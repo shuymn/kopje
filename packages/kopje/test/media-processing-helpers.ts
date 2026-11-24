@@ -133,17 +133,37 @@ export async function staged(w: AvWorld, options: { v1?: boolean; at?: number; u
 
 export const TEXT = { description: "a clip", focus: { x: 0.25, y: -0.5 } };
 
-export async function queued(w: AvWorld, options: { v1?: boolean; up?: Up } = {}): Promise<Queued> {
-  const up = await staged(w, options);
-  clock(T0 + 2 * SECOND);
-  const answer = await w.store.queueNormalize(BUILD, {
+// S3 for the upload `up` under the staging identity `stagedAt`: 2 MB of input and TEXT, on the active path.
+export function queue(w: AvWorld, up: Up, stagedAt: number) {
+  return w.store.queueNormalize(BUILD, {
     id: up.id,
     token: up.token,
-    stagedAt: up.stagedAt,
+    stagedAt,
     bytes: 2_000_000,
     text: TEXT,
     activation: ACTIVE,
   });
+}
+
+// completeMedia's input for alice's upload `id`: a 10 × 10 WebP, no description or focus.
+export function imageCompletion(w: AvWorld, id: string) {
+  return {
+    credential: w.alice,
+    id,
+    contentType: "image/webp",
+    original: { width: 10, height: 10 },
+    small: { width: 10, height: 10 },
+    animated: false,
+    blurhash: null,
+    description: "",
+    focus: undefined,
+  };
+}
+
+export async function queued(w: AvWorld, options: { v1?: boolean; up?: Up } = {}): Promise<Queued> {
+  const up = await staged(w, options);
+  clock(T0 + 2 * SECOND);
+  const answer = await queue(w, up, up.stagedAt);
   if (answer.status !== "queued") {
     throw new Error(`not queued: ${JSON.stringify(answer)}`);
   }

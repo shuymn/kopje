@@ -15,7 +15,8 @@ import {
   restore,
   SECOND,
   T0,
-  TEXT,
+  queue,
+  imageCompletion,
 } from "./media-processing-helpers";
 
 // One clock for the processing's fences (#1828 plan section 1, rules 2 and 5, "Identities"): a reservation that may
@@ -64,14 +65,7 @@ describe("the reservation's time is the Store's (H1)", () => {
       throw new Error(taken.status);
     }
     clock(T0 + 2 * SECOND);
-    const queued = await w.store.queueNormalize(BUILD, {
-      id,
-      token,
-      stagedAt: taken.stagedAt,
-      bytes: 2_000_000,
-      text: TEXT,
-      activation: ACTIVE,
-    });
+    const queued = await queue(w, { id, token }, taken.stagedAt);
     expect(queued).toMatchObject({ status: "queued" });
     await restore(w.store, await bookmark(w.store), T0 + 2500);
     clock(T0 + 4 * SECOND);
@@ -105,17 +99,6 @@ describe("the reservation's time is the Store's (H1)", () => {
 // One media clock (#1828 plan section 3, "PR4-1"): every comparison with a time stored on media_attachments is made at
 // the Store's time, whatever time the Worker's request carries.
 describe("one media clock: the Store's", () => {
-  const image = (id: string) => ({
-    id,
-    contentType: "image/webp",
-    original: { width: 10, height: 10 },
-    small: { width: 10, height: 10 },
-    animated: false,
-    blurhash: null,
-    description: "",
-    focus: undefined,
-  });
-
   it.each(SKEWS)(
     "a candidate that resolves to an image is open up to the Worker's deadline, the Worker %i ms off the Store",
     async (skew) => {
@@ -135,7 +118,7 @@ describe("one media clock: the Store's", () => {
           now: workerAt,
         }),
       ).toEqual({ status: "ok", value: { status: "ok" } });
-      const done = await w.store.completeMedia(BUILD, { credential: w.alice, ...image(reserved.id) });
+      const done = await w.store.completeMedia(BUILD, imageCompletion(w, reserved.id));
       expect(done).toMatchObject({ status: "ok", value: { id: reserved.id, type: "image" } });
       // At the Worker's deadline, on the Store's clock too, a reservation is closed.
       const late = await reserveAv(w, T0, skew);

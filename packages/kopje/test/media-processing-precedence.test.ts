@@ -40,6 +40,8 @@ import {
   type Up,
   V1_LEFT,
   VIDEO,
+  queue,
+  imageCompletion,
 } from "./media-processing-helpers";
 
 // Table 1.2 of the PR4 plan (spec/media-upload/MediaUploadStore.tla, S1-S13 under K1, K3 and K4), one case per cell,
@@ -82,15 +84,7 @@ const OPS = {
   S1: (w: AvWorld, c: Ctx) =>
     w.store.takeAvSlot(BUILD, { id: c.id, token: c.token, kind: "video", v1Left: null, activation: ACTIVE }),
   S2: (w: AvWorld, c: Ctx) => w.store.releaseStaging(BUILD, { id: c.id, token: c.token, stagedAt: c.stagedAt }),
-  S3: (w: AvWorld, c: Ctx) =>
-    w.store.queueNormalize(BUILD, {
-      id: c.id,
-      token: c.token,
-      stagedAt: c.stagedAt,
-      bytes: 2_000_000,
-      text: TEXT,
-      activation: ACTIVE,
-    }),
+  S3: (w: AvWorld, c: Ctx) => queue(w, c, c.stagedAt),
   S4: (w: AvWorld, c: Ctx) => w.store.startNormalize(BUILD, { id: c.id, token: c.token, invocation: c.invocation }),
   S4other: (w: AvWorld, c: Ctx) => w.store.startNormalize(BUILD, { id: c.id, token: c.token, invocation: "other" }),
   S5: (w: AvWorld, c: Ctx) => w.store.confirmAvWrite(BUILD, { id: c.id, startId: c.startId, write: "full" }),
@@ -723,26 +717,12 @@ describe("named cells", () => {
     expect(await held(w.store, c.id)).toEqual(before);
   });
 
-  const imageCompletion = (id: string, now: number) => ({
-    id,
-    contentType: "image/webp",
-    original: { width: 10, height: 10 },
-    small: { width: 10, height: 10 },
-    animated: false,
-    blurhash: null,
-    description: "",
-    focus: undefined,
-    now,
-  });
-
   it("the image path cannot complete an upload the processor holds: completeMedia answers null and changes nothing", async () => {
     const w = await avWorld();
     const c = await queued(w);
     clock(T0 + 5 * SECOND);
     const before = await held(w.store, c.id);
-    expect(
-      await w.store.completeMedia(BUILD, { credential: w.alice, ...imageCompletion(c.id, T0 + 5 * SECOND) }),
-    ).toEqual({ status: "ok", value: null });
+    expect(await w.store.completeMedia(BUILD, imageCompletion(w, c.id))).toEqual({ status: "ok", value: null });
     expect(await held(w.store, c.id)).toEqual(before);
   });
 
@@ -772,7 +752,7 @@ describe("named cells", () => {
     expect((await held(w.store, c.id)).att).toMatchObject({ gc_at: gcAt });
   });
 
-  it("S11's unfinished branch requires no status: a row completed by the image path and attached is in_use", async () => {
+  it("S11 on an attached, completed upload with a leftover processing row answers in_use", async () => {
     const w = await avWorld();
     const c = await queued(w);
     vi.useRealTimers();

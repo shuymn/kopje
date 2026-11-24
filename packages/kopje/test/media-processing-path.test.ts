@@ -11,7 +11,7 @@ import { mediaKeys, restoreMarkerKey } from "../src/platform/media-files";
 import { sha256Hex } from "../src/security/tokens";
 import { startImagePath } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
-import { BUILD, testKernel } from "./helpers";
+import { BUILD, deferred, testKernel } from "./helpers";
 import { base64, pngOf } from "./local-emoji-helpers";
 import { TestCodec } from "./media-helpers";
 import {
@@ -33,9 +33,10 @@ import {
   staged,
   started,
   T0,
-  TEXT,
   type Up,
   VIDEO,
+  queue,
+  imageCompletion,
 } from "./media-processing-helpers";
 import { ACCESS, setAccess } from "./ops-helpers";
 
@@ -49,18 +50,6 @@ afterEach(() => {
 });
 
 const BUDGETS = { instance: 1_000_000, account: 1_000_000 };
-
-const image = (w: AvWorld, id: string) => ({
-  credential: w.alice,
-  id,
-  contentType: "image/webp",
-  original: { width: 10, height: 10 },
-  small: { width: 10, height: 10 },
-  animated: false,
-  blurhash: null,
-  description: "",
-  focus: undefined,
-});
 
 function startImage(w: AvWorld, id: string) {
   return w.store.startTransforms(BUILD, { credential: w.alice, id, monthlyTransforms: BUDGETS, now: Date.now() });
@@ -133,7 +122,7 @@ async function build(w: AvWorld, state: State): Promise<Built> {
       const up = await reserve(w, T0);
       clock(T0 + SECOND);
       await startImage(w, up.id);
-      expect(await w.store.completeMedia(BUILD, image(w, up.id))).toMatchObject({ value: { id: up.id } });
+      expect(await w.store.completeMedia(BUILD, imageCompletion(w, up.id))).toMatchObject({ value: { id: up.id } });
       return { ...up, ...none };
     }
     case "AV staging":
@@ -241,7 +230,7 @@ const EMOJI = {
 const OPS: Record<Op, (w: AvWorld, b: Built) => Promise<unknown>> = {
   startTransforms: async (w, b) => ((await startImage(w, b.id)) as { value: { status: string } }).value.status,
   completeMedia: async (w, b) => {
-    const done = (await w.store.completeMedia(BUILD, image(w, b.id))) as { value: { type: string } | null };
+    const done = (await w.store.completeMedia(BUILD, imageCompletion(w, b.id))) as { value: { type: string } | null };
     return done.value === null ? null : done.value.type;
   },
   abandonMedia: async (w, b) =>
@@ -256,17 +245,7 @@ const OPS: Record<Op, (w: AvWorld, b: Built) => Promise<unknown>> = {
     return w.store.abandonEmoji(BUILD, { authority: ACCESS, id: b.id, token: b.token });
   },
   S1: async (w, b) => (await takeSlot(w, b)).status,
-  S3: async (w, b) =>
-    (
-      await w.store.queueNormalize(BUILD, {
-        id: b.id,
-        token: b.token,
-        stagedAt: b.stagedAt,
-        bytes: 2_000_000,
-        text: TEXT,
-        activation: ACTIVE,
-      })
-    ).status,
+  S3: async (w, b) => (await queue(w, b, b.stagedAt)).status,
   S4: async (w, b) => {
     const answer = await w.store.startNormalize(BUILD, { id: b.id, token: b.token, invocation: "cell" });
     return answer.status === "settled" ? { settled: answer.state } : answer.status;
@@ -553,48 +532,39 @@ describe("one path per reservation: every (path state × operation)", () => {
   });
 });
 
-// ---- The r3 interleavings
-
-// An explicit await point: the actor that awaits `point` stays there until the test calls `release`.
-function holdPoint(): { point: Promise<void>; release: () => void } {
-  let release = () => {};
-  const point = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  return { point, release };
-}
+// ---- The interleavings
 
 // The media bucket, its deletes held after they settle: `deleted` resolves once the sweep's R2 deletion is done, and
 // the sweep waits there, before its purge, until `release`.
 function heldBucket() {
-  const deleted = holdPoint();
-  const purge = holdPoint();
+  const deleted = deferred();
+  const purge = deferred();
   const bucket = new Proxy(env.MEDIA, {
     get(target, property) {
       if (property === "delete") {
         return async (keys: string | string[]) => {
           await target.delete(keys);
-          deleted.release();
-          await purge.point;
+          deleted.resolve();
+          await purge.promise;
         };
       }
       const value = Reflect.get(target, property) as unknown;
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
     },
   });
-  return { bucket, deleted: deleted.point, release: purge.release };
+  return { bucket, deleted: deleted.promise, release: purge.resolve };
 }
 
-describe("the r3 interleavings, each actor held at an explicit await", () => {
+describe("the interleavings, each actor held at an explicit await", () => {
   it("S11 before the image start: the candidate is doomed, and the image start and completion, held until after the sweep's deletion, are refused", async () => {
     const w = await avWorld();
     const up = await reserve(w, T0);
     // The image route has read the body and is held before its start.
-    const route = holdPoint();
+    const route = deferred();
     const imageRoute = (async () => {
-      await route.point;
+      await route.promise;
       const start = await startImage(w, up.id);
-      const done = await w.store.completeMedia(BUILD, image(w, up.id));
+      const done = await w.store.completeMedia(BUILD, imageCompletion(w, up.id));
       return { start, done };
     })();
     const { bucket, deleted, release } = heldBucket();
@@ -608,7 +578,7 @@ describe("the r3 interleavings, each actor held at an explicit await", () => {
       const sweep = sweepMedia({ ...env, MEDIA: bucket }, sweepDeps(w));
       await deleted;
       clock(T0 + 2 * SECOND);
-      route.release();
+      route.resolve();
       expect(await imageRoute).toEqual({
         start: { status: "ok", value: { status: "expired" } },
         done: { status: "ok", value: null },
@@ -617,7 +587,7 @@ describe("the r3 interleavings, each actor held at an explicit await", () => {
       expect(await sweep).toBe(1);
       expect((await held(w.store, up.id)).att).toBeNull();
     } finally {
-      route.release();
+      route.resolve();
       release();
     }
   });
@@ -628,10 +598,10 @@ describe("the r3 interleavings, each actor held at an explicit await", () => {
     clock(T0 + SECOND);
     expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "ok" } });
     // The image route has written its files and is held before its completion.
-    const route = holdPoint();
+    const route = deferred();
     const completion = (async () => {
-      await route.point;
-      return w.store.completeMedia(BUILD, image(w, up.id));
+      await route.promise;
+      return w.store.completeMedia(BUILD, imageCompletion(w, up.id));
     })();
     try {
       clock(T0 + 2 * SECOND);
@@ -641,14 +611,14 @@ describe("the r3 interleavings, each actor held at an explicit await", () => {
       });
       expect(await w.store.expiredMedia(BUILD, { limit: 100 })).toEqual([]);
       clock(T0 + 3 * SECOND);
-      route.release();
+      route.resolve();
       expect(await completion).toMatchObject({ status: "ok", value: { id: up.id, type: "image" } });
       expect((await held(w.store, up.id)).att).toMatchObject({
         processed: 1,
         gc_at: new Date(T0 + 3 * SECOND + DETACHED_GRACE_MS).toISOString(),
       });
     } finally {
-      route.release();
+      route.resolve();
     }
   });
 
@@ -657,19 +627,19 @@ describe("the r3 interleavings, each actor held at an explicit await", () => {
     const up = await reserve(w, T0);
     clock(T0 + SECOND);
     expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "ok" } });
-    const route = holdPoint();
+    const route = deferred();
     const completion = (async () => {
-      await route.point;
-      return w.store.completeMedia(BUILD, image(w, up.id));
+      await route.promise;
+      return w.store.completeMedia(BUILD, imageCompletion(w, up.id));
     })();
     try {
       clock(T0 + 2 * SECOND);
       expect(await takeSlot(w, up)).toEqual({ status: "gone" });
-      route.release();
+      route.resolve();
       expect(await completion).toMatchObject({ status: "ok", value: { id: up.id, type: "image" } });
       expect(await held(w.store, up.id)).toMatchObject({ row: null, slot: null });
     } finally {
-      route.release();
+      route.resolve();
     }
   });
 
@@ -682,30 +652,23 @@ describe("the r3 interleavings, each actor held at an explicit await", () => {
       throw new Error(taken.status);
     }
     clock(T0 + 2 * SECOND);
-    const queuedAnswer = await w.store.queueNormalize(BUILD, {
-      id: up.id,
-      token: up.token,
-      stagedAt: taken.stagedAt,
-      bytes: 2_000_000,
-      text: TEXT,
-      activation: ACTIVE,
-    });
+    const queuedAnswer = await queue(w, up, taken.stagedAt);
     expect(queuedAnswer).toMatchObject({ status: "queued" });
     // The AV route holds before its next step (the processor's start).
-    const route = holdPoint();
+    const route = deferred();
     const av = (async () => {
-      await route.point;
+      await route.promise;
       return w.store.startNormalize(BUILD, { id: up.id, token: up.token, invocation: "inv" });
     })();
     try {
       clock(T0 + 3 * SECOND);
       expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "expired" } });
-      expect(await w.store.completeMedia(BUILD, image(w, up.id))).toEqual({ status: "ok", value: null });
-      route.release();
+      expect(await w.store.completeMedia(BUILD, imageCompletion(w, up.id))).toEqual({ status: "ok", value: null });
+      route.resolve();
       expect(await av).toMatchObject({ status: "started" });
       expect((await held(w.store, up.id)).att).toMatchObject({ processed: 0, type: "video" });
     } finally {
-      route.release();
+      route.resolve();
     }
   });
 
@@ -743,7 +706,7 @@ describe("the r3 interleavings, each actor held at an explicit await", () => {
     const id = reserved.value.id;
     clock(T0 + SECOND);
     await startImage(w, id);
-    expect(await w.store.completeMedia(BUILD, image(w, id))).toMatchObject({ value: { id } });
+    expect(await w.store.completeMedia(BUILD, imageCompletion(w, id))).toMatchObject({ value: { id } });
     const gcAt = T0 + SECOND + DETACHED_GRACE_MS;
     expect((await held(w.store, id)).att?.gc_at).toBe(new Date(gcAt).toISOString());
     clock(gcAt + SECOND);
@@ -797,7 +760,7 @@ async function completedImage(w: AvWorld, at: number): Promise<string> {
   }
   const { id } = reserved.value;
   await startImage(w, id);
-  expect(await w.store.completeMedia(BUILD, image(w, id))).toMatchObject({ value: { id } });
+  expect(await w.store.completeMedia(BUILD, imageCompletion(w, id))).toMatchObject({ value: { id } });
   return id;
 }
 
@@ -880,25 +843,32 @@ describe("one media clock beyond the upload: every write and check of a stored m
     expect((await held(w.store, id)).att?.gc_at).toBe(new Date(T0 + 2 * SECOND + DETACHED_GRACE_MS).toISOString());
   });
 
-  it("a profile update judges its upload live at the Store's time: past its gc_at there, the upload is gone", async () => {
-    const w = await avWorld();
-    const id = await completedImage(w, T0);
-    const gcAt = T0 + DETACHED_GRACE_MS;
-    const credential = { tokenHash: await sha256Hex(w.h.users.alice.token), scope: "write:accounts" as const, now: T0 };
-    const update = () =>
-      w.store.updateCredentials(BUILD, {
-        credential,
-        changes: {},
-        images: { avatar: id },
-        present: { origin: "https://kopje.test" },
-        now: gcAt - SECOND,
-      });
-    clock(gcAt + SECOND);
-    expect(await update()).toEqual({ status: "ok", value: { status: "upload_gone" } });
-    // The control: before its gc_at on the Store's clock, the same request applies it.
-    clock(gcAt - SECOND);
-    expect(await update()).toMatchObject({ status: "ok", value: { status: "ok" } });
-  });
+  it.each(["updateCredentials", "updateProfile"] as const)(
+    "a profile update (%s) judges its upload live at the Store's time: past its gc_at there, the upload is gone",
+    async (operation) => {
+      const w = await avWorld();
+      const id = await completedImage(w, T0);
+      const gcAt = T0 + DETACHED_GRACE_MS;
+      const credential = {
+        tokenHash: await sha256Hex(w.h.users.alice.token),
+        scope: "write:accounts" as const,
+        now: T0,
+      };
+      const update = () =>
+        w.store[operation](BUILD, {
+          credential,
+          changes: {},
+          images: { avatar: id },
+          present: { origin: "https://kopje.test" },
+          now: gcAt - SECOND,
+        });
+      clock(gcAt + SECOND);
+      expect(await update()).toEqual({ status: "ok", value: { status: "upload_gone" } });
+      // The control: before its gc_at on the Store's clock, the same request applies it.
+      clock(gcAt - SECOND);
+      expect(await update()).toMatchObject({ status: "ok", value: { status: "ok" } });
+    },
+  );
 });
 
 describe("a row without a URL is never live, nor a doomed one completed", () => {
@@ -917,7 +887,7 @@ describe("a row without a URL is never live, nor a doomed one completed", () => 
     clock(T0 + SECOND);
     expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "ok" } });
     await sql(w.store, "UPDATE media_attachments SET gc_at = ? WHERE id = ?", new Date(0).toISOString(), up.id);
-    expect(await w.store.completeMedia(BUILD, image(w, up.id))).toEqual({ status: "ok", value: null });
+    expect(await w.store.completeMedia(BUILD, imageCompletion(w, up.id))).toEqual({ status: "ok", value: null });
     expect((await held(w.store, up.id)).att).toMatchObject({ processed: 0, gc_at: new Date(0).toISOString() });
   });
 });
@@ -979,7 +949,7 @@ describe("the restore fence on the image path of a candidate", () => {
     clock(T0 + 3 * SECOND);
     expect(await takeSlot(w, up)).toEqual({ status: "gone" });
     expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "expired" } });
-    expect(await w.store.completeMedia(BUILD, image(w, up.id))).toEqual({ status: "ok", value: null });
+    expect(await w.store.completeMedia(BUILD, imageCompletion(w, up.id))).toEqual({ status: "ok", value: null });
     expect(await stateOf(w, up.id)).toBe("unknown 0 1h | - | - | -");
   });
 
@@ -993,21 +963,21 @@ describe("the restore fence on the image path of a candidate", () => {
       status: "grant",
     });
     // The processor's full put is in flight, held across the restore; its completion comes after.
-    const put = holdPoint();
+    const put = deferred();
     const av = (async () => {
-      await put.point;
+      await put.promise;
       return w.store.completeAvUpload(BUILD, { id: up.id, token: up.token, startId: run.startId, facts: VIDEO });
     })();
     try {
       await restore(w.store, taken, T0 + 4 * SECOND);
       clock(T0 + 5 * SECOND);
       expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "expired" } });
-      expect(await w.store.completeMedia(BUILD, image(w, up.id))).toEqual({ status: "ok", value: null });
-      put.release();
+      expect(await w.store.completeMedia(BUILD, imageCompletion(w, up.id))).toEqual({ status: "ok", value: null });
+      put.resolve();
       expect(await av).toEqual({ status: "refused" });
       expect(await stateOf(w, up.id)).toBe("unknown 0 1h | - | - | -");
     } finally {
-      put.release();
+      put.resolve();
     }
   });
 
@@ -1019,7 +989,7 @@ describe("the restore fence on the image path of a candidate", () => {
     expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "ok" } });
     await restore(w.store, taken, T0 + 2 * SECOND);
     clock(T0 + 3 * SECOND);
-    expect(await w.store.completeMedia(BUILD, image(w, up.id))).toEqual({ status: "ok", value: null });
+    expect(await w.store.completeMedia(BUILD, imageCompletion(w, up.id))).toEqual({ status: "ok", value: null });
     expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "expired" } });
     expect(await stateOf(w, up.id)).toBe("unknown 0 1h | - | - | -");
   });
@@ -1031,7 +1001,9 @@ describe("the restore fence on the image path of a candidate", () => {
     expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "ok" } });
     await restore(w.store, await bookmark(w.store), T0 + 2 * SECOND);
     clock(T0 + 3 * SECOND);
-    expect(await w.store.completeMedia(BUILD, image(w, up.id))).toMatchObject({ value: { id: up.id, type: "image" } });
+    expect(await w.store.completeMedia(BUILD, imageCompletion(w, up.id))).toMatchObject({
+      value: { id: up.id, type: "image" },
+    });
   });
 
   it("a plain image reservation made before the restore is not fenced", async () => {
@@ -1126,25 +1098,6 @@ describe("the Worker's clock off the Store's: each write and check of a stored m
     await publishScheduled(env, scheduledDeps(w, T0 + 4 * HOUR));
     expect(await sql(w.store, "SELECT count(*) AS n FROM scheduled_statuses")).toEqual([{ n: 0 }]);
     expect(await stateOf(w, id)).toBe(`image 1 ${span(5 * HOUR + DETACHED_GRACE_MS)} | - | - | -`);
-  });
-
-  it("a profile update (updateProfile) judges its upload live at the Store's time: past its gc_at there, the upload is gone", async () => {
-    const w = await avWorld();
-    const id = await completedImage(w, T0);
-    const gcAt = T0 + DETACHED_GRACE_MS;
-    const credential = { tokenHash: await sha256Hex(w.h.users.alice.token), scope: "write:accounts" as const, now: T0 };
-    const update = () =>
-      w.store.updateProfile(BUILD, {
-        credential,
-        changes: {},
-        images: { avatar: id },
-        present: { origin: "https://kopje.test" },
-        now: gcAt - SECOND,
-      });
-    clock(gcAt + SECOND);
-    expect(await update()).toEqual({ status: "ok", value: { status: "upload_gone" } });
-    clock(gcAt - SECOND);
-    expect(await update()).toMatchObject({ status: "ok", value: { status: "ok" } });
   });
 
   it("the cron's purge stamps a tombstone from the Store's time, the Worker's clock an hour behind", async () => {

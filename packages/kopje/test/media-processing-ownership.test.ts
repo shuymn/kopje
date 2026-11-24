@@ -6,7 +6,6 @@ import { mediaKeys, sweptKeys } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
 import { BUILD } from "./helpers";
 import {
-  ACTIVE,
   type AvWorld,
   avWorld,
   bookmark,
@@ -19,8 +18,8 @@ import {
   staged,
   started,
   T0,
-  TEXT,
   VIDEO,
+  queue,
 } from "./media-processing-helpers";
 
 // Table 1.1 of the PR4 plan, the Store's side: who may clean up or free each resource in each phase. Only S2's
@@ -41,16 +40,6 @@ async function sweep(w: AvWorld, now: number): Promise<string[]> {
     return ids;
   });
 }
-
-const queue = (w: AvWorld, c: { id: string; token: string }, stagedAt: number) =>
-  w.store.queueNormalize(BUILD, {
-    id: c.id,
-    token: c.token,
-    stagedAt,
-    bytes: 2_000_000,
-    text: TEXT,
-    activation: ACTIVE,
-  });
 
 type Row = [resource: string, rule: string, run: (w: AvWorld) => Promise<void>];
 

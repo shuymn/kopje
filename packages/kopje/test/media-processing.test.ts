@@ -582,7 +582,7 @@ describe("the dispatch round", () => {
     expect(await held(w.store, "300000000000001000")).toMatchObject({ row: { state: "failed", failure: "restored" } });
   });
 
-  it("counts a restored staging row past its staged_until as K3's, beyond K3's batch too (review r2 LOW 2)", async () => {
+  it("counts a restored staging row past its staged_until as K3's, beyond K3's batch too", async () => {
     const w = await avWorld();
     await reserve(w, T0);
     await runInDurableObject(w.store, (_instance, state) => {

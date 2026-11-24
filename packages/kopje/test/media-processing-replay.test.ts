@@ -23,8 +23,8 @@ import {
   staged,
   started,
   T0,
-  TEXT,
   VIDEO,
+  queue,
 } from "./media-processing-helpers";
 
 // Table 1.4 of the PR4 plan, the Store's rows: each RPC's first call committed and its reply was lost (the test drops
@@ -45,16 +45,6 @@ async function sweep(w: AvWorld, now: number): Promise<void> {
 }
 
 type Replay = [rpc: string, phase: string, run: (w: AvWorld) => Promise<void>];
-
-const queue = (w: AvWorld, c: { id: string; token: string; stagedAt: number }) =>
-  w.store.queueNormalize(BUILD, {
-    id: c.id,
-    token: c.token,
-    stagedAt: c.stagedAt,
-    bytes: 2_000_000,
-    text: TEXT,
-    activation: ACTIVE,
-  });
 
 const REPLAYS: Replay[] = [
   [
@@ -110,7 +100,7 @@ const REPLAYS: Replay[] = [
     async (w) => {
       const c = await queued(w);
       clock(at(5));
-      expect(await queue(w, c)).toEqual({ status: "queued", teardownId: c.teardownId });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "queued", teardownId: c.teardownId });
       expect(await charged(w.store)).toBe(1);
     },
   ],
@@ -120,7 +110,7 @@ const REPLAYS: Replay[] = [
     async (w) => {
       const c = await started(w);
       clock(at(5));
-      expect(await queue(w, c)).toEqual({ status: "settled", outcome: "running" });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "settled", outcome: "running" });
       expect(await charged(w.store)).toBe(1);
     },
   ],
@@ -131,7 +121,7 @@ const REPLAYS: Replay[] = [
       const c = await completed(w);
       await w.store.releaseAvSlot(BUILD, { id: c.id, teardownId: c.teardownId });
       clock(at(5));
-      expect(await queue(w, c)).toEqual({ status: "settled", outcome: "completed" });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "settled", outcome: "completed" });
       expect(await charged(w.store)).toBe(1);
     },
   ],
@@ -142,7 +132,7 @@ const REPLAYS: Replay[] = [
       const c = await failed(w, "verifier");
       await w.store.releaseAvSlot(BUILD, { id: c.id, teardownId: c.teardownId });
       clock(at(5));
-      expect(await queue(w, c)).toEqual({ status: "settled", outcome: { failed: "verifier" } });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "settled", outcome: { failed: "verifier" } });
       expect(await charged(w.store)).toBe(1);
     },
   ],
@@ -152,10 +142,10 @@ const REPLAYS: Replay[] = [
     async (w) => {
       const c = await staged(w);
       const taken = await bookmark(w.store);
-      await queue(w, c);
+      await queue(w, c, c.stagedAt);
       await restore(w.store, taken, at(5));
       clock(at(6));
-      expect(await queue(w, c)).toEqual({ status: "refused_cleanup_yours", reason: "restored" });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "refused_cleanup_yours", reason: "restored" });
       expect(await held(w.store, c.id)).toMatchObject({ row: null, slot: null });
     },
   ],
@@ -167,7 +157,7 @@ const REPLAYS: Replay[] = [
       await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id });
       await sweep(w, at(5));
       clock(at(6));
-      expect(await queue(w, c)).toEqual({ status: "gone" });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "gone" });
     },
   ],
   [
@@ -176,8 +166,8 @@ const REPLAYS: Replay[] = [
     async (w) => {
       const c = await staged(w);
       clock(c.stagedAt + 10 * 60 * SECOND);
-      expect(await queue(w, c)).toEqual({ status: "refused_cleanup_yours", reason: "staging_deadline" });
-      expect(await queue(w, c)).toEqual({ status: "gone" });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "refused_cleanup_yours", reason: "staging_deadline" });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "gone" });
       expect(await charged(w.store)).toBe(0);
     },
   ],
