@@ -3240,6 +3240,27 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/media-rebuild-av.test.ts` ("publishes nothing the verifier refuses", "a call that loses its lease after `full`",
   "a call held right after its still's put loses the lease", "a restored row whose preview metadata predates the
   small", "falls back without the processor"), `test/media-processor.test.ts` ("MediaProcessor stillNow").
+  A video or audio upload's processing (#1828) keeps its Store record in `media_processing` and its capacity in
+  `media_av_slots` (`src/domain/media-processing.ts`). _Enforced (main)_ for the Store, with no route or processor
+  calling it yet (the callers' clauses come with #1828's processor and upload route): the upload's input is
+  `incoming/<id>` of the reservation's id (`incomingKey` in `src/platform/media-files.ts`), one of `mediaKeys`, so the
+  sweep and reconciliation delete it with the upload's other keys, in chunks of `R2_DELETE_KEYS` (1,000) keys a call.
+  Its write deadline is `AV_WRITE_WINDOW_MS` (30 minutes) after the reservation (`writeDeadline` in
+  `src/domain/media.ts`), and the tombstone of a purged AV upload keeps that deadline. Only the staging row of the
+  caller's `staged_at` hands the caller its input to delete (`releaseStaging`'s `released`, `queueNormalize`'s
+  `refused_cleanup_yours`); once queued, nothing hands it back. A write is confirmed one at a time
+  (`confirmAvWrite`), only under the live `start_id` of a running row before its `deadline_at`, and the grant ends
+  there; completion (`completeAvUpload`) takes the verifier's facts only, under that `start_id`, and no confirmation
+  follows it. A reservation made at or before the latest restore marker is fenced (K3): it is never staged, a staging
+  row of it is deleted with its slot and a queued one fails `restored`, so a restored Store starts no processing a
+  restore forgot. The `teardown_id` frees the slot (`releaseAvSlot`) and authorizes nothing else. The `incoming/`
+  orphan pass's Store steps checkpoint only under the live claim taken after the latest restore
+  (`incomingSweepClaim`, `incomingClassify`, `incomingSwept`), and classify as orphans only `incoming/<id>` keys no
+  attachment holds and `incoming/probe-<nonce>` copies, each uploaded more than a day before.
+  `test/media-processing-ownership.test.ts` ("table 1.1, the Store's side"), `test/media-processing-precedence.test.ts`
+  ("with the reservation at or before the restore marker (K3)", "named cells"), `test/media-processing-replay.test.ts`
+  ("table 1.4: a repeat after a lost reply"), `test/media-processing.test.ts` ("the incoming/ orphan pass (W4)",
+  "W13: a restore between the sweep's selection and its deletion"), `test/image-bytes.test.ts` ("media keys (MEDIA-2)").
   A custom emoji upload (`kopje-admin emoji add`, `src/mastodon/emoji-upload.ts`) builds its keys as every upload's,
   from a reservation the Store records before any write (`reserveEmoji` in `src/domain/local-emojis.ts`); completion
   and promotion are one transaction (`completeEmoji`: the row is kept, gc_at NULL, with its emoji row), and a failure
@@ -3593,6 +3614,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   rule (1,024 bytes, 256 characters); a link review's URL passes the card URL rule (2,048 bytes of printable ASCII) and
   a publisher's domain is normalized by `blockedDomain` within 253 bytes; `src/mastodon/trends.ts`,
   `src/domain/trends.ts`; `test/trends.test.ts`, `test/admin-trends.test.ts`.
+  _Enforced (main)_ for the Store's capacity of video and audio processing (#1828), with no route or processor calling
+  it yet (the callers' clauses come with #1828's processor and upload route): at most `MAX_AV_INFLIGHT` (2) slots count
+  at once, and a staging answers `busy` at that count. A slot is apart from the upload's row (`media_av_slots`, no
+  foreign key), so a deleted, purged or restored upload keeps its slot until the processor confirms its stop with the
+  slot's `teardown_id` (`releaseAvSlot`), and only then frees it. A slot never granted counts until its `held_until`
+  (the staging's end, or the job's `deadline_at`); a granted one, whose container may run, counts until that
+  confirmation or for at most `HARD_HOLD_MS` (24 hours) after `granted_at`, whatever its `held_until`. This holds for
+  a restore made by the documented procedure (`docs/backup.md`: the budget set to 0 and no slot in use first). After
+  such a restore a restored slot may answer `busy` until it is confirmed or its bound passes (W2). A restore made
+  otherwise can forget a grant the processor still holds, so up to one more container can run for each such grant
+  until its processor stops it (W3). `test/media-processing-precedence.test.ts` ("answers busy at MAX_AV_INFLIGHT
+  counting slots (SlotBound)", "S12 deletes a granted slot only at granted_at + HARD_HOLD_MS, whatever its
+  held_until", "S12 deletes a slot never granted at its held_until", "W2: restored slots"),
+  `test/media-processing-ownership.test.ts` ("table 1.1, the Store's side").
 - **RES-2: parsing work is bounded.** Every regex, parser and normalization over input at the RES-1 cap has an
   adversarial fixture with a time bound. _Enforced (main)_ for status text:
   `test/statuses.test.ts` ("handles the worst case at the bound within a generous time"). _Enforced (main)_ for the
@@ -4779,6 +4814,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   uploads once the monthly Images budget is reserved", "stops one account at its monthly share", "answers 503 when the
   transformation allowance is used up"), `test/media-reconcile.test.ts` ("spends no transformation on a reservation
   that expired", "charges the budgets of the month the transformations run in").
+  _Enforced (main)_ for the Store's side of a video or audio upload's processing (#1828), with no route calling it yet
+  (the upload route's clauses come with #1828's upload route): one upload is charged one unit of
+  `MEDIA_UPLOAD_MONTHLY_JOBS`, per UTC month of the Store's clock, by its queue (`queueNormalize`) and never by a
+  repeat or a refund, so a queued upload finishes whatever the budget becomes; the staging answers `spent` and charges
+  nothing. A queued job gets one allocation (`allocate` in `src/domain/media-processing.ts`): its `deadline_at` is fixed
+  at the queue, at most `V2_PROCESS_MS` (8 minutes) on, and within the AV write deadline; each stage's cut is that
+  deadline less the stages after it, and a start with less than `T_MIN_ENCODE` (5 s) of encode left fails the job.
+  With a passed `normalize@standard-4` probe and an AV candidate, the reservation counts the attempt and reports the
+  Images budget that is spent rather than refusing (`imagesRefusal`), since an AV upload needs no Images output; no
+  route passes the candidate yet, so every upload answers as before. `test/media-av-budget.test.ts` ("the upload budget
+  (P15)"), `test/media-processing-precedence.test.ts` ("S3 charges one unit on the queue and none on its repeat
+  (ChargeOnce)", "S4 with less than T_MIN_ENCODE left after the remaining fixed parts fails the job timeout"),
+  `test/media-processing.test.ts` ("the allocation (P8)"), `test/media.test.ts` ("the active path's reservation
+  (Q1)").
   Delivery: _Enforced (main):_ an activity's targets are expanded 100 at a time, oldest activity first, in the recording
   transaction and then in each claim; a claim reads at most 16 lane heads (only heads are due); an unavailable host's
   drain (`drainStep`, RES-5) runs first in each claim, and in the operator's stop, and shares the claim's 100 rows
@@ -6151,7 +6200,10 @@ so the Store isolate's 128 MB holds them together.
   they name R2 objects to delete, which a restored Store must not act on. So are card images (`card_images`): they
   have no original to restore from, so a restored Store shows its cards without images (`status_cards` keeps the
   links, which name no row) and fetches an image again for a new record (`test/card-image-dump.test.ts` ("are left out
-  with their tombstones, the links kept, and the cards shown without them")). So is the remote media cache
+  with their tombstones, the links kept, and the cards shown without them")). So is the Store record of video and audio
+  processing (`media_processing`, `media_av_slots`; #1828): a job, a staging or a slot names a container and an input
+  of the Store it was made on, so an imported Store starts with none (`test/media-processing.test.ts` ("the dump
+  (DATA-3)")). So is the remote media cache
   (`remote_media`, `remote_media_objects`, `remote_media_usage`; MEDIA-7): a restored or imported Store starts it
   empty, presents the remote URLs, fills it again from the backfill, and its orphan sweep deletes the files under
   `remote/` it does not know (`test-node/schema-coverage.test.ts`).

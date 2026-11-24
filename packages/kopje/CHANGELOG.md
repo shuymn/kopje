@@ -8,6 +8,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Instance changes
+
+- Store schema: adds one migration (0121), applied on the first request after the deploy. Until it is applied the
+  Store refuses every request, and it stays readonly until it is verified ([docs/upgrade.md](docs/upgrade.md), "What
+  the Store serves in each state"). A rollback to an earlier version needs the point-in-time restore described in
+  [docs/upgrade.md](docs/upgrade.md). Migration `0121_media_processing` creates two empty tables with their indexes
+  (`media_processing`, the state of a video or audio upload while the media processor works on it, and
+  `media_av_slots`, the processor's capacity) and reads no existing row; it creates a table that references
+  `media_attachments`, so the upgrade checks every reference of the Store. Neither table is in a dump.
+- `wrangler.jsonc`: no change.
+
 ### Added
 
 - The first part of video and audio support: the package ships the media processor's container (`container/`, a
