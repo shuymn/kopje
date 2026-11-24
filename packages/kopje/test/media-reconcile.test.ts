@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DETACHED_GRACE_MS, ORPHAN_GRACE_MS, TRANSFORMS_PER_UPLOAD } from "../src/domain/media";
 import { MAX_FIELD_LENGTH, reconcileMedia, sweepMedia } from "../src/mastodon/media";
@@ -10,7 +10,7 @@ import { NOW } from "./app-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
 import { BUILD } from "./helpers";
 import { added } from "./local-emoji-helpers";
-import { bytes, mediaForm, TestCodec, upload, uploaded } from "./media-helpers";
+import { atStoreTime, bytes, clocksAt, mediaForm, storeClock, TestCodec, upload, uploaded } from "./media-helpers";
 import { ACCESS, setAccess } from "./ops-helpers";
 import { community, getJson, post } from "./status-helpers";
 
@@ -50,21 +50,28 @@ function after(method: "reserveMedia" | "startTransforms", then: () => void | Pr
 }
 
 // A harness whose clock moves to `at()` once the reservation is answered (as a slow body read would).
+// The Store's clock starts at the harness's NOW, as the Worker's does: uploads are stamped, and their gc_at and
+// tombstones judged, at the Store's time (media.ts liveMediaSql).
+beforeEach(() => {
+  storeClock(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+// A harness whose clocks, the Worker's and the Store's, both move to `at()` once the reservation is made.
 async function afterReserve(at: () => number) {
   const clock = { move: () => {} };
   const h = await users({ wrapStore: after("reserveMedia", () => clock.move()) });
   clock.move = () => {
-    h.now.mockReturnValue(at());
+    clocksAt(h, at());
   };
   return h;
 }
 
 describe("reconciliation deletes only recorded tombstones", () => {
-  const deps = (h: { store: StoreStub }, at: number) => ({
-    build: () => env.CF_VERSION_METADATA.id,
-    store: () => h.store,
-    now: () => at,
-  });
+  const deps = (h: { store: StoreStub }) => ({ build: () => env.CF_VERSION_METADATA.id, store: () => h.store });
   const later = NOW + 30 * 24 * HOUR;
 
   async function present(keys: string[]): Promise<string[]> {
@@ -83,8 +90,8 @@ describe("reconciliation deletes only recorded tombstones", () => {
     for (const key of keys) {
       await env.MEDIA.put(key, "restored media");
     }
-    await sweepMedia(env, deps(h, later));
-    await reconcileMedia(env, deps(h, later));
+    await atStoreTime(later, () => sweepMedia(env, deps(h)));
+    await atStoreTime(later, () => reconcileMedia(env, deps(h)));
     expect(await present(keys)).toEqual(keys);
   });
 
@@ -110,7 +117,7 @@ describe("reconciliation deletes only recorded tombstones", () => {
       "INSERT INTO kopje_state (name, value) VALUES ('maintenance', ?)",
       JSON.stringify({ mode: "readonly", at: NOW }),
     );
-    expect(await reconcileMedia(env, deps(h, later))).toBe(0);
+    expect(await atStoreTime(later, () => reconcileMedia(env, deps(h)))).toBe(0);
     expect(await present(keys)).toEqual(keys);
     await sql(h.store, "DELETE FROM kopje_state WHERE name = 'maintenance'");
     await sql(
@@ -118,11 +125,11 @@ describe("reconciliation deletes only recorded tombstones", () => {
       "INSERT INTO kopje_state (name, value) VALUES ('import', ?)",
       JSON.stringify({ id: "i", state: "receiving" }),
     );
-    expect(await reconcileMedia(env, deps(h, later))).toBe(0);
+    expect(await atStoreTime(later, () => reconcileMedia(env, deps(h)))).toBe(0);
     expect(await present(keys)).toEqual(keys);
     await sql(h.store, "DELETE FROM kopje_state WHERE name = 'import'");
     await sql(h.store, "DELETE FROM instance_settings WHERE name = 'domain'");
-    expect(await reconcileMedia(env, deps(h, later))).toBe(0);
+    expect(await atStoreTime(later, () => reconcileMedia(env, deps(h)))).toBe(0);
     expect(await present(keys)).toEqual(keys);
   });
 
@@ -135,14 +142,14 @@ describe("reconciliation deletes only recorded tombstones", () => {
       "SELECT id, file_token, created_at FROM media_attachments",
     );
     const token = row?.file_token ?? "";
-    expect(await sweepMedia(env, deps(h, NOW))).toBe(1);
+    expect(await atStoreTime(NOW, () => sweepMedia(env, deps(h)))).toBe(1);
     expect(await sql(h.store, "SELECT file_token FROM media_orphans")).toEqual([{ file_token: token }]);
     // A put that was still in flight lands after the sweep.
     await env.MEDIA.put(`files/${token}/full`, "late");
     const due = Date.parse(row?.created_at ?? "") + 15 * MINUTE + 24 * HOUR;
-    expect(await reconcileMedia(env, deps(h, due - 1))).toBe(0);
+    expect(await atStoreTime(due - 1, () => reconcileMedia(env, deps(h)))).toBe(0);
     expect(await env.MEDIA.head(`files/${token}/full`)).not.toBeNull();
-    expect(await reconcileMedia(env, deps(h, due))).toBe(1);
+    expect(await atStoreTime(due, () => reconcileMedia(env, deps(h)))).toBe(1);
     expect(await env.MEDIA.head(`files/${token}/full`)).toBeNull();
     expect(await sql(h.store, "SELECT file_token FROM media_orphans")).toEqual([]);
   });
@@ -152,14 +159,13 @@ describe("reconciliation deletes only recorded tombstones", () => {
     expect((await upload(h, h.users.alice, png())).status).toBe(500);
     const [row] = await sql<{ file_token: string }>(h.store, "SELECT file_token FROM media_attachments");
     // Past the writer deadline, so the tombstone is scheduled from the sweep's time; the R2 delete takes 2 hours.
-    let at = NOW + HOUR;
     const bucket = {
       delete: async (keys: string | string[]) => {
         await env.MEDIA.delete(keys);
-        at += 2 * HOUR;
+        storeClock(Date.now() + 2 * HOUR);
       },
     } as unknown as R2Bucket;
-    const swept = await sweepMedia({ ...env, MEDIA: bucket }, { ...deps(h, 0), now: () => at });
+    const swept = await atStoreTime(NOW + HOUR, () => sweepMedia({ ...env, MEDIA: bucket }, deps(h)));
     expect(swept).toBe(1);
     expect(await sql(h.store, "SELECT file_token, delete_after FROM media_orphans")).toEqual([
       { file_token: row?.file_token, delete_after: new Date(NOW + 3 * HOUR + ORPHAN_GRACE_MS).toISOString() },
@@ -178,7 +184,7 @@ describe("the reservation is revalidated before Images runs (RES-6)", () => {
   it("charges the budgets of the month the transformations run in", async () => {
     const november = Date.parse("2026-11-01T00:00:00.000Z");
     const h = await afterReserve(() => november + 1000);
-    h.now.mockReturnValue(november - 1000);
+    clocksAt(h, november - 1000);
     expect((await upload(h, h.users.alice, png())).status).toBe(200);
     const counters = await sql<{ name: string; value: string }>(
       h.store,
@@ -282,7 +288,7 @@ describe("the reservation is revalidated before Images runs (RES-6)", () => {
     const november = Date.parse("2026-11-01T00:00:00.000Z");
     const h = await afterReserve(() => november + 1000);
     await sql(h.store, "INSERT INTO kopje_state (name, value) VALUES ('images_transforms:2026-11', '4000')");
-    h.now.mockReturnValue(november - 1000);
+    clocksAt(h, november - 1000);
     expect((await upload(h, h.users.alice, png())).status).toBe(429);
     expect(h.codec.calls).toBe(0);
   });
@@ -305,16 +311,16 @@ describe("completion fence", () => {
     } as unknown as R2Bucket;
     const codec = new TestCodec();
     const h = await community(["alice"], "read write follow", { images: () => codec }, { MEDIA: bucket });
-    clock.at = (ms) => h.now.mockReturnValue(ms);
+    clock.at = (ms) => clocksAt(h, ms);
     const response = await upload(h, h.users.alice, png());
     expect(response.status).toBe(422);
     expect(await sql(h.store, "SELECT processed, url FROM media_attachments")).toEqual([{ processed: 1, url: "" }]);
     // A put of the refused upload that lands after the sweep is cleaned up by its tombstone.
     const [row] = await sql<{ file_token: string }>(h.store, "SELECT file_token FROM media_attachments");
-    const deps = (at: number) => ({ build: () => env.CF_VERSION_METADATA.id, store: () => h.store, now: () => at });
-    await sweepMedia(env, deps(NOW + 15 * MINUTE));
+    const deps = { build: () => env.CF_VERSION_METADATA.id, store: () => h.store };
+    await atStoreTime(NOW + 15 * MINUTE, () => sweepMedia(env, deps));
     await env.MEDIA.put(`files/${row?.file_token}/small`, "late");
-    await reconcileMedia(env, deps(NOW + 15 * MINUTE + 24 * HOUR));
+    await atStoreTime(NOW + 15 * MINUTE + 24 * HOUR, () => reconcileMedia(env, deps));
     expect(await env.MEDIA.head(`files/${row?.file_token}/small`)).toBeNull();
   });
 
@@ -342,8 +348,8 @@ describe("completion fence", () => {
     // Kept as an ordinary unattached upload: its grace period runs from the completion, and a sweep before it ends
     // leaves the row and its files.
     expect(row?.gc_at).toBe(new Date(NOW + DETACHED_GRACE_MS).toISOString());
-    const deps = { build: () => env.CF_VERSION_METADATA.id, store: () => h.store, now: () => NOW + HOUR };
-    expect(await sweepMedia(env, deps)).toBe(0);
+    const deps = { build: () => env.CF_VERSION_METADATA.id, store: () => h.store };
+    expect(await atStoreTime(NOW + HOUR, () => sweepMedia(env, deps))).toBe(0);
     expect(await env.MEDIA.head(`files/${row?.file_token}/full`)).not.toBeNull();
     expect(await env.MEDIA.head(`originals/${row?.id}`)).not.toBeNull();
   });

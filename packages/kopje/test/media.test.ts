@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TRANSFORMS_PER_UPLOAD, UPLOAD_BUDGET } from "../src/domain/media";
 import { handleScheduled } from "../src/jobs/scheduled";
@@ -40,6 +40,9 @@ import {
   TestCodec,
   upload,
   uploaded,
+  atStoreTime,
+  clocksAt,
+  storeClock,
 } from "./media-helpers";
 import { animatedWebp, exifOrientation, webpChunk } from "./remote-media-fixtures";
 import {
@@ -89,7 +92,7 @@ async function users(names: readonly string[] = ["alice", "bob"], codec = new Te
 }
 
 function sweep(h: { store: Parameters<typeof sql>[0] }, at: number) {
-  return sweepMedia(env, { build: () => env.CF_VERSION_METADATA.id, now: () => at, store: () => h.store });
+  return atStoreTime(at, () => sweepMedia(env, { build: () => env.CF_VERSION_METADATA.id, store: () => h.store }));
 }
 
 async function row(h: { store: Parameters<typeof sql>[0] }, id: string) {
@@ -118,6 +121,16 @@ async function stored(keys: string[]): Promise<string[]> {
   }
   return present;
 }
+
+// The Store's clock starts at the harness's NOW: media uploaded here is judged live at the Store's time
+// (media.ts liveMediaSql).
+beforeEach(() => {
+  storeClock(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("POST /api/v2/media", () => {
   it("reads the last of repeated file parts, as Rails assigns them", async () => {
@@ -1000,7 +1013,7 @@ describe("explicit deletion", () => {
     const later = NOW + 60_000;
     const credential = { tokenHash: await sha256Hex(alice.token), scope: "write", now: later } as const;
     for (const id of [deleted.id, held.id]) {
-      expect(await h.store.deleteMedia(BUILD, { credential, id, now: later })).toEqual({
+      expect(await h.store.deleteMedia(BUILD, { credential, id })).toEqual({
         status: "ok",
         value: "deleted",
       });
@@ -1189,13 +1202,15 @@ describe("media lifecycle", () => {
     await h.request(`/api/v1/statuses/${status.id}`, bearer(alice.token, { method: "DELETE" }));
     expect(await sweep(h, NOW + 23 * HOUR)).toBe(0);
     expect(await stored(keys)).toEqual(keys);
+    // The redraft is made at that time, on both clocks.
+    clocksAt(h, NOW + 23 * HOUR);
     const redraft = await post(h, alice, { status: "again", media_ids: [media.id] });
     expect(redraft.media_attachments).toMatchObject([{ id: media.id }]);
 
     // Deleted again, it is detached again; after a day it can no longer be attached and is swept.
     await h.request(`/api/v1/statuses/${redraft.id}`, bearer(alice.token, { method: "DELETE" }));
     expect(await row(h, media.id)).toMatchObject({ status_id: null });
-    expect(await sweep(h, NOW + 25 * HOUR)).toBe(1);
+    expect(await sweep(h, NOW + 23 * HOUR + 25 * HOUR)).toBe(1);
     expect(await stored(keys)).toEqual([]);
     expect(await row(h, media.id)).toBeUndefined();
   });
@@ -1225,6 +1240,7 @@ describe("media lifecycle", () => {
     const h = await users();
     const media = await uploaded(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));
     const keys = await keysOf(h, media.id);
+    storeClock(NOW + 25 * HOUR);
     const deps = { build: () => env.CF_VERSION_METADATA.id, now: () => NOW + 25 * HOUR, store: () => h.store };
     await handleScheduled({ ...env, MAINTENANCE: "readonly" } as Env, deps);
     expect(await stored(keys)).toEqual(keys);

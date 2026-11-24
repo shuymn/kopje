@@ -751,7 +751,7 @@ describe("named cells", () => {
     const c = await queued(w);
     clock(T0 + 5 * SECOND);
     const before = await held(w.store, c.id);
-    expect(await w.store.abandonMedia(BUILD, { credential: w.alice, id: c.id, now: T0 + 5 * SECOND })).toEqual({
+    expect(await w.store.abandonMedia(BUILD, { credential: w.alice, id: c.id })).toEqual({
       status: "ok",
       value: "kept",
     });

@@ -1,5 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { EXPANSION_STEP } from "../src/domain/deliveries";
@@ -21,6 +21,7 @@ import { API_BODY_LIMIT } from "../src/mastodon/params";
 import { type ApiHarness, bearer, form, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
+import { storeClock } from "./media-helpers";
 import { remoteAccounts, staleStatistics, watchedCursor } from "./read-helpers";
 import {
   block,
@@ -93,6 +94,16 @@ async function pollNotifications(h: ApiHarness, user: User) {
   );
   return body.filter((n) => n.type === "poll").map((n) => ({ from: n.account.id, status: n.status?.id }));
 }
+
+// The Store's clock starts at the harness's NOW: media seeded or uploaded here is judged live at the Store's time
+// (media.ts liveMediaSql).
+beforeEach(() => {
+  storeClock(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("posting a poll", () => {
   it("answers the status with its Poll entity, as REST::PollSerializer shows it", async () => {

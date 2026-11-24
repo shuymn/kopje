@@ -377,7 +377,7 @@ function credentialsUpdate<A>(
   call: (
     store: StoreStub,
     build: string,
-    input: AccountUpdate & { credential: UserCredential },
+    input: Omit<AccountUpdate, "storeNow"> & { credential: UserCredential },
   ) => Promise<Authorized<CredentialsUpdated<A>>>,
 ): ApiHandler {
   return async (c, deps) => {

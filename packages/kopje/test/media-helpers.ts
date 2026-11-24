@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { vi } from "vitest";
 
 import {
   type EncodeOptions,
@@ -247,4 +248,38 @@ export function exifWithTag(tag: number, value: string): Uint8Array {
   view.setUint32(18, 26, true);
   tiff.set(text, 26);
   return new Uint8Array([...ascii("Exif\0\0"), ...tiff]);
+}
+
+// Sets the Store's clock (this isolate's Date, which the Store's kernel reads) to `at`, faking Date if it is not yet:
+// the test then restores real timers itself (afterEach).
+export function storeClock(at: number): void {
+  if (!vi.isFakeTimers()) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+  }
+  vi.setSystemTime(at);
+}
+
+// Moves both clocks to `at`: the Worker's (the harness's `now`) and the Store's.
+export function clocksAt(h: { now: { mockReturnValue(value: number): unknown } }, at: number): void {
+  h.now.mockReturnValue(at);
+  storeClock(at);
+}
+
+// Runs `run` with the Store's clock (this isolate's Date, which the Store's kernel reads) at `at`: the sweep,
+// reconciliation and every other media operation judge stored media times at the Store's time (#1828 plan section 3,
+// "One media clock"), so a test moves that clock, not only the Worker's. Fake timers already in use keep the clock at
+// `at`; otherwise the real clock is back once `run` settles.
+export async function atStoreTime<T>(at: number, run: () => Promise<T>): Promise<T> {
+  const faked = vi.isFakeTimers();
+  if (!faked) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+  }
+  vi.setSystemTime(at);
+  try {
+    return await run();
+  } finally {
+    if (!faked) {
+      vi.useRealTimers();
+    }
+  }
 }

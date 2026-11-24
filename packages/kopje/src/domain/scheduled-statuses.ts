@@ -350,13 +350,13 @@ export function heldFullSql(scheduled: string, media: string): string {
 }
 
 // Detaches the uploads a scheduled status holds, at most MAX_STATUS_MEDIA (heldFullSql), attachable again for a day (as
-// a deleted status's), and deletes it.
-function removeScheduled(db: Db, id: string, now: number): void {
+// a deleted status's) from the Store's time `storeNow` (media.ts liveMediaSql), and deletes it.
+function removeScheduled(db: Db, id: string, storeNow: number): void {
   db.run(
     `UPDATE media_attachments SET scheduled_status_id = NULL, position = 0, gc_at = ?2
 		WHERE scheduled_status_id = ?1 AND status_id IS NULL`,
     id,
-    iso(now + DETACHED_GRACE_MS),
+    iso(storeNow + DETACHED_GRACE_MS),
   );
   db.run("DELETE FROM scheduled_statuses WHERE id = ?", id);
 }
@@ -380,7 +380,10 @@ export type ScheduleResult = CreateStatusResult | { status: "scheduled"; value: 
 // is made now or scheduled. No scheduled_at, or a time not in the future, posts at once; otherwise the post is checked
 // as an immediate one (the status replied to, the media, a blank text), then against ScheduledStatus's validations, and
 // kept with its media held.
-export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db, input, caller, viewer) => {
+export const postStatus = userWriteOperation.atStoreTime("storeNow")<
+  ScheduleInput & { storeNow: number },
+  ScheduleResult
+>((db, input, caller, viewer) => {
   const { accountId } = caller;
   // AUTH-6: the app of the credential, which the Worker cannot name.
   const applicationId = storedApplicationId(caller.client.id);
@@ -415,11 +418,11 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
     return { status: "invalid", error: TOO_LONG };
   }
   if (post.scheduledAt === undefined || Date.parse(post.scheduledAt) <= post.now) {
-    return postNow(db, viewer, post, applicationId);
+    return postNow(db, viewer, post, applicationId, input.storeNow);
   }
   const scheduledAt = post.scheduledAt;
   // As PostStatusService#schedule_status!: allowed_mentions is kept in the params and checked at publication.
-  const prepared = preparePost(db, accountId, { ...post, allowedMentions: undefined }, null);
+  const prepared = preparePost(db, accountId, { ...post, allowedMentions: undefined }, null, input.storeNow);
   if (!isPrepared(prepared)) {
     return refusedPost(db, prepared, presentFor(input.present, accountId));
   }
@@ -555,12 +558,15 @@ export const updateScheduled = userWriteOperation<
 
 // DELETE /api/v1/scheduled_statuses/:id: its uploads are detached (attachable again for a day), as Mastodon nullifies
 // them, its params read or not. Whether it was the viewer's.
-export const deleteScheduled = userWriteOperation<{ id: string; now: number }, boolean>((db, input, { accountId }) => {
+export const deleteScheduled = userWriteOperation.atStoreTime("storeNow")<
+  { id: string; now: number; storeNow: number },
+  boolean
+>((db, input, { accountId }) => {
   const row = ownScheduled(db, accountId, input.id);
   if (row === undefined) {
     return false;
   }
-  removeScheduled(db, row.id, input.now);
+  removeScheduled(db, row.id, input.storeNow);
   return true;
 });
 
@@ -603,7 +609,10 @@ export type Failure = { status: "gone" } | { status: "retry"; attempts: number }
 // Records a publication of `id` that failed with an error, in its own transaction after the failed one rolled back:
 // one more attempt, and the next after its delay, or, at MAX_ATTEMPTS, the scheduled status dropped and its media
 // detached (attachable again for a day).
-export const recordPublishFailure = writeOperation<{ id: string; now: number }, Failure>((db, { id, now }) => {
+export const recordPublishFailure = writeOperation.atStoreTime("storeNow")<
+  { id: string; now: number; storeNow: number },
+  Failure
+>((db, { id, now, storeNow }) => {
   const row = db.first<{ attempts: number }>("SELECT attempts FROM scheduled_statuses WHERE id = ?", id);
   if (row === undefined) {
     return { status: "gone" };
@@ -611,7 +620,7 @@ export const recordPublishFailure = writeOperation<{ id: string; now: number }, 
   const attempts = row.attempts + 1;
   const delay = RETRY_DELAYS_MS[attempts - 1];
   if (attempts >= MAX_ATTEMPTS || delay === undefined) {
-    removeScheduled(db, id, now);
+    removeScheduled(db, id, storeNow);
     return { status: "dropped" };
   }
   db.run(
@@ -640,31 +649,32 @@ export type Publication =
 // its media detached. The status is created at the time of publication (PostStatusService does not take the scheduled
 // time), and its Idempotency-Key carries over while it has not expired, so a client repeating the request within the
 // key's hour is answered with it, until an hour after the publication.
-export const publishScheduled = writeOperation<{ id: string; now: number; objectId: string }, Publication>(
-  (db, { id, now, objectId }) => {
-    const row = db.first<PublishRow>(
-      `SELECT ss.account_id, ${paramsReadSql("ss.params")} AS params,
+export const publishScheduled = writeOperation.atStoreTime("storeNow")<
+  { id: string; now: number; storeNow: number; objectId: string },
+  Publication
+>((db, { id, now, storeNow, objectId }) => {
+  const row = db.first<PublishRow>(
+    `SELECT ss.account_id, ${paramsReadSql("ss.params")} AS params,
 				CASE WHEN ${keyFreshSql("ss.created_at", "?3")} THEN ss.client_key END AS client_key,
 				${availableSql("ss.account_id")} AS available
 			FROM scheduled_statuses ss WHERE ss.id = ?1
 				AND (ss.attempts = 0 AND ss.scheduled_at <= ?2 OR ss.attempts > 0 AND ss.next_attempt_at <= ?2)`,
-      id,
-      iso(now),
-      keyCutoff(now),
-    );
-    if (row === undefined) {
-      return { status: "gone" };
-    }
-    const publication = publish(db, id, row, now, objectId);
-    removeScheduled(db, id, now);
-    return publication;
-  },
-);
+    id,
+    iso(now),
+    keyCutoff(now),
+  );
+  if (row === undefined) {
+    return { status: "gone" };
+  }
+  const publication = publish(db, id, row, now, storeNow, objectId);
+  removeScheduled(db, id, storeNow);
+  return publication;
+});
 
 // client_key: the key while it has not expired, else null. params as paramsReadSql reads them.
 type PublishRow = { account_id: string; params: string | null; client_key: string | null; available: number };
 
-function publish(db: Db, id: string, row: PublishRow, now: number, objectId: string): Publication {
+function publish(db: Db, id: string, row: PublishRow, now: number, storeNow: number, objectId: string): Publication {
   if (row.available !== 1) {
     return { status: "dropped", reason: "unavailable" };
   }
@@ -676,7 +686,7 @@ function publish(db: Db, id: string, row: PublishRow, now: number, objectId: str
   if (input === null) {
     return { status: "dropped", reason: "invalid" };
   }
-  const prepared = preparePost(db, row.account_id, input, id);
+  const prepared = preparePost(db, row.account_id, input, id, storeNow);
   if (!isPrepared(prepared)) {
     return { status: "dropped", reason: prepared.status };
   }

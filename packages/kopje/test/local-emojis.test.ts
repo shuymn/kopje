@@ -21,7 +21,7 @@ import { NOW } from "./app-helpers";
 import { AVIF, GIF, JPEG_WITH_GPS, PNG_PLAIN, WEBP_PLAIN } from "./fixtures/images";
 import { BUILD, migratedStore, rejectionOf } from "./helpers";
 import { addEmoji, added, base64, emojiStore, pngOf, pngOfBytes } from "./local-emoji-helpers";
-import { bytes, r2Keys, TestCodec } from "./media-helpers";
+import { atStoreTime, bytes, r2Keys, TestCodec } from "./media-helpers";
 import { ACCESS, copyConfig, dumpViaRpc, importViaRpc, memoryIO } from "./ops-helpers";
 
 // Local custom emoji (migration 0055_local_custom_emojis, domain/local-emojis.ts, mastodon/emoji-upload.ts): the
@@ -344,7 +344,9 @@ describe("emoji completion", () => {
     expect(await store.abandonEmoji(BUILD, { authority: ACCESS, id: reserved.id, token: "c".repeat(43) })).toBe(
       "abandoned",
     );
-    const swept = await sweepMedia(env, { build: () => BUILD, now: () => Date.now() + 60_000, store: () => store });
+    const swept = await atStoreTime(Date.now() + 60_000, () =>
+      sweepMedia(env, { build: () => BUILD, store: () => store }),
+    );
     expect(swept).toBe(1);
     expect(await sql(store, "SELECT media_id FROM media_orphans")).toEqual([{ media_id: reserved.id }]);
   });
@@ -588,13 +590,11 @@ describe("emoji query plans at saturation, with stale statistics", () => {
       adminEmojis.run(capturing("admin", /FROM custom_emojis e/), { after: "140000000000000500" });
       expiredMedia.run(capturing("expired", /gc_at <= /), {
         now: NOW + 10 ** 10,
-        storeNow: NOW + 10 ** 10,
         limit: 100,
       });
       purgeMedia.run(capturing("purge", /json_each/), {
         ids: ["140000000000000001"],
         now: NOW + 10 ** 10,
-        storeNow: NOW + 10 ** 10,
       });
       rebuildCandidates.run(capturing("rebuild", /AS emoji/), { after: null, now: NOW });
       const plan = (query: string) =>

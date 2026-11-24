@@ -257,9 +257,15 @@ function candidate(att: Attachment): boolean {
   return att.type === AV_CANDIDATE_TYPE;
 }
 
-// Whether the reservation is on the AV path: a candidate, or one S1 staged.
+// Whether S1 chose the AV path for the reservation: it set the provisional type, video or audio.
+function onAvPath(att: Attachment): boolean {
+  return att.type === "video" || att.type === "audio";
+}
+
+// Whether the reservation is on the AV path or may still take it (a candidate): S11's unfinished reservation. One the
+// image path took (startTransforms set image) is left to deleteMedia's rules, as any image upload.
 function avReservation(att: Attachment): boolean {
-  return candidate(att) || att.type === "video" || att.type === "audio";
+  return candidate(att) || onAvPath(att);
 }
 
 // K3's fence: the attachment was reserved at or before the last restore.
@@ -609,7 +615,7 @@ export const queueNormalize = writeOperation.atStoreTime("now")<
   if (row?.state === "failed" && row.failure !== null) {
     return { status: "settled", outcome: { failed: row.failure } };
   }
-  if (row === null && attachmentState(att, token) === "done") {
+  if (row === null && attachmentState(att, token) === "done" && onAvPath(att)) {
     return { status: "settled", outcome: "completed" };
   }
   return { status: "gone" };
@@ -801,7 +807,7 @@ export const completeAvUpload = writeOperation.atStoreTime("now")<
     deleteRow(db, id);
     return { status: "done" };
   }
-  return mine === "done" && row === null ? { status: "done" } : { status: "refused" };
+  return mine === "done" && row === null && att !== null && onAvPath(att) ? { status: "done" } : { status: "refused" };
 });
 
 // ---- S7 failNormalize

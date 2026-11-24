@@ -36,8 +36,8 @@ const at = (s: number) => T0 + s * SECOND;
 
 async function sweep(w: AvWorld, now: number): Promise<string[]> {
   return runInDurableObject(w.store, (_instance, state) => {
-    const ids = expiredMedia.run(state.storage.sql, { now, storeNow: now, limit: 100 }).map((m) => m.id);
-    purgeMedia.run(state.storage.sql, { ids, now, storeNow: now });
+    const ids = expiredMedia.run(state.storage.sql, { now, limit: 100 }).map((m) => m.id);
+    purgeMedia.run(state.storage.sql, { ids, now });
     return ids;
   });
 }

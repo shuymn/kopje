@@ -102,10 +102,10 @@ describe("the reservation's time is the Store's (H1)", () => {
   });
 });
 
-// The image path of a reservation made as an AV candidate (one that resolves to an image, PR4-4), and the sweep,
-// the purge and reconciliation, each judged so that neither clock sees a deadline early (review r2).
-describe("one clock per reservation (review r2, item 1)", () => {
-  const image = (id: string, now: number) => ({
+// One media clock (#1828 plan section 3, "PR4-1"): every comparison with a time stored on media_attachments is made at
+// the Store's time, whatever time the Worker's request carries.
+describe("one media clock: the Store's", () => {
+  const image = (id: string) => ({
     id,
     contentType: "image/webp",
     original: { width: 10, height: 10 },
@@ -114,7 +114,6 @@ describe("one clock per reservation (review r2, item 1)", () => {
     blurhash: null,
     description: "",
     focus: undefined,
-    now,
   });
 
   it.each(SKEWS)(
@@ -136,38 +135,53 @@ describe("one clock per reservation (review r2, item 1)", () => {
           now: workerAt,
         }),
       ).toEqual({ status: "ok", value: { status: "ok" } });
-      const done = await w.store.completeMedia(BUILD, { credential: w.alice, ...image(reserved.id, workerAt) });
+      const done = await w.store.completeMedia(BUILD, { credential: w.alice, ...image(reserved.id) });
       expect(done).toMatchObject({ status: "ok", value: { id: reserved.id, type: "image" } });
+      // At the Worker's deadline, on the Store's clock too, a reservation is closed.
+      const late = await reserveAv(w, T0, skew);
+      if (late.reserved.status !== "ok") {
+        throw new Error(late.reserved.status);
+      }
+      clock(late.reserved.deadline - skew);
+      expect(
+        await w.store.startTransforms(BUILD, {
+          credential: w.alice,
+          id: late.reserved.id,
+          monthlyTransforms: { instance: 1_000_000, account: 1_000_000 },
+          now: late.reserved.deadline,
+        }),
+      ).toEqual({ status: "ok", value: { status: "expired" } });
     },
   );
 
-  it("the sweep does not select a completed AV upload before its gc_at on the Store's clock, the Worker 3 s ahead", async () => {
+  it("the sweep selects a completed AV upload at its gc_at on the Store's clock, not before", async () => {
     const w = await avWorld();
     const c = await completed(w);
     const [row] = await sql<{ gc_at: string }>(w.store, "SELECT gc_at FROM media_attachments WHERE id = ?", c.id);
     const gcAt = Date.parse(row!.gc_at);
     expect(gcAt).toBe(T0 + 4 * SECOND + DETACHED_GRACE_MS);
-    clock(gcAt - SECOND);
-    const workerNow = gcAt - SECOND + 3 * SECOND;
-    expect(await w.store.expiredMedia(BUILD, { now: workerNow, limit: 100 })).toEqual([]);
-    expect(await w.store.purgeMedia(BUILD, { ids: [c.id], now: workerNow })).toBe(0);
+    clock(gcAt - 1);
+    expect(await w.store.expiredMedia(BUILD, { limit: 100 })).toEqual([]);
+    expect(await w.store.purgeMedia(BUILD, { ids: [c.id] })).toBe(0);
     expect(await w.store.v1Final(BUILD, { id: c.id, token: c.token })).toMatchObject({ status: 200 });
+    clock(gcAt);
+    expect(await w.store.expiredMedia(BUILD, { limit: 100 })).toEqual([{ id: c.id, token: c.token }]);
   });
 
-  it("reconciliation does not take a tombstone before it falls due on the Store's clock, the Worker 3 s ahead", async () => {
+  it("reconciliation takes a tombstone when it falls due on the Store's clock, not before", async () => {
     const w = await avWorld();
     // An unfinished AV upload purged: its tombstone keeps the authority to the AV write deadline + ORPHAN_GRACE_MS.
     const c = await queued(w);
     clock(T0 + 3 * SECOND);
     await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id });
-    expect(await w.store.expiredMedia(BUILD, { now: T0 + 3 * SECOND, limit: 100 })).toEqual([
-      { id: c.id, token: c.token },
-    ]);
-    await w.store.purgeMedia(BUILD, { ids: [c.id], now: T0 + 3 * SECOND });
+    expect(await w.store.expiredMedia(BUILD, { limit: 100 })).toEqual([{ id: c.id, token: c.token }]);
+    await w.store.purgeMedia(BUILD, { ids: [c.id] });
     const [tomb] = await sql<{ delete_after: string }>(w.store, "SELECT delete_after FROM media_orphans");
     const due = Date.parse(tomb!.delete_after);
-    clock(due - SECOND);
-    expect(await w.store.dueOrphans(BUILD, { now: due + 2 * SECOND })).toEqual([]);
+    clock(due - 1);
+    expect(await w.store.dueOrphans(BUILD)).toEqual([]);
+    clock(due);
+    expect(await w.store.dueOrphans(BUILD)).toEqual([{ id: c.id, token: c.token }]);
   });
 
   it("S1 takes only a reservation made as an AV candidate: one made without it is gone", async () => {

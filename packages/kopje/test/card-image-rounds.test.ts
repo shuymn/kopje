@@ -23,7 +23,7 @@ import { NOW } from "./app-helpers";
 import { cardWorld, type CardWorld, pageWith } from "./card-image-helpers";
 import { BUILD, deferred } from "./helpers";
 import { localRgba } from "./images-binding";
-import { r2Keys } from "./media-helpers";
+import { atStoreTime, r2Keys } from "./media-helpers";
 import { encodeWebp } from "./webp-fixtures";
 
 // The cron's card image round (federation/card-images.ts) over the Store's claim, admissions and record
@@ -645,7 +645,7 @@ describe("the reconciliation gate", () => {
     expect(await r2Keys(key)).toEqual([key]);
     expect(tombstone!.delete_after).toBe(iso(NOW + CARD_IMAGE_HOLD_MS + ORPHAN_GRACE_MS));
     const reconcile = (at: number) =>
-      reconcileMedia(env, { build: () => BUILD, now: () => at, store: () => w.h.store });
+      atStoreTime(at, () => reconcileMedia(env, { build: () => BUILD, store: () => w.h.store }));
     // Past the hold, before delete_after: nothing is reconciled.
     for (const at of [NOW + CARD_IMAGE_HOLD_MS + 1, NOW + CARD_IMAGE_HOLD_MS + ORPHAN_GRACE_MS - 1]) {
       expect(await reconcile(at)).toBe(0);
@@ -716,7 +716,7 @@ describe("the reconciliation capacity", () => {
           expect(await due(at)).toBeLessThanOrEqual(99 + 64);
           counts.collectedAfterPause += counts.paused > 0 ? 1 : 0;
         }
-        await reconcileMedia(env, { build: () => BUILD, now: () => at, store: () => w.h.store });
+        await atStoreTime(at, () => reconcileMedia(env, { build: () => BUILD, store: () => w.h.store }));
       }
       expect(counts.paused).toBeGreaterThan(0);
       expect(counts.collectedAfterPause).toBeGreaterThan(0);

@@ -38,6 +38,7 @@ import { StoreUnavailableError } from "../platform/store-errors";
 //     refreshDomainCount), one walk of the remote accounts. It is also kept in the Store's readonly state; a skipped
 //     refresh leaves the count to age out (DOMAIN_COUNT_FRESH_MS), and requests then count it.
 export type ScheduledDeps = SweepDeps & {
+  now: () => number;
   // Rings the delivery doorbell after statuses are published (default: a message on env.QUEUE).
   doorbell?: (env: Env) => Promise<void>;
   // The object id (uuid) of each status published.

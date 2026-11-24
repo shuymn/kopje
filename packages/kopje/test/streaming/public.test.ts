@@ -926,6 +926,7 @@ describe("payloads with tagged collections at their maxima (D26)", () => {
         ...(quoted === undefined ? {} : { quotedStatusId: quoted }),
         objectId: crypto.randomUUID(),
         now: NOW,
+        storeNow: NOW,
         present: { origin: "https://kopje.test" },
       });
       const posted = result.status === "ok" ? result.value : result;

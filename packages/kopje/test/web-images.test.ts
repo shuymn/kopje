@@ -5,7 +5,7 @@ import { sweepMedia } from "../src/mastodon/media";
 import { bearer, json, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
-import { bytes, mediaForm, pathOf, r2Keys, TestCodec } from "./media-helpers";
+import { atStoreTime, bytes, mediaForm, pathOf, r2Keys, TestCodec } from "./media-helpers";
 import { community, outbound, remoteAccount, remoteFollows } from "./status-helpers";
 import { type Browser, csrfOf, ORIGIN, signIn } from "./web-helpers";
 
@@ -107,7 +107,7 @@ describe("profile images", () => {
     expect(old?.gc_at).not.toBeNull();
     expect(current?.gc_at).toBeNull();
     // The sweep deletes the replaced image's files and row, and keeps the current one.
-    await sweepMedia(env, { build: () => env.CF_VERSION_METADATA.id, now: () => NOW, store: () => h.store });
+    await atStoreTime(NOW, () => sweepMedia(env, { build: () => env.CF_VERSION_METADATA.id, store: () => h.store }));
     expect(await r2Keys(`files/${old?.file_token}/`)).toEqual([]);
     expect(await r2Keys(`originals/${old?.id}`)).toEqual([]);
     expect(await r2Keys(`files/${current?.file_token}/`)).toHaveLength(2);

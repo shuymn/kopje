@@ -75,7 +75,7 @@ async function unboosted(t: Setup, how: How, id: string, as: As = "alice") {
     const result = state.storage.transactionSync(() =>
       how === "unreblog"
         ? unreblog.run(state.storage.sql, base)
-        : deleteStatus.run(state.storage.sql, { ...base, deleteMedia: false, signed: null }),
+        : deleteStatus.run(state.storage.sql, { ...base, storeNow: NOW, deleteMedia: false, signed: null }),
     );
     const answered = result.status === "ok" && result.value.status === "ok" ? result.value : null;
     return {
@@ -1013,6 +1013,7 @@ describe("an unboost’s reads under stale statistics (RES-7)", () => {
       mediaIds: [],
       mediaAttributes: [],
       now: NOW,
+      storeNow: NOW,
       present: PRESENT,
     });
     await planned("job", { run: (sql: SqlStorage, id: string) => deleteStatusBatch(new Db(sql), id, NOW) }, b!.id);
@@ -1029,6 +1030,7 @@ describe("an unboost’s reads under stale statistics (RES-7)", () => {
       deleteMedia: false,
       signed: await deleteSignature(t.store, dave, original.id),
       now: NOW,
+      storeNow: NOW,
       present: PRESENT,
     });
     expect(scans).toEqual([]);

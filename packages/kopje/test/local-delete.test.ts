@@ -97,6 +97,7 @@ async function deleted(
     deleteMedia,
     signed: signed === undefined ? prepared : signed(prepared),
     now: NOW,
+    storeNow: NOW,
     present: PRESENT,
   };
   return runInDurableObject(t.store, (_instance, state) => {
@@ -1143,6 +1144,7 @@ describe("the job’s rounds (RES-5, RES-6)", () => {
           signed: await deleteSignature(t.store, await credential(t), status.id),
           deleteMedia: false,
           now: NOW,
+          storeNow: NOW,
           present: PRESENT,
         }),
       );
@@ -1231,6 +1233,7 @@ describe("reads bounded by the inputs at their worst (RES-6, RES-7)", () => {
         signed: await deleteSignature(t.store, await credential(t), status.id),
         deleteMedia: false,
         now: NOW,
+        storeNow: NOW,
         present: PRESENT,
       });
       await settle(t.store);
@@ -1318,6 +1321,7 @@ describe("reads bounded by the inputs at their worst (RES-6, RES-7)", () => {
         signed: await deleteSignature(t.store, await credential(t), id),
         deleteMedia: false,
         now: NOW,
+        storeNow: NOW,
         present: PRESENT,
       });
       let job = 0;

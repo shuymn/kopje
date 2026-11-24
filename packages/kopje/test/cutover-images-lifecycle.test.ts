@@ -4,6 +4,7 @@ import { describe, expect, inject, it } from "vitest";
 import { sweepMedia } from "../src/mastodon/media";
 import { apiHarness, bearer, login, sql } from "./api-helpers";
 import { BUILD } from "./helpers";
+import { atStoreTime } from "./media-helpers";
 import { ADMIN_AUD, ADMIN_EMAIL, importViaRpc, setAccess } from "./ops-helpers";
 
 // Images moved out of Cloudflare Images by the cutover (`convert --images`, docs/cutover.md "Media") live by Kopje's
@@ -71,11 +72,9 @@ describe("media moved from Cloudflare Images", () => {
       bearer(token, { method: "DELETE" }),
     );
     expect(response.status).toBe(200);
-    await sweepMedia(env, {
-      build: () => env.CF_VERSION_METADATA.id,
-      now: () => Date.now() + 1000,
-      store: () => h.store,
-    });
+    await atStoreTime(Date.now() + 1000, () =>
+      sweepMedia(env, { build: () => env.CF_VERSION_METADATA.id, store: () => h.store }),
+    );
 
     const present = async (keys: string[]) => {
       const found: string[] = [];

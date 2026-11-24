@@ -220,7 +220,12 @@ describe("a local post's links (7-T1)", () => {
     const { id } = await response.json<{ id: string }>();
     expect(await count(t, "status_collections")).toBe(0);
     const published = await runInDurableObject(t.store, (_instance, state) =>
-      publishScheduled.run(state.storage.sql, { id, now: NOW + 2 * 60 * 60 * 1000, objectId: crypto.randomUUID() }),
+      publishScheduled.run(state.storage.sql, {
+        id,
+        now: NOW + 2 * 60 * 60 * 1000,
+        storeNow: NOW + 2 * 60 * 60 * 1000,
+        objectId: crypto.randomUUID(),
+      }),
     );
     expect(published).toMatchObject({ status: "published" });
     const [row] = await sql<{ status_id: string; collection_id: string }>(t.store, "SELECT * FROM status_collections");
@@ -254,6 +259,7 @@ async function postInput(t: Setup, text: string) {
     mediaIds: [],
     objectId: crypto.randomUUID(),
     now: NOW,
+    storeNow: NOW,
     present: { origin: LOCAL },
   };
 }

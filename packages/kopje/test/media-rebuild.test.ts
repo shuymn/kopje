@@ -20,7 +20,7 @@ import { NOW } from "./app-helpers";
 import { ANIMATED_WEBP, JPEG_ORIENTATION_6, PNG_PLAIN, WIDE_PNG } from "./fixtures/images";
 import { BUILD, completeSetup, deferred, migratedStore, rejectionOf } from "./helpers";
 import { pngOf, pngOfBytes } from "./local-emoji-helpers";
-import { bytes, framesKeepingCodec, recordRgba, TestCodec } from "./media-helpers";
+import { atStoreTime, bytes, framesKeepingCodec, recordRgba, TestCodec } from "./media-helpers";
 import {
   ACCESS,
   ADMIN_AUD,
@@ -478,7 +478,7 @@ describe("media rebuild and the operator gate (OPS-8)", () => {
     const unpublished = await addRow(h.store, { original: bytes(WIDE_PNG) });
     expect((await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>()).counts.built).toBe(1);
     expect(await meta(h.store, unpublished.id)).toMatchObject({ original: { width: 3840, height: 960 } });
-    const refused = await rejectionOf(h.store.expiredMedia(BUILD, { now: NOW, limit: 1 }));
+    const refused = await rejectionOf(h.store.expiredMedia(BUILD, { limit: 1 }));
     expect(toStoreUnavailable(refused)?.reason).toBe("unpublished");
 
     await runInDurableObject(h.store, (_instance, state) => {
@@ -488,7 +488,7 @@ describe("media rebuild and the operator gate (OPS-8)", () => {
     const readonly = await addRow(h.store);
     expect((await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>()).counts.built).toBe(1);
     expect(await files(readonly)).toEqual([true, true]);
-    const stillRefused = await rejectionOf(h.store.expiredMedia(BUILD, { now: NOW, limit: 1 }));
+    const stillRefused = await rejectionOf(h.store.expiredMedia(BUILD, { limit: 1 }));
     expect(toStoreUnavailable(stillRefused)?.reason).toBe("maintenance");
   });
 
@@ -653,7 +653,7 @@ describe("media rebuild: races, bounds and real conversions", () => {
         row.id,
       );
     });
-    expect(await sweepMedia(env, { build: () => BUILD, now: () => NOW + 1000, store: () => h.store })).toBe(0);
+    expect(await atStoreTime(NOW + 1000, () => sweepMedia(env, { build: () => BUILD, store: () => h.store }))).toBe(0);
     // Defence in depth: should the row go anyway (here by hand), the files the rebuild writes are deleted again.
     await env.MEDIA.delete([`files/${row.token}/full`, `files/${row.token}/small`]);
     await runInDurableObject(h.store, (_instance, state) => {
@@ -806,7 +806,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
       expect(await sweepMedia(env, deps)).toBe(0);
       await handleScheduled(env, deps);
       expect(await files(doomed)).toEqual([true, true]);
-      const reason = toStoreUnavailable(await rejectionOf(h.store.dueOrphans(BUILD, { now: NOW })))?.reason;
+      const reason = toStoreUnavailable(await rejectionOf(h.store.dueOrphans(BUILD)))?.reason;
       expect(reason).toBe(flag);
     }
     // The env's maintenance: the cron does nothing (API writes answer 503 at the gate, test/gate.test.ts).
@@ -932,9 +932,9 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
       state.storage.sql.exec("DELETE FROM kopje_state WHERE name = 'maintenance'");
     });
     for (const call of [
-      h.store.expiredMedia(BUILD, { now: NOW, limit: 1 }),
-      h.store.purgeMedia(BUILD, { ids: [], now: NOW }),
-      h.store.dueOrphans(BUILD, { now: NOW }),
+      h.store.expiredMedia(BUILD, { limit: 1 }),
+      h.store.purgeMedia(BUILD, { ids: [] }),
+      h.store.dueOrphans(BUILD),
       h.store.forgetOrphans(BUILD, { tokens: [] }),
     ]) {
       expect(toStoreUnavailable(await rejectionOf(call))?.reason).toBe("rebuild-in-progress");
@@ -942,7 +942,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     // Other writes are not affected by the lease.
     expect(await h.store.sweepOAuth(BUILD, { now: NOW })).toBeDefined();
     await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "leased", release: true });
-    expect(await h.store.expiredMedia(BUILD, { now: NOW, limit: 1 })).toEqual([]);
+    expect(await h.store.expiredMedia(BUILD, { limit: 1 })).toEqual([]);
     expect(() => admitFlags(flagsWith({ until: NOW + 1 }), "media-delete", NOW)).toThrow(/rebuild-in-progress/);
     expect(() => admitFlags(flagsWith({ until: NOW }), "media-delete", NOW)).not.toThrow();
     expect(() => admitFlags(flagsWith({ until: NOW + 1 }), "write", NOW)).not.toThrow();

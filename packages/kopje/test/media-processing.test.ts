@@ -442,13 +442,13 @@ describe("W13: a restore between the sweep's selection and its deletion", () => 
     await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id });
     // The sweep selects the doomed row; the restore lands before its R2 deletion and purgeMedia.
     const selected = await runInDurableObject(w.store, (_instance, state) =>
-      expiredMedia.run(state.storage.sql, { now: at(11), storeNow: at(11), limit: 100 }).map((m) => m.id),
+      expiredMedia.run(state.storage.sql, { now: at(11), limit: 100 }).map((m) => m.id),
     );
     expect(selected).toEqual([c.id]);
     await restore(w.store, taken, at(12));
     // The Worker deletes the selected row's keys (not modelled here: the row names them) and then purges.
     const purged = await runInDurableObject(w.store, (_instance, state) =>
-      purgeMedia.run(state.storage.sql, { ids: selected, now: at(13), storeNow: at(13) }),
+      purgeMedia.run(state.storage.sql, { ids: selected, now: at(13) }),
     );
     expect(purged).toBe(0);
     expect(await held(w.store, c.id)).toMatchObject({
@@ -465,7 +465,7 @@ describe("the AV write window (MEDIA-2)", () => {
     clock(T0 + 5 * SECOND);
     await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id });
     await runInDurableObject(w.store, (_instance, state) => {
-      purgeMedia.run(state.storage.sql, { ids: [c.id], now: T0 + 6 * SECOND, storeNow: T0 + 6 * SECOND });
+      purgeMedia.run(state.storage.sql, { ids: [c.id], now: T0 + 6 * SECOND });
     });
     // The reservation was made at T0: an image's tombstone would be due at T0 + WRITE_WINDOW_MS + ORPHAN_GRACE_MS.
     expect(await sql(w.store, "SELECT media_id, delete_after FROM media_orphans")).toEqual([

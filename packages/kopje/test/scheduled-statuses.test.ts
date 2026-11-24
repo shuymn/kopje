@@ -1,6 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import fc from "fast-check";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MIGRATIONS } from "../src/db/migrations";
 import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
@@ -37,6 +37,7 @@ import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, json, login, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
+import { storeClock } from "./media-helpers";
 import { measuredStatements, observedSql } from "./read-helpers";
 import {
   community,
@@ -91,6 +92,16 @@ async function refusal(response: Response): Promise<{ status: number; body: unkn
   return { status: response.status, body: await response.json() };
 }
 
+// The Store's clock starts at the harness's NOW: the uploads below are attachable for a day from it, judged at the
+// Store's time (media.ts liveMediaSql).
+beforeEach(() => {
+  storeClock(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 // A completed, unattached upload of the user's, attachable for a day.
 async function upload(h: ApiHarness, user: User, n: number): Promise<string> {
   const id = String(800000000000000000n + BigInt(n));
@@ -107,14 +118,16 @@ async function upload(h: ApiHarness, user: User, n: number): Promise<string> {
   return id;
 }
 
+// The publication round at `now`, on both clocks: the media it attaches are judged at the Store's time.
 function round(h: ApiHarness, now: number, doorbell = vi.fn(() => Promise.resolve())) {
+  storeClock(now);
   return publishScheduled(h.env, { build: () => BUILD, now: () => now, store: () => h.store, doorbell });
 }
 
 // The publication of the scheduled status `id` at `now`, by the Store operation itself, with its answer.
 function publishDirectly(h: ApiHarness, id: string, now: number) {
   return runInDurableObject(h.store, (_instance, state) =>
-    publishOne.run(state.storage.sql, { id, now, objectId: crypto.randomUUID() }),
+    publishOne.run(state.storage.sql, { id, now, storeNow: now, objectId: crypto.randomUUID() }),
   );
 }
 
@@ -521,7 +534,7 @@ describe("the scheduled_statuses endpoints", () => {
     await scheduled(h, alice, { status: "x", media_ids: [media], scheduled_at: at(NOW + 3 * DAY) });
     expect(await sql(h.store, "SELECT gc_at FROM media_attachments")).toEqual([{ gc_at: null }]);
     const due = await runInDurableObject(h.store, (_instance, state) =>
-      expiredMedia.run(state.storage.sql, { now: NOW + 2 * DAY, storeNow: NOW + 2 * DAY, limit: 100 }),
+      expiredMedia.run(state.storage.sql, { now: NOW + 2 * DAY, limit: 100 }),
     );
     expect(due).toEqual([]);
     expect(await refusal(await schedule(h, alice, { status: "other", media_ids: [media] }))).toEqual({
@@ -1153,10 +1166,16 @@ describe("a scheduled status holds at most four media (RES-6)", () => {
     const detach = /^UPDATE media_attachments SET scheduled_status_id = NULL/;
     const recount = /^UPDATE accounts SET statuses_count = /;
     const callers = {
-      delete: (id: string) => measuredStatements(h, deleteScheduled, { credential, id, now: NOW }, true),
+      delete: (id: string) => measuredStatements(h, deleteScheduled, { credential, id, now: NOW, storeNow: NOW }, true),
       publication: (id: string) =>
-        measuredStatements(h, publishOne, { id, now: NOW + HOUR, objectId: crypto.randomUUID() }, true),
-      failure: (id: string) => measuredStatements(h, recordPublishFailure, { id, now: NOW + HOUR }, true),
+        measuredStatements(
+          h,
+          publishOne,
+          { id, now: NOW + HOUR, storeNow: NOW + HOUR, objectId: crypto.randomUUID() },
+          true,
+        ),
+      failure: (id: string) =>
+        measuredStatements(h, recordPublishFailure, { id, now: NOW + HOUR, storeNow: NOW + HOUR }, true),
     };
     const outcomes = {
       delete: { status: "ok", value: true },

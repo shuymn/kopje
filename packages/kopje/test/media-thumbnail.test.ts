@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sweepMedia } from "../src/mastodon/media";
 import { API_BODY_LIMIT, FILE_PART_SLACK } from "../src/mastodon/params";
@@ -9,7 +9,16 @@ import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { bearer, json, sql, userToken } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
-import { type Attachment, bytes, mediaForm, multipartForm, TestCodec, uploaded } from "./media-helpers";
+import {
+  atStoreTime,
+  type Attachment,
+  bytes,
+  mediaForm,
+  multipartForm,
+  storeClock,
+  TestCodec,
+  uploaded,
+} from "./media-helpers";
 import { community, getJson, outbound, post } from "./status-helpers";
 
 // `thumbnail` on media uploads, media updates and status edits: Kopje media are images, so any thumbnail is refused
@@ -66,12 +75,18 @@ function emptyFilenameUpload(): { body: Uint8Array; type: string } {
   return { body, type: "multipart/form-data; boundary=b" };
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe.each(["v1", "v2"] as const)("POST /api/%s/media with a thumbnail", (version) => {
   const send = (h: Awaited<ReturnType<typeof users>>, form: FormData, query = "", token = h.users.alice.token) =>
     h.request(`/api/${version}/media${query}`, bearer(token, { method: "POST", body: form }));
 
   it("refuses a thumbnail file before any transformation, budget charge or write (RES-6)", async () => {
     const h = await users();
+    // The abandon's gc_at is the Store's time: its clock at the harness's NOW.
+    storeClock(NOW);
     const before = await state(h.store);
     const response = await send(
       h,
@@ -94,11 +109,9 @@ describe.each(["v1", "v2"] as const)("POST /api/%s/media with a thumbnail", (ver
     expect(await sql(h.store, "SELECT processed, url, gc_at FROM media_attachments")).toEqual([
       { processed: 1, url: "", gc_at: new Date(NOW).toISOString() },
     ]);
-    const swept = await sweepMedia(env, {
-      build: () => env.CF_VERSION_METADATA.id,
-      now: () => NOW,
-      store: () => h.store,
-    });
+    const swept = await atStoreTime(NOW, () =>
+      sweepMedia(env, { build: () => env.CF_VERSION_METADATA.id, store: () => h.store }),
+    );
     expect(swept).toBe(1);
     expect(await sql(h.store, "SELECT id FROM media_attachments")).toEqual([]);
   });

@@ -61,20 +61,19 @@ const OTHER_STATEMENTS = [
   "INSERT INTO admin_actions (actor, account_id, client_id, action, target_type, target_id, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id",
   "INSERT INTO custom_emojis (id, shortcode, category, visible_in_picker, disabled, created_at) VALUES (?, ?, ?, ?, 0, ?)",
   "SELECT (SELECT count(*) FROM (SELECT 1 FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?1 LIMIT ?2)) + (SELECT count(*) FROM (SELECT 1 FROM announcement_dismissals INDEXED BY announcement_dismissals_announcement WHERE announcement_id = ?1 LIMIT ?2)) AS n",
-  "SELECT 1 AS held FROM media_processing WHERE media_id = ?",
   "SELECT 1 AS x FROM stream_subscriptions WHERE stream_key = 'user'",
   "SELECT count(*) AS n FROM custom_emojis WHERE disabled = 0",
   "SELECT d.announcement_id AS id FROM json_each(?1) j CROSS JOIN announcement_dismissals d ON d.account_id = ?2 AND d.announcement_id = j.value",
   "SELECT id FROM custom_emojis INDEXED BY custom_emojis_enabled WHERE shortcode = ? AND disabled = 0",
   "SELECT id, text, starts_at, ends_at, all_day, published, published_at, scheduled_at, created_at, updated_at FROM announcements a INDEXED BY announcements_published WHERE a.published = 1 LIMIT 16",
   "SELECT id, text, starts_at, ends_at, all_day, published, published_at, scheduled_at, created_at, updated_at FROM announcements a WHERE a.id = ? AND a.published = 1",
-  "SELECT m.id AS id, m.type AS type, m.url AS url, m.preview_url AS preview_url, m.description AS description, m.meta AS meta, CASE WHEN (m.focus_given = 1 OR m.focus_x <> 0 OR m.focus_y <> 0) THEN m.focus_x END AS focus_x, m.focus_y AS focus_y, m.blurhash AS blurhash, (SELECT md.domain IS NOT NULL FROM accounts md INDEXED BY sqlite_autoindex_accounts_1 WHERE md.id = m.account_id) AS remote, NULL AS cached, NULL AS cached_preview FROM media_attachments m WHERE m.id = ?1 AND m.account_id = ?2 AND m.status_id IS NULL AND (m.processed = 1 AND (m.gc_at IS NULL OR m.gc_at > ?3) AND NOT EXISTS (SELECT 1 FROM accounts m_pa WHERE m_pa.id = m.account_id AND m.url IN (m_pa.avatar_url, m_pa.header_url)) AND NOT EXISTS (SELECT 1 FROM custom_emojis m_e WHERE m_e.id = m.id))",
+  "SELECT m.id AS id, m.type AS type, m.url AS url, m.preview_url AS preview_url, m.description AS description, m.meta AS meta, CASE WHEN (m.focus_given = 1 OR m.focus_x <> 0 OR m.focus_y <> 0) THEN m.focus_x END AS focus_x, m.focus_y AS focus_y, m.blurhash AS blurhash, (SELECT md.domain IS NOT NULL FROM accounts md INDEXED BY sqlite_autoindex_accounts_1 WHERE md.id = m.account_id) AS remote, NULL AS cached, NULL AS cached_preview FROM media_attachments m WHERE m.id = ?1 AND m.account_id = ?2 AND m.status_id IS NULL AND (m.processed = 1 AND m.url <> '' AND (m.gc_at IS NULL OR m.gc_at > ?3) AND NOT EXISTS (SELECT 1 FROM accounts m_pa WHERE m_pa.id = m.account_id AND m.url IN (m_pa.avatar_url, m_pa.header_url)) AND NOT EXISTS (SELECT 1 FROM custom_emojis m_e WHERE m_e.id = m.id))",
   "SELECT name, CASE WHEN value IN ('true', 'false') THEN value END AS value FROM instance_settings WHERE name IN ('trends', 'trendable_by_default')",
   "SELECT name, value FROM instance_settings WHERE name IN (?,?,?,?)",
   "SELECT t.scopes, t.account_id, t.expires_at, c.id AS client_id, c.name, c.website, l.suspended_at, coalesce(t.epoch <> l.credential_epoch, 0) AS stale FROM oauth_tokens t CROSS JOIN oauth_clients c INDEXED BY sqlite_autoindex_oauth_clients_1 ON c.id = t.client_id LEFT JOIN local_accounts l INDEXED BY sqlite_autoindex_local_accounts_1 ON l.account_id = t.account_id WHERE t.token_hash = ? AND t.kind = 'access'",
   "SELECT text, published FROM announcements WHERE id = ?",
   "SELECT total_changes() AS n",
-  "UPDATE media_attachments SET type = 'image', url = ?, preview_url = ?, content_type = ?, meta = ?, blurhash = ?, description = ?, focus_x = ?, focus_y = ?, focus_given = ?, processed = 1, gc_at = ? WHERE id = ?",
+  "UPDATE media_attachments SET url = ?, preview_url = ?, content_type = ?, meta = ?, blurhash = ?, description = ?, focus_x = ?, focus_y = ?, focus_given = ?, processed = 1, gc_at = ? WHERE id = ?",
   "UPDATE media_attachments SET url = ?, preview_url = ?, content_type = ?, meta = ?, processed = 1, gc_at = NULL WHERE id = ?",
 ];
 
@@ -83,9 +82,10 @@ const OTHER_STATEMENTS = [
 // a correlated lookup), its form exactly. The delete's write: the ids of the reactions it removes.
 const WITNESS = new PlanWitness(
   {
-    // completeMedia, reading the type too since #1828 (the write window is the type's)
-    "77d29b9778031004": {
-      sql: "SELECT m.file_token AS token, a.uri, m.processed, m.url, m.type, m.created_at FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.account_id = ?",
+    // completeMedia, reading the type and gc_at since #1828 (the image path only, never a doomed row) and no longer the
+    // URL (liveMediaSql requires it)
+    "8fc5fefa1e87f6ad": {
+      sql: "SELECT m.file_token AS token, a.uri, m.processed, m.type, m.gc_at, m.created_at FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.account_id = ?",
       pins: (text) =>
         text.replace(
           " INDEXED BY sqlite_autoindex_media_attachments_1 CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON",
@@ -325,7 +325,7 @@ const EMOJI_UPLOAD = {
 
 const CASES: Record<string, Case> = {
   "an upload's completion": {
-    main: ["77d29b9778031004"],
+    main: ["8fc5fefa1e87f6ad"],
     count: NEIGHBOURS,
     run: (sql, transact) =>
       completeMedia.run(
@@ -341,7 +341,6 @@ const CASES: Record<string, Case> = {
           description: "",
           focus: { x: 0, y: 0 },
           now: NOW,
-          storeNow: NOW,
         },
         transact,
       ),
