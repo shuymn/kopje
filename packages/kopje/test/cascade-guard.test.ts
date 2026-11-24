@@ -35,6 +35,8 @@ const STATUS_EXEMPT: Record<string, string> = {
   status_trend_reviews: "one row per status, inside the final delete’s reservation (deleteStatusWithin)",
   status_cards: "one row per status, inside the final delete’s reservation (deleteStatusWithin)",
   poll_votes: "below polls: deleted a batch at a time by deletePollVotes, checked by hasPollVotes",
+  media_processing:
+    "below media_attachments: a processing row is an unfinished upload's (processed = 0), which no status holds (CHECK status_id IS NULL OR processed = 1), so a status's delete meets none",
 };
 
 // Tables met through the account's cascades that the purge's completion check (accountHasRows) does not list. A
@@ -53,6 +55,8 @@ const ACCOUNT_EXEMPT: Record<string, string> = {
     "below notifications: deleted child-first by the purge's sender and report windows (purgeRelationships), so no notification's delete cascades",
   status_collections:
     "below collections (and statuses): deleted child-first by the purge's collection window (purgeCollectionRows, COLLECTION_CHILDREN), so no collection's delete cascades",
+  media_processing:
+    "below media_attachments: a local upload's only (the media upload route's), one row per upload at most; a remote account is the only one purged",
 };
 
 // Triggers that write. A batched delete or purge counts every row changed (total_changes()), so a trigger its writes
