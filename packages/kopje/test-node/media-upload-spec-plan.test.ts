@@ -1,7 +1,8 @@
 // The plan of spec/media-upload/ against the specification itself, in the Node suite, which every Kopje change runs
 // (the checks the plan lists run in the kopje-spec project, media-upload-spec/checks.ts): every .cfg is a check, every
 // named property has a mutation that breaks it, the mutations of checks.json are exactly the (property, mutation,
-// scenario) triples MediaUpload.tla's Mutations declares, and its goals exactly the ones MediaUploadGoals.tla defines.
+// scenario) triples MediaUpload.tla's Mutations declares, and its goals exactly the (goal, scenario) pairs
+// MediaUploadGoals.tla's GoalChecks declares, each a goal its Goals record defines.
 import { readdirSync, readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
@@ -37,11 +38,18 @@ const declared = (() => {
   const set = main.slice(from, main.indexOf("}", from));
   return [...set.matchAll(/<<"(\w+)", "(\w+)", "(\w+)">>/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
 })();
+const goalsSource = read("MediaUploadGoals");
 // The goals MediaUploadGoals.tla's Goals record names.
 const goalsInSpec = (() => {
-  const source = read("MediaUploadGoals");
-  const record = source.slice(source.indexOf("Goals =="), source.indexOf("NotReached =="));
+  const record = goalsSource.slice(goalsSource.indexOf("Goals =="), goalsSource.indexOf("GoalChecks =="));
   return new Set([...record.matchAll(/^ {2,3}\[?(\w+) \|->/gm)].map((m) => m[1] ?? ""));
+})();
+// The (goal, scenario) pairs MediaUploadGoals.tla's GoalChecks declares, each as "goal scenario".
+const goalChecks = (() => {
+  const from = goalsSource.indexOf("GoalChecks ==");
+  if (from < 0) throw new Error("MediaUploadGoals.tla declares no GoalChecks");
+  const set = goalsSource.slice(from, goalsSource.indexOf("}", from));
+  return [...set.matchAll(/<<"(\w+)", "(\w+)">>/g)].map((m) => `${m[1]} ${m[2]}`);
 })();
 
 describe("the plan of spec/media-upload", () => {
@@ -92,8 +100,12 @@ describe("the plan of spec/media-upload", () => {
     for (const v of plan.variants) expect(v.breaks.trim(), v.name).not.toBe("");
   });
 
-  it("reaches exactly the goals the specification defines", () => {
+  it("reaches exactly the goals the specification defines, each in the scenario it declares", () => {
     expect(goalsInSpec.size).toBeGreaterThan(0);
     expect([...new Set(plan.goals.map((g) => g.goal))].toSorted()).toEqual([...goalsInSpec].toSorted());
+    const run = plan.goals.map((g) => `${g.goal} ${g.scenario}`);
+    expect(new Set(run).size).toBe(run.length);
+    expect(run.toSorted()).toEqual(goalChecks.toSorted());
+    for (const g of plan.goals) expect(g.name, g.name).toBe(`${g.scenario}-${g.goal}`);
   });
 });

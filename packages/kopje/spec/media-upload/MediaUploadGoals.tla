@@ -67,11 +67,16 @@ Goals ==
    \* W11 across two restores in one time unit, the first before S10's commit and the second after it, which rewound
    \* the upload the 200 was for (D28, Codex r5 CM1).
    W11Tick |-> "W11Tick" \in ev,
-   \* W11 for a 503 (D32): S10 decided 503 and doomed the upload, and a restore before the route answered brought it
-   \* back completed, so the 503 goes to a client for a published upload (Codex r5 CM1).
+   \* W11 for a 503 (D32, D39): S10 decided 503 and doomed the upload, and a restore before the route answered brought
+   \* it back completed, so the 503 goes to a client for a published upload (Codex r5 CM1).
    W11Doom |-> "W11Doom" \in ev,
    \* The same, with the restore after the answer.
-   W11DoomLate |-> "W11Doom" \notin ev /\ \E u \in U : Non200(u) /\ Published(u, st[u]) /\ rt[u].kind = "decided",
+   W11DoomLate |->
+     "W11Doom" \notin ev /\ "S10Doom" \in ev
+     /\ \E u \in U : Non200(u) /\ Published(u, st[u]) /\ rt[u].kind = "decided",
+   \* W11 for a 503 S10 decided for an upload it found absent (no row), which a restore then brought back completed
+   \* (D39, Codex r6 CA1).
+   W11Absent |-> "W11Absent" \in ev,
    W11Swept |-> "W11" \in ev /\ \E u \in U : rt[u].ans = 200 /\ st[u].att = "gone" /\ r2[u].obj = {},
    W11Forgotten |-> "W11" \in ev /\ \E u \in U : rt[u].ans = 200 /\ st[u].att = "none" /\ r2[u].obj # {},
    \* Keys a restore forgot (the bookmark predates the reservation) of an upload nobody was answered 200 for or shown
@@ -81,6 +86,12 @@ Goals ==
    W12 |-> "W12" \in ev,
    \* W12 for an S10 still out when its route died (D28).
    W12Dead |-> "W12Dead" \in ev,
+   \* W13: the owner's GET shows the URL of a completed upload a restore brought back after a sweep deleted its files
+   \* (D40, Codex r6 CA2).
+   W13 |-> \E u \in U : rt[u].ans \in {200, 202} /\ st[u].att = "done" /\ ~st[u].doomed /\ now < st[u].gcAt
+                        /\ gh[u].fb /\ r2[u].obj # Writes,
+   \* S10 commits between the sweep's two steps and meets the completed row whose files are gone (Codex r6 CB3).
+   S10Swept |-> "S10Swept" \in ev,
    \* Codex r4 H1: S10 decides at the route's cut, before the Store's deadline of a job whose container started.
    H1 |-> "H1" \in ev,
    \* Codex r4 H3: a later invocation starts a job an earlier one did not.
@@ -99,6 +110,19 @@ Goals ==
    M5 |-> \E u \in U : rt[u].v1 /\ rt[u].kind = "maint" /\ rt[u].ans = 503,
    \* A v2 upload with every write completes and its URL is issued.
    Published |-> \E u \in U : st[u].att = "done" /\ gh[u].tok /\ r2[u].obj = Writes]
+
+\* Each goal's check as <<goal, scenario>>: checks.json's goals must be exactly these
+\* (test-node/media-upload-spec-plan.test.ts), so a goal dropped from either, or moved to another scenario, fails it.
+GoalChecks ==
+  {<<"W1", "V2D">>, <<"W1R", "RS">>, <<"W3", "RS2">>, <<"W4", "OR">>, <<"W5Lost", "V1L">>, <<"W5Fail", "V1L">>,
+   <<"W5GiveUp", "V1L">>, <<"W5Maint", "H1W">>, <<"W5S3Lost", "V1L">>, <<"W5Swept", "V1L">>, <<"W6", "L2">>,
+   <<"W9", "L2">>, <<"W10", "CAP3">>, <<"W11", "RS">>, <<"W11Swept", "RS">>, <<"W11Forgotten", "RS">>, <<"H1", "H1W">>,
+   <<"H3", "V2K">>, <<"GH3", "RS">>, <<"Q4Round", "RS">>, <<"Q4Route", "RS">>, <<"M5", "MT">>, <<"Published", "DLW">>,
+   <<"LateLanding", "DLW">>, <<"W3Cap", "CAP6">>, <<"Forgotten", "RS2">>, <<"W3", "RSS">>,
+   <<"HoldSpansFaults", "CAP5">>, <<"MaintLate", "MTR">>, <<"MaintHolds", "MTS">>, <<"W10Cap", "CAP3">>,
+   <<"W3Twice", "RSD">>, <<"W3Cleared", "RSB">>, <<"W3LateStart", "CAP6">>, <<"W11Tick", "RST">>, <<"W11Doom", "RST">>,
+   <<"W11DoomLate", "RST">>, <<"S4Timeout", "H1W">>, <<"W12", "RS12">>, <<"W12Dead", "RS12">>, <<"W11Absent", "RST">>,
+   <<"W13", "RS3">>, <<"S10Swept", "V1L">>}
 
 NotReached == ~Goals[Goal]
 

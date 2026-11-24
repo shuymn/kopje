@@ -3,10 +3,11 @@
 // distinct-state count and depth are fixed: a change means the state space changed, which the commit that changes
 // checks.json explains. Each check logs its time and the process's RSS.
 //
-// The checks are split over PARTS files, checks-<part>.test.ts beside this module, so that CI's test shards share them:
-// `vitest --shard` deals out whole files, and each part's file has a shard of its own
-// (test-node/media-upload-spec-parts.test.ts; the names are the ones whose paths hash into four different quarters).
-// A check runs in the part PLACED gives it, or else in the part the SHA-256 of its title picks, so a new check moves no
+// The checks are split over the parts PARTS numbers, part n in checks-<n>.test.ts beside this module, so that CI's test
+// shards share them: `vitest --shard` deals out whole files, and each of CI's four shards holds two parts' files
+// (test-node/media-upload-spec-parts.test.ts; the numbers are ones whose paths hash two into each quarter), which run
+// at once there, as a shard runs its files on a hosted runner's vCPUs less one (Vitest's default maxWorkers, D43). A
+// check runs in the part PLACED gives it, or else in the part the SHA-256 of its title picks, so a new check moves no
 // other. PLACED holds the checks that took 5 s or more in a run of the parts on a laptop: those, the longest first,
 // each went to the part with the least time so far, the other checks counted in the part their hash picks. Before a
 // part's checks run, its file must have declared exactly its share of them (below), so a part file that stops calling
@@ -20,55 +21,55 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { checks, readModule, readPlan } from "../../scripts/media-upload-plan.mjs";
 
-export const PARTS = 4;
+export const PARTS = [0, 1, 2, 3, 4, 6, 7, 8];
 
 // A check's title (its kind and name) and its part.
 export const PLACED = new Map<string, number>([
-  ["scenario RS", 0],
-  ["scenario RS3", 1],
-  ["scenario MTX", 2],
-  ["scenario CAP2", 3],
-  ["scenario RSL", 3],
+  ["scenario MTX", 0],
+  ["scenario CAP2", 4],
+  ["scenario RS", 8],
+  ["scenario RSL", 7],
   ["scenario RS12", 2],
-  ["scenario OR", 0],
-  ["scenario RS2", 1],
-  ["scenario CAP4", 0],
-  ["goal RS12-W12", 3],
-  ["goal RS12-W12Dead", 1],
-  ["scenario DLW", 2],
-  ["scenario MT", 3],
-  ["goal RS-W11Swept", 1],
-  ["scenario CAP5", 2],
-  ["scenario V2D", 0],
-  ["liveness L3", 0],
-  ["scenario V1L", 2],
-  ["scenario H1W", 1],
-  ["scenario LK", 3],
-  ["scenario V1R", 0],
-  ["scenario RSD", 2],
-  ["scenario SK", 1],
-  ["variant SlotsReleased-NoExpiry", 3],
-  ["scenario MT2", 1],
-  ["goal V1L-W5Swept", 2],
-  ["scenario V2L", 0],
+  ["scenario RS2", 6],
+  ["scenario CAP4", 1],
+  ["scenario OR", 3],
+  ["scenario MT", 1],
+  ["scenario DLW", 6],
+  ["scenario V2D", 3],
+  ["goal RS12-W12", 2],
+  ["goal RS12-W12Dead", 7],
+  ["scenario CAP5", 8],
+  ["scenario LK", 4],
+  ["goal RS-W11Swept", 0],
+  ["scenario V1L", 1],
+  ["scenario V1R", 3],
+  ["scenario H1W", 6],
+  ["liveness L3", 4],
+  ["scenario RSD", 8],
+  ["scenario SK", 7],
+  ["scenario V2L", 2],
+  ["scenario MT2", 0],
+  ["goal V1L-W5Swept", 8],
+  ["goal V1L-S10Swept", 4],
+  ["variant SlotsReleased-NoExpiry", 6],
+  ["scenario V2K", 1],
   ["goal RS-W11Forgotten", 3],
-  ["scenario MTR", 1],
+  ["scenario V1K", 7],
   ["variant V1Answer-S10IgnoresGc", 2],
-  ["goal RSD-W3Twice", 0],
-  ["scenario V2K", 3],
-  ["scenario CAP", 1],
-  ["goal DLW-Published", 2],
-  ["scenario V1K", 0],
-  ["goal RS-W11", 3],
+  ["scenario MTR", 0],
+  ["goal RSD-W3Twice", 8],
+  ["variant NoPublishAfterNon200-WaitForStoreDeadline", 4],
+  ["scenario CAP", 3],
+  ["goal DLW-Published", 6],
   ["variant V1Answer-ShortGrace", 1],
-  ["goal H1W-W5Maint", 2],
-  ["variant NoPublishAfterNon200-WaitForStoreDeadline", 0],
-  ["goal V1L-W5S3Lost", 3],
+  ["goal RS-W11", 2],
+  ["goal H1W-W5Maint", 7],
+  ["goal V1L-W5S3Lost", 0],
 ]);
 
 export const plan = readPlan();
-// The longest check, scenario RS (2,936,536 distinct states), took 116 s on a laptop running three checks at once; the
-// timeout leaves CI about three times that.
+// The longest check, scenario MTX (3,578,157 distinct states), took 117 s on a laptop running three checks at once; the
+// timeout leaves CI over twice that.
 const CHECK_TIMEOUT_MS = 300_000;
 
 // The title of the describe block tlaTsChecks declares.
@@ -76,12 +77,12 @@ const SUITE = "spec/media-upload under tla-ts";
 
 /** The part that runs a check of checks.json, by its title. */
 const partOf = (title: string): number =>
-  PLACED.get(title) ?? createHash("sha256").update(title).digest().readUInt32BE(0) % PARTS;
+  PLACED.get(title) ?? PARTS[createHash("sha256").update(title).digest().readUInt32BE(0) % PARTS.length] ?? -1;
 
 /** The part whose file is the given path or file URL (part 0 is checks-0.test.ts), or undefined for another file. */
 const partOfFile = (file: string): number | undefined => {
   const match = /^checks-(\d+)\.test\.ts$/.exec(basename(file.startsWith("file:") ? fileURLToPath(file) : file));
-  return match === null ? undefined : Number(match[1]);
+  return match === null || !PARTS.includes(Number(match[1])) ? undefined : Number(match[1]);
 };
 
 /** The titles of the checks the given part runs. */

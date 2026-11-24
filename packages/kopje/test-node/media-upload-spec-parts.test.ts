@@ -1,6 +1,6 @@
 // The parts the specification's checks are split into (media-upload-spec/checks.ts): each check of checks.json runs in
-// a part that has a file, the kopje-spec project collects every part's file, and each part's file has a shard of its
-// own among CI's test shards. That each part's file declares its share is checked again where the checks run, against
+// a part that has a file, the kopje-spec project collects every part's file, and CI's test shards hold the same number
+// of parts' files each. That each part's file declares its share is checked again where the checks run, against
 // the titles vitest collected (checks.ts).
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -25,7 +25,7 @@ const files = readdirSync(new URL("media-upload-spec/", import.meta.url))
 
 describe("the parts of the media upload specification's checks", () => {
   it("have a file each", () => {
-    expect(files).toEqual(Array.from({ length: PARTS }, (_, part) => `checks-${part}.test.ts`));
+    expect(files).toEqual(PARTS.map((part) => `checks-${part}.test.ts`).toSorted());
   });
 
   // A part's file that did not declare its share would leave those checks unrun with every test passing.
@@ -61,14 +61,16 @@ describe("the parts of the media upload specification's checks", () => {
 
   // `vitest --shard` sorts the run's test files by the SHA-1 of their path from the repository root and cuts the list
   // into runs of equal length (BaseSequencer's shard in vitest), so with hundreds of files the edges between shards lie
-  // close to the quarters of the hash space. A part's file inside a quarter of its own, at least MARGIN from its edges,
-  // has a shard of its own.
-  it("lie in a shard each", () => {
+  // close to the quarters of the hash space. A part's file inside a quarter, at least MARGIN from its edges, lies in
+  // that quarter's shard, and each shard holds as many parts' files as the others.
+  it("lie evenly in the shards", () => {
     const shards = files.map((file) => {
       const at = createHash("sha1").update(`/${DIRECTORY}${file}`).digest().readUInt32BE(0) / 2 ** 32;
       const shard = Math.floor(at * SHARDS);
       return at - shard / SHARDS < MARGIN || (shard + 1) / SHARDS - at < MARGIN ? `${file} near an edge` : shard;
     });
-    expect(shards.map(String).toSorted()).toEqual(Array.from({ length: SHARDS }, (_, shard) => `${shard}`));
+    expect(shards.map(String).toSorted()).toEqual(
+      Array.from({ length: PARTS.length }, (_, i) => `${Math.floor((i * SHARDS) / PARTS.length)}`),
+    );
   });
 });

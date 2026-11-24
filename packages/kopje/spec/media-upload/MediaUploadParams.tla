@@ -48,10 +48,9 @@
 (*          gc_at)                                                          *)
 (*  gc      the sweep, reconciliation and the tombstone's retirement run    *)
 (*  purge   the tombstone keeps a purge's time past the write deadline in   *)
-(*          its delete_after, as main's does (D27, D34); elsewhere every    *)
-(*          purge counts as before the write deadline, in the Store and in  *)
-(*          NoLateObject's oracle alike, so only the authority of an early  *)
-(*          purge is checked there                                          *)
+(*          its delete_after, as main's does (D27, D34); elsewhere a late   *)
+(*          purge's tombstone is never retired, so only the authority of an *)
+(*          early purge is checked there (D41)                              *)
 (*  split   the sweep's deletion of the keys and purgeMedia are two steps,  *)
 (*          as main's (D33); elsewhere one                                  *)
 (*  skd     the processor's clock offset from the Store's                   *)
@@ -100,8 +99,9 @@ Params ==
    \* v2, three writes, each granted on its own, with the deadline at AV_WRITE_WINDOW_MS and DELETE (D5), and the
    \* purge's time in the tombstone's delete_after (Codex r4 CM4, D27).
    DLW |-> [Base EXCEPT !.c = CD, !.nw = 3, !.del = 1, !.purge = TRUE, !.tmax = 7],
-   \* v2, two writes, DELETE, a failed write and a route that dies.
-   V2D |-> [Base EXCEPT !.nw = 2, !.del = 1, !.perr = 1, !.rdie = 1, !.tmax = 7],
+   \* v2, two writes, DELETE, a failed write and a route that dies, and the purge's time in the tombstone's
+   \* delete_after: a failed write still in flight when a late purge's tombstone is retired (D41, Codex r6 CA3).
+   V2D |-> [Base EXCEPT !.nw = 2, !.del = 1, !.perr = 1, !.rdie = 1, !.purge = TRUE, !.tmax = 7],
    \* Maintenance across a v1 upload, with a kill.
    MT |-> [Base EXCEPT !.v1 = {"u1"}, !.kill = 1, !.mOn = 1],
    \* Maintenance across a v2 upload with two writes.
@@ -146,8 +146,9 @@ Params ==
    RST |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 2, !.rs = 2, !.tmax = 0],
    \* A PITR restore across a v2 upload, with a lost reply (Gemini r1 GH4).
    RSL |-> [Base EXCEPT !.bm = 1, !.rs = 1, !.loss = 1, !.gc = FALSE, !.prompt = {"cron"}],
-   \* A PITR restore across a v2 upload, with DELETE.
-   RS3 |-> [Base EXCEPT !.bm = 1, !.rs = 1, !.del = 1, !.gc = FALSE, !.prompt = {"cron"}],
+   \* A PITR restore across a v2 upload, with DELETE and the sweep, at time 0: a restore after DELETE and the sweep
+   \* brings the completed row back without its files (W13, D40, Codex r6 CA2).
+   RS3 |-> [Base EXCEPT !.bm = 1, !.rs = 1, !.del = 1, !.tmax = 0],
    \* Two v2 uploads competing for one slot, with DELETE.
    CAP |-> [Base EXCEPT !.up = {"u1", "u2"}, !.max = 1, !.arr = 1, !.del = 1, !.gc = FALSE,
                         !.prompt = {"cron", "route"}, !.tmax = 5],

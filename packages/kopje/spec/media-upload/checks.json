@@ -3,63 +3,63 @@
   "scenarios": [
     {
       "name": "V1L",
-      "distinct": 722950,
-      "depth": 48
+      "distinct": 745010,
+      "depth": 47
     },
     {
       "name": "V1K",
-      "distinct": 221158,
-      "depth": 46
+      "distinct": 231142,
+      "depth": 45
     },
     {
       "name": "V1R",
-      "distinct": 642080,
+      "distinct": 677956,
       "depth": 48
     },
     {
       "name": "V2L",
-      "distinct": 376125,
-      "depth": 51
+      "distinct": 459061,
+      "depth": 50
     },
     {
       "name": "V2K",
-      "distinct": 279999,
-      "depth": 46
+      "distinct": 334244,
+      "depth": 45
     },
     {
       "name": "LK",
-      "distinct": 730481,
-      "depth": 49
+      "distinct": 876810,
+      "depth": 48
     },
     {
       "name": "V2D",
-      "distinct": 876851,
+      "distinct": 1569442,
       "depth": 49
     },
     {
       "name": "DLW",
-      "distinct": 1619450,
+      "distinct": 1619219,
       "depth": 57
     },
     {
       "name": "MT",
-      "distinct": 1445223,
-      "depth": 55
+      "distinct": 1510220,
+      "depth": 54
     },
     {
       "name": "MT2",
-      "distinct": 484085,
-      "depth": 57
+      "distinct": 571678,
+      "depth": 56
     },
     {
       "name": "MTX",
-      "distinct": 3212293,
+      "distinct": 3578157,
       "depth": 55
     },
     {
       "name": "MTR",
-      "distinct": 327801,
-      "depth": 51
+      "distinct": 297803,
+      "depth": 50
     },
     {
       "name": "MTS",
@@ -68,22 +68,22 @@
     },
     {
       "name": "H1W",
-      "distinct": 766230,
+      "distinct": 827925,
       "depth": 49
     },
     {
       "name": "RS",
-      "distinct": 2936536,
+      "distinct": 2237566,
       "depth": 50
     },
     {
       "name": "RSW",
-      "distinct": 118588,
-      "depth": 44
+      "distinct": 109896,
+      "depth": 43
     },
     {
       "name": "RS2",
-      "distinct": 2189749,
+      "distinct": 2188601,
       "depth": 44
     },
     {
@@ -93,17 +93,17 @@
     },
     {
       "name": "RS12",
-      "distinct": 2051933,
+      "distinct": 1966451,
       "depth": 44
     },
     {
       "name": "RST",
-      "distinct": 36693,
+      "distinct": 36395,
       "depth": 31
     },
     {
       "name": "RSL",
-      "distinct": 2670225,
+      "distinct": 2661557,
       "depth": 48
     },
     {
@@ -118,8 +118,8 @@
     },
     {
       "name": "RS3",
-      "distinct": 3734537,
-      "depth": 46
+      "distinct": 2124,
+      "depth": 26
     },
     {
       "name": "CAP",
@@ -153,39 +153,39 @@
     },
     {
       "name": "OR",
-      "distinct": 1933247,
-      "depth": 45
+      "distinct": 1723246,
+      "depth": 44
     },
     {
       "name": "SK",
-      "distinct": 487315,
+      "distinct": 546835,
       "depth": 49
     }
   ],
   "liveness": [
     {
       "name": "L1",
-      "distinct": 2067,
-      "depth": 44
+      "distinct": 1995,
+      "depth": 43
     },
     {
       "name": "L2",
-      "distinct": 6349,
-      "depth": 52
+      "distinct": 6294,
+      "depth": 51
     },
     {
       "name": "L3",
-      "distinct": 202409,
-      "depth": 50
+      "distinct": 166962,
+      "depth": 49
     },
     {
       "name": "L4",
-      "distinct": 223,
+      "distinct": 211,
       "depth": 36
     },
     {
       "name": "L5",
-      "distinct": 3917,
+      "distinct": 3845,
       "depth": 55
     }
   ],
@@ -391,7 +391,7 @@
       "scenario": "L3",
       "variant": "NoExpiry",
       "property": "SlotsReleased",
-      "trace": 35,
+      "trace": 38,
       "liveness": true,
       "breaks": "the dispatch round never deletes a slot past held_until (W2)"
     },
@@ -498,7 +498,7 @@
       "scenario": "L2",
       "variant": "LateSweep",
       "property": "CompletedSwept",
-      "trace": 38,
+      "trace": 37,
       "liveness": true,
       "breaks": "the sweep takes a completed unattached upload one unit after its gc_at instead of at it (Codex r2 CM5, D11)"
     },
@@ -653,6 +653,46 @@
       "property": "ContainerCovered",
       "trace": 16,
       "breaks": "K3 deletes the restored ungranted slot of a container whose grant the restore forgot (Gemini r5 GM2: W3 excuses only once that slot has passed its held_until)"
+    },
+    {
+      "name": "NoLateObject-SharedEarlyPurge",
+      "scenario": "V2D",
+      "variant": "SharedEarlyPurge",
+      "property": "NoLateObject",
+      "trace": 24,
+      "breaks": "the Store takes every purge as before the write deadline, so a late purge's tombstone is retired at the reservation + AV_WRITE_WINDOW_MS + ORPHAN_GRACE_MS, before its authority ends (D41, Codex r6 CA3, CB1)"
+    },
+    {
+      "name": "StartNeedsSlot-MoveStartDeadline",
+      "scenario": "V2K",
+      "variant": "MoveStartDeadline",
+      "property": "StartNeedsSlot",
+      "trace": 12,
+      "breaks": "S4 moves deadline_at at the start, so a container starts past the deadline S3 stored (Codex r6 CB1)"
+    },
+    {
+      "name": "V1Answer-GiveUp200",
+      "scenario": "V1L",
+      "variant": "GiveUp200",
+      "property": "V1Answer",
+      "trace": 6,
+      "breaks": "the route's give-up answers 200 for an upload not published (D42, Codex r6 CB2)"
+    },
+    {
+      "name": "NoPublishAfterNon200-NoDoomAtCut",
+      "scenario": "H1W",
+      "variant": "NoDoomAtCut",
+      "property": "NoPublishAfterNon200",
+      "trace": 23,
+      "breaks": "S10 answers 503 at the route's cut without dooming the upload, which then completes (D42, Gemini r6 GM2)"
+    },
+    {
+      "name": "OwnerGetHasFiles-CompleteBeforeLanding",
+      "scenario": "V2D",
+      "variant": "CompleteBeforeLanding",
+      "property": "OwnerGetHasFiles",
+      "trace": 22,
+      "breaks": "S6 completes the upload before its last write lands, so the owner's GET shows a URL without its file (D40)"
     }
   ],
   "goals": [
@@ -895,6 +935,24 @@
       "scenario": "RS12",
       "goal": "W12Dead",
       "trace": 33
+    },
+    {
+      "name": "RST-W11Absent",
+      "scenario": "RST",
+      "goal": "W11Absent",
+      "trace": 27
+    },
+    {
+      "name": "RS3-W13",
+      "scenario": "RS3",
+      "goal": "W13",
+      "trace": 23
+    },
+    {
+      "name": "V1L-S10Swept",
+      "scenario": "V1L",
+      "goal": "S10Swept",
+      "trace": 29
     }
   ]
 }

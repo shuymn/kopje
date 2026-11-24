@@ -14,9 +14,9 @@ replays and accepted windows that PR4's Store, processor and route implement. Pa
 | `<scenario>.cfg`        | one scenario each, with every safety invariant (or, `L1`-`L5`, every liveness property under `LSpec`)                                               |
 | `checks.json`           | every check's expected outcome: each scenario's state count and depth, each mutation's broken property and trace length, each goal's witness length |
 
-`MediaUpload.tla`'s `Mutations` declares each mutation as the property it breaks and the scenario it breaks it in;
-`checks.json` must list exactly those (`test-node/media-upload-spec-plan.test.ts`, in the Node suite, which every Kopje
-change runs).
+`MediaUpload.tla`'s `Mutations` declares each mutation as the property it breaks and the scenario it breaks it in, and
+`MediaUploadGoals.tla`'s `GoalChecks` each goal with the scenario that reaches it; `checks.json` must list exactly those
+(`test-node/media-upload-spec-plan.test.ts`, in the Node suite, which every Kopje change runs).
 
 ## The checks
 
@@ -30,7 +30,7 @@ pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2 test-node/media-up
 A change of the specification that changes a count changes `checks.json` in the same commit, which says why. Every named
 invariant and property has a mutation that the checker is seen to violate (`variants` in `checks.json`); the plan test
 fails for a property without one. `test-node/media-upload-spec-parts.test.ts` checks that the `kopje-spec` project
-collects every part's file and that each lies in a CI shard of its own.
+collects every part's file and that CI's four test shards hold two parts' files each.
 
 Each safety property and each exception it allows compares the step it checks against ghost state recorded at the
 event that grounds it (the reservation, the grant, the queue's deadline, the Store's cleanup answer, S10's decision and
@@ -56,17 +56,24 @@ step without each action raising them: `MaintInert` compares the Store with its 
   also holds the retirement to `ORPHAN_GRACE_MS` after each write's start; it checks that nothing lands, and no write
   is in flight, between the retirement and then, and that the retirement leaves no key behind (mutations
   `EarlyRetire`, `RetireIgnoresPurge`, `DeleteAfterNoPurge`, `DeleteAfterNoLand`, `QueueNoCap`, `RetireNoDelete`, all
-  in `DLW`). Only `DLW` keeps a purge's time past the write deadline (it adds a state per purge time); the other
-  scenarios count every purge as before it, in the Store and in the check alike, so they check the authority of an
-  early purge only, not a stricter rule. Neither Cloudflare nor main bounds when a started put lands (the alarm's wall
-  limit ends the writer, not the put), so the lasting residual is a key that lands after that last deletion, between
-  it and the tombstone's removal included (main deletes the keys, then the tombstone; the model takes the two as one,
-  since the deletion commutes with the Store's steps), or one a restore forgot (no row, no tombstone): it stays, as an
-  image's does (`docs/threat-model.md`). The goal `DLW-LateLanding` reaches the first, `RS2-Forgotten` the second.
+  in `DLW`). Only `DLW` and `V2D` keep a purge's time past the write deadline (it adds a state per purge time; `V2D`
+  has a failed write still in flight then). In the other scenarios a late purge's tombstone is never retired, and the
+  check takes its authority to outlast the scenario, so they check the retirement of an early purge only (mutation
+  `SharedEarlyPurge`, the Store taking every purge as early, in `V2D`). Neither Cloudflare nor main bounds when a
+  started put lands (the alarm's wall limit ends the writer, not the put), so the lasting residual is a key that lands
+  after that last deletion, between it and the tombstone's removal included (main deletes the keys, then the tombstone;
+  the model takes the two as one, since the deletion commutes with the Store's steps), or one a restore forgot (no row,
+  no tombstone): it stays, as an image's does (`docs/threat-model.md`). The goal `DLW-LateLanding` reaches the first,
+  `RS2-Forgotten` the second.
 - The sweep is main's two steps, the deletion of the upload's keys and then `purgeMedia`, which deletes the row only
   if it is still sweepable, in the scenarios with `split` (`V1L`, `RSW`, `RS12`), where a late S10 or a restore
   may come between them; elsewhere one step. Between the two, a completed row whose files are gone is past its
-  `gc_at`, so S10 answers 503 for it, as main reads such a row as gone (mutation `S10IgnoresGc`).
+  `gc_at`, so S10 answers 503 for it, as main reads such a row as gone (goal `V1L-S10Swept`; mutation
+  `S10IgnoresGc`). The sweep's selection of the rows (`expiredMedia`) and its deletion of their keys are one step, so
+  a restore between them, which brings a row back live and then loses its files, is not modelled; PR4-1's tests carry
+  it.
+- A restore after DELETE and the sweep brings a completed row back without its files, and the owner's GET then shows
+  a URL to missing files (W13, goal `RS3-W13`), as a restored image's does; `OwnerGetHasFiles` holds outside it.
 - One to three uploads. `MAX_AV_INFLIGHT` is 1 where two or three uploads compete, so a later one meets a full
   instance, and 2 in `CAP4` and `CAP5`, where a third arrives while two stops are retried; the capacity rules do not
   depend on the number.
@@ -98,6 +105,9 @@ step without each action raising them: `MaintInert` compares the Store with its 
   the container ran at the restore or starts after it, and such a start still meets the job's deadline.
 - A restore's time (`ra`, `restoredAt`) fences reservations; replies are ordered against restores by the restores'
   sequence number (`rn`), so two restores in one time unit (`RST`) are two.
+- A restore since S10's commit that rewrote the upload's record excuses the status sent either way (W11): a 200 for an
+  upload it took back, and a 503 for one it brought back completed, whether S10 doomed the row it met (goal
+  `RST-W11Doom`) or met none (`RST-W11Absent`).
 - The number of invocations is bounded only by the clock: an alarm fires at most once a time unit, so no bound of the
   model cuts a retry sequence short (Codex r2 CM8; `L5` retries seven stops).
 - A restore and a maintenance window may be held back to `rsAt` and `mAt`, so that `RSS`, `MTS` and `MTR` begin them

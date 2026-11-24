@@ -50,14 +50,18 @@ LAND == 1
 RETIRE == WW + LAND \* the tombstone's authority after the reservation, for a purge before the write deadline (M3)
 \* The tombstone's delete_after, as purgeMedia stores it: max(purge, write deadline) + ORPHAN_GRACE_MS (D27), the write
 \* deadline the AV one, the reservation + AV_WRITE_WINDOW_MS, past every write cut (deadline_at). Only scenarios with
-\* purge keep a purge's time past the write deadline (it adds a state per purge time, +38% in V1K); the others take
-\* every purge as before it, in the Store and in NoLateObject's oracle alike, so they check the authority of an early
-\* purge only. DeleteAfterNoPurge ignores the purge's time, DeleteAfterNoLand drops ORPHAN_GRACE_MS (Gemini r5 GH1,
+\* purge keep a purge's time past the write deadline (it adds a state per purge time, +38% in V1K). The others keep an
+\* early purge's delete_after and give a late one NEVER: its tombstone is never retired there, so the retirement's
+\* authority is checked for early purges only (D41), against NoLateObject's own reckoning from the purge's time.
+\* SharedEarlyPurge takes every purge as early, the reduced abstraction that retired a late purge one unit early (Codex
+\* r6 CA3, CB1); DeleteAfterNoPurge ignores the purge's time, DeleteAfterNoLand drops ORPHAN_GRACE_MS (Gemini r5 GH1,
 \* Codex r5 CM4).
-PurgeAt(t, resAt) == IF P.purge /\ t > resAt + WW THEN t ELSE resAt + WW
+NEVER == P.tmax + 1
+PurgeAt(t, resAt) == IF t > resAt + WW /\ Variant # "SharedEarlyPurge" THEN t ELSE resAt + WW
 DeleteAfter(x, t) ==
   CASE Variant = "DeleteAfterNoPurge" -> x.resAt + RETIRE
     [] Variant = "DeleteAfterNoLand" -> PurgeAt(t, x.resAt)
+    [] ~P.purge /\ PurgeAt(t, x.resAt) > x.resAt + WW -> NEVER
     [] OTHER -> PurgeAt(t, x.resAt) + LAND
 \* DETACHED_GRACE_MS: the gc_at completion gives an unattached upload (completeMedia), longer than the v1 wait.
 DGRACE == IF Variant = "ShortGrace" THEN V1 ELSE V1 + 1
@@ -172,7 +176,9 @@ S4(x0, t, ra, maint, inv) ==
   IF maint THEN Res(x0, "maint")
   ELSE IF x.ps = "pending"
   THEN IF x.dl - t >= MINENC
+       \* MoveStartDeadline moves deadline_at at the start (Codex r6 CB1): the deadline S3 stored binds the start.
        THEN Res([x EXCEPT !.ps = "running", !.sid = inv, !.disp = 0,
+                          !.dl = IF Variant = "MoveStartDeadline" THEN x.dl + 1 ELSE x.dl,
                           !.slot = IF x.slot.ph = "processing" /\ x.slot.ga < 0 THEN [x.slot EXCEPT !.ga = t] ELSE x.slot],
                 "started")
        ELSE Res([x EXCEPT !.ps = "failed", !.cause = "timeout", !.disp = 0], "settled")
@@ -259,7 +265,8 @@ S10(x0, t, ra, maint) ==
   ELSE IF Fenced(x0, ra) /\ x.att = "res" /\ Variant = "LateRestored200" /\ t > x0.resAt + V1 THEN Res(x, "200")
   ELSE IF x.ps = "failed" /\ S10Code(x.cause) # "503" THEN Res(x, S10Code(x.cause))
   ELSE IF x.ps \in {"pending", "running"} /\ t < x.dl /\ Variant = "WaitForStoreDeadline" THEN Res(x, "not_yet")
-  ELSE IF x.att \in {"res", "done"} /\ ~x.doomed THEN Res(Doom(x), "503")
+  \* NoDoomAtCut: S10 answers 503 for an unfinished upload and leaves it to complete (Gemini r6 GM2).
+  ELSE IF x.att \in {"res", "done"} /\ ~x.doomed THEN Res(IF Variant = "NoDoomAtCut" THEN x ELSE Doom(x), "503")
   ELSE Res(x, "503")
 
 \* S11 DELETE of an unattached upload by its owner: doomed, its processing row deleted, its slot kept.
