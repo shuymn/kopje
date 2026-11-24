@@ -638,8 +638,12 @@ describe("the reconciliation gate", () => {
       await gate.promise;
       return real();
     });
-    const running = w.imageRound({ store: () => store });
-    await reached.promise;
+    // The claim stamps its tombstone at the Store's time (one media clock), here NOW.
+    const { running } = await atStoreTime(NOW, async () => {
+      const round = w.imageRound({ store: () => store });
+      await reached.promise;
+      return { running: round };
+    });
     const [tombstone] = await w.orphans();
     const key = `files/${tombstone!.file_token}/full`;
     expect(await r2Keys(key)).toEqual([key]);
@@ -701,6 +705,7 @@ describe("the reconciliation capacity", () => {
         const before = await due(at);
         const claimed = await w.op(claimCardImages, {
           now: at,
+          storeNow: at,
           tokens: k === 0 ? ["c".repeat(43), "d".repeat(43), "e".repeat(43)] : [],
           share: 1000,
         });

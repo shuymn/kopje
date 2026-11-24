@@ -7,6 +7,7 @@ import { checkCredential, type Credential, type Judged } from "./domain/auth";
 import { HANDSHAKE_REPLAYS_PER_ROUND, handshakeReplaysDue, handshakeReplayStep } from "./domain/handshake-replays";
 import * as inbox from "./domain/inbox";
 import * as instanceActivity from "./domain/instance-activity";
+import * as media from "./domain/media";
 import * as mediaProcessing from "./domain/media-processing";
 import * as mediaRebuild from "./domain/media-rebuild";
 import * as remoteActors from "./domain/remote-actors";
@@ -497,6 +498,13 @@ export class Store extends DurableObject<Env> {
   ) {
     const restoredAt = await lastRestore(this.env.MEDIA, restoreMarkerKey(this.ctx.id.toString()));
     return this.#kernel.execute(callerBuild, mediaRebuild.rebuildLease, { ...input, restoredAt });
+  }
+
+  // The image path's start (domain/media.ts startTransforms), after the restore marker is read (restoreMarkerKey), so a
+  // candidate reserved at or before the last restore is refused as S1 refuses it.
+  async startTransforms(callerBuild: string, input: Omit<OperationInput<typeof media.startTransforms>, "restoredAt">) {
+    const restoredAt = await this.#restoredAt();
+    return this.#kernel.execute(callerBuild, media.startTransforms, { ...input, restoredAt });
   }
 
   // The media processor's upload operations (domain/media-processing.ts, S1-S13), each at the Store's own time after the

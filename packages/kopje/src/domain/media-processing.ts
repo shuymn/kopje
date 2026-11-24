@@ -268,6 +268,12 @@ function avReservation(att: Attachment): boolean {
   return candidate(att) || onAvPath(att);
 }
 
+// The attachment as S4, S7, S9 and S10 see it: one the image path took (startTransforms set image) is not theirs, the
+// same as none, so they never answer for it or doom it.
+function avAttachment(att: Attachment | null): Attachment | null {
+  return att !== null && avReservation(att) ? att : null;
+}
+
 // K3's fence: the attachment was reserved at or before the last restore.
 function fenced(att: Attachment | null, restoredAt: number | null): boolean {
   return att !== null && restoredAt !== null && Date.parse(att.created_at) <= restoredAt;
@@ -641,7 +647,8 @@ export const startNormalize = writeOperation.atStoreTime("now")<
   if (!identity(invocation)) {
     throw new Error("not an invocation id");
   }
-  const { att, row, slot } = normalize(db, id, now, restoredAt);
+  const { att: loaded, row, slot } = normalize(db, id, now, restoredAt);
+  const att = avAttachment(loaded);
   const mine = attachmentState(att, token) !== "none";
   if (mine && row?.state === "pending" && row.deadline_at !== null && row.input_bytes !== null) {
     const endpoint: Endpoint = row.reply_by !== null ? "v1" : "v2";
@@ -830,7 +837,7 @@ export const failNormalize = writeOperation.atStoreTime("now")<
   if (row?.state === "failed" && row.failure !== null) {
     return { status: "recorded", cause: row.failure };
   }
-  if (row === null && attachmentState(att) === "done") {
+  if (row === null && attachmentState(avAttachment(att)) === "done") {
     return { status: "settled", state: "completed" };
   }
   return { status: "gone" };
@@ -867,7 +874,7 @@ export const v1Outcome = readOperation.atStoreTime("now")<
 >((db, { id, token, now, restoredAt }) => {
   checkId(id);
   const { att, row } = normalized(load(db, id), now, restoredAt);
-  const kind = attachmentState(att, token);
+  const kind = attachmentState(avAttachment(att), token);
   if (kind === "done") {
     return { status: "done" };
   }
@@ -909,7 +916,8 @@ export const v1Final = writeOperation.atStoreTime("now")<{ id: string; token: st
   { id, token, now, restoredAt },
 ) => {
   checkId(id);
-  const { att, row } = normalize(db, id, now, restoredAt);
+  const { att: loaded, row } = normalize(db, id, now, restoredAt);
+  const att = avAttachment(loaded);
   const media = liveDone(db, att, token, now);
   if (media !== null) {
     return { status: 200, media };
@@ -935,7 +943,7 @@ export const v1FinalRead = readOperation.atStoreTime("now")<{ id: string; token:
 ) => {
   checkId(id);
   const { att } = normalized(load(db, id), now, restoredAt);
-  const media = liveDone(db, att, token, now);
+  const media = liveDone(db, avAttachment(att), token, now);
   return media === null ? { status: "maintenance" } : { status: 200, media };
 });
 

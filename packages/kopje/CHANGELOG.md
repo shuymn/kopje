@@ -42,6 +42,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   later. A still costs one job of the new `MEDIA_UPLOAD_MONTHLY_JOBS` budget (default 0: none) and three Images
   transformations ([docs/backup.md](docs/backup.md), "Restore"). Nothing writes such rows yet.
 
+### Changed
+
+- An image upload's deadline is judged when the Store commits the upload, by the Store's clock, so time the request
+  spends in transit counts: an upload completed just before its deadline by the Worker's clock may be refused with 422
+  "Validation failed: The upload expired".
+- An owned upload marked processed but without a URL, a shape migration 0048 could leave, is no longer shown, edited
+  or attached: `GET`, `PUT` and `DELETE /api/v1/media/:id` answer 404 for it, and a post that attaches it is refused
+  with 422.
+
 ### Fixed
 
 - A post sent while the sweep was deleting an expired upload could still attach it and keep a broken attachment, when

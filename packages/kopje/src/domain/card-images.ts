@@ -158,11 +158,12 @@ const GC_WALK_SQL = `SELECT id, NOT EXISTS (SELECT 1 FROM status_cards INDEXED B
 	FROM card_images i INDEXED BY ${CARD_IMAGE_STORED_ID_INDEX}
 	WHERE i.stored_at IS NOT NULL AND i.id > ?1 ORDER BY i.id LIMIT ${CARD_IMAGE_GC_WALK}`;
 
-// The image GC: when fewer than CARD_IMAGE_GC_BACKLOG tombstones are due at `now`, at most CARD_IMAGE_GC_WALK
-// stored rows from the cursor, each unreferenced one given a tombstone due at once (its token and id, copied in SQL)
-// and deleted; the cursor moves to the last row walked, or back to the start when fewer were left. Null when paused.
-function collect(db: Db, now: number): number | null {
-  const due = db.first<{ n: number }>(DUE_BACKLOG_SQL, iso(now))?.n ?? CARD_IMAGE_GC_BACKLOG;
+// The image GC: when fewer than CARD_IMAGE_GC_BACKLOG tombstones are due at the Store's time `storeNow` (media_orphans
+// is shared with the media sweep, which stamps and reconciles it on that clock), at most CARD_IMAGE_GC_WALK stored rows
+// from the cursor, each unreferenced one given a tombstone due at once (its token and id, copied in SQL) and deleted;
+// the cursor moves to the last row walked, or back to the start when fewer were left. Null when paused.
+function collect(db: Db, storeNow: number): number | null {
+  const due = db.first<{ n: number }>(DUE_BACKLOG_SQL, iso(storeNow))?.n ?? CARD_IMAGE_GC_BACKLOG;
   if (due >= CARD_IMAGE_GC_BACKLOG) {
     return null;
   }
@@ -178,7 +179,7 @@ function collect(db: Db, now: number): number | null {
       `INSERT OR REPLACE INTO media_orphans (file_token, media_id, delete_after)
 			SELECT token, id, ?2 FROM card_images WHERE id = ?1 AND stored_at IS NOT NULL`,
       row.id,
-      iso(now),
+      iso(storeNow),
     );
     db.run("DELETE FROM card_images WHERE id = ?1 AND stored_at IS NOT NULL", row.id);
     collected++;
@@ -189,11 +190,12 @@ function collect(db: Db, now: number): number | null {
 
 // See the module's head. `tokens`: the Worker's fresh file tokens, one per claim it may start (at most
 // CARD_IMAGE_ROUND_CLAIMS are used); `share`: IMAGES_CARD_MONTHLY_TRANSFORMS. At most CARD_IMAGE_EXPIRE_BATCH +
-// 2 × CARD_IMAGE_GC_WALK + CARD_IMAGE_CLAIM_WALK + CARD_IMAGE_ROUND_CLAIMS rows written, and the cursor.
-export const claimCardImages = mediaDeleteOperation<
-  { now: number; tokens: readonly string[]; share: number },
+// 2 × CARD_IMAGE_GC_WALK + CARD_IMAGE_CLAIM_WALK + CARD_IMAGE_ROUND_CLAIMS rows written, and the cursor. The
+// tombstones (media_orphans) are read and written at the Store's time `storeNow`, as the media sweep's.
+export const claimCardImages = mediaDeleteOperation.atStoreTime("storeNow")<
+  { now: number; storeNow: number; tokens: readonly string[]; share: number },
   CardImageClaims
->((db, { now, tokens, share }) => {
+>((db, { now, storeNow, tokens, share }) => {
   const out: CardImageClaims = { domain: null, claims: [], expired: 0, collected: 0, paused: false, dropped: 0 };
   const domain = db.first<{ value: SqlStorageValue }>(
     "SELECT value FROM instance_settings WHERE name = 'domain'",
@@ -215,7 +217,7 @@ export const claimCardImages = mediaDeleteOperation<
     cutoff,
     now,
   );
-  const collected = collect(db, now);
+  const collected = collect(db, storeNow);
   out.paused = collected === null;
   out.collected = collected ?? 0;
   const shareLeft = Number.isSafeInteger(share) && share > 0 ? Math.max(0, share - used(db, now)) : 0;
@@ -275,7 +277,7 @@ export const claimCardImages = mediaDeleteOperation<
       "INSERT INTO media_orphans (file_token, media_id, delete_after) VALUES (?1, ?2, ?3)",
       token,
       id,
-      iso(now + CARD_IMAGE_HOLD_MS + ORPHAN_GRACE_MS),
+      iso(storeNow + CARD_IMAGE_HOLD_MS + ORPHAN_GRACE_MS),
     );
     out.claims.push({ id, claim: claimed, token, sourceUrl: url });
     if (out.claims.length >= claimable || next >= given.length) {

@@ -333,12 +333,17 @@ export type Started =
 // time (not completed, abandoned, doomed or past its deadline) and on the image path or none yet: a candidate becomes
 // an image here, and one S1 took (video or audio) is refused, so a reservation is written by one path only. The
 // transformations are charged to the budgets of the month `now` is in.
+// `restoredAt`: the restore marker the Store's method reads (store.ts), as the AV operations' (K3). A candidate
+// reserved at or before the last restore is refused, as S1 refuses it: the restore may have rewound S1, and the AV
+// path's late writes (W1) may still land on its keys. completeMedia needs no fence of its own: a start the restore
+// rewound left the row a candidate, which it refuses, and a start the restore kept committed before the bookmark, so
+// no S1 took the reservation in either history. A plain image reservation, never a candidate, is not fenced.
 export const startTransforms = userWriteOperation.atStoreTime("storeNow")<
-  { id: string; monthlyTransforms: MonthlyTransforms; now: number; storeNow: number },
+  { id: string; monthlyTransforms: MonthlyTransforms; now: number; storeNow: number; restoredAt: number | null },
   Started
->((db, { id, monthlyTransforms, now, storeNow }, { accountId }) => {
-  const open = db.first<{ type: string }>(
-    `SELECT type FROM media_attachments WHERE id = ? AND account_id = ? AND processed = 0 AND gc_at <> ?
+>((db, { id, monthlyTransforms, now, storeNow, restoredAt }, { accountId }) => {
+  const open = db.first<{ type: string; created_at: string }>(
+    `SELECT type, created_at FROM media_attachments WHERE id = ? AND account_id = ? AND processed = 0 AND gc_at <> ?
 			AND type IN ('image', ?) AND created_at > ?`,
     id,
     accountId,
@@ -346,7 +351,10 @@ export const startTransforms = userWriteOperation.atStoreTime("storeNow")<
     AV_CANDIDATE_TYPE,
     iso(storeNow - WRITE_WINDOW_MS),
   );
-  if (open === undefined) {
+  if (
+    open === undefined ||
+    (open.type === AV_CANDIDATE_TYPE && restoredAt !== null && Date.parse(open.created_at) <= restoredAt)
+  ) {
     return { status: "expired" };
   }
   const refused = budgetRefusal(db, accountId, monthlyTransforms, now);
@@ -455,15 +463,17 @@ export const completeMedia = userWriteOperation.atStoreTime("now")<CompleteMedia
 // objects stay; gone: there is no such row, so nothing refers to its objects.
 export type Abandoned = "abandoned" | "kept" | "gone";
 
-// A failed upload: released from its writer and due at once at the Store's time, so the sweep takes it right away; a
-// candidate (no path chosen) is doomed (DOOMED_AT, which nothing revives). A completed upload is never doomed here.
+// A failed upload, released from its writer: an image-path one is due at once at the Store's time, so the sweep takes
+// it right away; a candidate (no path chosen) or an AV-path one (after S2 or S3 refused its input) is doomed
+// (DOOMED_AT, which nothing revives), and so is one already doomed: a doom is never overwritten. A completed upload is
+// never doomed here.
 export const abandonMedia = userMediaDeleteOperation.atStoreTime("now")<{ id: string; now: number }, Abandoned>((
   db,
   { id, now },
   { accountId },
 ) => {
-  const row = db.first<{ processed: number; url: string; type: string }>(
-    "SELECT processed, url, type FROM media_attachments WHERE id = ? AND account_id = ?",
+  const row = db.first<{ processed: number; url: string; type: string; gc_at: string | null }>(
+    "SELECT processed, url, type, gc_at FROM media_attachments WHERE id = ? AND account_id = ?",
     id,
     accountId,
   );
@@ -476,7 +486,7 @@ export const abandonMedia = userMediaDeleteOperation.atStoreTime("now")<{ id: st
   }
   db.run(
     "UPDATE media_attachments SET processed = 1, gc_at = ? WHERE id = ? AND status_id IS NULL",
-    row.type === AV_CANDIDATE_TYPE ? DOOMED_AT : iso(now),
+    row.type === "image" && row.gc_at !== DOOMED_AT ? iso(now) : DOOMED_AT,
     id,
   );
   return "abandoned";

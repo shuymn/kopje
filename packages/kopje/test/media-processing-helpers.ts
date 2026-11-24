@@ -133,7 +133,7 @@ export async function staged(w: AvWorld, options: { v1?: boolean; at?: number; u
 
 export const TEXT = { description: "a clip", focus: { x: 0.25, y: -0.5 } };
 
-export async function queued(w: AvWorld, options: { v1?: boolean } = {}): Promise<Queued> {
+export async function queued(w: AvWorld, options: { v1?: boolean; up?: Up } = {}): Promise<Queued> {
   const up = await staged(w, options);
   clock(T0 + 2 * SECOND);
   const answer = await w.store.queueNormalize(BUILD, {
@@ -150,7 +150,7 @@ export async function queued(w: AvWorld, options: { v1?: boolean } = {}): Promis
   return { ...up, teardownId: answer.teardownId };
 }
 
-export async function started(w: AvWorld, options: { v1?: boolean } = {}): Promise<Started> {
+export async function started(w: AvWorld, options: { v1?: boolean; up?: Up } = {}): Promise<Started> {
   const up = await queued(w, options);
   clock(T0 + 3 * SECOND);
   const invocation = `inv-${crypto.randomUUID()}`;

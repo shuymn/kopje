@@ -92,9 +92,9 @@ const WITNESS = new PlanWitness(
           " JOIN accounts a ON",
         ),
     },
-    // completeEmoji's uploader
-    b2ba7bd7c87d186e: {
-      sql: "SELECT a.uri FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.file_token = ? AND m.processed = 0 AND m.created_at > ? AND m.status_id IS NULL AND m.scheduled_status_id IS NULL",
+    // completeEmoji's uploader, an image row not doomed since #1828
+    fb4328891e65d513: {
+      sql: "SELECT a.uri FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.file_token = ? AND m.processed = 0 AND m.type = 'image' AND m.gc_at IS NOT ? AND m.created_at > ? AND m.status_id IS NULL AND m.scheduled_status_id IS NULL",
       pins: (text) =>
         text.replace(
           " INDEXED BY sqlite_autoindex_media_attachments_1 CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON",
@@ -347,7 +347,7 @@ const CASES: Record<string, Case> = {
   },
   "an emoji upload's uploader": {
     // The emoji looked up by its id before the upload is read, and again after it is stored.
-    main: ["80b7909111a47fc3", "b2ba7bd7c87d186e", "80b7909111a47fc3"],
+    main: ["80b7909111a47fc3", "fb4328891e65d513", "80b7909111a47fc3"],
     count: NEIGHBOURS,
     run: (sql, transact) =>
       completeEmoji.run(sql, { ...EMOJI_UPLOAD, authority: ACCESS, id: PENDING, shortcode: "fresh" }, transact),

@@ -588,7 +588,6 @@ export const STORE_RPC = {
   updateMedia: media.updateMedia,
   deleteMedia: media.deleteMedia,
   removeProfileImage: media.removeProfileImage,
-  startTransforms: media.startTransforms,
   dueOrphans: media.dueOrphans,
   forgetOrphans: media.forgetOrphans,
   expiredMedia: media.expiredMedia,
