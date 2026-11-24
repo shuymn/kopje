@@ -1,8 +1,6 @@
+import { type ProbeAttempt, probeImageTag, type ProbeRecord, PROBE_RETRY_MS } from "../domain/media-probes";
 import {
   avMetaFits,
-  type ProbeAttempt,
-  probeImageTag,
-  type ProbeRecord,
   type RebuildAv,
   type RebuildCharge,
   type RebuildRecord,
@@ -78,8 +76,8 @@ const AV_PROBE_MS = 60_000;
 const AV_STILL_MS = 75_000;
 export const MAX_AV_BUILDS_PER_CALL = 1;
 const STILL_PROFILE = "still@standard-1";
-// How soon a failed probe of the still profile is run again for the same build (design 4.15, PROBE_RETRY_MS).
-export const PROBE_RETRY_MS = 60 * 60 * 1000;
+// How soon a failed probe of the still profile is run again for the same build (design 4.15).
+export { PROBE_RETRY_MS };
 
 export type AvCall = {
   build: string;

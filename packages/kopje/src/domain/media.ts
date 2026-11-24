@@ -14,6 +14,7 @@ import { actorSnapshot, recordActorUpdate } from "./actor-update";
 import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
 import { setState, state } from "./kopje-state";
+import { NORMALIZE_PROFILE, probePassed } from "./media-probes";
 import { mediaDeleteOperation } from "./operation";
 import { type MediaAttachment, type MediaRow, presentMedia } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
@@ -64,6 +65,16 @@ export const DETACHED_GRACE_MS = 24 * HOUR;
 // RESERVATION_MS.
 export const WRITE_WINDOW_MS = 15 * 60 * 1000;
 const RESERVATION_MS = HOUR;
+
+// The write deadline of a video or audio upload (#1828 design 4.7): the processor writes its files up to this long
+// after the reservation, within RESERVATION_MS. A reservation becomes one (its type video or audio) when its request
+// takes a processing slot (domain/media-processing.ts takeAvSlot); completion and the tombstone use it.
+export const AV_WRITE_WINDOW_MS = 30 * 60 * 1000;
+
+// The write deadline of a reservation made at `created` (its ISO time) of `type`.
+function writeDeadline(type: string, created: string): number {
+  return Date.parse(created) + (type === "video" || type === "audio" ? AV_WRITE_WINDOW_MS : WRITE_WINDOW_MS);
+}
 
 // A tombstone of an upload that never completed falls due this long after its writer's deadline.
 export const ORPHAN_GRACE_MS = 24 * HOUR;
@@ -125,7 +136,9 @@ function ownUpload(db: Db, accountId: string, id: string, now: number): MediaRow
 }
 
 export type Reserved =
-  | { status: "ok"; id: string; deadline: number }
+  // imagesRefusal: on the active path (avCandidate), the Images budget an image would be refused for, account first,
+  // or null; absent otherwise.
+  | { status: "ok"; id: string; deadline: number; imagesRefusal?: "account" | "instance" | null }
   | { status: "rate_limited" }
   | { status: "budget_exhausted"; scope: "account" | "instance" }
   // The Worker's token is taken: nothing is counted or reserved, and the request may be sent again.
@@ -138,18 +151,25 @@ export type MonthlyTransforms = { instance: number; account: number };
 // account (R4) cannot use up the instance's budget for everyone. The attempt is counted here and the budgets checked,
 // so an over-budget request reads no body; startTransforms checks them again and charges them, in its transaction, so
 // concurrent uploads cannot overshoot them and nothing reaches Images past them (RES-6).
+//
+// The active path (#1828 plan Q1): `avCandidate` is passed by the media upload route alone, with the processor bound
+// and a positive upload budget; with it and a passed probe of NORMALIZE_PROFILE for its build, the Images budgets do
+// not refuse the reservation (a video or audio upload needs them only for its still): the attempt is counted, the row
+// reserved, and the answer names the budget an image would be refused for (imagesRefusal). Otherwise the reservation
+// is the one above.
 export const reserveMedia = userWriteOperation<
-  { token: string; monthlyTransforms: MonthlyTransforms; now: number },
+  { token: string; monthlyTransforms: MonthlyTransforms; avCandidate?: { build: string } | undefined; now: number },
   Reserved
->((db, { token, monthlyTransforms, now }, { accountId }) => {
+>((db, { token, monthlyTransforms, avCandidate, now }, { accountId }) => {
   const attemptsName = `${ATTEMPTS}${accountId}`;
   const since = now - UPLOAD_BUDGET.windowMs;
   const attempts = (JSON.parse(state(db, attemptsName) ?? "[]") as number[]).filter((at) => at > since);
   if (attempts.length >= UPLOAD_BUDGET.count) {
     return { status: "rate_limited" };
   }
+  const active = avCandidate !== undefined && probePassed(db, NORMALIZE_PROFILE, avCandidate.build, now);
   const refused = budgetRefusal(db, accountId, monthlyTransforms, now);
-  if (refused !== null) {
+  if (refused !== null && !active) {
     return refused;
   }
   if (mediaTokenTaken(db, token)) {
@@ -157,7 +177,11 @@ export const reserveMedia = userWriteOperation<
   }
   setState(db, attemptsName, JSON.stringify([...attempts, now]));
   const reserved = insertReservation(db, accountId, token, now);
-  return "retry" in reserved ? { status: "retry" } : { status: "ok", id: reserved.ok, deadline: now + WRITE_WINDOW_MS };
+  if ("retry" in reserved) {
+    return { status: "retry" };
+  }
+  const ok = { status: "ok", id: reserved.ok, deadline: now + WRITE_WINDOW_MS } as const;
+  return active ? { ...ok, imagesRefusal: refused?.scope ?? null } : ok;
 });
 
 // A file token is unique across every owner of an R2 key under files/<token>/: uploads and emoji, finished or reserved
@@ -235,12 +259,18 @@ export function chargeInstanceTransforms(db: Db, count: number, limit: number, n
 }
 
 // The media processor's upload units spent per UTC month (#1828 design 4.12, MEDIA_UPLOAD_MONTHLY_JOBS): one per
-// container job that budget pays for. This release charges only the media rebuild's stills (domain/media-rebuild.ts).
+// container job that budget pays for: an upload's processing (domain/media-processing.ts queueNormalize) and the media
+// rebuild's stills (domain/media-rebuild.ts).
 // Kept and pruned as the transformation counters are.
 const UPLOAD_JOBS = "media_upload_jobs:";
 
 function uploadJobsName(now: number): string {
   return `${UPLOAD_JOBS}${iso(now).slice(0, 7)}`;
+}
+
+// The upload units spent in the month `now` is in.
+export function uploadJobsSpent(db: Db, now: number): number {
+  return Number(state(db, uploadJobsName(now)) ?? "0");
 }
 
 // Whether one more upload unit fits `limit` in the month `now` is in (0 admits nothing).
@@ -331,8 +361,15 @@ export type CompleteMediaInput = {
 // Null when the reservation is gone or its writer deadline has passed: the Worker then abandons it.
 export const completeMedia = userWriteOperation<CompleteMediaInput, MediaAttachment | null>(
   (db, input, { accountId }) => {
-    const row = db.first<{ token: string | null; uri: string; processed: number; url: string; created_at: string }>(
-      `SELECT m.file_token AS token, a.uri, m.processed, m.url, m.created_at
+    const row = db.first<{
+      token: string | null;
+      uri: string;
+      processed: number;
+      url: string;
+      type: string;
+      created_at: string;
+    }>(
+      `SELECT m.file_token AS token, a.uri, m.processed, m.url, m.type, m.created_at
 			FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id
 			WHERE m.id = ? AND m.account_id = ?`,
       input.id,
@@ -345,7 +382,7 @@ export const completeMedia = userWriteOperation<CompleteMediaInput, MediaAttachm
       const done = row.url === "" ? undefined : ownUpload(db, accountId, input.id, input.now);
       return done === undefined ? null : presentMedia(done);
     }
-    if (row.created_at <= iso(input.now - WRITE_WINDOW_MS)) {
+    if (!(writeDeadline(row.type, row.created_at) > input.now)) {
       return null;
     }
     const origin = new URL(row.uri).origin;
@@ -560,8 +597,8 @@ export const expiredMedia = mediaDeleteOperation<{ now: number; limit: number },
 // that never completed leaves a tombstone: its writer may still put an object after this, and reconciliation deletes
 // the keys again once the tombstone falls due, ORPHAN_GRACE_MS after the later of now and the writer's deadline.
 export const purgeMedia = mediaDeleteOperation<{ ids: string[]; now: number }, number>((db, { ids, now }) => {
-  const swept = db.all<{ id: string; token: string | null; url: string; created_at: string }>(
-    `SELECT id, file_token AS token, url, created_at FROM media_attachments
+  const swept = db.all<{ id: string; token: string | null; url: string; type: string; created_at: string }>(
+    `SELECT id, file_token AS token, url, type, created_at FROM media_attachments
 		WHERE id IN (SELECT value FROM json_each(?)) AND status_id IS NULL AND gc_at IS NOT NULL AND gc_at <= ?
 			AND ${notEmojiSql("media_attachments")}`,
     JSON.stringify(ids.slice(0, SWEEP_BATCH)),
@@ -569,7 +606,7 @@ export const purgeMedia = mediaDeleteOperation<{ ids: string[]; now: number }, n
   );
   for (const row of swept) {
     if (row.token !== null && row.url === "") {
-      const deadline = Date.parse(row.created_at) + WRITE_WINDOW_MS;
+      const deadline = writeDeadline(row.type, row.created_at);
       db.run(
         "INSERT OR REPLACE INTO media_orphans (file_token, media_id, delete_after) VALUES (?, ?, ?)",
         row.token,

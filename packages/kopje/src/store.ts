@@ -7,6 +7,7 @@ import { checkCredential, type Credential, type Judged } from "./domain/auth";
 import { HANDSHAKE_REPLAYS_PER_ROUND, handshakeReplaysDue, handshakeReplayStep } from "./domain/handshake-replays";
 import * as inbox from "./domain/inbox";
 import * as instanceActivity from "./domain/instance-activity";
+import * as mediaProcessing from "./domain/media-processing";
 import * as mediaRebuild from "./domain/media-rebuild";
 import * as remoteActors from "./domain/remote-actors";
 import * as remoteMedia from "./domain/remote-media";
@@ -25,8 +26,9 @@ import {
 import { errorFields } from "./platform/error-message";
 import { restoreMarkerKey } from "./platform/media-files";
 import { type ImportAuthority, StoreAdmin } from "./platform/store-admin";
+import { type MaintenanceReason, toStoreUnavailable, WRITE_REFUSALS } from "./platform/store-errors";
 import { readFlags } from "./platform/store-flags";
-import { type OperationInput, StoreKernel } from "./platform/store-kernel";
+import { type OperationInput, type StoreOperation, StoreKernel } from "./platform/store-kernel";
 import { defineRpc, STORE_RPC, type StoreRpc } from "./store-rpc";
 import { StreamHub } from "./stream-hub";
 import { buildOf, PACKAGE_VERSION } from "./version";
@@ -40,6 +42,19 @@ async function lastRestore(bucket: R2Bucket, key: string): Promise<number | null
   const at = (JSON.parse(await marker.text()) as { at?: unknown }).at;
   return typeof at === "number" ? at : null;
 }
+
+// The refusals a media processing write answers as `maintenance` (K1): the Store refuses writes, and the caller
+// repeats later.
+const AV_MAINTENANCE: ReadonlySet<MaintenanceReason> = new Set<MaintenanceReason>([
+  ...WRITE_REFUSALS,
+  "import-in-progress",
+  "rebuild-in-progress",
+]);
+
+type AvMaintenance = { status: "maintenance" };
+
+// A media processing operation's input as its Store method takes it: the Store fills its time and the restore marker.
+type AvInput<Op> = Omit<OperationInput<Op>, "restoredAt">;
 
 // The types of the methods STORE_RPC defines on the Store (the static block below). The class and this interface are
 // merged on purpose, and the interface has no members of its own: they all come from StoreRpc.
@@ -469,6 +484,101 @@ export class Store extends DurableObject<Env> {
   ) {
     const restoredAt = await lastRestore(this.env.MEDIA, restoreMarkerKey(this.ctx.id.toString()));
     return this.#kernel.execute(callerBuild, mediaRebuild.rebuildLease, { ...input, restoredAt });
+  }
+
+  // The media processor's upload operations (domain/media-processing.ts, S1-S13), each at the Store's own time after the
+  // restore marker is read (restoreMarkerKey), so K3 fences every reservation made at or before the last restore. A
+  // write the Store refuses (maintenance, a dump, an import) answers `maintenance` and changes nothing (K1).
+  takeAvSlot(callerBuild: string, input: AvInput<typeof mediaProcessing.takeAvSlot>) {
+    return this.#avWrite(callerBuild, mediaProcessing.takeAvSlot, input);
+  }
+
+  releaseStaging(callerBuild: string, input: AvInput<typeof mediaProcessing.releaseStaging>) {
+    return this.#avWrite(callerBuild, mediaProcessing.releaseStaging, input);
+  }
+
+  queueNormalize(callerBuild: string, input: AvInput<typeof mediaProcessing.queueNormalize>) {
+    return this.#avWrite(callerBuild, mediaProcessing.queueNormalize, input);
+  }
+
+  startNormalize(callerBuild: string, input: AvInput<typeof mediaProcessing.startNormalize>) {
+    return this.#avWrite(callerBuild, mediaProcessing.startNormalize, input);
+  }
+
+  confirmAvWrite(callerBuild: string, input: AvInput<typeof mediaProcessing.confirmAvWrite>) {
+    return this.#avWrite(callerBuild, mediaProcessing.confirmAvWrite, input);
+  }
+
+  completeAvUpload(callerBuild: string, input: AvInput<typeof mediaProcessing.completeAvUpload>) {
+    return this.#avWrite(callerBuild, mediaProcessing.completeAvUpload, input);
+  }
+
+  failNormalize(callerBuild: string, input: AvInput<typeof mediaProcessing.failNormalize>) {
+    return this.#avWrite(callerBuild, mediaProcessing.failNormalize, input);
+  }
+
+  releaseAvSlot(callerBuild: string, input: AvInput<typeof mediaProcessing.releaseAvSlot>) {
+    return this.#avWrite(callerBuild, mediaProcessing.releaseAvSlot, input);
+  }
+
+  async v1Outcome(callerBuild: string, input: AvInput<typeof mediaProcessing.v1Outcome>) {
+    const restoredAt = await this.#restoredAt();
+    return this.#kernel.execute(callerBuild, mediaProcessing.v1Outcome, { ...input, restoredAt });
+  }
+
+  // S10 decides with a write; while the Store refuses writes it is a read that answers 200 for a completed upload and
+  // `maintenance` otherwise, dooming nothing.
+  async v1Final(callerBuild: string, input: AvInput<typeof mediaProcessing.v1Final>) {
+    const decided = await this.#avWrite(callerBuild, mediaProcessing.v1Final, input);
+    if (decided.status !== "maintenance") {
+      return decided;
+    }
+    const restoredAt = await this.#restoredAt();
+    return this.#kernel.execute(callerBuild, mediaProcessing.v1FinalRead, { ...input, restoredAt });
+  }
+
+  deleteAvUpload(callerBuild: string, input: AvInput<typeof mediaProcessing.deleteAvUpload>) {
+    return this.#avWrite(callerBuild, mediaProcessing.deleteAvUpload, input);
+  }
+
+  mediaDispatchRound(callerBuild: string) {
+    return this.#avWrite(callerBuild, mediaProcessing.mediaDispatchRound, {});
+  }
+
+  incomingSweepClaim(callerBuild: string) {
+    return this.#avWrite(callerBuild, mediaProcessing.incomingSweepClaim, undefined);
+  }
+
+  incomingClassify(callerBuild: string, input: AvInput<typeof mediaProcessing.incomingClassify>) {
+    return this.#avWrite(callerBuild, mediaProcessing.incomingClassify, input);
+  }
+
+  incomingSwept(callerBuild: string, input: AvInput<typeof mediaProcessing.incomingSwept>) {
+    return this.#avWrite(callerBuild, mediaProcessing.incomingSwept, input);
+  }
+
+  async #restoredAt(): Promise<number | null> {
+    return lastRestore(this.env.MEDIA, restoreMarkerKey(this.ctx.id.toString()));
+  }
+
+  async #avWrite<O>(
+    callerBuild: string,
+    operation: StoreOperation<never, O>,
+    input: unknown,
+  ): Promise<O | AvMaintenance> {
+    const restoredAt = await this.#restoredAt();
+    try {
+      return await this.#kernel.execute(callerBuild, operation as StoreOperation<unknown, O>, {
+        ...(input as object | undefined),
+        restoredAt,
+      });
+    } catch (error) {
+      const reason = toStoreUnavailable(error)?.reason;
+      if (reason !== undefined && AV_MAINTENANCE.has(reason)) {
+        return { status: "maintenance" };
+      }
+      throw error;
+    }
   }
 
   // Search with resolve=true, before any network work and as the first read after the host check's domain read

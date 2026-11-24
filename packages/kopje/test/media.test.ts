@@ -1400,3 +1400,109 @@ describe("the blurhash of a local upload", () => {
     expect(pinned?.["@context"][1]).toMatchObject(TERM);
   });
 });
+
+// #1828 plan Q1, the Store's side: on the active path (avCandidate, passed by the media upload route alone with the
+// processor bound and a positive upload budget, and a passed normalize probe for its build) a reservation is not
+// refused for the Images budgets: it counts the attempt and names the budget an image would be refused for, the
+// account's share first. Otherwise, and for every route of this release, it is today's reservation.
+describe("the active path's reservation (Q1)", () => {
+  const month = new Date(NOW).toISOString().slice(0, 7);
+
+  async function world(probe: string | null) {
+    const h = await users();
+    if (probe !== null) {
+      await sql(
+        h.store,
+        "INSERT INTO kopje_state (name, value) VALUES ('media_probe:normalize@standard-4', ?)",
+        JSON.stringify({ version: probe, imageTag: null, at: NOW, ok: true, imagesVerified: true }),
+      );
+    }
+    const credential = { tokenHash: await sha256Hex(h.users.alice.token), scope: "write:media" as const, now: NOW };
+    const reserve = (monthlyTransforms: { instance: number; account: number }, avCandidate?: { build: string }) =>
+      h.store.reserveMedia(BUILD, {
+        credential,
+        token: `q1${crypto.randomUUID().replaceAll("-", "")}`,
+        monthlyTransforms,
+        avCandidate,
+        now: NOW,
+      });
+    const attempts = async () => {
+      const [found] = await sql<{ value: string }>(
+        h.store,
+        "SELECT value FROM kopje_state WHERE name = ?",
+        `media_attempts:${h.users.alice.id}`,
+      );
+      return found === undefined ? 0 : (JSON.parse(found.value) as number[]).length;
+    };
+    return { h, reserve, attempts };
+  }
+
+  it("inactive: Images spent answers today's refusal, no attempt counted", async () => {
+    const w = await world(null);
+    expect(await w.reserve({ instance: 0, account: 400 }, { build: BUILD })).toEqual({
+      status: "ok",
+      value: { status: "budget_exhausted", scope: "instance" },
+    });
+    expect(await w.attempts()).toBe(0);
+    // A pass for another build is no pass for this one.
+    const other = await world("another-build");
+    expect(await other.reserve({ instance: 400, account: 0 }, { build: BUILD })).toEqual({
+      status: "ok",
+      value: { status: "budget_exhausted", scope: "account" },
+    });
+    expect(await other.attempts()).toBe(0);
+  });
+
+  it("active: counts the attempt and answers account, account first when both are spent", async () => {
+    const w = await world(BUILD);
+    expect(await w.reserve({ instance: 0, account: 0 }, { build: BUILD })).toMatchObject({
+      status: "ok",
+      value: { status: "ok", imagesRefusal: "account" },
+    });
+    expect(await w.attempts()).toBe(1);
+  });
+
+  it("active: answers instance with the account's share left, and null with room in both", async () => {
+    const w = await world(BUILD);
+    expect(await w.reserve({ instance: 0, account: 400 }, { build: BUILD })).toMatchObject({
+      value: { status: "ok", imagesRefusal: "instance" },
+    });
+    expect(await w.reserve({ instance: 4000, account: 400 }, { build: BUILD })).toMatchObject({
+      value: { status: "ok", imagesRefusal: null },
+    });
+    // Without avCandidate the same reservation is today's: no imagesRefusal.
+    const today = await w.reserve({ instance: 4000, account: 400 });
+    expect(today).toMatchObject({ value: { status: "ok" } });
+    expect(today.status === "ok" && today.value.status === "ok" && "imagesRefusal" in today.value).toBe(false);
+    expect(await w.attempts()).toBe(3);
+  });
+
+  it("the attempt budget still refuses first on the active path", async () => {
+    const w = await world(BUILD);
+    for (let i = 0; i < UPLOAD_BUDGET.count; i++) {
+      await w.reserve({ instance: 0, account: 0 }, { build: BUILD });
+    }
+    expect(await w.reserve({ instance: 0, account: 0 }, { build: BUILD })).toEqual({
+      status: "ok",
+      value: { status: "rate_limited" },
+    });
+  });
+
+  it("no route passes avCandidate: an image upload and a profile image with Images spent answer today's 429", async () => {
+    const w = await world(BUILD);
+    await sql(w.h.store, "INSERT INTO kopje_state (name, value) VALUES (?, '4000')", `images_transforms:${month}`);
+    const refused = await upload(w.h, w.h.users.alice, mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png"));
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toEqual({ error: "This server's media processing budget for the month is used up" });
+    const avatar = new FormData();
+    avatar.append("avatar", new File([bytes(PNG_PLAIN)], "a.png", { type: "image/png" }));
+    const profile = await w.h.request("/api/v1/accounts/update_credentials", {
+      method: "PATCH",
+      body: avatar,
+      headers: { authorization: `Bearer ${w.h.users.alice.token}` },
+    });
+    expect(profile.status).toBe(429);
+    expect(await w.attempts()).toBe(0);
+    expect(await sql(w.h.store, "SELECT count(*) AS n FROM media_attachments")).toEqual([{ n: 0 }]);
+  });
+});

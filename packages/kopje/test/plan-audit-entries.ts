@@ -1128,7 +1128,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "custom_emojis holds at most 1,000 enabled emoji, on every insert and re-enable, imports included (custom_emojis_enabled_insert, custom_emojis_enabled_update, migration 0055_local_custom_emojis)",
   },
   {
-    id: "4c8b97dcc2191d66",
+    id: "b5da63de01aae6c5",
     scans: ["media_attachments: SCAN media_attachments"],
     site: "src/domain/media.ts#<anonymous> in purgeMedia",
     disposition: "background",
