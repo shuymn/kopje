@@ -620,7 +620,7 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
         ),
     });
     expect(code).toBe(3);
-    expect(JSON.parse(out.join(""))).toMatchObject({ stopped: "retry", "quota-stopped": true });
+    expect(JSON.parse(out.join(""))).toMatchObject({ stopped: "retry", "quota-stopped": false });
   });
 
   it(`builds at most ${MAX_AV_BUILDS_PER_CALL} video or audio row a call and resumes by the cursor`, async () => {

@@ -58,7 +58,9 @@ Commands
                                 before publish, or 20 minutes after "maintenance on" (the env MAINTENANCE is not
                                 enough), one call at a time. Prints counts and the rows to look at; exits 3 when an original is
                                 missing, a type does not match, re-encoding failed, the Images quota or monthly budget
-                                stopped it, or the Store is not readonly (run it again later: made files are skipped)
+                                stopped it ("quota-stopped"), the media processor or Images failed for a moment
+                                (stopped "retry", the row kept as it was), or the Store is not readonly (run it again
+                                later: made files are skipped)
   media-processor probe [<profile>...]
                                 start the media processor's container for each profile (default: all of
                                 normalize@standard-4 and still@standard-1), run its operation on
@@ -1002,7 +1004,7 @@ export async function run({
           }
           after = step.next;
         }
-        print({ dryRun, ...counts, "quota-stopped": stopped !== null, stopped, problems });
+        print({ dryRun, ...counts, "quota-stopped": stopped === "quota" || stopped === "budget", stopped, problems });
         if (stopped !== null) {
           out.info(
             stopped === "quota"
