@@ -254,46 +254,66 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     expect(await run(store, { stills: made.stills })).toMatchObject({ counts: { "skipped-existing": 1, built: 0 } });
   });
 
-  it("publishes nothing the verifier refuses: a file refused at its end never reaches R2", async () => {
-    const store = await setup();
-    // The last byte of the last frame's audio changed: frame data is not parsed, so only the Xing frame's music CRC,
-    // checked once the stream has ended, refuses it.
-    const tagged = (await avFixture("mp3.mp3")).slice();
-    tagged[tagged.length - 1]! ^= 0xff;
-    const row = await addAv(store, "audio", { original: tagged });
-    // R2 as a known-length upload behaves: committed once all its bytes arrived, whatever follows.
-    let committed: Uint8Array | null = null;
-    const bucket = {
-      ...recordingBucket().bucket,
-      head: (key: string) => env.MEDIA.head(key),
-      get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
-      put: async (key: string, value: ReadableStream<Uint8Array>) => {
-        const reader = value.getReader();
-        const parts: Uint8Array[] = [];
-        let read = 0;
-        for (;;) {
-          const { done, value: chunk } = await reader.read();
-          if (done) {
-            break;
+  it.each([
+    ["", false],
+    [", its body ending in an empty chunk", true],
+  ])(
+    "publishes nothing the verifier refuses: a file refused at its end never reaches R2%s",
+    async (_name, emptyTail) => {
+      const store = await setup();
+      // The last byte of the last frame's audio changed: frame data is not parsed, so only the Xing frame's music CRC,
+      // checked once the stream has ended, refuses it.
+      const tagged = (await avFixture("mp3.mp3")).slice();
+      tagged[tagged.length - 1]! ^= 0xff;
+      const row = await addAv(store, "audio", { original: tagged });
+      // R2 as a known-length upload behaves: committed once all its bytes arrived, whatever follows.
+      let committed: Uint8Array | null = null;
+      const bucket = {
+        ...recordingBucket().bucket,
+        head: (key: string) => env.MEDIA.head(key),
+        get: async (key: string, options?: R2GetOptions) => {
+          const object = await env.MEDIA.get(key, options);
+          if (object === null || !emptyTail) {
+            return object;
           }
-          parts.push(chunk);
-          read += chunk.byteLength;
-          if (read === tagged.byteLength) {
-            committed = concat(...parts);
-            await env.MEDIA.put(key, committed);
+          // The same bytes, then one empty chunk before the end.
+          const body = object.body.pipeThrough(
+            new TransformStream<Uint8Array, Uint8Array>({
+              flush(controller) {
+                controller.enqueue(new Uint8Array(0));
+              },
+            }),
+          );
+          return { size: object.size, body };
+        },
+        put: async (key: string, value: ReadableStream<Uint8Array>) => {
+          const reader = value.getReader();
+          const parts: Uint8Array[] = [];
+          let read = 0;
+          for (;;) {
+            const { done, value: chunk } = await reader.read();
+            if (done) {
+              break;
+            }
+            parts.push(chunk);
+            read += chunk.byteLength;
+            if (read === tagged.byteLength) {
+              committed = concat(...parts);
+              await env.MEDIA.put(key, committed);
+            }
           }
-        }
-        return null;
-      },
-    } as unknown as R2Bucket;
-    const step = await run(store, { bucket });
-    expect(step).toMatchObject({ ok: true, counts: { failed: 1, built: 0 } });
-    expect((step as { problems: unknown[] }).problems).toEqual([
-      { id: row.id, outcome: "failed", detail: "verify:xing" },
-    ]);
-    expect(committed).toBeNull();
-    expect(await env.MEDIA.head(`files/${row.token}/full`)).toBeNull();
-  });
+          return null;
+        },
+      } as unknown as R2Bucket;
+      const step = await run(store, { bucket });
+      expect(step).toMatchObject({ ok: true, counts: { failed: 1, built: 0 } });
+      expect((step as { problems: unknown[] }).problems).toEqual([
+        { id: row.id, outcome: "failed", detail: "verify:xing" },
+      ]);
+      expect(committed).toBeNull();
+      expect(await env.MEDIA.head(`files/${row.token}/full`)).toBeNull();
+    },
+  );
 
   it("reports a missing original and a video whose original is not an MP4, and writes nothing", async () => {
     const store = await setup();

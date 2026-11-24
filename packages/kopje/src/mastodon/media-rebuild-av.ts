@@ -213,10 +213,14 @@ async function copyFull(call: AvCall, row: RebuildRow, av: RebuildAv, until: num
   const type = row.contentType as AvType;
   const verifier = avVerifier(type, original.size);
   let kindMismatch = false;
-  // The last chunk waits for the verdict: R2 gets every byte only of a file the verifier accepted.
+  // The last non-empty chunk waits for the verdict: R2 gets every byte only of a file the verifier accepted. An empty
+  // chunk passes nothing and replaces nothing, so it cannot release the held one early.
   let held: Uint8Array | null = null;
   const hold = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
+      if (chunk.byteLength === 0) {
+        return;
+      }
       if (held !== null) {
         controller.enqueue(held);
       }
