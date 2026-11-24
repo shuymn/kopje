@@ -20,7 +20,7 @@ import { fileKey, MEDIA_VARIANTS, originalKey } from "../platform/media-files";
 import type { StillMaker } from "../platform/media-transcoder";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreStub } from "../platform/store-client";
-import { type AvCall, avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./media-rebuild-av";
+import { avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./media-rebuild-av";
 
 // Rebuilds the served files of local media from their originals (domain/media-rebuild.ts), one bounded call at a time
 // from /admin/media/rebuild; the CLI (`kopje-admin media-rebuild`) follows the cursor to the end. A row whose two files
@@ -365,7 +365,6 @@ async function pass(
   const problems: RebuildProblem[] = [];
   let builds = 0;
   let avBuilds = 0;
-  const probe: AvCall["probe"] = { state: "unknown" };
   // Images answered 9422 to a row's RGBA output: the call stops once that row is handled.
   let quota = false;
   // The last row handled; a stop leaves the row it stopped at for the next call.
@@ -434,7 +433,6 @@ async function pass(
             publish: input.stills === true,
             bounded: (work, end) => within(work, Math.min(end ?? deadline, deadline), now),
             settled,
-            probe,
           },
           row,
           av,
@@ -457,7 +455,6 @@ async function pass(
             break;
           default:
             counts[outcome.kind] = (counts[outcome.kind] ?? 0) + 1;
-            quota ||= outcome.quota === true;
         }
         handled = row.id;
         if (control.lost) {
