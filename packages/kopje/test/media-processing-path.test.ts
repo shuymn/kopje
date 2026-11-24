@@ -6,7 +6,7 @@ import { MAX_ATTEMPTS } from "../src/domain/scheduled-statuses";
 import { handleScheduled, publishScheduled } from "../src/jobs/scheduled";
 import { uploadEmoji } from "../src/mastodon/emoji-upload";
 import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
-import { mediaKeys } from "../src/platform/media-files";
+import { mediaKeys, restoreMarkerKey } from "../src/platform/media-files";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, sql } from "./api-helpers";
 import { BUILD } from "./helpers";
@@ -20,6 +20,7 @@ import {
   clock,
   completed,
   fileToken,
+  gate,
   held,
   HOUR,
   MINUTE,
@@ -1155,5 +1156,70 @@ describe("the Worker's clock off the Store's: each write and check of a stored m
     expect(await stateOf(w, c.id)).toBe(
       `- | - | processing | tomb ${span(AV_WRITE_WINDOW_MS + MINUTE + ORPHAN_GRACE_MS)}`,
     );
+  });
+});
+
+describe("the restore marker read only for a candidate's image start", () => {
+  it("refuses a candidate's image start when the marker cannot be read, as S1 refuses it", async () => {
+    const w = await avWorld();
+    const up = await reserve(w, T0);
+    await env.MEDIA.put(restoreMarkerKey(w.store.id.toString()), "{");
+    clock(T0 + SECOND);
+    expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "expired" } });
+    expect(await stateOf(w, up.id)).toBe("unknown 0 1h | - | - | -");
+  });
+
+  it("starts an ordinary image reservation whatever the marker holds", async () => {
+    const w = await avWorld();
+    clock(T0);
+    const reserved = await w.store.reserveMedia(BUILD, {
+      credential: w.alice,
+      token: fileToken(),
+      monthlyTransforms: BUDGETS,
+      now: T0,
+    });
+    if (reserved.status !== "ok" || reserved.value.status !== "ok") {
+      throw new Error("not reserved");
+    }
+    await env.MEDIA.put(restoreMarkerKey(w.store.id.toString()), "{");
+    clock(T0 + SECOND);
+    expect(await startImage(w, reserved.value.id)).toEqual({ status: "ok", value: { status: "ok" } });
+  });
+});
+
+describe("S10 while the Store refuses writes (its read)", () => {
+  it.each([
+    ["image completed", "maintenance"],
+    ["AV completed", 200],
+  ] as const)("on an %s upload answers %s: an image-path upload is not S10's", async (state, answer) => {
+    const w = await avWorld();
+    const built = await build(w, state);
+    await gate(w.store, "maintenance", true);
+    clock(AT);
+    expect(await w.store.v1Final(BUILD, { id: built.id, token: built.token })).toMatchObject({ status: answer });
+  });
+});
+
+describe("publication judges its held media at the Store's time", () => {
+  it("refuses a held upload past its gc_at on the Store's clock, the Worker 2 s behind (a hold migration 0011 permits)", async () => {
+    const w = await avWorld();
+    const id = await completedImage(w, T0);
+    clock(T0 + SECOND);
+    w.h.now.mockReturnValue(T0 + SECOND);
+    const scheduled = await w.h.request(
+      "/api/v1/statuses",
+      bearer(
+        w.h.users.alice.token,
+        json({ status: "later", media_ids: [id], scheduled_at: new Date(T0 + 2 * HOUR).toISOString() }),
+      ),
+    );
+    expect(scheduled.status).toBe(200);
+    // A hold with a finite gc_at, as an import may write one (the API's hold clears it).
+    const gcAt = T0 + 3 * HOUR;
+    await sql(w.store, "UPDATE media_attachments SET gc_at = ? WHERE id = ?", new Date(gcAt).toISOString(), id);
+    clock(gcAt + SECOND);
+    await publishScheduled(env, { ...sweepDeps(w), now: () => gcAt - SECOND, doorbell: () => Promise.resolve() });
+    expect(await sql(w.store, "SELECT count(*) AS n FROM statuses WHERE source_text = 'later'")).toEqual([{ n: 0 }]);
+    expect(await sql(w.store, "SELECT count(*) AS n FROM scheduled_statuses")).toEqual([{ n: 0 }]);
   });
 });
