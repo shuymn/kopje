@@ -36,14 +36,23 @@ import { type AvCall, avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./me
 // The lease (REBUILD_LEASE_MS, at the Store's clock) is renewed before each row. Within a row, steps without a lasting
 // effect (R2 reads, Images, Store calls, whose writes check the lease again) are given up LEASE_MARGIN_MS before the
 // renewed lease would end; R2 writes and deletes are never given up: each is awaited to completion while a heartbeat
-// renews the lease every REBUILD_HEARTBEAT_MS, so the lease cannot end under a write this call started while the call
-// runs. Every renewal, confirmation and the release name the generation the Store gave the call's take, and succeed
-// only while that generation is the live lease: a renewal that arrives late (after the release, or after another call
-// took an expired lease) changes nothing. Each heartbeat is given up after REBUILD_HEARTBEAT_STALL_MS, which says nothing
-// of the lease, and the next one is sent on time whatever the earlier one does, so one that hangs cannot let the lease
-// end under a write. Each write or delete starts only after the heartbeats in flight have answered or been given up
-// and the Store confirms the lease is still this call's; once a renewal or that check fails, the call starts no further
-// write, reports `lease-overrun` and does not release the lease.
+// renews the lease every REBUILD_HEARTBEAT_MS, so while the call and its heartbeats run the lease does not end under a
+// write it started. Every renewal, confirmation and the release name the generation the Store gave the call's take, and
+// succeed only while that generation is the live lease: a renewal that arrives late (after the release, or after
+// another call took an expired lease) changes nothing. Each heartbeat is given up after REBUILD_HEARTBEAT_STALL_MS,
+// which says nothing of the lease, and the next one is sent on time whatever the earlier one does. Each write or delete
+// starts only after the heartbeats in flight have answered or been given up and the Store confirms the lease is still
+// this call's with at least LEASE_MARGIN_MS of its grant left as this call's clock reads it after the reply; once a
+// renewal or that check fails, the call starts no further write, reports `lease-overrun` and does not release the
+// lease.
+//
+// The accepted limit: R2 cannot check a generation, so a write already pending when its call's lease ended (its
+// heartbeats all delayed, or its Worker stopped) can land after a newer holder's write of the same key. This is so for
+// image rows as it was on main. Every rebuild write is idempotent per key: `full` is the original's verified copy (an
+// image's re-encode through the same checks, a video's or audio's original bytes the verifier accepted), and a video's
+// `small` carries its own {width, height, blurhash} metadata, which the skip rule compares with the row and adopts again
+// on a mismatch (media-rebuild-av.ts). So an overlapping write never publishes bytes the checks did not accept, and the
+// next run converges.
 // A call that gave up a step keeps the lease until it expires. The bound: per row, at most two R2 reads, six Images
 // calls (an emoji's: the preflight info() and processImage's five; any other row's: processImage's six, its preview's
 // RGBA included) and five Store calls, each given up within the lease, then at most three R2 writes, each awaited.
@@ -309,8 +318,11 @@ async function pass(
     if (control.lost) {
       throw new Overrun();
     }
+    const asked = now();
     const owned = await within(() => control.lease(false), deadline, now);
-    if (owned.status !== "ok") {
+    // The grant ran from no earlier than `asked`: a reply that arrives with less than LEASE_MARGIN_MS of it left, as
+    // this call's clock reads it after the await, may be of a lease that has ended since, so it starts nothing.
+    if (owned.status !== "ok" || asked + owned.remainingMs - now() < LEASE_MARGIN_MS) {
       control.lost = true;
     }
     // Checked again after the confirmation: a renewal that failed meanwhile stops the write too.

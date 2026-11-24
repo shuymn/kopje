@@ -962,6 +962,26 @@ describe("media rebuild of video rows: interruptions and lease loss (#1828 P25)"
     expect(writes).toEqual([`put files/${row.token}/full`]);
   });
 
+  it("converges when an earlier holder's still put lands over the small a later call recorded", async () => {
+    const store = await setup();
+    const row = await addAv(store, "video");
+    expect(await run(store)).toMatchObject({ counts: { built: 1 } });
+    // The write of a call whose lease ended while it was pending lands last, with its own still and metadata.
+    const stale = await new TestCodec().real.encode(await pngOf(32, 18), { format: "image/webp", still: true });
+    await env.MEDIA.put(`files/${row.token}/small`, stale, {
+      httpMetadata: { contentType: "image/webp" },
+      customMetadata: { width: "32", height: "18", blurhash: "" },
+    });
+    // The next call sees the object's metadata differ from the row, adopts the object as it is, and records it.
+    const made = maker();
+    expect(await run(store, { stills: made.stills })).toMatchObject({ counts: { built: 1 } });
+    expect(made.calls).toEqual([]);
+    expect(await bytesOf(`files/${row.token}/small`)).toEqual(stale);
+    await expectStill(store, row);
+    expect((await rowOf(store, row.id)).meta).toMatchObject({ small: { width: 32, height: 18 } });
+    expect(await run(store)).toMatchObject({ counts: { "skipped-existing": 1 } });
+  });
+
   it("a restored row whose preview metadata predates the small an interrupted rebuild wrote ends with the object's", async () => {
     const store = await setup();
     const row = await addAv(store, "video", {

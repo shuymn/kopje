@@ -1140,6 +1140,82 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     expect(await files(row)).toEqual([true, true]);
   });
 
+  it("starts no write on a confirmation whose reply arrives once the lease may have ended", async () => {
+    const h = await setup();
+    const row = await addRow(h.store);
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const order: string[] = [];
+    const recording = (who: string) =>
+      ({
+        head: (key: string) => env.MEDIA.head(key),
+        get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
+        delete: (keys: string | string[]) => env.MEDIA.delete(keys),
+        put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+          order.push(`${who} ${key.slice(key.lastIndexOf("/") + 1)}`);
+          return env.MEDIA.put(key, value, options);
+        },
+      }) as unknown as R2Bucket;
+    // A's third lease call, the confirmation of its first put (after the take and the row's renewal), is answered by
+    // the Store at once; the reply reaches A only once `deliver` opens.
+    let deliver = () => {};
+    const delivered = new Promise<void>((resolve) => (deliver = resolve));
+    let held = false;
+    let calls = 0;
+    const store = new Proxy(h.store, {
+      get: (target, property, receiver) =>
+        property === "mediaRebuildLease"
+          ? async (...args: Parameters<StoreStub["mediaRebuildLease"]>) => {
+              const answer = await target.mediaRebuildLease(...args);
+              if (++calls === 3) {
+                held = true;
+                await delivered;
+              }
+              return answer;
+            }
+          : (Reflect.get(target, property, receiver) as unknown),
+    });
+    let clock = Date.now();
+    const a = rebuildMedia(
+      {
+        build: BUILD,
+        store,
+        bucket: recording("A"),
+        images: new TestCodec(),
+        now: () => clock,
+        authority: admin,
+        monthlyTransforms: 100,
+        holder: "A",
+      },
+      { after: null, dryRun: false },
+    );
+    await vi.waitFor(() => expect(held).toBe(true));
+    // A's lease ends (its clock and the Store's), and B takes the next generation and rebuilds the row.
+    clock += REBUILD_LEASE_MS + 1;
+    await runInDurableObject(h.store, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE kopje_state SET value = json_set(value, '$.until', 1) WHERE name = 'media_rebuild_lease'",
+      );
+    });
+    await env.MEDIA.delete([`files/${row.token}/full`, `files/${row.token}/small`]);
+    const b = await rebuildMedia(
+      {
+        build: BUILD,
+        store: h.store,
+        bucket: recording("B"),
+        images: new TestCodec(),
+        now: () => Date.now(),
+        authority: admin,
+        monthlyTransforms: 100,
+        holder: "B",
+      },
+      { after: null, dryRun: false },
+    );
+    expect(b).toMatchObject({ ok: true, counts: { built: 1 } });
+    deliver();
+    expect(await a).toMatchObject({ ok: true, stopped: "lease-overrun" });
+    expect(order).toEqual(["B full", "B small"]);
+  });
+
   it("a heartbeat that reaches the Store after the call released the lease does not take it back", async () => {
     const h = await setup();
     await addRow(h.store);
