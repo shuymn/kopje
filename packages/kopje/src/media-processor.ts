@@ -63,7 +63,7 @@ export const STILL_CALL_MS = 75_000;
 // Of a stillNow call's time, what is kept for the destroy after the operation, and of that, what is kept after the
 // destroy for removing the object's alarm and storage before the call answers.
 export const STILL_TEARDOWN_MS = 10_000;
-export const STILL_CLEANUP_MS = 2_000;
+const STILL_CLEANUP_MS = 2_000;
 const STILL_PROFILE = "still@standard-1" satisfies ProbeProfile;
 
 const OPERATIONS = {

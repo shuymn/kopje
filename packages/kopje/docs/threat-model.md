@@ -3189,7 +3189,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   an R2 write is pending, every minute; R2 writes and deletes are never given up but awaited to completion, so the lease
   cannot end under a write the call started while the call runs, and each starts only after the Store confirms the lease
   is still the call's (once a renewal or that check fails, no further write starts, the call reports `lease-overrun` and
-  the lease is not released). A PITR restore is refused while the lease is live, and the lease while a restore is being
+  the lease is not released). Every renewal, confirmation and release names the generation of the call's take and
+  succeeds only while that generation is the live lease, so a renewal that reaches the Store late (after the release,
+  or after another call took an expired lease) changes nothing; a heartbeat that hangs is given up after 30 seconds and
+  the next is sent on time. A PITR restore is refused while the lease is live, and the lease while a restore is being
   scheduled (`pitr_restoring`); since a restore rewinds the maintenance start and the unpublished flag, the Store
   records each restore outside its database (an R2 object named by its id, `restoreMarkerKey` in
   `src/platform/media-files.ts`, never served) before scheduling it, and the
