@@ -1,6 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { run } from "../cli/lib/main.js";
 import { Db } from "../src/db/sql";
@@ -11,7 +11,7 @@ import { REBUILD_SETTLE_MS, rebuildCandidates } from "../src/domain/media-rebuil
 import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
 import { rebuildMedia } from "../src/mastodon/media-rebuild";
 import { EMOJI_IMAGE_LIMIT, EMOJI_PREVIEW_LIMIT } from "../src/platform/emoji-image";
-import type { EncodeOptions } from "../src/platform/images";
+import { type EncodeOptions, ImageCodecError } from "../src/platform/images";
 import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { MAX_ENABLED_EMOJIS } from "../src/platform/stored-bounds";
@@ -21,7 +21,7 @@ import { NOW } from "./app-helpers";
 import { AVIF, GIF, JPEG_WITH_GPS, PNG_PLAIN, WEBP_PLAIN } from "./fixtures/images";
 import { BUILD, migratedStore, rejectionOf } from "./helpers";
 import { addEmoji, added, base64, emojiStore, pngOf, pngOfBytes } from "./local-emoji-helpers";
-import { bytes, r2Keys, TestCodec } from "./media-helpers";
+import { atStoreTime, bytes, r2Keys, TestCodec } from "./media-helpers";
 import { ACCESS, copyConfig, dumpViaRpc, importViaRpc, memoryIO } from "./ops-helpers";
 
 // Local custom emoji (migration 0055_local_custom_emojis, domain/local-emojis.ts, mastodon/emoji-upload.ts): the
@@ -190,6 +190,19 @@ describe("emoji upload", () => {
     expect(await sql(store, "SELECT id FROM custom_emojis")).toEqual([]);
   });
 
+  it("a failed emoji upload deletes its own keys only, never an incoming/ key of its id (#1828 plan 1.1)", async () => {
+    const { store } = await emojiStore();
+    const failing = new TestCodec();
+    failing.encode = async () => {
+      const [reserved] = await sql<{ id: string }>(store, "SELECT id FROM media_attachments");
+      await env.MEDIA.put(`incoming/${(reserved as { id: string }).id}`, "input");
+      throw new ImageCodecError(9412, "injected");
+    };
+    expect(await addEmoji(store, "aa", { codec: failing })).toMatchObject({ ok: false, code: "invalid-image" });
+    const [row] = await sql<{ id: string }>(store, "SELECT id FROM media_attachments");
+    expect(await env.MEDIA.head(`incoming/${(row as { id: string }).id}`)).not.toBeNull();
+  });
+
   it("refuses shortcodes outside 2 to 128 ASCII letters, digits and underscores", async () => {
     const { store } = await emojiStore();
     expect((await addEmoji(store, "ab")).ok).toBe(true);
@@ -331,7 +344,9 @@ describe("emoji completion", () => {
     expect(await store.abandonEmoji(BUILD, { authority: ACCESS, id: reserved.id, token: "c".repeat(43) })).toBe(
       "abandoned",
     );
-    const swept = await sweepMedia(env, { build: () => BUILD, now: () => Date.now() + 60_000, store: () => store });
+    const swept = await atStoreTime(Date.now() + 60_000, () =>
+      sweepMedia(env, { build: () => BUILD, store: () => store }),
+    );
     expect(swept).toBe(1);
     expect(await sql(store, "SELECT media_id FROM media_orphans")).toEqual([{ media_id: reserved.id }]);
   });
@@ -573,8 +588,14 @@ describe("emoji query plans at saturation, with stale statistics", () => {
         12_288,
       );
       adminEmojis.run(capturing("admin", /FROM custom_emojis e/), { after: "140000000000000500" });
-      expiredMedia.run(capturing("expired", /gc_at <= /), { now: NOW + 10 ** 10, limit: 100 });
-      purgeMedia.run(capturing("purge", /json_each/), { ids: ["140000000000000001"], now: NOW + 10 ** 10 });
+      expiredMedia.run(capturing("expired", /gc_at <= /), {
+        now: NOW + 10 ** 10,
+        limit: 100,
+      });
+      purgeMedia.run(capturing("purge", /json_each/), {
+        ids: ["140000000000000001"],
+        now: NOW + 10 ** 10,
+      });
       rebuildCandidates.run(capturing("rebuild", /AS emoji/), { after: null, now: NOW });
       const plan = (query: string) =>
         real
@@ -796,10 +817,18 @@ describe("emoji abandon under the rebuild lease", () => {
     expect(await r2Keys(`files/${token}/`)).toEqual([`files/${token}/full`, `files/${token}/small`]);
     // Once the lease and maintenance end, the sweep takes the reservation and reconciliation its keys.
     await store.mediaRebuildLease(BUILD, { authority: ACCESS, holder: "rebuild", release: true });
+    // Both clocks move on: the sweep and reconciliation take a row only once the Store's clock has passed too.
     const later = Date.now() + 2 * 60 * 60 * 1000;
-    const deps = { build: () => BUILD, store: () => store, now: () => later };
-    expect(await sweepMedia(env, deps)).toBe(1);
-    expect(await reconcileMedia(env, { ...deps, now: () => later + 25 * 60 * 60 * 1000 })).toBe(1);
+    const deps = { build: () => BUILD, store: () => store, now: () => Date.now() };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(later);
+      expect(await sweepMedia(env, deps)).toBe(1);
+      vi.setSystemTime(later + 25 * 60 * 60 * 1000);
+      expect(await reconcileMedia(env, deps)).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(await r2Keys(`files/${token}/`)).toEqual([]);
     expect(await r2Keys(`originals/${row!.id}`)).toEqual([]);
   });

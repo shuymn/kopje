@@ -10,6 +10,7 @@ import { type Credential, type Judged, unlessSuspended } from "./auth";
 import { emojiHref, type EmojiTag, emojiTag } from "./custom-emojis";
 import {
   chargeInstanceTransforms,
+  DOOMED_AT,
   insertReservation,
   mediaTokenTaken,
   TRANSFORMS_PER_EMOJI,
@@ -169,10 +170,11 @@ type Size = { width: number; height: number };
 export type EmojiCompleted = { ok: true; emoji: AdminEmoji } | EmojiRefusal;
 
 // Step 3, idempotent: an emoji that exists with this id answers as it is (the first answer may have been lost).
-// Otherwise, in one transaction: the reservation is still open (this id and token, processed = 0, within its writer
-// deadline at `now`, unattached), the shortcode and cap are judged again, the row is promoted (URLs, type, sizes,
-// processed = 1, gc_at NULL), a replaced emoji is disabled, and the emoji row is written and logged. A refusal leaves
-// the reservation as it was, for abandonEmoji.
+// Otherwise, in one transaction: the reservation is still open (this id and token, processed = 0, an image's and not
+// doomed, within its writer deadline at `now`, unattached; an AV candidate or an AV-path reservation, which alone may
+// have a processing row, is not an emoji's), the shortcode and cap are judged again, the row is promoted (URLs, type,
+// sizes, processed = 1, gc_at NULL), a replaced emoji is disabled, and the emoji row is written and logged. A refusal
+// leaves the reservation as it was, for abandonEmoji.
 export const completeEmoji = writeOperation.atStoreTime("now")<
   {
     authority: ImportAuthority;
@@ -199,10 +201,11 @@ export const completeEmoji = writeOperation.atStoreTime("now")<
   }
   const row = db.first<{ uri: string }>(
     `SELECT a.uri FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id
-		WHERE m.id = ? AND m.file_token = ? AND m.processed = 0 AND m.created_at > ? AND m.status_id IS NULL
-			AND m.scheduled_status_id IS NULL`,
+		WHERE m.id = ? AND m.file_token = ? AND m.processed = 0 AND m.type = 'image' AND m.gc_at IS NOT ? AND m.created_at > ?
+			AND m.status_id IS NULL AND m.scheduled_status_id IS NULL`,
     input.id,
     input.token,
+    DOOMED_AT,
     iso(input.now - WRITE_WINDOW_MS),
   );
   if (row === undefined) {
@@ -247,8 +250,9 @@ export const completeEmoji = writeOperation.atStoreTime("now")<
   return { ok: true, emoji: emojiById(db, input.id)! };
 });
 
-// abandoned: the reservation is doomed (or already was) and its objects may go; kept: the emoji exists or the row
-// completed, so its objects stay; gone: no such reservation, so nothing refers to its objects.
+// abandoned: the reservation is doomed (or already was) and its objects may go; kept: the emoji exists, the row
+// completed or the row is another path's, so its objects stay; gone: no such reservation, so nothing refers to its
+// objects.
 export type EmojiAbandoned = "abandoned" | "kept" | "gone" | "denied";
 
 // A failed emoji upload, as abandonMedia dooms a failed upload: only the reservation of this id and token (the Worker's
@@ -261,8 +265,8 @@ export const abandonEmoji = mediaDeleteOperation.atStoreTime("now")<
   if (!accessAdmin(db, authority, ACCESS_ONLY).ok) {
     return "denied";
   }
-  const row = db.first<{ processed: number; url: string; emoji: number }>(
-    `SELECT processed, url, EXISTS (SELECT 1 FROM custom_emojis e WHERE e.id = m.id) AS emoji
+  const row = db.first<{ processed: number; url: string; type: string; gc_at: string | null; emoji: number }>(
+    `SELECT processed, url, type, gc_at, EXISTS (SELECT 1 FROM custom_emojis e WHERE e.id = m.id) AS emoji
 		FROM media_attachments m WHERE id = ? AND file_token = ?`,
     id,
     token,
@@ -271,6 +275,15 @@ export const abandonEmoji = mediaDeleteOperation.atStoreTime("now")<
     return "gone";
   }
   if (row.emoji === 1 || (row.processed === 1 && row.url !== "")) {
+    return "kept";
+  }
+  // A doomed reservation stays doomed, and its objects may go.
+  if (row.gc_at === DOOMED_AT) {
+    return "abandoned";
+  }
+  // An AV candidate or an AV-path reservation is not an emoji's: nothing is written, and its objects are left to its
+  // own path and the sweep.
+  if (row.type !== "image") {
     return "kept";
   }
   db.run("UPDATE media_attachments SET processed = 1, gc_at = ? WHERE id = ? AND status_id IS NULL", iso(now), id);

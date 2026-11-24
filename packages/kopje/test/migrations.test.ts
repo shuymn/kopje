@@ -15769,3 +15769,135 @@ CREATE INDEX collections_url ON collections (url, uri) WHERE local = 0 AND url I
     });
   });
 });
+
+describe("0121_media_processing", () => {
+  const NAME = "0121_media_processing";
+  const at = NAMES.indexOf(NAME);
+  const ACCOUNT = "100000000000000001";
+  const MEDIA = "100000000000000002";
+  const T = "2026-11-25T00:00:00.000Z";
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .split(";")
+      .map((statement) => statement.replace(/\s+/g, " ").trim())
+      .filter((statement) => statement !== "");
+
+  it("follows 0120 and only creates its two tables and their indexes (P26)", () => {
+    expect(NAMES[at - 1]).toBe("0120_tagged_collections");
+    expect(at).toBe(NAMES.length - 1);
+    // A new table: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const all = statements(MIGRATIONS[at]?.sql ?? "");
+    expect(all).toHaveLength(8);
+    for (const statement of all) {
+      expect(statement).toMatch(
+        /^CREATE (TABLE (media_processing|media_av_slots) \(|INDEX media_(processing|av_slots)_\w+ ON (media_processing|media_av_slots) )/,
+      );
+    }
+  });
+
+  it("leaves every other object and every row of the Store as it was", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at)).upgrade()).toMatchObject({ ok: true });
+      sql.exec("INSERT INTO accounts (id, uri, username) VALUES (?, 'https://kopje.test/users/a', 'a')", ACCOUNT);
+      sql.exec(
+        `INSERT INTO media_attachments (id, account_id, type, url, file_token, processed, gc_at, created_at)
+				VALUES (?, ?, 'image', '', ?, 0, ?, ?)`,
+        MEDIA,
+        ACCOUNT,
+        "t".repeat(43),
+        T,
+        T,
+      );
+      const objects = () =>
+        sql
+          .exec<{ name: string; sql: string | null }>(
+            "SELECT name, sql FROM sqlite_master WHERE tbl_name NOT IN ('media_processing', 'media_av_slots') AND name NOT LIKE '_cf_%' ORDER BY name",
+          )
+          .toArray();
+      const rows = () => sql.exec("SELECT * FROM media_attachments").toArray();
+      const before = { objects: objects(), rows: rows() };
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect({ objects: objects(), rows: rows() }).toEqual(before);
+      expect(sql.exec("SELECT count(*) AS n FROM media_processing").one().n).toBe(0);
+      expect(sql.exec("SELECT count(*) AS n FROM media_av_slots").one().n).toBe(0);
+    });
+  });
+
+  it("holds each state to its columns, and cascades the processing row, not the slot, with its attachment", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      sql.exec("INSERT INTO accounts (id, uri, username) VALUES (?, 'https://kopje.test/users/a', 'a')", ACCOUNT);
+      sql.exec(
+        `INSERT INTO media_attachments (id, account_id, type, url, file_token, processed, gc_at, created_at)
+				VALUES (?, ?, 'video', '', ?, 0, ?, ?)`,
+        MEDIA,
+        ACCOUNT,
+        "t".repeat(43),
+        T,
+        T,
+      );
+      const row = (columns: string, values: SqlStorageValue[]) => () =>
+        sql.exec(
+          `INSERT INTO media_processing (media_id, ${columns}) VALUES (?${", ?".repeat(values.length)})`,
+          MEDIA,
+          ...values,
+        );
+      // Refused: staging with a queue time; pending without its dispatch; failed without its cause; a cause outside
+      // the list; running without a start; an input past AV_UPLOAD_LIMIT.
+      for (const refused of [
+        row("state, staged_at, staged_until, queued_at", ["staging", 1, 2, 1]),
+        row("state, staged_at, staged_until, queued_at, deadline_at, input_bytes", ["pending", 1, 2, 1, 3, 1]),
+        row("state, staged_at, staged_until, queued_at, deadline_at, input_bytes", ["failed", 1, 2, 1, 3, 1]),
+        row("state, staged_at, staged_until, queued_at, deadline_at, input_bytes, failure", [
+          "failed",
+          1,
+          2,
+          1,
+          3,
+          1,
+          "other",
+        ]),
+        row("state, staged_at, staged_until, queued_at, deadline_at, input_bytes", ["running", 1, 2, 1, 3, 1]),
+        row("state, staged_at, staged_until, queued_at, dispatched_at, deadline_at, input_bytes", [
+          "pending",
+          1,
+          2,
+          1,
+          1,
+          3,
+          94_371_841,
+        ]),
+      ]) {
+        expect(refused).toThrow(/CHECK constraint failed/);
+      }
+      row("state, staged_at, staged_until, queued_at, dispatched_at, deadline_at, input_bytes", [
+        "pending",
+        1,
+        2,
+        1,
+        1,
+        3,
+        94_371_840,
+      ])();
+      expect(() =>
+        sql.exec(
+          "INSERT INTO media_av_slots (media_id, phase, held_until, granted_at) VALUES (?, 'staging', 3, 2)",
+          MEDIA,
+        ),
+      ).toThrow(/CHECK constraint failed/);
+      sql.exec(
+        "INSERT INTO media_av_slots (media_id, phase, held_until, teardown_id) VALUES (?, 'processing', 3, 'td')",
+        MEDIA,
+      );
+      sql.exec("DELETE FROM media_attachments WHERE id = ?", MEDIA);
+      expect(sql.exec("SELECT count(*) AS n FROM media_processing").one().n).toBe(0);
+      expect(sql.exec("SELECT media_id FROM media_av_slots").toArray()).toEqual([{ media_id: MEDIA }]);
+    });
+  });
+});

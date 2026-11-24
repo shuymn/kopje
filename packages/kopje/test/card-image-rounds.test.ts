@@ -23,7 +23,7 @@ import { NOW } from "./app-helpers";
 import { cardWorld, type CardWorld, pageWith } from "./card-image-helpers";
 import { BUILD, deferred } from "./helpers";
 import { localRgba } from "./images-binding";
-import { r2Keys } from "./media-helpers";
+import { atStoreTime, r2Keys } from "./media-helpers";
 import { encodeWebp } from "./webp-fixtures";
 
 // The cron's card image round (federation/card-images.ts) over the Store's claim, admissions and record
@@ -638,14 +638,18 @@ describe("the reconciliation gate", () => {
       await gate.promise;
       return real();
     });
-    const running = w.imageRound({ store: () => store });
-    await reached.promise;
+    // The claim stamps its tombstone at the Store's time (one media clock), here NOW.
+    const { running } = await atStoreTime(NOW, async () => {
+      const round = w.imageRound({ store: () => store });
+      await reached.promise;
+      return { running: round };
+    });
     const [tombstone] = await w.orphans();
     const key = `files/${tombstone!.file_token}/full`;
     expect(await r2Keys(key)).toEqual([key]);
     expect(tombstone!.delete_after).toBe(iso(NOW + CARD_IMAGE_HOLD_MS + ORPHAN_GRACE_MS));
     const reconcile = (at: number) =>
-      reconcileMedia(env, { build: () => BUILD, now: () => at, store: () => w.h.store });
+      atStoreTime(at, () => reconcileMedia(env, { build: () => BUILD, store: () => w.h.store }));
     // Past the hold, before delete_after: nothing is reconciled.
     for (const at of [NOW + CARD_IMAGE_HOLD_MS + 1, NOW + CARD_IMAGE_HOLD_MS + ORPHAN_GRACE_MS - 1]) {
       expect(await reconcile(at)).toBe(0);
@@ -701,6 +705,7 @@ describe("the reconciliation capacity", () => {
         const before = await due(at);
         const claimed = await w.op(claimCardImages, {
           now: at,
+          storeNow: at,
           tokens: k === 0 ? ["c".repeat(43), "d".repeat(43), "e".repeat(43)] : [],
           share: 1000,
         });
@@ -716,7 +721,7 @@ describe("the reconciliation capacity", () => {
           expect(await due(at)).toBeLessThanOrEqual(99 + 64);
           counts.collectedAfterPause += counts.paused > 0 ? 1 : 0;
         }
-        await reconcileMedia(env, { build: () => BUILD, now: () => at, store: () => w.h.store });
+        await atStoreTime(at, () => reconcileMedia(env, { build: () => BUILD, store: () => w.h.store }));
       }
       expect(counts.paused).toBeGreaterThan(0);
       expect(counts.collectedAfterPause).toBeGreaterThan(0);

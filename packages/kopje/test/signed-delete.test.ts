@@ -62,7 +62,15 @@ function deleteRequest(t: Setup, id: string, as: "alice" | "dave" = "alice") {
 // alice's record of the DELETE of `id` with `signed`, as a Store operation in its own transaction: its answer and the
 // rows it wrote (total_changes()).
 async function recorded(t: Setup, id: string, signed: Json | null, as: "alice" | "dave" = "alice") {
-  const input = { credential: await credential(t, as), id, deleteMedia: false, signed, now: NOW, present: PRESENT };
+  const input = {
+    credential: await credential(t, as),
+    id,
+    deleteMedia: false,
+    signed,
+    now: NOW,
+    storeNow: NOW,
+    present: PRESENT,
+  };
   return runInDurableObject(t.store, (_instance, state) => {
     const db = new Db(state.storage.sql);
     const changes = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;

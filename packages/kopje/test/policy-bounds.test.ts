@@ -2165,7 +2165,7 @@ describe("scheduled statuses read a page and a round, however many accounts sche
   it("reads the same rows with 10 or 300 accounts holding scheduled statuses", async () => {
     const page = { credential: { tokenHash: TOKEN, scope: "read", now: NOW }, page: PAGE } as const;
     const due = { now: NOW, limit: 25 };
-    const publish = { id: DUE, now: NOW, objectId: "00000000-0000-4000-8000-000000000001" };
+    const publish = { id: DUE, now: NOW, storeNow: NOW, objectId: "00000000-0000-4000-8000-000000000001" };
     const measured: number[][] = [];
     for (const store of [await schedules(10), await schedules(300)]) {
       const shown = await runInDurableObject(store, (_instance, state) => listScheduled.run(state.storage.sql, page));

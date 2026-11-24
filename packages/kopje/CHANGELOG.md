@@ -8,6 +8,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Instance changes
+
+- Store schema: adds one migration (0121), applied on the first request after the deploy. Until it is applied the
+  Store refuses every request, and it stays readonly until it is verified ([docs/upgrade.md](docs/upgrade.md), "What
+  the Store serves in each state"). A rollback to an earlier version needs the point-in-time restore described in
+  [docs/upgrade.md](docs/upgrade.md). Migration `0121_media_processing` creates two empty tables with their indexes
+  (`media_processing`, the state of a video or audio upload while the media processor works on it, and
+  `media_av_slots`, the processor's capacity) and reads no existing row; it creates a table that references
+  `media_attachments`, so the upgrade checks every reference of the Store. Neither table is in a dump.
+- `wrangler.jsonc`: no change.
+
 ### Added
 
 - The first part of video and audio support: the package ships the media processor's container (`container/`, a
@@ -31,8 +42,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   later. A still costs one job of the new `MEDIA_UPLOAD_MONTHLY_JOBS` budget (default 0: none) and three Images
   transformations ([docs/backup.md](docs/backup.md), "Restore"). Nothing writes such rows yet.
 
+### Changed
+
+- An image upload's deadline is judged when the Store commits the upload, by the Store's clock, so time the request
+  spends in transit counts: an upload completed just before its deadline by the Worker's clock may be refused with 422
+  "Validation failed: The upload expired".
+- An owned upload marked processed but without a URL, a shape migration 0048 could leave, is no longer shown, edited
+  or attached: `GET`, `PUT` and `DELETE /api/v1/media/:id` answer 404 for it, and a post that attaches it is refused
+  with 422.
+
 ### Fixed
 
+- A post sent while the sweep was deleting an expired upload could still attach it and keep a broken attachment, when
+  the posting Worker's clock was behind the sweep's. The Store now decides on its own clock both whether an upload can
+  be attached and whether the sweep can take it.
 - Cached remote media answers 304 to a matching `If-None-Match` whatever its `Range`, as RFC 9110 orders them; an
   unsatisfiable range answered 416.
 - A video or gifv from another server that comes without a preview image is playable in clients such as Elk: its

@@ -67,7 +67,7 @@ const OTHER_STATEMENTS = [
   "SELECT id FROM custom_emojis INDEXED BY custom_emojis_enabled WHERE shortcode = ? AND disabled = 0",
   "SELECT id, text, starts_at, ends_at, all_day, published, published_at, scheduled_at, created_at, updated_at FROM announcements a INDEXED BY announcements_published WHERE a.published = 1 LIMIT 16",
   "SELECT id, text, starts_at, ends_at, all_day, published, published_at, scheduled_at, created_at, updated_at FROM announcements a WHERE a.id = ? AND a.published = 1",
-  "SELECT m.id AS id, m.type AS type, m.url AS url, m.preview_url AS preview_url, m.description AS description, m.meta AS meta, CASE WHEN (m.focus_given = 1 OR m.focus_x <> 0 OR m.focus_y <> 0) THEN m.focus_x END AS focus_x, m.focus_y AS focus_y, m.blurhash AS blurhash, (SELECT md.domain IS NOT NULL FROM accounts md INDEXED BY sqlite_autoindex_accounts_1 WHERE md.id = m.account_id) AS remote, NULL AS cached, NULL AS cached_preview FROM media_attachments m WHERE m.id = ?1 AND m.account_id = ?2 AND m.status_id IS NULL AND (m.processed = 1 AND (m.gc_at IS NULL OR m.gc_at > ?3) AND NOT EXISTS (SELECT 1 FROM accounts m_pa WHERE m_pa.id = m.account_id AND m.url IN (m_pa.avatar_url, m_pa.header_url)) AND NOT EXISTS (SELECT 1 FROM custom_emojis m_e WHERE m_e.id = m.id))",
+  "SELECT m.id AS id, m.type AS type, m.url AS url, m.preview_url AS preview_url, m.description AS description, m.meta AS meta, CASE WHEN (m.focus_given = 1 OR m.focus_x <> 0 OR m.focus_y <> 0) THEN m.focus_x END AS focus_x, m.focus_y AS focus_y, m.blurhash AS blurhash, (SELECT md.domain IS NOT NULL FROM accounts md INDEXED BY sqlite_autoindex_accounts_1 WHERE md.id = m.account_id) AS remote, NULL AS cached, NULL AS cached_preview FROM media_attachments m WHERE m.id = ?1 AND m.account_id = ?2 AND m.status_id IS NULL AND (m.processed = 1 AND m.url <> '' AND (m.gc_at IS NULL OR m.gc_at > ?3) AND NOT EXISTS (SELECT 1 FROM accounts m_pa WHERE m_pa.id = m.account_id AND m.url IN (m_pa.avatar_url, m_pa.header_url)) AND NOT EXISTS (SELECT 1 FROM custom_emojis m_e WHERE m_e.id = m.id))",
   "SELECT name, CASE WHEN value IN ('true', 'false') THEN value END AS value FROM instance_settings WHERE name IN ('trends', 'trendable_by_default')",
   "SELECT name, value FROM instance_settings WHERE name IN (?,?,?,?)",
   "SELECT t.scopes, t.account_id, t.expires_at, c.id AS client_id, c.name, c.website, l.suspended_at, coalesce(t.epoch <> l.credential_epoch, 0) AS stale FROM oauth_tokens t CROSS JOIN oauth_clients c INDEXED BY sqlite_autoindex_oauth_clients_1 ON c.id = t.client_id LEFT JOIN local_accounts l INDEXED BY sqlite_autoindex_local_accounts_1 ON l.account_id = t.account_id WHERE t.token_hash = ? AND t.kind = 'access'",
@@ -82,18 +82,19 @@ const OTHER_STATEMENTS = [
 // a correlated lookup), its form exactly. The delete's write: the ids of the reactions it removes.
 const WITNESS = new PlanWitness(
   {
-    // completeMedia
-    "4ec0ae054c56140a": {
-      sql: "SELECT m.file_token AS token, a.uri, m.processed, m.url, m.created_at FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.account_id = ?",
+    // completeMedia, reading the type and gc_at since #1828 (the image path only, never a doomed row) and no longer the
+    // URL (liveMediaSql requires it)
+    "8fc5fefa1e87f6ad": {
+      sql: "SELECT m.file_token AS token, a.uri, m.processed, m.type, m.gc_at, m.created_at FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.account_id = ?",
       pins: (text) =>
         text.replace(
           " INDEXED BY sqlite_autoindex_media_attachments_1 CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON",
           " JOIN accounts a ON",
         ),
     },
-    // completeEmoji's uploader
-    b2ba7bd7c87d186e: {
-      sql: "SELECT a.uri FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.file_token = ? AND m.processed = 0 AND m.created_at > ? AND m.status_id IS NULL AND m.scheduled_status_id IS NULL",
+    // completeEmoji's uploader, an image row not doomed since #1828
+    fb4328891e65d513: {
+      sql: "SELECT a.uri FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.file_token = ? AND m.processed = 0 AND m.type = 'image' AND m.gc_at IS NOT ? AND m.created_at > ? AND m.status_id IS NULL AND m.scheduled_status_id IS NULL",
       pins: (text) =>
         text.replace(
           " INDEXED BY sqlite_autoindex_media_attachments_1 CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON",
@@ -324,7 +325,7 @@ const EMOJI_UPLOAD = {
 
 const CASES: Record<string, Case> = {
   "an upload's completion": {
-    main: ["4ec0ae054c56140a"],
+    main: ["8fc5fefa1e87f6ad"],
     count: NEIGHBOURS,
     run: (sql, transact) =>
       completeMedia.run(
@@ -346,7 +347,7 @@ const CASES: Record<string, Case> = {
   },
   "an emoji upload's uploader": {
     // The emoji looked up by its id before the upload is read, and again after it is stored.
-    main: ["80b7909111a47fc3", "b2ba7bd7c87d186e", "80b7909111a47fc3"],
+    main: ["80b7909111a47fc3", "fb4328891e65d513", "80b7909111a47fc3"],
     count: NEIGHBOURS,
     run: (sql, transact) =>
       completeEmoji.run(sql, { ...EMOJI_UPLOAD, authority: ACCESS, id: PENDING, shortcode: "fresh" }, transact),

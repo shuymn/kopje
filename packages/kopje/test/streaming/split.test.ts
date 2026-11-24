@@ -578,7 +578,15 @@ const KINDS: Kind[] = [
         const signed = operation === deleteStatus ? await deleteSignature(h.store, credential, id) : null;
         const result = await runInDurableObject(h.store, (_instance, state) =>
           state.storage.transactionSync(() =>
-            operation.run(state.storage.sql, { credential, id, deleteMedia: false, signed, now: NOW, present }),
+            operation.run(state.storage.sql, {
+              credential,
+              id,
+              deleteMedia: false,
+              signed,
+              now: NOW,
+              storeNow: NOW,
+              present,
+            }),
           ),
         );
         expect(result).toMatchObject({ status: "ok", value: { status: "ok" } });

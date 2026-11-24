@@ -114,7 +114,8 @@ export async function describedMedia(h: ApiHarness, user: User, descriptions: re
 			VALUES (?1, ?2, 'image', 'https://kopje.test/files/t' || ?1 || '/full', 't' || ?1, 1, ?3)`,
       id,
       user.id,
-      new Date(NOW + 86_400_000).toISOString(),
+      // A day from the Store's time (this isolate's Date), at which media is judged live (media.ts liveMediaSql).
+      new Date(Date.now() + 86_400_000).toISOString(),
     );
     const response = await h.request(
       `/api/v1/media/${id}`,
@@ -147,6 +148,7 @@ export async function writeFilled(
       ...(quoted === undefined ? {} : { quotedStatusId: quoted }),
       objectId: crypto.randomUUID(),
       now: NOW,
+      storeNow: NOW,
       present: { origin: "https://kopje.test" },
     });
     const posted = result.status === "ok" ? result.value : result;

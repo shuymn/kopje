@@ -866,7 +866,11 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
   const problems: string[] = [];
   const run = <T>(operation: StoreOperation<never, unknown>, input: unknown) =>
     operation.run(sql, input as never, savepoint) as T;
-  const credential = (x: number) => ({ credential: { tokenHash: actingToken(x), scope: "write", now }, now });
+  const credential = (x: number) => ({
+    credential: { tokenHash: actingToken(x), scope: "write", now },
+    now,
+    storeNow: now,
+  });
   const accountIndex = new Map(world.accounts.map((_, x) => [accountId(x), x]));
   const uriOf = (x: number) => world.accounts[x]!.uri;
   const nameOf = (x: number) => world.accounts[x]!.name;

@@ -1,5 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { postStatus, type ScheduleInput } from "../src/domain/scheduled-statuses";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
@@ -11,7 +11,7 @@ import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, type App, bearer, form, json, login, setSetting, settle, sql } from "./api-helpers";
 import { countingStore, NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
-import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS } from "./media-helpers";
+import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS, storeClock } from "./media-helpers";
 import {
   plannedRun,
   type PlannedStatement,
@@ -57,6 +57,16 @@ async function createsInFlight(store: StoreStub): Promise<void> {
 		WHERE json_extract(o.body, '$.activity.type') = 'Create'`,
   );
 }
+
+// The Store's clock starts at the harness's NOW: media seeded or uploaded here is judged live at the Store's time
+// (media.ts liveMediaSql).
+beforeEach(() => {
+  storeClock(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("POST /api/v1/statuses", () => {
   it("posts a status in the Mastodon shape", async () => {
@@ -2262,6 +2272,7 @@ describe("media_ids (PostStatusService#validate_media!, MEDIA-1)", () => {
       mediaAttributes: [],
       poll: { ...poll, options: ["c", "d"], sent: { options: ["c", "d"], multiple: false } },
       now: NOW,
+      storeNow: NOW,
       present: { origin: "https://kopje.test" },
     });
     expect(edited.result).toMatchObject({ value: { status: "ok" } });
@@ -2498,6 +2509,7 @@ async function postPlans(
       mediaIds: [],
       objectId: crypto.randomUUID(),
       now: NOW,
+      storeNow: NOW,
       present: { origin: "https://kopje.test" },
       ...input,
     });

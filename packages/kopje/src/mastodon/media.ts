@@ -8,7 +8,7 @@ import { readBoundedBody } from "../platform/body";
 import { accountMonthlyTransforms, readConfig } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { IMAGE_MATRIX_LIMIT, IMAGE_SIZE_LIMIT, processImage, type ProcessedImage } from "../platform/images";
-import { fileKey, mediaKeys, originalKey } from "../platform/media-files";
+import { deleteKeys, fileKey, mediaKeys, originalKey, sweptKeys } from "../platform/media-files";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { MAX_MEDIA_DESCRIPTION_LENGTH, yieldsMoreThan } from "../platform/stored-bounds";
@@ -371,7 +371,6 @@ async function transformReserved(
           blurhash,
           description: fields.description,
           focus: fields.focus,
-          now: deps.now(),
         }),
       ),
     );
@@ -457,7 +456,7 @@ async function discard(
   const { id, token } = upload;
   try {
     const outcome = authorized(
-      await storeCall(c, deps, (s, b) => s.abandonMedia(b, { credential: upload.credential(), id, now: deps.now() })),
+      await storeCall(c, deps, (s, b) => s.abandonMedia(b, { credential: upload.credential(), id })),
     );
     if (outcome !== "kept") {
       await c.env.MEDIA.delete(mediaKeys(id, token));
@@ -466,9 +465,7 @@ async function discard(
     if (completed === "keep") {
       return;
     }
-    authorized(
-      await storeCall(c, deps, (s, b) => s.deleteMedia(b, { credential: upload.credential(), id, now: deps.now() })),
-    );
+    authorized(await storeCall(c, deps, (s, b) => s.deleteMedia(b, { credential: upload.credential(), id })));
   } catch (error) {
     console.error({ event: "kopje.media.abandon_failed", ...errorFields(error) });
   }
@@ -490,9 +487,7 @@ export async function discardProfileUploads(
 // GET /api/v1/media/:id.
 export const getMedia: ApiHandler = async (c, deps) => {
   const credential = userCredential(c, deps);
-  const media = authorized(
-    await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c), now: deps.now() })),
-  );
+  const media = authorized(await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c) })));
   return media === null ? recordNotFound() : c.json(media);
 };
 
@@ -506,14 +501,12 @@ export const updateMedia: ApiHandler = withParams(
     if (problem !== undefined) {
       // MediaController#set_media_attachment finds the media (404) before update! validates it (422): a read, so it is
       // answered in readonly maintenance too, as an edit's target is (statuses.ts editTarget).
-      const found = authorized(
-        await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c), now: deps.now() })),
-      );
+      const found = authorized(await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c) })));
       return found === null ? recordNotFound() : mastodonError(422, problem);
     }
     const changes: MediaChanges = { description, focus: parseFocus(p.get("focus")) };
     const media = authorized(
-      await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes, now: deps.now() })),
+      await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes })),
     );
     return media === null ? recordNotFound() : c.json(media);
   },
@@ -523,9 +516,7 @@ export const updateMedia: ApiHandler = withParams(
 // DELETE /api/v1/media/:id: own unattached media; the sweep deletes its R2 objects after the response.
 export const deleteMedia: ApiHandler = async (c, deps) => {
   const credential = userCredential(c, deps);
-  const outcome = authorized(
-    await storeCall(c, deps, (s, b) => s.deleteMedia(b, { credential, id: mediaId(c), now: deps.now() })),
-  );
+  const outcome = authorized(await storeCall(c, deps, (s, b) => s.deleteMedia(b, { credential, id: mediaId(c) })));
   if (outcome === "not_found") {
     return recordNotFound();
   }
@@ -536,7 +527,7 @@ export const deleteMedia: ApiHandler = async (c, deps) => {
   return c.json({});
 };
 
-export type SweepDeps = { build: (env: Env) => string; now: () => number; store: StoreResolver };
+export type SweepDeps = { build: (env: Env) => string; store: StoreResolver };
 
 // Deletes doomed uploads: their R2 objects first, then their rows, one bounded batch (domain/media.ts). Returns how
 // many rows were deleted. In maintenance the Store refuses and the sweep waits for the next run.
@@ -544,13 +535,13 @@ export async function sweepMedia(env: Env, deps: SweepDeps): Promise<number> {
   const store = deps.store(env);
   const build = deps.build(env);
   try {
-    const expired = await callStore(() => store.expiredMedia(build, { now: deps.now(), limit: SWEEP_BATCH }));
+    const expired = await callStore(() => store.expiredMedia(build, { limit: SWEEP_BATCH }));
     if (expired.length === 0) {
       return 0;
     }
-    const keys = expired.flatMap((m) => (m.token === null ? [originalKey(m.id)] : mediaKeys(m.id, m.token)));
-    await env.MEDIA.delete(keys);
-    return await callStore(() => store.purgeMedia(build, { ids: expired.map((m) => m.id), now: deps.now() }));
+    const keys = expired.flatMap((m) => (m.token === null ? [originalKey(m.id)] : sweptKeys(m.id, m.token)));
+    await deleteKeys(env.MEDIA, keys);
+    return await callStore(() => store.purgeMedia(build, { ids: expired.map((m) => m.id) }));
   } catch (error) {
     if (error instanceof StoreUnavailableError) {
       return 0;
@@ -577,11 +568,14 @@ export async function reconcileMedia(env: Env, deps: SweepDeps): Promise<number>
   const store = deps.store(env);
   const build = deps.build(env);
   try {
-    const due = await callStore(() => store.dueOrphans(build, { now: deps.now() }));
+    const due = await callStore(() => store.dueOrphans(build));
     if (due.length === 0) {
       return 0;
     }
-    await env.MEDIA.delete(due.flatMap((orphan) => mediaKeys(orphan.id, orphan.token)));
+    await deleteKeys(
+      env.MEDIA,
+      due.flatMap((orphan) => sweptKeys(orphan.id, orphan.token)),
+    );
     return await callStore(() => store.forgetOrphans(build, { tokens: due.map((orphan) => orphan.token) }));
   } catch (error) {
     if (error instanceof StoreUnavailableError) {

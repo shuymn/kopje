@@ -20,6 +20,8 @@ import { ORPHAN_GRACE_MS, RECONCILE_BATCH } from "../src/domain/media";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { cardWorld, type CardWorld, pageWith } from "./card-image-helpers";
+import { BUILD } from "./helpers";
+import { atStoreTime } from "./media-helpers";
 import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
 
 // The Store's part of card images (domain/card-images.ts) and the card writers' link to it (domain/link-cards.ts).
@@ -74,7 +76,7 @@ const FIELDS = {
 } as const;
 
 const claim = (w: CardWorld, tokens: string[], share = 1000) =>
-  w.op(claimCardImages, { now: w.clock.t, tokens, share });
+  w.op(claimCardImages, { now: w.clock.t, storeNow: w.clock.t, tokens, share });
 
 describe("the link from a card to its image (recordCard)", () => {
   it("links an attached card to a new pending row, then reuses it for the same URL", async () => {
@@ -262,6 +264,7 @@ describe("the seeks of a record and of the walk, after ANALYZE and growth", () =
           const walk = (
             await plannedRun(w.h, /INDEXED BY card_images_due/, claimCardImages, {
               now: w.clock.t,
+              storeNow: w.clock.t,
               tokens: [token(w.clock.t)],
               share: 10,
             })
@@ -467,7 +470,8 @@ describe("the image GC with backpressure", () => {
       await seedStored(w, 1, 2);
       const gc = /card_images_stored_id|media_orphans_due/;
       const { before, after } = await staleStatistics(w.h, {
-        capture: async () => (await plannedRun(w.h, gc, claimCardImages, { now: NOW, tokens: [], share: 0 })).plans,
+        capture: async () =>
+          (await plannedRun(w.h, gc, claimCardImages, { now: NOW, storeNow: NOW, tokens: [], share: 0 })).plans,
         grow: async () => {
           await sql(
             w.h.store,
@@ -500,7 +504,7 @@ describe("the image GC with backpressure", () => {
       expect(backlog.rows).toBeLessThanOrEqual(CARD_IMAGE_GC_BACKLOG + 1);
       // Past the backlog the GC reads no stored row.
       await sql(w.h.store, "UPDATE media_orphans SET delete_after = ?", iso(NOW));
-      const paused = await plannedRun(w.h, gc, claimCardImages, { now: NOW, tokens: [], share: 0 });
+      const paused = await plannedRun(w.h, gc, claimCardImages, { now: NOW, storeNow: NOW, tokens: [], share: 0 });
       expect(paused.result.paused).toBe(true);
       expect(paused.plans.filter(({ query }) => query.includes("card_images_stored_id"))).toEqual([]);
       expect(paused.plans[0]!.rows).toBeLessThanOrEqual(CARD_IMAGE_GC_BACKLOG + 1);
@@ -604,5 +608,56 @@ describe("the fence of a claim (admitCardImage, startCardImage, recordCardImage)
     });
     expect(await other.images()).toEqual([]);
     expect((await other.orphans()).map((o) => o.file_token)).toEqual([f2.token]);
+  });
+});
+
+// One media clock (#1828 plan section 3, "PR4-1"): media_orphans is the media sweep's too, so the claim reads its due
+// tombstones and writes its own at the Store's time, whatever time the Worker sends.
+describe("the claim's tombstones on the Store's clock", () => {
+  // CARD_IMAGE_GC_BACKLOG media tombstones due at `at`.
+  function seedDue(w: CardWorld, at: number) {
+    return sql(
+      w.h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO media_orphans (file_token, media_id, delete_after) SELECT printf('o%042d', i), printf('8%017d', i), ?2 FROM n`,
+      CARD_IMAGE_GC_BACKLOG,
+      iso(at),
+    );
+  }
+
+  it("pauses the GC on a backlog due at the Store's time, the Worker 1 ms behind it", async () => {
+    const w = await cardWorld();
+    const due = NOW + 10_000;
+    await seedDue(w, due);
+    await seedStored(w, 1, 1);
+    const claimed = await atStoreTime(due, () =>
+      w.h.store.claimCardImages(BUILD, { now: due - 1, tokens: [], share: 0 }),
+    );
+    expect(claimed).toMatchObject({ paused: true, collected: 0 });
+  });
+
+  it("collects while the backlog is not due at the Store's time, the Worker 1 ms past it", async () => {
+    const w = await cardWorld();
+    const due = NOW + 10_000;
+    await seedDue(w, due);
+    await seedStored(w, 1, 1);
+    const claimed = await atStoreTime(due - 1, () =>
+      w.h.store.claimCardImages(BUILD, { now: due, tokens: [], share: 0 }),
+    );
+    expect(claimed).toMatchObject({ paused: false, collected: 1 });
+    expect((await w.orphans()).find((o) => o.media_id === "700000000000000001")?.delete_after).toBe(iso(due - 1));
+  });
+
+  it("stamps a claim's tombstone from the Store's time, the Worker 10 s behind it", async () => {
+    const w = await cardWorld();
+    const { card } = await carded(w);
+    const at = NOW + 20_000;
+    const claimed = await atStoreTime(at, () =>
+      w.h.store.claimCardImages(BUILD, { now: at - 10_000, tokens: [token(1)], share: 10 }),
+    );
+    expect(claimed.claims).toHaveLength(1);
+    expect(await w.orphans()).toEqual([
+      { file_token: token(1), media_id: card.image_id, delete_after: iso(at + CARD_IMAGE_HOLD_MS + ORPHAN_GRACE_MS) },
+    ]);
   });
 });

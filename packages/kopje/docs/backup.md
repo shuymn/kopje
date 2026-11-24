@@ -57,6 +57,13 @@ writes and deletes nothing for 20 minutes; it then deletes the files the restore
 file it shows (at most 100 a round) and fetches a missing one again. Until the check reaches it, a cached URL may
 answer 404.
 
+Video and audio processing (its jobs and capacity slots) is not in a dump either, and a point-in-time restore takes it
+back to the bookmark while a container the restore forgot may still run. Before a point-in-time restore, set
+`MEDIA_UPLOAD_MONTHLY_JOBS` to 0 and wait until `kopje-admin health` shows no processing slot in use; otherwise the
+restored Store may admit uploads beside containers it no longer knows of, one more for each. After the restore, a
+restored slot can keep new video and audio uploads busy: one never granted to a container until its job's deadline,
+and a granted one until its processor confirms the container stopped, or for at most 24 hours.
+
 Custom emoji are never deleted, disabled ones included (`kopje-admin emoji`), so every version's original (below
 256 KiB) is in every backup's index for good: it is copied once per destination and reused afterwards, and a new
 destination copies them all again. After a restore, the rebuild re-encodes every version, disabled ones included, at

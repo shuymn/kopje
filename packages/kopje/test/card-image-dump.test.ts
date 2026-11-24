@@ -40,7 +40,9 @@ describe("card images in dumps", () => {
     const pending = await w.postLink("https://site.example/pending");
     await w.cardRound();
     // A claim's tombstone besides: the pending image claimed and never recorded.
-    expect((await w.op(claimCardImages, { now: NOW, tokens: ["c".repeat(43)], share: 10 })).claims).toHaveLength(1);
+    expect(
+      (await w.op(claimCardImages, { now: NOW, storeNow: NOW, tokens: ["c".repeat(43)], share: 10 })).claims,
+    ).toHaveLength(1);
     const images = await w.images();
     expect(images.map((row) => row.stored_at === null)).toEqual([false, true]);
     expect(await w.orphans()).toHaveLength(1);
@@ -80,7 +82,7 @@ describe("card images in dumps", () => {
     // The GC changes nothing (it collects stored rows only, and there are none).
     const op = <I, O>(operation: { run: (sql: SqlStorage, input: I) => O }, input: I) =>
       runInDurableObject(target, (_instance, s) => operation.run(s.storage.sql, input));
-    expect(await op(claimCardImages, { now: NOW + 1, tokens: [], share: 0 })).toMatchObject({
+    expect(await op(claimCardImages, { now: NOW + 1, storeNow: NOW + 1, tokens: [], share: 0 })).toMatchObject({
       collected: 0,
       expired: 0,
       dropped: 0,

@@ -110,6 +110,7 @@ function applyAccountChanges(
   changes: CredentialChanges,
   images: ProfileImages,
   now: number,
+  storeNow: number,
 ): { status: "ok"; accepting: boolean } | { status: "not_found" } | { status: "upload_gone" } {
   const current = db.first<{
     username: string;
@@ -127,7 +128,7 @@ function applyAccountChanges(
     return { status: "not_found" };
   }
   const kinds = PROFILE_IMAGES.filter((kind) => images[kind] !== undefined);
-  if (kinds.some((kind) => !profileUploadReady(db, accountId, images[kind]!, now))) {
+  if (kinds.some((kind) => !profileUploadReady(db, accountId, images[kind]!, storeNow))) {
     return { status: "upload_gone" };
   }
   const before = actorSnapshot(db, accountId);
@@ -212,16 +213,23 @@ function applyAccountChanges(
   return { status: "ok", accepting: unlockChanged(db, accountId, current.locked === 1, changes.locked) };
 }
 
-export type AccountUpdate = { changes: CredentialChanges; images?: ProfileImages; present: PresentInput; now: number };
+// storeNow: the Store's time, at which the uploads are judged live (media.ts liveMediaSql).
+export type AccountUpdate = {
+  changes: CredentialChanges;
+  images?: ProfileImages;
+  present: PresentInput;
+  now: number;
+  storeNow: number;
+};
 
 // applyAccountChanges, then the account as `presented` shows it.
 function updated<A>(
   db: Db,
   accountId: string,
-  { changes, images = {}, now }: AccountUpdate,
+  { changes, images = {}, now, storeNow }: AccountUpdate,
   presented: () => A | null,
 ): CredentialsUpdated<A> {
-  const applied = applyAccountChanges(db, accountId, changes, images, now);
+  const applied = applyAccountChanges(db, accountId, changes, images, now, storeNow);
   if (applied.status !== "ok") {
     return applied;
   }
@@ -231,14 +239,15 @@ function updated<A>(
 
 // update_credentials and the profile update (Api::V1::ProfilesController#update), answered with the CredentialAccount
 // and the Profile. Media-delete operations: replacing an image dooms the upload behind it (MEDIA-2).
-export const updateCredentials = userMediaDeleteOperation<AccountUpdate, CredentialsUpdated>(
+export const updateCredentials = userMediaDeleteOperation.atStoreTime("storeNow")<AccountUpdate, CredentialsUpdated>(
   (db, input, { accountId }) =>
     updated(db, accountId, input, () => credentialAccount(db, accountId, presentFor(input.present, accountId))),
 );
 
-export const updateProfile = userMediaDeleteOperation<AccountUpdate, CredentialsUpdated<Profile>>(
-  (db, input, { accountId }) => updated(db, accountId, input, () => profileOf(db, accountId, input.present)),
-);
+export const updateProfile = userMediaDeleteOperation.atStoreTime("storeNow")<
+  AccountUpdate,
+  CredentialsUpdated<Profile>
+>((db, input, { accountId }) => updated(db, accountId, input, () => profileOf(db, accountId, input.present)));
 
 // The Profile with the account's first MAX_FEATURED_TAGS featured hashtags in id order (ACCOUNT_FEATURED_SQL, at most
 // that many rows read): Mastodon's association has no order, and creation order is the closest stable one.

@@ -68,6 +68,8 @@ import * as localEmojis from "./domain/local-emojis";
 import * as localNotes from "./domain/local-notes";
 import * as markers from "./domain/markers";
 import * as media from "./domain/media";
+import * as mediaProbes from "./domain/media-probes";
+import { avActivation } from "./domain/media-processing";
 import * as mediaRebuild from "./domain/media-rebuild";
 import { moderationLog } from "./domain/moderation-log";
 import * as notificationGroups from "./domain/notification-groups";
@@ -586,7 +588,6 @@ export const STORE_RPC = {
   updateMedia: media.updateMedia,
   deleteMedia: media.deleteMedia,
   removeProfileImage: media.removeProfileImage,
-  startTransforms: media.startTransforms,
   dueOrphans: media.dueOrphans,
   forgetOrphans: media.forgetOrphans,
   expiredMedia: media.expiredMedia,
@@ -603,6 +604,16 @@ export const STORE_RPC = {
   fallbackMediaRebuild: mediaRebuild.fallbackAvRebuild,
   mediaProbeRecord: mediaRebuild.probeRecord,
   recordMediaProbe: mediaRebuild.recordProbe,
+
+  // The media processor's probe records and activation (domain/media-probes.ts, domain/media-processing.ts), each at
+  // the Store's own time: one claim shared by the CLI and the probe round, its fenced result, an upload's
+  // infrastructure failure, and what health and the instance endpoints read. Its upload operations are the Store's
+  // own methods (store.ts), which read the restore marker first.
+  claimMediaProbe: mediaProbes.claimProbe,
+  recordMediaProbeResult: mediaProbes.recordProbeResult,
+  recordMediaInfrastructureFailure: mediaProbes.recordInfrastructureFailure,
+  mediaProbeRecords: mediaProbes.probeRecords,
+  avActivation,
 
   // Local custom emoji (domain/local-emojis.ts): the Access admin's writes from /admin/emojis, each at the Store's own
   // time, so the writer deadline is judged on one clock; the public list and the Emoji object.

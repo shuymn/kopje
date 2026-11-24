@@ -324,7 +324,7 @@ function mediaToAttach(
   accountId: string,
   mediaIds: readonly string[],
   statusId: string | null,
-  now: number,
+  storeNow: number,
   scheduledId: string | null = null,
 ): string[] | { status: "invalid"; error: string } {
   if (mediaIds.length === 0) {
@@ -341,7 +341,7 @@ function mediaToAttach(
     JSON.stringify(requested.map(storedIdOf)),
     accountId,
     statusId,
-    iso(now),
+    iso(storeNow),
     scheduledId,
   );
   const missing = rows.filter((row) => row.id === null).map((row) => requested[row.i] ?? "");
@@ -517,7 +517,14 @@ export function convertedPost<T extends PostInput>(input: T): T | null {
 // PostStatusService's checks, before any write, including the raw bound; a quote permits blank text. `scheduledId` is
 // the scheduled status being published, whose media it attaches (null: none). R36 is checked in the writing
 // transaction at posting, scheduling and publication (test/quote-authoring.test.ts concurrency table, row 1).
-export function preparePost(db: Db, accountId: string, input: PostInput, scheduledId: string | null): Prepared {
+// `storeNow`: the Store's time, at which the media are judged live (media.ts liveMediaSql).
+export function preparePost(
+  db: Db,
+  accountId: string,
+  input: PostInput,
+  scheduledId: string | null,
+  storeNow: number,
+): Prepared {
   // Checked as writePost stores them, so text of only U+0000 is blank, as an edit's is.
   if (exceedsRawLength(storedText(input.text), storedText(input.spoilerText))) {
     return { status: "invalid", error: TOO_LONG };
@@ -539,7 +546,7 @@ export function preparePost(db: Db, accountId: string, input: PostInput, schedul
       return { status: "quote_not_found" };
     }
   }
-  const media = mediaToAttach(db, accountId, input.mediaIds, null, input.now, scheduledId);
+  const media = mediaToAttach(db, accountId, input.mediaIds, null, storeNow, scheduledId);
   if (!Array.isArray(media)) {
     return media;
   }
@@ -830,9 +837,10 @@ export function postNow(
   viewer: UserContext,
   input: CreateStatusInput,
   applicationId: string | null,
+  storeNow: number,
 ): CreateStatusResult {
   const { accountId } = viewer;
-  const prepared = preparePost(db, accountId, input, null);
+  const prepared = preparePost(db, accountId, input, null, storeNow);
   if (!isPrepared(prepared)) {
     return refusedPost(db, prepared, presentFor(input.present, accountId));
   }
@@ -1035,7 +1043,10 @@ export const editTarget = userReadOperation<{ id: string }, "ok" | "not_found">(
 // added by an edit is linked in the text but adds no recipient, notification or delivery, so neither the status nor
 // its history reaches anyone who could not see the original. Public and unlisted statuses follow Mastodon: a new
 // mention is a mention and is notified. Either way, a mention removed by an edit stays as a silent mention.
-export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db, input, { accountId }, viewer) => {
+export const editStatus = userWriteOperation.atStoreTime("storeNow")<
+  EditStatusInput & { storeNow: number },
+  Acted<Status>
+>((db, input, { accountId }, viewer) => {
   const options = { ...input.present, viewer };
   const current = ownStatus(db, accountId, input.id);
   if (current === null || current.reblog_of_id !== null) {
@@ -1047,7 +1058,7 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
     return { status: "invalid", error: TOO_LONG };
   }
   // Before the "unchanged" test: UpdateStatusService validates the media before NoChangesSubmittedError.
-  const media = mediaToAttach(db, accountId, input.mediaIds, current.id, input.now);
+  const media = mediaToAttach(db, accountId, input.mediaIds, current.id, input.storeNow);
   if (!Array.isArray(media)) {
     return media;
   }
@@ -1350,8 +1361,15 @@ export const prepareDelete = userReadOperation<{ id: string }, Acted<DeletePrepa
 //     the status's mentions, boosts, quotes, votes and receipts are kept, withdraws its local boosts, then deletes its
 //     children and the status. The job's bound is the deadline of the media, which the job gives what the answer did
 //     not show. jobsPending asks the Worker for a round of jobs.
-export const deleteStatus = userMediaDeleteOperation<
-  { id: string; deleteMedia: boolean; signed: Record<string, unknown> | null; now: number; present: PresentInput },
+export const deleteStatus = userMediaDeleteOperation.atStoreTime("storeNow")<
+  {
+    id: string;
+    deleteMedia: boolean;
+    signed: Record<string, unknown> | null;
+    now: number;
+    storeNow: number;
+    present: PresentInput;
+  },
   DeleteResult
 >((db, input, { accountId }, viewer) => {
   // A boost of an original whose removal has begun: its Undo is that removal's (inbox.ts withdrawLocalBoosts), so the
@@ -1412,7 +1430,8 @@ export const deleteStatus = userMediaDeleteOperation<
   db.run("UPDATE polls SET ended = 1, update_due_at = NULL WHERE status_id = ?", current.id);
   retireQuoteOf(db, current.id, input.now, true);
   db.run(UNTAG_WINDOW_SQL, current.id, MAX_STATUS_TAGS);
-  const bound = input.deleteMedia ? DOOMED_AT : iso(input.now + DETACHED_GRACE_MS);
+  // The media's gc_at is a stored media time, so it is the Store's (media.ts liveMediaSql).
+  const bound = input.deleteMedia ? DOOMED_AT : iso(input.storeNow + DETACHED_GRACE_MS);
   db.run(
     `UPDATE media_attachments INDEXED BY ${MEDIA_ID_INDEX} SET status_id = NULL, position = 0, shown = 1, gc_at = ?3
 		WHERE id IN (SELECT value FROM json_each(?2)) AND status_id = ?1`,

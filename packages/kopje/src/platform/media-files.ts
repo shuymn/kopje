@@ -4,6 +4,8 @@
 //   files/<token>/full            the re-encoded image, or the verified video or audio (#1828), that is served
 //   files/<token>/small           the re-encoded preview (an image) that is served
 //   kopje/pitr-restored/<store>   when that Store last scheduled a PITR restore (restoreMarkerKey), never served
+//   incoming/<id>                 a video or audio upload's input while the media processor reads it (incomingKey,
+//                                 #1828 design 4.7), never served
 //   incoming/probe-<nonce>        a copy of the media processor's probe clip while a probe reads it (probeInputKey,
 //                                 #1828 design 4.15), never served
 //   remote/<token>/full           a cached remote file, verified, served (domain/remote-media.ts, MEDIA-7)
@@ -75,9 +77,36 @@ export function fileKey(token: string, variant: MediaVariant): string {
   return `files/${token}/${variant}`;
 }
 
-// Every key of one upload, for deleting it.
+export function incomingKey(id: string): string {
+  if (!ID.test(id)) {
+    throw new Error("media id is not a server id");
+  }
+  return `incoming/${id}`;
+}
+
+// The keys an upload's own writer deletes when it fails (its original and served files). Its input, a video or audio
+// upload's `incoming/<id>`, is not among them: only the staging's cleanup answers hand that to a request (#1828 plan
+// 1.1), and the sweep and reconciliation, which hold the row's authority, delete it (sweptKeys).
 export function mediaKeys(id: string, token: string): string[] {
   return [originalKey(id), ...MEDIA_VARIANTS.map((variant) => fileKey(token, variant))];
+}
+
+// Every key of one upload, for the sweep and reconciliation: its input, original and served files.
+export function sweptKeys(id: string, token: string): string[] {
+  return [incomingKey(id), ...mediaKeys(id, token)];
+}
+
+// The most keys one R2 delete takes (R2's bulk delete limit).
+export const R2_DELETE_KEYS = 1000;
+
+// Deletes `keys` in calls of at most R2_DELETE_KEYS, in order; a failed call throws and leaves the later keys.
+export async function deleteKeys(
+  bucket: { delete(keys: string[]): Promise<void> },
+  keys: readonly string[],
+): Promise<void> {
+  for (let at = 0; at < keys.length; at += R2_DELETE_KEYS) {
+    await bucket.delete(keys.slice(at, at + R2_DELETE_KEYS));
+  }
 }
 
 // The public path of a served file: /media/<token>/<variant>.<ext>.

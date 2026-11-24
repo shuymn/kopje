@@ -48,6 +48,8 @@ function excluded(name: string): boolean {
   return (
     name === "kopje_migrations" ||
     name === "media_orphans" ||
+    name === "media_processing" ||
+    name === "media_av_slots" ||
     name === "card_images" ||
     name === "remote_media" ||
     name === "remote_media_objects" ||

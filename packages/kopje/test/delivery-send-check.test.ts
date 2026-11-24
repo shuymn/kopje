@@ -854,6 +854,7 @@ describe("delivery reads with stale statistics (RES-7)", () => {
         mediaIds: [],
         mediaAttributes: [],
         now: NOW,
+        storeNow: NOW,
         present: PRESENT,
       }),
       delete: await deleteSignature(h.store, credential, id)
@@ -865,6 +866,7 @@ describe("delivery reads with stale statistics (RES-7)", () => {
               deleteMedia: false,
               signed,
               now: NOW,
+              storeNow: NOW,
               present: PRESENT,
             }),
           ),

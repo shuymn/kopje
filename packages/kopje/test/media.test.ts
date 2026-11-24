@@ -1,12 +1,13 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TRANSFORMS_PER_UPLOAD, UPLOAD_BUDGET } from "../src/domain/media";
 import { handleScheduled } from "../src/jobs/scheduled";
 import { sweepMedia, THUMBNAIL_MUST_BE_BLANK, UPLOAD_SAVE_RESERVE_MS } from "../src/mastodon/media";
 import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
 import { retainedMetadata } from "../src/platform/image-bytes";
-import { RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
+import { ImageCodecError, RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
+import { restoreMarkerKey } from "../src/platform/media-files";
 import { remoteImageMetadata } from "../src/platform/remote-media-bytes";
 import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
@@ -40,6 +41,9 @@ import {
   TestCodec,
   upload,
   uploaded,
+  atStoreTime,
+  clocksAt,
+  storeClock,
 } from "./media-helpers";
 import { animatedWebp, exifOrientation, webpChunk } from "./remote-media-fixtures";
 import {
@@ -89,7 +93,7 @@ async function users(names: readonly string[] = ["alice", "bob"], codec = new Te
 }
 
 function sweep(h: { store: Parameters<typeof sql>[0] }, at: number) {
-  return sweepMedia(env, { build: () => env.CF_VERSION_METADATA.id, now: () => at, store: () => h.store });
+  return atStoreTime(at, () => sweepMedia(env, { build: () => env.CF_VERSION_METADATA.id, store: () => h.store }));
 }
 
 async function row(h: { store: Parameters<typeof sql>[0] }, id: string) {
@@ -118,6 +122,16 @@ async function stored(keys: string[]): Promise<string[]> {
   }
   return present;
 }
+
+// The Store's clock starts at the harness's NOW: media uploaded here is judged live at the Store's time
+// (media.ts liveMediaSql).
+beforeEach(() => {
+  storeClock(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("POST /api/v2/media", () => {
   it("reads the last of repeated file parts, as Rails assigns them", async () => {
@@ -204,6 +218,24 @@ describe("POST /api/v2/media", () => {
     expect(attach.status).toBe(422);
     expect(await sweep(h, NOW)).toBe(1);
     expect(await row(h, id)).toBeUndefined();
+  });
+
+  it("a failed upload deletes its own keys only, never its incoming/ input (#1828 plan 1.1)", async () => {
+    const h = await users();
+    // The input key of the reservation exists when the transformation fails (an AV route's input, a stray object).
+    h.codec.encode = async () => {
+      const [reserved] = await sql<{ id: string }>(h.store, "SELECT id FROM media_attachments");
+      await env.MEDIA.put(`incoming/${(reserved as { id: string }).id}`, "input");
+      throw new ImageCodecError(9523, "injected");
+    };
+    const response = await upload(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));
+    expect(response.status).toBe(500);
+    const [doomed] = await sql<{ id: string }>(h.store, "SELECT id FROM media_attachments");
+    const id = (doomed as { id: string }).id;
+    expect(await env.MEDIA.head(`incoming/${id}`)).not.toBeNull();
+    // The sweep, which holds the row's authority, deletes it with the row.
+    expect(await sweep(h, NOW)).toBe(1);
+    expect(await env.MEDIA.head(`incoming/${id}`)).toBeNull();
   });
 
   // The codec stands in for an Images output that kept metadata; each is stripped before the check (MEDIA-3).
@@ -982,7 +1014,7 @@ describe("explicit deletion", () => {
     const later = NOW + 60_000;
     const credential = { tokenHash: await sha256Hex(alice.token), scope: "write", now: later } as const;
     for (const id of [deleted.id, held.id]) {
-      expect(await h.store.deleteMedia(BUILD, { credential, id, now: later })).toEqual({
+      expect(await h.store.deleteMedia(BUILD, { credential, id })).toEqual({
         status: "ok",
         value: "deleted",
       });
@@ -1171,13 +1203,15 @@ describe("media lifecycle", () => {
     await h.request(`/api/v1/statuses/${status.id}`, bearer(alice.token, { method: "DELETE" }));
     expect(await sweep(h, NOW + 23 * HOUR)).toBe(0);
     expect(await stored(keys)).toEqual(keys);
+    // The redraft is made at that time, on both clocks.
+    clocksAt(h, NOW + 23 * HOUR);
     const redraft = await post(h, alice, { status: "again", media_ids: [media.id] });
     expect(redraft.media_attachments).toMatchObject([{ id: media.id }]);
 
     // Deleted again, it is detached again; after a day it can no longer be attached and is swept.
     await h.request(`/api/v1/statuses/${redraft.id}`, bearer(alice.token, { method: "DELETE" }));
     expect(await row(h, media.id)).toMatchObject({ status_id: null });
-    expect(await sweep(h, NOW + 25 * HOUR)).toBe(1);
+    expect(await sweep(h, NOW + 23 * HOUR + 25 * HOUR)).toBe(1);
     expect(await stored(keys)).toEqual([]);
     expect(await row(h, media.id)).toBeUndefined();
   });
@@ -1207,6 +1241,7 @@ describe("media lifecycle", () => {
     const h = await users();
     const media = await uploaded(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));
     const keys = await keysOf(h, media.id);
+    storeClock(NOW + 25 * HOUR);
     const deps = { build: () => env.CF_VERSION_METADATA.id, now: () => NOW + 25 * HOUR, store: () => h.store };
     await handleScheduled({ ...env, MAINTENANCE: "readonly" } as Env, deps);
     expect(await stored(keys)).toEqual(keys);
@@ -1398,5 +1433,127 @@ describe("the blurhash of a local upload", () => {
     const pinned = featured.orderedItems.find((item) => item.id === both.uri);
     expect(pinned?.attachment).toEqual(expected);
     expect(pinned?.["@context"][1]).toMatchObject(TERM);
+  });
+});
+
+// #1828 plan Q1, the Store's side: on the active path (avCandidate, passed by the media upload route alone with the
+// processor bound and a positive upload budget, and a passed normalize probe for its build) a reservation is not
+// refused for the Images budgets: it counts the attempt and names the budget an image would be refused for, the
+// account's share first. Otherwise, and for every route of this release, it is today's reservation.
+describe("the active path's reservation (Q1)", () => {
+  const month = new Date(NOW).toISOString().slice(0, 7);
+
+  async function world(probe: string | null) {
+    const h = await users();
+    if (probe !== null) {
+      await sql(
+        h.store,
+        "INSERT INTO kopje_state (name, value) VALUES ('media_probe:normalize@standard-4', ?)",
+        JSON.stringify({ version: probe, imageTag: null, at: NOW, ok: true, imagesVerified: true }),
+      );
+    }
+    const credential = { tokenHash: await sha256Hex(h.users.alice.token), scope: "write:media" as const, now: NOW };
+    const reserve = (monthlyTransforms: { instance: number; account: number }, avCandidate?: { build: string }) =>
+      h.store.reserveMedia(BUILD, {
+        credential,
+        token: `q1${crypto.randomUUID().replaceAll("-", "")}`,
+        monthlyTransforms,
+        avCandidate,
+        now: NOW,
+      });
+    const attempts = async () => {
+      const [found] = await sql<{ value: string }>(
+        h.store,
+        "SELECT value FROM kopje_state WHERE name = ?",
+        `media_attempts:${h.users.alice.id}`,
+      );
+      return found === undefined ? 0 : (JSON.parse(found.value) as number[]).length;
+    };
+    return { h, reserve, attempts };
+  }
+
+  it("inactive: Images spent answers today's refusal, no attempt counted", async () => {
+    const w = await world(null);
+    expect(await w.reserve({ instance: 0, account: 400 }, { build: BUILD })).toEqual({
+      status: "ok",
+      value: { status: "budget_exhausted", scope: "instance" },
+    });
+    expect(await w.attempts()).toBe(0);
+    // A pass for another build is no pass for this one.
+    const other = await world("another-build");
+    expect(await other.reserve({ instance: 400, account: 0 }, { build: BUILD })).toEqual({
+      status: "ok",
+      value: { status: "budget_exhausted", scope: "account" },
+    });
+    expect(await other.attempts()).toBe(0);
+  });
+
+  it("active: counts the attempt and answers account, account first when both are spent", async () => {
+    const w = await world(BUILD);
+    expect(await w.reserve({ instance: 0, account: 0 }, { build: BUILD })).toMatchObject({
+      status: "ok",
+      value: { status: "ok", imagesRefusal: "account" },
+    });
+    expect(await w.attempts()).toBe(1);
+  });
+
+  it("active: answers instance with the account's share left, and null with room in both", async () => {
+    const w = await world(BUILD);
+    expect(await w.reserve({ instance: 0, account: 400 }, { build: BUILD })).toMatchObject({
+      value: { status: "ok", imagesRefusal: "instance" },
+    });
+    expect(await w.reserve({ instance: 4000, account: 400 }, { build: BUILD })).toMatchObject({
+      value: { status: "ok", imagesRefusal: null },
+    });
+    // Without avCandidate the same reservation is today's: no imagesRefusal.
+    const today = await w.reserve({ instance: 4000, account: 400 });
+    expect(today).toMatchObject({ value: { status: "ok" } });
+    expect(today.status === "ok" && today.value.status === "ok" && "imagesRefusal" in today.value).toBe(false);
+    expect(await w.attempts()).toBe(3);
+  });
+
+  it("the attempt budget still refuses first on the active path", async () => {
+    const w = await world(BUILD);
+    for (let i = 0; i < UPLOAD_BUDGET.count; i++) {
+      await w.reserve({ instance: 0, account: 0 }, { build: BUILD });
+    }
+    expect(await w.reserve({ instance: 0, account: 0 }, { build: BUILD })).toEqual({
+      status: "ok",
+      value: { status: "rate_limited" },
+    });
+  });
+
+  it("no route passes avCandidate: an image upload and a profile image with Images spent answer today's 429", async () => {
+    const w = await world(BUILD);
+    await sql(w.h.store, "INSERT INTO kopje_state (name, value) VALUES (?, '4000')", `images_transforms:${month}`);
+    const refused = await upload(w.h, w.h.users.alice, mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png"));
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toEqual({ error: "This server's media processing budget for the month is used up" });
+    const avatar = new FormData();
+    avatar.append("avatar", new File([bytes(PNG_PLAIN)], "a.png", { type: "image/png" }));
+    const profile = await w.h.request("/api/v1/accounts/update_credentials", {
+      method: "PATCH",
+      body: avatar,
+      headers: { authorization: `Bearer ${w.h.users.alice.token}` },
+    });
+    expect(profile.status).toBe(429);
+    expect(await w.attempts()).toBe(0);
+    expect(await sql(w.h.store, "SELECT count(*) AS n FROM media_attachments")).toEqual([{ n: 0 }]);
+  });
+});
+
+// An ordinary image reservation is never a candidate, so its start does not read the restore marker (#1828 plan
+// section 3, "PR4-1"): an unreadable marker leaves image uploads as they were.
+describe("an unreadable restore marker", () => {
+  it("uploads an ordinary image when the PITR marker is unreadable", async () => {
+    const h = await users();
+    const key = restoreMarkerKey(h.store.id.toString());
+    await env.MEDIA.put(key, "{");
+    try {
+      const form = mediaForm(bytes(PNG_PLAIN), {}, "photo.png", "image/png");
+      expect((await upload(h, h.users.alice, form)).status).toBe(200);
+    } finally {
+      await env.MEDIA.delete(key);
+    }
   });
 });

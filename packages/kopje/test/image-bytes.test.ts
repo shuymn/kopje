@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import { isAnimated, retainedMetadata, sniffImageType } from "../src/platform/image-bytes";
-import { keyOfPath, mediaKeys, mediaPath, originalKey } from "../src/platform/media-files";
+import {
+  deleteKeys,
+  incomingKey,
+  keyOfPath,
+  mediaKeys,
+  mediaPath,
+  originalKey,
+  R2_DELETE_KEYS,
+  sweptKeys,
+} from "../src/platform/media-files";
 import {
   ANIMATED_WEBP,
   APNG,
@@ -211,6 +220,22 @@ describe("media keys (MEDIA-2)", () => {
       `files/${token}/small`,
     ]);
     expect(() => originalKey("../x")).toThrow("media id is not a server id");
+    expect(() => incomingKey("../x")).toThrow("media id is not a server id");
+    // The sweep and reconciliation delete the input too; a failed upload's own cleanup does not (#1828 plan 1.1).
+    expect(sweptKeys("100000000000000001", token)).toEqual([
+      "incoming/100000000000000001",
+      ...mediaKeys("100000000000000001", token),
+    ]);
+  });
+
+  it("deletes keys in calls of at most R2_DELETE_KEYS, in order", async () => {
+    const calls: string[][] = [];
+    const keys = Array.from({ length: 2 * R2_DELETE_KEYS + 1 }, (_, i) => `incoming/${i}`);
+    await deleteKeys({ delete: (batch) => (calls.push(batch), Promise.resolve()) }, keys);
+    expect(calls.map((c) => c.length)).toEqual([R2_DELETE_KEYS, R2_DELETE_KEYS, 1]);
+    expect(calls.flat()).toEqual(keys);
+    await deleteKeys({ delete: (batch) => (calls.push(batch), Promise.resolve()) }, []);
+    expect(calls).toHaveLength(3);
   });
 
   it("builds the paths of video and audio as full only", () => {

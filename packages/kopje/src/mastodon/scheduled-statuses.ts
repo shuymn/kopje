@@ -42,7 +42,7 @@ export const update: ApiHandler = withParams(async (c, deps, p) => {
 });
 
 export const destroy: ApiHandler = async (c, deps) => {
-  const input = { credential: userCredential(c, deps), id: scheduledId(c), now: deps.now() };
+  const input = { credential: userCredential(c, deps), id: scheduledId(c) };
   const deleted = authorized(await storeCall(c, deps, (s, b) => s.deleteScheduled(b, input)));
   return deleted ? c.json({}) : recordNotFound();
 };
