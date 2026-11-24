@@ -3250,33 +3250,38 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `gc_at`, a purge tombstone's `delete_after`) is written and compared in a Store transaction at the Store's time, for
   every upload: the reservation, the image path's start and completion, abandonment, the owner's reads and deletions,
   the attach check of posting and of a profile update (`liveMediaSql`), a status's or scheduled status's detach, and
-  the sweep's selection, its purge (the tombstone at `max(t, write deadline) + ORPHAN_GRACE_MS`) and reconciliation;
-  the Worker counts its own deadline from its own reading. One path per reservation: a candidate (`avCandidate`, type
+  the sweep's selection, its purge (the tombstone at `max(t, write deadline) + ORPHAN_GRACE_MS`) and reconciliation,
+  and the card-image claim's reading and writing of the tombstones it shares (`claimCardImages`); the Worker counts its
+  own deadline from its own reading. One path per reservation: a candidate (`avCandidate`, type
   `unknown`) takes the image path (`startTransforms` sets `image`) or the AV path (`takeAvSlot` sets the provisional
-  AV type), whichever comes first; each refuses a reservation the other chose, a doomed one and a finished one, and
-  `completeMedia` takes only an image-path row not doomed. A doom (`DOOMED_AT`: the owner's delete, a candidate's
-  abandonment, S10) is never revived, and a row without a URL is never live, so an abandoned reservation is neither
-  shown nor attachable. The owner's delete of an upload in progress (`deleteAvUpload`) dooms only a reservation on
-  the AV path or still a candidate; one the image path took is left to `deleteMedia`'s rules. An AV write deadline is
-  `AV_WRITE_WINDOW_MS` (30 minutes) after the reservation (`writeDeadline` in `src/domain/media.ts`), and the tombstone
-  of a purged AV upload keeps that deadline. Only the
-  staging row of the caller's `staged_at` hands the caller its input to delete (`releaseStaging`'s `released`,
-  `queueNormalize`'s `refused_cleanup_yours`); once queued, nothing hands it back. A write is confirmed one at a time
-  (`confirmAvWrite`), only under the live `start_id` of a running row before its `deadline_at`, which is never past
-  the write deadline, and the grant ends there; completion (`completeAvUpload`) takes the verifier's facts only, as
-  the verifier states them (`VideoFacts`, `AudioFacts`, `isFrameRate` in `src/platform/av-bytes.ts`), under that
-  `start_id`, and no confirmation follows it. A reservation made at or before the latest restore marker is fenced
-  (K3): it is never staged, a staging row of it is deleted with its slot and a queued one fails `restored`, and the
-  dispatch round applies K3 to a row before it dispatches it again, so a restored Store starts no processing a restore
-  forgot. The `teardown_id` frees only its own processing slot (`releaseAvSlot`) and authorizes nothing else. The
-  `incoming/` orphan pass's Store steps run only in a set-up Store and checkpoint only under the live claim taken
+  AV type), whichever comes first; each refuses a reservation the other chose, a doomed one and a finished one;
+  `completeMedia` and `completeEmoji` take only an image row not doomed, and `abandonEmoji` leaves another path's
+  reservation and its files alone; S4, S7, S9 and S10 treat an image-path row as no AV reservation. A doom
+  (`DOOMED_AT`: the owner's delete, S10, the abandonment of a candidate or an AV-path reservation) is never revived or
+  overwritten, and a row without a URL is never live, so an abandoned reservation is neither shown nor attachable.
+  The owner's delete of an upload in progress (`deleteAvUpload`) dooms only a reservation on the AV path or still a
+  candidate; one the image path took is left to `deleteMedia`'s rules. An AV write deadline is `AV_WRITE_WINDOW_MS`
+  (30 minutes) after the reservation (`writeDeadline` in `src/domain/media.ts`), and the tombstone of a purged AV
+  upload keeps that deadline. Only the staging row of the caller's `staged_at` hands the caller its input to delete
+  (`releaseStaging`'s `released`, `queueNormalize`'s `refused_cleanup_yours`); once queued, nothing hands it back. A
+  write is confirmed one at a time (`confirmAvWrite`), only under the live `start_id` of a running row before its
+  `deadline_at`, which is never past the write deadline, and the grant ends there; completion (`completeAvUpload`) takes
+  the verifier's facts only, as the verifier states them (`VideoFacts`, `AudioFacts`, `isFrameRate` in
+  `src/platform/av-bytes.ts`), under that `start_id`, and no confirmation follows it. A reservation made at or before
+  the latest restore marker is fenced (K3): it is never staged, a candidate of it never takes the image path
+  (`startTransforms` reads the marker), a staging row of it is deleted with its slot and a queued one fails `restored`,
+  and the dispatch round applies K3 to a row before it dispatches it again, so a restored Store starts no processing a
+  restore forgot. The `teardown_id` frees only its own processing slot (`releaseAvSlot`) and authorizes nothing else.
+  The `incoming/` orphan pass's Store steps run only in a set-up Store and checkpoint only under the live claim taken
   after the latest restore (`incomingSweepClaim`, `incomingClassify`, `incomingSwept`), and classify as orphans only
   `incoming/<id>` keys no attachment holds and `incoming/probe-<nonce>` copies, each uploaded more than a day before.
   `test/media-processing-ownership.test.ts` ("table 1.1, the Store's side"), `test/media-processing-precedence.test.ts`
   ("with the reservation at or before the restore marker (K3)", "named cells"), `test/media-processing-replay.test.ts`
   ("table 1.4: a repeat after a lost reply"), `test/media-processing-clock.test.ts` ("the reservation's time is the
   Store's (H1)", "one media clock: the Store's"), `test/media-processing-path.test.ts` ("one path per reservation",
-  "interleavings, each actor held"), `test/media-processing.test.ts` ("the incoming/ orphan pass (W4)",
+  "interleavings, each actor held", "the restore fence on the image path", "an emoji upload acts on an emoji's
+  reservation only", "the Worker's clock off the Store's"), `test/card-images.test.ts` ("the claim's tombstones on the
+  Store's clock"), `test/media-processing.test.ts` ("the incoming/ orphan pass (W4)",
   "W13: a restore between the sweep's selection and its deletion", "the dispatch round", "the completion's own facts
   and the text (P7, P9)"), `test/image-bytes.test.ts` ("media keys (MEDIA-2)"), `test/media.test.ts` ("a failed
   upload deletes its own keys only, never its incoming/ input (#1828 plan 1.1)").
