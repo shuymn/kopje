@@ -190,7 +190,7 @@ describe("smoke probe", () => {
     expect(fake.calls).toEqual([
       "start",
       "GET /healthz",
-      "POST /normalize?probe_ms=10000&encode_ms=60000",
+      "POST /normalize?work_ms=70000&still_ms=10000",
       "GET /normalize/still",
       "destroy",
     ]);

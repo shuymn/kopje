@@ -46,9 +46,10 @@ const PORT = 8080;
 // The first start on a host pulls the image (the experiment's first pulls took 3.2 and 7.9 s); a probe waits longer.
 export const READY_MS = 90_000;
 const READY_POLL_MS = 250;
-// The stage times the probe gives normalize, and the bound on the whole operation.
-const PROBE_STAGE_MS = 10_000;
-const PROBE_ENCODE_MS = 60_000;
+// The work deadline the probe gives normalize and its still's reserve (container/server/main.go), and the bound on
+// the whole operation.
+const PROBE_WORK_MS = 70_000;
+const PROBE_STILL_MS = 10_000;
 const OPERATION_MS = 120_000;
 // AV_OUTPUT_LIMIT and STILL_OUTPUT_LIMIT: the most read of a response body (container/server/main.go refuses first).
 export const AV_OUTPUT_LIMIT = 63 * 1024 * 1024;
@@ -67,7 +68,7 @@ const STILL_CLEANUP_MS = 2_000;
 const STILL_PROFILE = "still@standard-1" satisfies ProbeProfile;
 
 const OPERATIONS = {
-  normalize: { path: `/normalize?probe_ms=${PROBE_STAGE_MS}&encode_ms=${PROBE_ENCODE_MS}`, type: "video/mp4" },
+  normalize: { path: `/normalize?work_ms=${PROBE_WORK_MS}&still_ms=${PROBE_STILL_MS}`, type: "video/mp4" },
   still: { path: "/still", type: "image/png" },
 } as const;
 

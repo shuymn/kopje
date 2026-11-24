@@ -108,7 +108,7 @@ for input in "$work"/in/*; do
   base="$(basename "$input")"
   stem="${base%.*}"
   got="$(req "$stem" -X POST --data-binary "@/in/$base" -H 'Content-Type: application/octet-stream' \
-    'http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=600000')"
+    'http://127.0.0.1:8080/normalize?work_ms=660000&still_ms=30000')"
   read -r code kind <<<"$got"
   [ "$code" = 200 ] || { echo "$base: HTTP $code" >&2; exit 1; }
   ext=mp4

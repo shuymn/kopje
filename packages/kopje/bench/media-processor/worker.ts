@@ -7,7 +7,7 @@
 //   PUT    /object/<key>   stream an input into R2 (Content-Length required); answers the time it took (ingress)
 //   DELETE /object/<key>   delete one object
 //   POST   /run?op=normalize|still&key=<key>&expect=video|audio&instance=standard-1|standard-3|standard-4
-//                         [&threads=default|filters:N|all:N][&encode_ms=<ms>]
+//                         [&threads=default|filters:N|all:N][&work_ms=<ms>&still_ms=<ms>]
 //          one unit of work on a fresh object, as Kopje's MediaProcessor runs it: start with no Internet, /healthz,
 //          the input read once from R2 and streamed as the request body, the output streamed into R2 under out/
 //          through the output verifier (verifyMp4 or verifyMp3 for the fixture's kind, its Content-Length checked),
@@ -96,7 +96,8 @@ export class BenchUnit extends DurableObject<Env> {
     key: string,
     instance: Instance,
     threads: string,
-    encodeMs: number,
+    // The container's work deadline from its request and the still's reserve in it (container/server/main.go).
+    work: { workMs: number; stillMs: number },
   ) {
     const t0 = Date.now();
     const runId = this.ctx.id.toString().slice(0, 12);
@@ -159,7 +160,7 @@ export class BenchUnit extends DurableObject<Env> {
         await scheduler.wait(100);
       }
       r.startToReadyMs = Date.now() - t0;
-      const path = op === "normalize" ? `/normalize?probe_ms=30000&encode_ms=${encodeMs}` : "/still";
+      const path = op === "normalize" ? `/normalize?work_ms=${work.workMs}&still_ms=${work.stillMs}` : "/still";
       const t1 = Date.now();
       const res = await port.fetch(`http://container${path}`, {
         method: "POST",
@@ -339,19 +340,23 @@ export default {
       const key = url.searchParams.get("key") ?? "";
       const instance = url.searchParams.get("instance") as Instance;
       const threads = url.searchParams.get("threads") ?? "default";
-      const encodeMs = Number(url.searchParams.get("encode_ms") ?? 1_800_000);
+      const work = {
+        workMs: Number(url.searchParams.get("work_ms") ?? 1_830_000),
+        stillMs: Number(url.searchParams.get("still_ms") ?? 30_000),
+      };
       if (
         (op !== "normalize" && op !== "still") ||
         (expect !== "video" && expect !== "audio") ||
         !KEY.test(key) ||
         !INSTANCES.includes(instance) ||
         !THREADS.test(threads) ||
-        !Number.isSafeInteger(encodeMs)
+        !Number.isSafeInteger(work.workMs) ||
+        !Number.isSafeInteger(work.stillMs)
       ) {
         return Response.json({ error: "bad parameters" }, { status: 400 });
       }
       const unit = env.BENCH.getByName(`run:${crypto.randomUUID()}`);
-      return keepAlive(ctx, unit.run(op, expect, key, instance, threads, encodeMs));
+      return keepAlive(ctx, unit.run(op, expect, key, instance, threads, work));
     }
     if (url.pathname === "/dispatch" && request.method === "POST") {
       return Response.json({ dispatchMs: await env.BENCH.getByName(`dispatch:${crypto.randomUUID()}`).dispatch() });

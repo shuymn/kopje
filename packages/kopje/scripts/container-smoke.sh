@@ -10,6 +10,10 @@
 # each rung's last duration (exactly 120 s of 320x180 at 60 fps and 300 s of 720p30, with audio, kept at 60 fps and at
 # 1280x720), and 119.9 s of the first with its audio starting 500 ms late, which the verifier must hold to the same rung;
 # and M4A, FLAC, Ogg, MP3 and Opus-only WebM audio.
+# The work deadline (#1828 PR4 plan, P8): rung1.mp4 delivered over about 4 s, to a second container held to
+# SLOW_CPUS so that its encode really takes longer than the time left, answers from its arrival within the work
+# deadline SLOW_WORK_MS (refused for the envelope, or cut at the deadline), where the old fixed stage times (an encode
+# time counted after the input and the probe) answered past it.
 # One more input, an MP4 whose headers declare 320x240 but whose frames after the first are 4096x2160, is checked
 # apart: normalize refuses it (422 pixels: the decoder's diagnostic for the frames it dropped over the limit refuses it,
 # whatever the output's length), and a still is the first frame's 320x240 or the operation fails. Its AV1 counterpart (a second of
@@ -42,8 +46,8 @@
 #   bash packages/kopje/scripts/container-smoke.sh [--build] <image tag> [<input>...]
 #     --build  builds packages/kopje/container into the tag first
 #     inputs   [video:|audio:]<path>; default: packages/kopje/container/probe.mp4
-#   CPUS (default 2, standard-3's vCPUs) and MEMORY (default 8g) size the container; ENCODE_MS (default 600000) is
-#   the encode stage time normalize is given; MIN_SSIM_480P (default 0.95; the noisy input measured 0.990) the
+#   CPUS (default 2, standard-3's vCPUs) and MEMORY (default 8g) size the container; WORK_MS (default 660000) is
+#   the work deadline normalize is given and STILL_MS (default 30000) its still's reserve; MIN_SSIM_480P (default 0.95; the noisy input measured 0.990) the
 #   480p30 quality floor.
 set -euo pipefail
 
@@ -61,14 +65,17 @@ CURL_IMAGE='curlimages/curl:8.17.0@sha256:935d9100e9ba842cdb060de42472c7ca90cfe9
 ffmpeg_image="$(sed -n 's/^FROM \(mwader\/static-ffmpeg[^ ]*\) AS ffmpeg$/\1/p' "$pkg/container/Dockerfile")"
 CPUS="${CPUS:-2}"
 MEMORY="${MEMORY:-8g}"
-ENCODE_MS="${ENCODE_MS:-600000}"
+WORK_MS="${WORK_MS:-660000}"
+STILL_MS="${STILL_MS:-30000}"
+SLOW_WORK_MS=30000
+SLOW_CPUS=0.05
 MIN_SSIM_480P="${MIN_SSIM_480P:-0.95}"
 work="$(mktemp -d "${TMPDIR:-/tmp}/kopje-container-smoke.XXXXXX")"
 # The fixtures are written as this user, so the script can rewrite them (the image's user may be root or another uid).
 as_me=(--user "$(id -u):$(id -g)")
 name="kopje-media-smoke-$$"
 cleanup() {
-  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker rm -f "$name" "$name-slow" >/dev/null 2>&1 || true
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -215,7 +222,7 @@ status() { sed -n '1s/^HTTP\/[0-9.]* \([0-9]*\).*/\1/p' <<<"$1"; }
 # The headers of a normalize of <input in $work/in>, its output written to <output file>.
 post_normalize() { # <input> <output file>
   req "$2" -X POST --data-binary "@/in/$1" -H 'Content-Type: application/octet-stream' \
-    "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=$ENCODE_MS"
+    "http://127.0.0.1:8080/normalize?work_ms=$WORK_MS&still_ms=$STILL_MS"
 }
 # The headers of a /still of <input in $work/in>, its output written to <output file>.
 post_still() { # <input> <output file>
@@ -642,11 +649,36 @@ head -c 94371841 /dev/zero >"$work/in/over-cap.bin"
 printf 'not media' >"$work/in/text.txt"
 for case in "over-cap.bin 413 too_large" "text.txt 422 unreadable"; do
   read -r file want code_want <<<"$case"
-  h="$(req refusal -X POST --data-binary "@/in/$file" "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=60000")"
+  h="$(req refusal -X POST --data-binary "@/in/$file" "http://127.0.0.1:8080/normalize?work_ms=60000&still_ms=1000")"
   got="$(status "$h") $(header Kopje-Error "$h")"
   check "$([ "$got" = "$want $code_want" ] && echo true)" "$file: $got, want $want $code_want"
   echo "| $file | normalize | $(status "$h") | | | | | | | | $(header Kopje-Error "$h") |"
 done
+
+# The work deadline: rung1.mp4 sent at a quarter of its size a second, so its input takes about 4 s, to a container
+# held to SLOW_CPUS. Whatever the answer (the envelope refused for the time left, a timeout at the cut, or an output),
+# its first byte arrives by SLOW_WORK_MS from the request's start, never a fixed encode time after the input.
+slow="$name-slow"
+docker run -d --name "$slow" --network none --cpus "$SLOW_CPUS" --memory "$MEMORY" --read-only \
+  --tmpfs /tmp:rw,size=1g "$image" >/dev/null
+for _ in $(seq 1 240); do
+  docker run --rm --network "container:$slow" "$CURL_IMAGE" -sf http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
+  sleep 0.5
+done
+cp "$work/fixture/rung1.mp4" "$work/in/slow.mp4"
+rate=$(($(wc -c <"$work/in/slow.mp4") / 4 + 1))
+h="$(docker run --rm --network "container:$slow" -v "$work/in:/in:ro" "$CURL_IMAGE" -sS -H 'Expect:' -o /dev/null -D - \
+  -w 'starttransfer: %{time_starttransfer}\n' --limit-rate "$rate" -X POST --data-binary @/in/slow.mp4 \
+  -H 'Content-Type: application/octet-stream' \
+  "http://127.0.0.1:8080/normalize?work_ms=$SLOW_WORK_MS&still_ms=1000" | tr -d '\r')"
+docker rm -f "$slow" >/dev/null
+first="$(header starttransfer "$h")"
+input_ms="$(header Kopje-Input-Ms "$h")"
+got="$(status "$h") $(header Kopje-Error "$h")"
+check "$(python3 -I -c 'import sys; print("true" if float(sys.argv[1]) * 1000 <= int(sys.argv[2]) and int(sys.argv[3]) >= 3000 else "false")' \
+  "${first:-99}" "$SLOW_WORK_MS" "${input_ms:-0}")" \
+  "slow input: $got, first byte at ${first:-?} s, input ${input_ms:-?} ms, want by $SLOW_WORK_MS ms with 3 s or more of input"
+echo "| slow.mp4 | normalize, work $SLOW_WORK_MS ms | $(status "$h") | ${first:-} | $(awk -v ms="${input_ms:-0}" 'BEGIN { printf "%.1f", ms / 1000 }') | | | | | | $(header Kopje-Error "$h") |"
 
 # Kopje's verifier on every output and still kept above.
 (IFS=,; printf '[%s]\n' "${fresh_list[*]}") >"$fresh/list.json"
