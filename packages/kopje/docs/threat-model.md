@@ -3246,9 +3246,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `incoming/<id>` of the reservation's id (`incomingKey` in `src/platform/media-files.ts`). The sweep and
   reconciliation delete it with the upload's other keys (`sweptKeys`), in chunks of `R2_DELETE_KEYS` (1,000) keys a
   call; a failed image or emoji upload's own cleanup deletes only its original and served files (`mediaKeys`), never
-  an input. A reservation that may become a video or audio upload is made at the Store's time, so every fence below
-  compares the Store's times only. Its write deadline is `AV_WRITE_WINDOW_MS` (30 minutes) after the reservation
-  (`writeDeadline` in `src/domain/media.ts`), and the tombstone of a purged AV upload keeps that deadline. Only the
+  an input. A reservation that may become a video or audio upload is made as a candidate at the Store's time (type
+  `unknown`), every other at the Worker's, and only a candidate is staged (`takeAvSlot`). The Store judges a
+  reservation's write deadline, and the sweep, its purge and reconciliation the `gc_at` and tombstone deadlines, at the
+  earlier of the Worker's and the Store's times (`writerTime`): a reservation stays open while either clock is before
+  its deadline, and a row or a tombstone is taken only once both have passed it. The image path's completion and
+  abandonment refuse an upload a processing row holds, so the two paths stay exclusive, and the owner's delete
+  (`deleteAvUpload`) dooms only an unfinished, unattached reservation of the AV path. An AV write deadline is
+  `AV_WRITE_WINDOW_MS` (30 minutes) after the reservation (`writeDeadline` in `src/domain/media.ts`), and the tombstone
+  of a purged AV upload keeps that deadline. Only the
   staging row of the caller's `staged_at` hands the caller its input to delete (`releaseStaging`'s `released`,
   `queueNormalize`'s `refused_cleanup_yours`); once queued, nothing hands it back. A write is confirmed one at a time
   (`confirmAvWrite`), only under the live `start_id` of a running row before its `deadline_at`, which is never past
@@ -3264,10 +3270,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/media-processing-ownership.test.ts` ("table 1.1, the Store's side"), `test/media-processing-precedence.test.ts`
   ("with the reservation at or before the restore marker (K3)", "named cells"), `test/media-processing-replay.test.ts`
   ("table 1.4: a repeat after a lost reply"), `test/media-processing-clock.test.ts` ("the reservation's time is the
-  Store's (H1)"), `test/media-processing.test.ts` ("the incoming/ orphan pass (W4)", "W13: a restore between the
-  sweep's selection and its deletion", "the dispatch round", "the completion's own facts and the text (P7, P9)"),
-  `test/image-bytes.test.ts` ("media keys (MEDIA-2)"), `test/media.test.ts` ("a failed upload deletes its own keys
-  only, never its incoming/ input (#1828 plan 1.1)").
+  Store's (H1)", "one clock per reservation"), `test/media-processing.test.ts` ("the incoming/ orphan pass (W4)",
+  "W13: a restore between the sweep's selection and its deletion", "the dispatch round", "the completion's own facts
+  and the text (P7, P9)"), `test/image-bytes.test.ts` ("media keys (MEDIA-2)"), `test/media.test.ts` ("a failed
+  upload deletes its own keys only, never its incoming/ input (#1828 plan 1.1)").
   A custom emoji upload (`kopje-admin emoji add`, `src/mastodon/emoji-upload.ts`) builds its keys as every upload's,
   from a reservation the Store records before any write (`reserveEmoji` in `src/domain/local-emojis.ts`); completion
   and promotion are one transaction (`completeEmoji`: the row is kept, gc_at NULL, with its emoji row), and a failure
