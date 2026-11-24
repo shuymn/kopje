@@ -1043,6 +1043,25 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     expect((await leaseRow(h.store))[0]?.holder).toBe("other");
   });
 
+  it("answers a release of an earlier generation as released, and leaves the live one as it is", async () => {
+    const h = await setup();
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const first = await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h" });
+    expect(first).toMatchObject({ status: "ok", generation: 1 });
+    // That lease ends, and the same holder takes the next generation.
+    await runInDurableObject(h.store, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE kopje_state SET value = json_set(value, '$.until', 1) WHERE name = 'media_rebuild_lease'",
+      );
+    });
+    expect(await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h" })).toMatchObject({ generation: 2 });
+    expect(
+      await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h", generation: 1, release: true }),
+    ).toEqual({ status: "released" });
+    expect(await leaseRow(h.store)).toEqual([expect.objectContaining({ holder: "h", generation: 2 })]);
+    expect((await leaseRow(h.store))[0]!.until).toBeGreaterThan(Date.now());
+  });
+
   // The store, with each lease call after the take held at `hold(n)` (n counts them from 1) before it reaches the Store.
   function holding(store: StoreStub, hold: (n: number) => Promise<void> | null) {
     let calls = 0;

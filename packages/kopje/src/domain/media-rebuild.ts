@@ -233,7 +233,7 @@ function readiness(
 export type RebuildLeaseResult =
   | { status: "ok"; remainingMs: number; generation: number }
   | { status: "released" }
-  // A renewal or release of a generation that is not the live one (released, expired or taken since).
+  // A renewal of a generation that is not the live one (released, expired or taken since). A release never answers it.
   | { status: "lost" }
   | { status: "needs-readonly" }
   | { status: "settling"; readyAt: number }
@@ -242,10 +242,12 @@ export type RebuildLeaseResult =
   | { status: "denied"; reason: string };
 
 // Takes the lease for `holder` (for REBUILD_LEASE_MS from the Store's `now`) as a new generation, renews it, or releases
-// it. With `generation` (the take's answer) a renewal or release succeeds only for that generation while it is live
-// and the holder's: a renewal that arrives after the release, after the lease ended or after another call took it is
-// `lost` and changes nothing, so it can never take the lease back. Without one, a holder that holds the live lease
-// renews it and a release by a holder that no longer holds it changes nothing.
+// it. With `generation` (the take's answer) a renewal succeeds only for that generation while it is live and the
+// holder's: one that arrives after the release, after the lease ended or after another call took it is `lost` and
+// changes nothing, so it can never take the lease back. A release is idempotent: it ends that generation when it is the
+// holder's, and otherwise (released already, or a later generation, even the same holder's, now live) changes nothing,
+// answering `released` either way. Without `generation`, a holder that holds the live lease renews it and a release by
+// a holder that no longer holds it changes nothing.
 export const rebuildLease = mediaRebuildOperation.atStoreTime("now")<
   {
     authority: ImportAuthority;
