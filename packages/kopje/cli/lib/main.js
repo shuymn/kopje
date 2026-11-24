@@ -53,7 +53,8 @@ Commands
                                 cutover's moved images) from their originals in R2, and correct their sizes; video and
                                 audio files are copied after their check, a video's still is made by the media
                                 processor or its preview cleared. --stills also gives a still to videos that have none
-                                (the processor bound, MEDIA_UPLOAD_MONTHLY_JOBS left). Writes only
+                                (the processor bound, MEDIA_UPLOAD_MONTHLY_JOBS left). --dry-run checks that a
+                                video or audio row's original exists, not that it plays. Writes only
                                 before publish, or 20 minutes after "maintenance on" (the env MAINTENANCE is not
                                 enough), one call at a time. Prints counts and the rows to look at; exits 3 when an original is
                                 missing, a type does not match, re-encoding failed, the Images quota or monthly budget

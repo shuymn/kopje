@@ -438,6 +438,16 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     await addRow(h.store, { original: null });
     const step = await (await h.post(adminClaims(), "/admin/media/rebuild", { dryRun: true })).json<Step>();
     expect(step.counts).toMatchObject({ "would-build": 1, built: 0, "original-missing": 1 });
+    // The image-only answer: no video or audio row, no `fallback`.
+    expect(Object.keys(step.counts).toSorted()).toEqual([
+      "built",
+      "failed",
+      "gone",
+      "original-missing",
+      "skipped-existing",
+      "type-mismatch",
+      "would-build",
+    ]);
     expect(h.codec.calls).toBe(0);
     expect(await transforms(h.store)).toBe(0);
     expect(await files(row)).toEqual([false, false]);

@@ -97,7 +97,7 @@ type RebuildProblem = { id: string; outcome: "original-missing" | "type-mismatch
 export type RebuildStep =
   | {
       ok: true;
-      counts: Record<RebuildOutcome, number>;
+      counts: RebuildCounts;
       problems: RebuildProblem[];
       // True when the call reached the last row; otherwise the next call continues after `next` (null: from the
       // start).
@@ -145,7 +145,10 @@ class Refused extends Error {
   }
 }
 
-function emptyCounts(): Record<RebuildOutcome, number> {
+// `fallback` is counted only once a video falls back, so an answer with no video or audio row is the image-only one.
+type RebuildCounts = Record<Exclude<RebuildOutcome, "fallback">, number> & { fallback?: number };
+
+function emptyCounts(): RebuildCounts {
   return {
     built: 0,
     "would-build": 0,
@@ -153,7 +156,6 @@ function emptyCounts(): Record<RebuildOutcome, number> {
     "original-missing": 0,
     "type-mismatch": 0,
     failed: 0,
-    fallback: 0,
     gone: 0,
   };
 }
@@ -421,7 +423,7 @@ async function pass(
             });
             break;
           default:
-            counts[outcome.kind]++;
+            counts[outcome.kind] = (counts[outcome.kind] ?? 0) + 1;
             quota ||= outcome.quota === true;
         }
         handled = row.id;

@@ -434,8 +434,9 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
         stopped: "retry",
         done: false,
         next: null,
-        counts: { built: 0, fallback: 0 },
+        counts: { built: 0 },
       });
+      expect((step as { counts: Record<string, number> }).counts.fallback).toBeUndefined();
       expect(await rowOf(store, row.id)).toEqual(before);
       expect(await bytesOf(`files/${row.token}/full`)).toEqual(row.original);
       expect(await env.MEDIA.head(`files/${row.token}/small`)).toBeNull();
