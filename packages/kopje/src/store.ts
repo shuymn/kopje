@@ -500,11 +500,28 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, mediaRebuild.rebuildLease, { ...input, restoredAt });
   }
 
-  // The image path's start (domain/media.ts startTransforms), after the restore marker is read (restoreMarkerKey), so a
-  // candidate reserved at or before the last restore is refused as S1 refuses it.
-  async startTransforms(callerBuild: string, input: Omit<OperationInput<typeof media.startTransforms>, "restoredAt">) {
-    const restoredAt = await this.#restoredAt();
-    return this.#kernel.execute(callerBuild, media.startTransforms, { ...input, restoredAt });
+  // The image path's start (domain/media.ts startTransforms). The restore marker (restoreMarkerKey) is read only when
+  // the row is a candidate (`needs_marker`), and the start runs again with it, so a candidate reserved at or before the
+  // last restore, or whose marker cannot be read, is refused as S1 refuses it, and an ordinary image's start never
+  // depends on the marker.
+  async startTransforms(
+    callerBuild: string,
+    input: Omit<OperationInput<typeof media.startTransforms>, "restoredAt">,
+  ): Promise<Judged<media.Started>> {
+    const first = await this.#kernel.execute(callerBuild, media.startTransforms, { ...input, restoredAt: "unread" });
+    if (first.status !== "ok" || first.value.status !== "needs_marker") {
+      return first as Judged<media.Started>;
+    }
+    let restoredAt: media.RestoreMarker;
+    try {
+      restoredAt = await this.#restoredAt();
+    } catch {
+      restoredAt = "unreadable";
+    }
+    return (await this.#kernel.execute(callerBuild, media.startTransforms, {
+      ...input,
+      restoredAt,
+    })) as Judged<media.Started>;
   }
 
   // The media processor's upload operations (domain/media-processing.ts, S1-S13), each at the Store's own time after the

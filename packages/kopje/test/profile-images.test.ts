@@ -1,9 +1,11 @@
 import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { DOOMED_AT, profileReleaseSql } from "../src/domain/media";
 import { API_BODY_LIMIT, FILE_PART_SLACK } from "../src/mastodon/params";
 import { PROFILE_IMAGE_LIMIT } from "../src/platform/images";
+import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, sql } from "./api-helpers";
 import { ANIMATED_GIF, PNG_PLAIN } from "./fixtures/images";
@@ -499,5 +501,20 @@ describe("the settings page", () => {
       duplex: "half",
     } as RequestInit);
     expect(response.status).toBe(302);
+  });
+});
+
+describe("update_credentials with an unreadable restore marker", () => {
+  it("applies an avatar: an ordinary image's start does not read the marker", async () => {
+    const h = await setup();
+    const key = restoreMarkerKey(h.store.id.toString());
+    await env.MEDIA.put(key, "{");
+    try {
+      const response = await patch(h, h.users.alice.token, formOf([["avatar", png()]]));
+      expect(response.status).toBe(200);
+      expect((await profile(h.store))?.avatar_url).toMatch(/\/full\.png$/);
+    } finally {
+      await env.MEDIA.delete(key);
+    }
   });
 });

@@ -333,14 +333,20 @@ export type Started =
 // time (not completed, abandoned, doomed or past its deadline) and on the image path or none yet: a candidate becomes
 // an image here, and one S1 took (video or audio) is refused, so a reservation is written by one path only. The
 // transformations are charged to the budgets of the month `now` is in.
-// `restoredAt`: the restore marker the Store's method reads (store.ts), as the AV operations' (K3). A candidate
-// reserved at or before the last restore is refused, as S1 refuses it: the restore may have rewound S1, and the AV
-// path's late writes (W1) may still land on its keys. completeMedia needs no fence of its own: a start the restore
-// rewound left the row a candidate, which it refuses, and a start the restore kept committed before the bookmark, so
-// no S1 took the reservation in either history. A plain image reservation, never a candidate, is not fenced.
+// `restoredAt`: the restore marker, as the AV operations' (K3), which the Store's method reads only for a candidate
+// (store.ts): `unread` until then, so an ordinary image's start never depends on the marker, and `unreadable` when
+// the read failed. The transaction that would choose the path for a candidate it has not read the marker for answers
+// `needs_marker`, and the method runs it again with the marker, so the row is judged afresh where the path is chosen.
+// A candidate reserved at or before the last restore, or whose marker cannot be read, is refused, as S1 refuses it:
+// the restore may have rewound S1, and the AV path's late writes (W1) may still land on its keys. completeMedia needs
+// no fence of its own: a start the restore rewound left the row a candidate, which it refuses, and a start the restore
+// kept committed before the bookmark, so no S1 took the reservation in either history. A plain image reservation,
+// never a candidate, is not fenced.
+export type RestoreMarker = number | null | "unread" | "unreadable";
+
 export const startTransforms = userWriteOperation.atStoreTime("storeNow")<
-  { id: string; monthlyTransforms: MonthlyTransforms; now: number; storeNow: number; restoredAt: number | null },
-  Started
+  { id: string; monthlyTransforms: MonthlyTransforms; now: number; storeNow: number; restoredAt: RestoreMarker },
+  Started | { status: "needs_marker" }
 >((db, { id, monthlyTransforms, now, storeNow, restoredAt }, { accountId }) => {
   const open = db.first<{ type: string; created_at: string }>(
     `SELECT type, created_at FROM media_attachments WHERE id = ? AND account_id = ? AND processed = 0 AND gc_at <> ?
@@ -351,11 +357,16 @@ export const startTransforms = userWriteOperation.atStoreTime("storeNow")<
     AV_CANDIDATE_TYPE,
     iso(storeNow - WRITE_WINDOW_MS),
   );
-  if (
-    open === undefined ||
-    (open.type === AV_CANDIDATE_TYPE && restoredAt !== null && Date.parse(open.created_at) <= restoredAt)
-  ) {
+  if (open === undefined) {
     return { status: "expired" };
+  }
+  if (open.type === AV_CANDIDATE_TYPE) {
+    if (restoredAt === "unread") {
+      return { status: "needs_marker" };
+    }
+    if (restoredAt === "unreadable" || (restoredAt !== null && Date.parse(open.created_at) <= restoredAt)) {
+      return { status: "expired" };
+    }
   }
   const refused = budgetRefusal(db, accountId, monthlyTransforms, now);
   if (refused !== null) {

@@ -7,6 +7,7 @@ import { sweepMedia, THUMBNAIL_MUST_BE_BLANK, UPLOAD_SAVE_RESERVE_MS } from "../
 import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
 import { retainedMetadata } from "../src/platform/image-bytes";
 import { ImageCodecError, RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
+import { restoreMarkerKey } from "../src/platform/media-files";
 import { remoteImageMetadata } from "../src/platform/remote-media-bytes";
 import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
@@ -1538,5 +1539,21 @@ describe("the active path's reservation (Q1)", () => {
     expect(profile.status).toBe(429);
     expect(await w.attempts()).toBe(0);
     expect(await sql(w.h.store, "SELECT count(*) AS n FROM media_attachments")).toEqual([{ n: 0 }]);
+  });
+});
+
+// An ordinary image reservation is never a candidate, so its start does not read the restore marker (#1828 plan
+// section 3, "PR4-1"): an unreadable marker leaves image uploads as they were.
+describe("an unreadable restore marker", () => {
+  it("uploads an ordinary image when the PITR marker is unreadable", async () => {
+    const h = await users();
+    const key = restoreMarkerKey(h.store.id.toString());
+    await env.MEDIA.put(key, "{");
+    try {
+      const form = mediaForm(bytes(PNG_PLAIN), {}, "photo.png", "image/png");
+      expect((await upload(h, h.users.alice, form)).status).toBe(200);
+    } finally {
+      await env.MEDIA.delete(key);
+    }
   });
 });
