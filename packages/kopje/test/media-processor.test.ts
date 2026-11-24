@@ -788,8 +788,9 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
   it.each([
     [422, "no_video", "no_video"],
     [422, "pixels", "pixels"],
-    [413, "too_large", "too_large"],
+    [422, "no_frame", "no_frame"],
     [500, "internal", undefined],
+    [413, "too_large", "too_large"],
     [504, "timeout", undefined],
     [500, "no_video", undefined],
     [422, "still_failed", undefined],

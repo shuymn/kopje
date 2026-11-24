@@ -383,6 +383,11 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
       {},
     ],
     [
+      "a still of which the container found no frame",
+      { answer: { ok: false, failure: "still:no_frame", image: null, input: "no_frame" } as StillOutcome },
+      {},
+    ],
+    [
       "a still whose input the container refused",
       { answer: { ok: false, failure: "still:pixels", image: null, input: "pixels" } as StillOutcome },
       {},
@@ -397,7 +402,12 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     const store = await setup();
     const row = await addAv(store, "video");
     const made = maker(answers);
-    expect(await run(store, { stills: made.stills, ...budgets })).toMatchObject({ counts: { fallback: 1 } });
+    // The cursor moves past the row: the call goes on.
+    expect(await run(store, { stills: made.stills, ...budgets })).toMatchObject({
+      counts: { fallback: 1 },
+      stopped: null,
+      done: true,
+    });
     expect(await rowOf(store, row.id)).toMatchObject({ preview_url: null, blurhash: null });
     expect(await env.MEDIA.head(`files/${row.token}/small`)).toBeNull();
     expect((await env.MEDIA.list({ prefix: "incoming/" })).objects).toEqual([]);

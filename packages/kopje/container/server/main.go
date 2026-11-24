@@ -358,6 +358,11 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = stripPNG(out)
 	}
+	// No frame at the seek nor at 0 from an input ffmpeg read without failing: the input has no still to give.
+	if errors.Is(err, errNoFrame) && ctx.Err() == nil {
+		writeFailure(w, refuse(refuseNoFrame))
+		return
+	}
 	if err != nil {
 		writeFailure(w, ffmpegFailure(ctx, "still_failed"))
 		return
@@ -505,6 +510,10 @@ func runProbe(ctx context.Context, args []string) (*probeResult, *failure) {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, fail(http.StatusGatewayTimeout, "timeout")
 		}
+		// Only ffprobe exiting with a status is about the input; one that did not start, or that the host killed, is not.
+		if !exitedWithStatus(err) {
+			return nil, fail(http.StatusInternalServerError, "internal")
+		}
 		return nil, refuse(refuseUnreadable)
 	}
 	var p probeResult
@@ -515,6 +524,18 @@ func runProbe(ctx context.Context, args []string) (*probeResult, *failure) {
 		return nil, refuse(refuseFormat)
 	}
 	return &p, nil
+}
+
+// exitedWithStatus reports whether a command's error is the process exiting with a non-zero status: it started and
+// ran to its own end. Not starting (a missing binary, no resources) and a signal from outside (the host's OOM killer;
+// the job's own kill comes with its context's end, which callers check first) are not.
+func exitedWithStatus(err error) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return false
+	}
+	status, ok := exit.Sys().(syscall.WaitStatus)
+	return ok && status.Exited()
 }
 
 // frameICC runs the frame probe, after the header probe's limits passed: whether the stream at index has an ICC

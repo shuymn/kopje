@@ -45,9 +45,19 @@ export type MediaProcessorClient = {
 // that failed. `busy`: the object already runs an operation (a probe object's single owner, design 4.5). `pending`: the
 // container's destroy has not finished, so the caller keeps its lease until the object's alarm has cleaned up.
 // The container's refusals of a still's input itself (container/server: the plan's refusals /still answers with 422,
-// and 413 for an input past its limit). Only these are about the input; every other failure of a still is the
-// processor's or the platform's, and says nothing of the row.
-export const STILL_INPUT_REFUSALS = ["unreadable", "format", "no_stream", "no_video", "pixels", "too_large"] as const;
+// no_frame when ffmpeg read the input and wrote no frame at the seek nor at 0, and 413 for an input past its limit).
+// The server answers unreadable only when ffprobe ran and exited with a status, and 500 internal when it did not start
+// or was killed. Only these are about the input; every other failure of a still is the processor's or the platform's,
+// and says nothing of the row.
+export const STILL_INPUT_REFUSALS = [
+  "unreadable",
+  "format",
+  "no_stream",
+  "no_video",
+  "pixels",
+  "no_frame",
+  "too_large",
+] as const;
 export type StillInputRefusal = (typeof STILL_INPUT_REFUSALS)[number];
 
 export type StillOutcome =

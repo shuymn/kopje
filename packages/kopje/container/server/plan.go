@@ -205,6 +205,8 @@ const (
 	refuseEnvelope   refusal = "envelope"
 	// An output shorter than the plan (checkOutput); a 400 "truncated" is a request body shorter than its length.
 	refuseTruncated refusal = "truncated"
+	// /still: ffmpeg read the input and wrote no frame, at the seek or at 0.
+	refuseNoFrame refusal = "no_frame"
 )
 
 // What normalize does with an input, decided from the probe before any decoding.
