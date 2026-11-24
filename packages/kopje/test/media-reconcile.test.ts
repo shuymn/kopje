@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { DETACHED_GRACE_MS, ORPHAN_GRACE_MS, TRANSFORMS_PER_UPLOAD } from "../src/domain/media";
 import { MAX_FIELD_LENGTH, reconcileMedia, sweepMedia } from "../src/mastodon/media";
@@ -492,15 +492,23 @@ describe("custom emoji images after every grace period", () => {
       h.store,
       "SELECT id, file_token FROM media_attachments WHERE url = ''",
     );
+    // Both clocks move on: the sweep and reconciliation take a row only once the Store's clock has passed too.
     const later = Math.max(NOW, Date.now()) + 3 * DAY + HOUR;
-    const deps = { build: () => env.CF_VERSION_METADATA.id, store: () => h.store, now: () => later };
-    while ((await sweepMedia(env, deps)) > 0) {
-      // One bounded batch per run.
+    const deps = { build: () => env.CF_VERSION_METADATA.id, store: () => h.store, now: () => Date.now() };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(later);
+      while ((await sweepMedia(env, deps)) > 0) {
+        // One bounded batch per run.
+      }
+      // A late write of the failed upload, which reconciliation deletes once its tombstone is due.
+      await env.MEDIA.put(`files/${failed!.file_token}/full`, "late");
+      // The tombstone falls due ORPHAN_GRACE_MS after the sweep that left it.
+      vi.setSystemTime(later + DAY);
+      expect(await reconcileMedia(env, deps)).toBe(1);
+    } finally {
+      vi.useRealTimers();
     }
-    // A late write of the failed upload, which reconciliation deletes once its tombstone is due.
-    await env.MEDIA.put(`files/${failed!.file_token}/full`, "late");
-    // The tombstone falls due ORPHAN_GRACE_MS after the sweep that left it.
-    expect(await reconcileMedia(env, { ...deps, now: () => later + DAY })).toBe(1);
     expect(await env.MEDIA.head(`files/${failed!.file_token}/full`)).toBeNull();
     expect(await sql(h.store, "SELECT id FROM media_attachments WHERE id IN (?, ?)", ordinary.id, failed!.id)).toEqual(
       [],

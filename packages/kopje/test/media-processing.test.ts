@@ -442,13 +442,13 @@ describe("W13: a restore between the sweep's selection and its deletion", () => 
     await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id });
     // The sweep selects the doomed row; the restore lands before its R2 deletion and purgeMedia.
     const selected = await runInDurableObject(w.store, (_instance, state) =>
-      expiredMedia.run(state.storage.sql, { now: at(11), limit: 100 }).map((m) => m.id),
+      expiredMedia.run(state.storage.sql, { now: at(11), storeNow: at(11), limit: 100 }).map((m) => m.id),
     );
     expect(selected).toEqual([c.id]);
     await restore(w.store, taken, at(12));
     // The Worker deletes the selected row's keys (not modelled here: the row names them) and then purges.
     const purged = await runInDurableObject(w.store, (_instance, state) =>
-      purgeMedia.run(state.storage.sql, { ids: selected, now: at(13) }),
+      purgeMedia.run(state.storage.sql, { ids: selected, now: at(13), storeNow: at(13) }),
     );
     expect(purged).toBe(0);
     expect(await held(w.store, c.id)).toMatchObject({
@@ -465,7 +465,7 @@ describe("the AV write window (MEDIA-2)", () => {
     clock(T0 + 5 * SECOND);
     await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id });
     await runInDurableObject(w.store, (_instance, state) => {
-      purgeMedia.run(state.storage.sql, { ids: [c.id], now: T0 + 6 * SECOND });
+      purgeMedia.run(state.storage.sql, { ids: [c.id], now: T0 + 6 * SECOND, storeNow: T0 + 6 * SECOND });
     });
     // The reservation was made at T0: an image's tombstone would be due at T0 + WRITE_WINDOW_MS + ORPHAN_GRACE_MS.
     expect(await sql(w.store, "SELECT media_id, delete_after FROM media_orphans")).toEqual([
@@ -582,6 +582,39 @@ describe("the dispatch round", () => {
     expect(await held(w.store, "300000000000001000")).toMatchObject({ row: { state: "failed", failure: "restored" } });
   });
 
+  it("counts a restored staging row past its staged_until as K3's, beyond K3's batch too (review r2 LOW 2)", async () => {
+    const w = await avWorld();
+    await reserve(w, T0);
+    await runInDurableObject(w.store, (_instance, state) => {
+      const alice = state.storage.sql
+        .exec<{ account_id: string }>("SELECT account_id FROM media_attachments LIMIT 1")
+        .one();
+      for (let i = 0; i <= DISPATCH_BATCH; i++) {
+        const id = String(310_000_000_000_000_000n + BigInt(i));
+        state.storage.sql.exec(
+          `INSERT INTO media_attachments (id, account_id, type, url, file_token, processed, gc_at, created_at)
+					VALUES (?, ?, 'video', '', ?, 0, ?, ?)`,
+          id,
+          alice.account_id,
+          `staging${String(i).padStart(4, "0")}${"q".repeat(30)}`,
+          new Date(T0 + HOUR).toISOString(),
+          new Date(T0).toISOString(),
+        );
+        state.storage.sql.exec(
+          "INSERT INTO media_processing (media_id, state, staged_at, staged_until) VALUES (?, 'staging', ?, ?)",
+          id,
+          T0 + i,
+          T0 + MINUTE,
+        );
+      }
+    });
+    await restore(w.store, await bookmark(w.store), T0 + SECOND);
+    clock(T0 + 2 * MINUTE);
+    expect(await w.store.mediaDispatchRound(BUILD)).toMatchObject({
+      counts: { restored: DISPATCH_BATCH + 1, abandoned: 0 },
+    });
+  });
+
   it("runs nothing in maintenance", async () => {
     const w = await avWorld();
     await queued(w);
@@ -670,7 +703,8 @@ describe("the plans of the new statements at saturation", () => {
 
   it("each statement reads within its LIMIT under stale statistics, every searched range grown past it", async () => {
     const w = await avWorld();
-    const c = await completed(w);
+    // A completed upload per capture, so each capture's S8 reaches its DELETE.
+    const done = { before: await completed(w), after: await completed(w) };
     // A reservation S1 takes to the slot count: after the marker, within its write window, the probe passed.
     const fresh = { before: await reserve(w, NOW_AT - MINUTE), after: await reserve(w, NOW_AT - MINUTE) };
     const PATTERN = /media_processing|media_av_slots/;
@@ -682,7 +716,7 @@ describe("the plans of the new statements at saturation", () => {
         [takeAvSlot, { ...fresh[phase], kind: "video", v1Left: null, activation: ACTIVE, restoredAt: RESTORED_AT }],
         [avActivation, ACTIVE],
         [mediaDispatchRound, { restoredAt: RESTORED_AT }],
-        [releaseAvSlot, { id: c.id, teardownId: c.teardownId, restoredAt: RESTORED_AT }],
+        [releaseAvSlot, { id: done[phase].id, teardownId: done[phase].teardownId, restoredAt: RESTORED_AT }],
       ] as const) {
         const planned = await plannedRun(w.h, PATTERN, operation as never, { ...input, now: NOW_AT } as never, true);
         answers.push(planned.result);
@@ -705,6 +739,8 @@ describe("the plans of the new statements at saturation", () => {
       [/media_av_slots_held\s+WHERE granted_at IS NULL AND held_until <=/, DISPATCH_BATCH],
       [/media_av_slots_granted\s+WHERE granted_at IS NOT NULL AND granted_at <=/, DISPATCH_BATCH],
       [/media_processing_dispatch/, DISPATCH_BATCH],
+      // S8's release and the round's expiry: one slot by its key.
+      [/DELETE FROM media_av_slots WHERE media_id = \?/, 1],
     ];
     for (const [marker, limit] of bounded) {
       for (const planned of reads(marker)) {
@@ -729,6 +765,7 @@ describe("the plans of the new statements at saturation", () => {
       },
       { status: "released" },
     ]);
+    expect((await held(w.store, done.after.id)).slot).toBeNull();
     for (const planned of after) {
       expect(scansOf(planned.plan, ["media_processing", "media_av_slots"]), planned.query).toEqual([]);
     }

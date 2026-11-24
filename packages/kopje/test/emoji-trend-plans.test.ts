@@ -61,6 +61,7 @@ const OTHER_STATEMENTS = [
   "INSERT INTO admin_actions (actor, account_id, client_id, action, target_type, target_id, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id",
   "INSERT INTO custom_emojis (id, shortcode, category, visible_in_picker, disabled, created_at) VALUES (?, ?, ?, ?, 0, ?)",
   "SELECT (SELECT count(*) FROM (SELECT 1 FROM announcement_reactions INDEXED BY announcement_reactions_name WHERE announcement_id = ?1 LIMIT ?2)) + (SELECT count(*) FROM (SELECT 1 FROM announcement_dismissals INDEXED BY announcement_dismissals_announcement WHERE announcement_id = ?1 LIMIT ?2)) AS n",
+  "SELECT 1 AS held FROM media_processing WHERE media_id = ?",
   "SELECT 1 AS x FROM stream_subscriptions WHERE stream_key = 'user'",
   "SELECT count(*) AS n FROM custom_emojis WHERE disabled = 0",
   "SELECT d.announcement_id AS id FROM json_each(?1) j CROSS JOIN announcement_dismissals d ON d.account_id = ?2 AND d.announcement_id = j.value",
@@ -73,7 +74,7 @@ const OTHER_STATEMENTS = [
   "SELECT t.scopes, t.account_id, t.expires_at, c.id AS client_id, c.name, c.website, l.suspended_at, coalesce(t.epoch <> l.credential_epoch, 0) AS stale FROM oauth_tokens t CROSS JOIN oauth_clients c INDEXED BY sqlite_autoindex_oauth_clients_1 ON c.id = t.client_id LEFT JOIN local_accounts l INDEXED BY sqlite_autoindex_local_accounts_1 ON l.account_id = t.account_id WHERE t.token_hash = ? AND t.kind = 'access'",
   "SELECT text, published FROM announcements WHERE id = ?",
   "SELECT total_changes() AS n",
-  "UPDATE media_attachments SET url = ?, preview_url = ?, content_type = ?, meta = ?, blurhash = ?, description = ?, focus_x = ?, focus_y = ?, focus_given = ?, processed = 1, gc_at = ? WHERE id = ?",
+  "UPDATE media_attachments SET type = 'image', url = ?, preview_url = ?, content_type = ?, meta = ?, blurhash = ?, description = ?, focus_x = ?, focus_y = ?, focus_given = ?, processed = 1, gc_at = ? WHERE id = ?",
   "UPDATE media_attachments SET url = ?, preview_url = ?, content_type = ?, meta = ?, processed = 1, gc_at = NULL WHERE id = ?",
 ];
 
@@ -82,9 +83,9 @@ const OTHER_STATEMENTS = [
 // a correlated lookup), its form exactly. The delete's write: the ids of the reactions it removes.
 const WITNESS = new PlanWitness(
   {
-    // completeMedia
-    "4ec0ae054c56140a": {
-      sql: "SELECT m.file_token AS token, a.uri, m.processed, m.url, m.created_at FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.account_id = ?",
+    // completeMedia, reading the type too since #1828 (the write window is the type's)
+    "77d29b9778031004": {
+      sql: "SELECT m.file_token AS token, a.uri, m.processed, m.url, m.type, m.created_at FROM media_attachments m JOIN accounts a ON a.id = m.account_id WHERE m.id = ? AND m.account_id = ?",
       pins: (text) =>
         text.replace(
           " INDEXED BY sqlite_autoindex_media_attachments_1 CROSS JOIN accounts a INDEXED BY sqlite_autoindex_accounts_1 ON",
@@ -324,7 +325,7 @@ const EMOJI_UPLOAD = {
 
 const CASES: Record<string, Case> = {
   "an upload's completion": {
-    main: ["4ec0ae054c56140a"],
+    main: ["77d29b9778031004"],
     count: NEIGHBOURS,
     run: (sql, transact) =>
       completeMedia.run(
@@ -340,6 +341,7 @@ const CASES: Record<string, Case> = {
           description: "",
           focus: { x: 0, y: 0 },
           now: NOW,
+          storeNow: NOW,
         },
         transact,
       ),

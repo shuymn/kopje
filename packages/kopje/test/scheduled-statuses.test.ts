@@ -521,7 +521,7 @@ describe("the scheduled_statuses endpoints", () => {
     await scheduled(h, alice, { status: "x", media_ids: [media], scheduled_at: at(NOW + 3 * DAY) });
     expect(await sql(h.store, "SELECT gc_at FROM media_attachments")).toEqual([{ gc_at: null }]);
     const due = await runInDurableObject(h.store, (_instance, state) =>
-      expiredMedia.run(state.storage.sql, { now: NOW + 2 * DAY, limit: 100 }),
+      expiredMedia.run(state.storage.sql, { now: NOW + 2 * DAY, storeNow: NOW + 2 * DAY, limit: 100 }),
     );
     expect(due).toEqual([]);
     expect(await refusal(await schedule(h, alice, { status: "other", media_ids: [media] }))).toEqual({

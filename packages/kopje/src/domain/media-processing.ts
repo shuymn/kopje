@@ -8,6 +8,7 @@ import { storedBlurhash, storedMediaDescription, storedMediaMeta } from "../plat
 import { userMediaDeleteOperation } from "./auth";
 import { state, setState } from "./kopje-state";
 import {
+  AV_CANDIDATE_TYPE,
   AV_WRITE_WINDOW_MS,
   chargeUploadJob,
   deleteOwnMedia,
@@ -250,9 +251,15 @@ function attachmentState(att: Attachment | null, token?: string): AttachmentStat
   return att.processed === 1 ? "done" : "res";
 }
 
-// Whether S1 has run for the reservation: it set the attachment's type from the input's signature.
-function staged(att: Attachment): boolean {
-  return att.type === "video" || att.type === "audio";
+// Whether the reservation was made as an AV candidate (reserveMedia's avCandidate, stamped at the Store's time) and
+// has not been staged: S1 sets its type from the input's signature, so a reservation is staged once at most.
+function candidate(att: Attachment): boolean {
+  return att.type === AV_CANDIDATE_TYPE;
+}
+
+// Whether the reservation is on the AV path: a candidate, or one S1 staged.
+function avReservation(att: Attachment): boolean {
+  return candidate(att) || att.type === "video" || att.type === "audio";
 }
 
 // K3's fence: the attachment was reserved at or before the last restore.
@@ -451,7 +458,7 @@ export const takeAvSlot = writeOperation.atStoreTime("now")<
   if (row?.state === "staging") {
     return { status: "taken", stagedAt: row.staged_at, stagingMs: row.staged_until - now };
   }
-  if (fenced(att, restoredAt) || staged(att)) {
+  if (fenced(att, restoredAt) || !candidate(att)) {
     return { status: "gone" };
   }
   const left = v1Left === null ? null : Number.isSafeInteger(v1Left) ? v1Left : 0;
@@ -928,10 +935,12 @@ export const v1FinalRead = readOperation.atStoreTime("now")<{ id: string; token:
 
 // ---- S11 deleteAvUpload
 
-// S11, the owner's DELETE of an upload. An unfinished video or audio upload (queued, running or failed) that is the
-// owner's and unattached is doomed, its processing row deleted and its slot kept; a staging one is not found (its
-// request still holds it). Anything else is decided by deleteMedia's rules (media.ts deleteOwnMedia): a completed
-// upload is in use while attached or kept, not found from its gc_at on.
+// S11, the owner's DELETE of an upload (the spec's S11 after Norm). An unfinished reservation on the AV path that is
+// the owner's and unattached (a status cannot hold one: the CHECK status_id IS NULL OR processed = 1; a scheduled
+// status's hold is the application's, so it is checked), and not staging, is doomed, its processing row deleted if it
+// has one and its slot kept; a staging one is not found (its request still holds it). Anything else is decided by
+// deleteMedia's rules (media.ts deleteOwnMedia): a completed upload is in use while attached or kept, not found from
+// its gc_at on, and a doomed or absent one is not found.
 export const deleteAvUpload = userMediaDeleteOperation.atStoreTime("now")<{ id: string } & Fence, MediaDeleted>((
   db,
   { id, now, restoredAt },
@@ -942,10 +951,13 @@ export const deleteAvUpload = userMediaDeleteOperation.atStoreTime("now")<{ id: 
   if (row?.state === "staging") {
     return "not_found";
   }
-  // A processing row exists only for an unfinished staged upload: S1 inserts it, and completion, a doom and the
-  // purge's cascade delete it. A status cannot hold it (the CHECK status_id IS NULL OR processed = 1); a scheduled
-  // status's hold is the application's, so it is checked.
-  if (row !== null && att !== null && att.account_id === accountId && att.scheduled_status_id === null) {
+  if (
+    att !== null &&
+    att.account_id === accountId &&
+    attachmentState(att) === "res" &&
+    att.scheduled_status_id === null &&
+    avReservation(att)
+  ) {
     doom(db, id);
     return "deleted";
   }
@@ -1014,9 +1026,13 @@ export const mediaDispatchRound = writeOperation.atStoreTime("now")<Fence, Dispa
 		WHERE state = 'staging' AND staged_until <= ? ORDER BY staged_until LIMIT ?`,
     now,
   )) {
-    deleteRow(db, id);
-    deleteSlot(db, id);
-    counts.abandoned++;
+    // K3 first, so a restored staging row counts as K3's.
+    const { row } = guarded(id);
+    if (row?.state === "staging") {
+      deleteRow(db, id);
+      deleteSlot(db, id);
+      counts.abandoned++;
+    }
   }
   const expired = [
     ...seek<{ id: string }>(

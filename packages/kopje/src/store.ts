@@ -547,12 +547,13 @@ export class Store extends DurableObject<Env> {
     if (decided.status !== "maintenance") {
       return decided;
     }
-    // Writes are refused, so `maintenance` is S10's answer wherever the read cannot decide (no marker read).
+    // Without the marker the read is still exact for the one answer it gives besides `maintenance`: a completed
+    // upload has no processing row, so K3 cannot change it, and it is answered from its token and gc_at.
     let restoredAt: number | null;
     try {
       restoredAt = await this.#restoredAt();
     } catch {
-      return decided;
+      restoredAt = null;
     }
     return this.#avRun(callerBuild, mediaProcessing.v1FinalRead, input, restoredAt);
   }

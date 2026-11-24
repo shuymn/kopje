@@ -158,8 +158,9 @@ export type MonthlyTransforms = { instance: number; account: number };
 // reserved, and the answer names the budget an image would be refused for (imagesRefusal). Otherwise the reservation
 // is the one above. A reservation with `avCandidate` may go down the video and audio path, whose fences compare the
 // reservation's time with the Store's (the restore marker, the staging and the queue, plan section 1 rules 2 and 5):
-// it is stamped at the Store's time (`storeNow`), and the probe is judged at it. The answer's deadline is the Worker's,
-// as for every upload.
+// it is stamped at the Store's time (`storeNow`), and the probe is judged at it. Its type is AV_CANDIDATE_TYPE until
+// the upload's kind is known (S1 sets video or audio, completeMedia image), and only such a reservation is staged
+// (media-processing.ts takeAvSlot). The answer's deadline is the Worker's, as for every upload.
 export const reserveMedia = userWriteOperation.atStoreTime("storeNow")<
   {
     token: string;
@@ -185,7 +186,10 @@ export const reserveMedia = userWriteOperation.atStoreTime("storeNow")<
     return { status: "retry" };
   }
   setState(db, attemptsName, JSON.stringify([...attempts, now]));
-  const reserved = insertReservation(db, accountId, token, avCandidate === undefined ? now : storeNow);
+  const reserved =
+    avCandidate === undefined
+      ? insertReservation(db, accountId, token, now)
+      : insertReservation(db, accountId, token, storeNow, AV_CANDIDATE_TYPE);
   if ("retry" in reserved) {
     return { status: "retry" };
   }
@@ -205,6 +209,16 @@ export function mediaTokenTaken(db: Db, token: string): boolean {
   return db.first(`SELECT 1 AS free WHERE ${MEDIA_TOKEN_FREE_SQL}`, token) === undefined;
 }
 
+// The type of a reservation made as an AV candidate (reserveMedia's avCandidate) until its kind is known: Mastodon's
+// 'unknown', never presented, since a reservation is not.
+export const AV_CANDIDATE_TYPE = "unknown";
+
+// Whether a processing row (media-processing.ts) holds the upload: the image path then neither completes nor abandons
+// it, so the two paths stay exclusive.
+function processorHolds(db: Db, id: string): boolean {
+  return db.first("SELECT 1 AS held FROM media_processing WHERE media_id = ?", id) !== undefined;
+}
+
 // The row of a new reservation (step 1, and a custom emoji's, local-emojis.ts): processed = 0 with the Worker's token,
 // swept after RESERVATION_MS unless completed. Its id, or retry when the token is taken (inserted only while
 // MEDIA_TOKEN_FREE_SQL holds, so the database enforces the uniqueness, whatever the caller checked).
@@ -213,16 +227,18 @@ export function insertReservation(
   accountId: string,
   token: string,
   now: number,
+  type: "image" | typeof AV_CANDIDATE_TYPE = "image",
 ): { ok: string } | { retry: true } {
   const id = allocateLocalId(db, now);
   const inserted = db.run(
     `INSERT INTO media_attachments (id, account_id, type, url, file_token, processed, gc_at, created_at)
-		SELECT ?2, ?3, 'image', '', ?1, 0, ?4, ?5 WHERE ${MEDIA_TOKEN_FREE_SQL}`,
+		SELECT ?2, ?3, ?6, '', ?1, 0, ?4, ?5 WHERE ${MEDIA_TOKEN_FREE_SQL}`,
     token,
     id,
     accountId,
     iso(now + RESERVATION_MS),
     iso(now),
+    type,
   );
   return inserted > 0 ? { ok: id } : { retry: true };
 }
@@ -301,22 +317,31 @@ export function chargeUploadJob(db: Db, limit: number, now: number): boolean {
   return true;
 }
 
+// A reservation is open, and a row is kept, while either clock is before its deadline: a reservation made as an AV
+// candidate is stamped at the Store's time, every other at the Worker's, and seconds of skew between the two must not
+// close a reservation the Worker still holds open, or sweep a row before its gc_at on the clock that set it (#1828).
+// So a writer's deadline is judged at the earlier of the caller's `now` and the Store's (writerTime), and a sweep or
+// reconciliation at the earlier too (a row or a tombstone goes only once both have passed its time).
+function writerTime(now: number, storeNow: number): number {
+  return Math.min(now, storeNow);
+}
+
 export type Started =
   | { status: "ok" }
   | { status: "expired" }
   | { status: "budget_exhausted"; scope: "account" | "instance" };
 
 // Step 2, right before Images is called. The reservation must still be open (not completed, abandoned or past its
-// deadline at `now`), and the transformations are charged to the budgets of the month `now` is in.
-export const startTransforms = userWriteOperation<
-  { id: string; monthlyTransforms: MonthlyTransforms; now: number },
+// deadline at writerTime), and the transformations are charged to the budgets of the month `now` is in.
+export const startTransforms = userWriteOperation.atStoreTime("storeNow")<
+  { id: string; monthlyTransforms: MonthlyTransforms; now: number; storeNow: number },
   Started
->((db, { id, monthlyTransforms, now }, { accountId }) => {
+>((db, { id, monthlyTransforms, now, storeNow }, { accountId }) => {
   const open = db.first<{ id: string }>(
     "SELECT id FROM media_attachments WHERE id = ? AND account_id = ? AND processed = 0 AND created_at > ?",
     id,
     accountId,
-    iso(now - WRITE_WINDOW_MS),
+    iso(writerTime(now, storeNow) - WRITE_WINDOW_MS),
   );
   if (open === undefined) {
     return { status: "expired" };
@@ -352,6 +377,8 @@ export function uploadMediaMeta(original: Size, small: Size, animated: boolean):
 }
 
 export type CompleteMediaInput = {
+  // The Store's time (filled by the kernel): with `now`, the writer's deadline (writerTime).
+  storeNow: number;
   id: string;
   contentType: string;
   original: Size;
@@ -368,53 +395,55 @@ export type CompleteMediaInput = {
 // Step 3. The URLs are made here, on the instance origin of the uploader's actor URI (as status URIs are), from the
 // row's own token. Completing an upload that is already complete answers with it (the first answer may have been lost).
 // Null when the reservation is gone or its writer deadline has passed: the Worker then abandons it.
-export const completeMedia = userWriteOperation<CompleteMediaInput, MediaAttachment | null>(
-  (db, input, { accountId }) => {
-    const row = db.first<{
-      token: string | null;
-      uri: string;
-      processed: number;
-      url: string;
-      type: string;
-      created_at: string;
-    }>(
-      `SELECT m.file_token AS token, a.uri, m.processed, m.url, m.type, m.created_at
+export const completeMedia = userWriteOperation.atStoreTime("storeNow")<CompleteMediaInput, MediaAttachment | null>((
+  db,
+  input,
+  { accountId },
+) => {
+  const row = db.first<{
+    token: string | null;
+    uri: string;
+    processed: number;
+    url: string;
+    type: string;
+    created_at: string;
+  }>(
+    `SELECT m.file_token AS token, a.uri, m.processed, m.url, m.type, m.created_at
 			FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id
 			WHERE m.id = ? AND m.account_id = ?`,
-      input.id,
-      accountId,
-    );
-    if (row === undefined || row.token === null) {
-      return null;
-    }
-    if (row.processed === 1) {
-      const done = row.url === "" ? undefined : ownUpload(db, accountId, input.id, input.now);
-      return done === undefined ? null : presentMedia(done);
-    }
-    if (!(writeDeadline(row.type, row.created_at) > input.now)) {
-      return null;
-    }
-    const origin = new URL(row.uri).origin;
-    db.run(
-      `UPDATE media_attachments SET url = ?, preview_url = ?, content_type = ?, meta = ?, blurhash = ?, description = ?,
-				focus_x = ?, focus_y = ?, focus_given = ?, processed = 1, gc_at = ?
-			WHERE id = ?`,
-      mediaUrl(origin, row.token, "full", input.contentType),
-      mediaUrl(origin, row.token, "small", input.contentType),
-      input.contentType,
-      uploadMediaMeta(input.original, input.small, input.animated),
-      storedBlurhash(input.blurhash),
-      storedMediaDescription(input.description),
-      input.focus?.x ?? 0,
-      input.focus?.y ?? 0,
-      input.focus === undefined ? 0 : 1,
-      iso(input.now + DETACHED_GRACE_MS),
-      input.id,
-    );
-    const done = ownUpload(db, accountId, input.id, input.now);
+    input.id,
+    accountId,
+  );
+  if (row === undefined || row.token === null || processorHolds(db, input.id)) {
+    return null;
+  }
+  if (row.processed === 1) {
+    const done = row.url === "" ? undefined : ownUpload(db, accountId, input.id, input.now);
     return done === undefined ? null : presentMedia(done);
-  },
-);
+  }
+  if (!(writeDeadline(row.type, row.created_at) > writerTime(input.now, input.storeNow))) {
+    return null;
+  }
+  const origin = new URL(row.uri).origin;
+  db.run(
+    `UPDATE media_attachments SET type = 'image', url = ?, preview_url = ?, content_type = ?, meta = ?, blurhash = ?,
+				description = ?, focus_x = ?, focus_y = ?, focus_given = ?, processed = 1, gc_at = ?
+			WHERE id = ?`,
+    mediaUrl(origin, row.token, "full", input.contentType),
+    mediaUrl(origin, row.token, "small", input.contentType),
+    input.contentType,
+    uploadMediaMeta(input.original, input.small, input.animated),
+    storedBlurhash(input.blurhash),
+    storedMediaDescription(input.description),
+    input.focus?.x ?? 0,
+    input.focus?.y ?? 0,
+    input.focus === undefined ? 0 : 1,
+    iso(input.now + DETACHED_GRACE_MS),
+    input.id,
+  );
+  const done = ownUpload(db, accountId, input.id, input.now);
+  return done === undefined ? null : presentMedia(done);
+});
 
 // abandoned: the reservation is doomed (or already was) and its objects may go; kept: the upload completed, so its
 // objects stay; gone: there is no such row, so nothing refers to its objects.
@@ -432,7 +461,8 @@ export const abandonMedia = userMediaDeleteOperation<{ id: string; now: number }
     if (row === undefined) {
       return "gone";
     }
-    if (row.processed === 1 && row.url !== "") {
+    // A completed upload, or one the media processor holds (its keys are the processor's), is kept.
+    if ((row.processed === 1 && row.url !== "") || processorHolds(db, id)) {
       return "kept";
     }
     db.run("UPDATE media_attachments SET processed = 1, gc_at = ? WHERE id = ? AND status_id IS NULL", iso(now), id);
@@ -593,13 +623,16 @@ export function setUp(db: Db): boolean {
 
 // Doomed uploads, oldest first. They cannot be attached or read any more (liveMediaSql), so the R2 objects can go
 // before the rows.
-export const expiredMedia = mediaDeleteOperation<{ now: number; limit: number }, ExpiredMedia[]>((db, { now, limit }) =>
+export const expiredMedia = mediaDeleteOperation.atStoreTime("storeNow")<
+  { now: number; limit: number; storeNow: number },
+  ExpiredMedia[]
+>((db, { now, limit, storeNow }) =>
   setUp(db)
     ? db.all<ExpiredMedia>(
         `SELECT id, file_token AS token FROM media_attachments
 				WHERE status_id IS NULL AND gc_at IS NOT NULL AND gc_at <= ? AND ${notEmojiSql("media_attachments")}
 				ORDER BY gc_at LIMIT ?`,
-        iso(now),
+        iso(writerTime(now, storeNow)),
         Math.min(limit, SWEEP_BATCH),
       )
     : [],
@@ -608,13 +641,16 @@ export const expiredMedia = mediaDeleteOperation<{ now: number; limit: number },
 // Deletes swept rows whose R2 objects are gone; a row attached again meanwhile cannot match (it has no gc_at). A row
 // that never completed leaves a tombstone: its writer may still put an object after this, and reconciliation deletes
 // the keys again once the tombstone falls due, ORPHAN_GRACE_MS after the later of now and the writer's deadline.
-export const purgeMedia = mediaDeleteOperation<{ ids: string[]; now: number }, number>((db, { ids, now }) => {
+export const purgeMedia = mediaDeleteOperation.atStoreTime("storeNow")<
+  { ids: string[]; now: number; storeNow: number },
+  number
+>((db, { ids, now, storeNow }) => {
   const swept = db.all<{ id: string; token: string | null; url: string; type: string; created_at: string }>(
     `SELECT id, file_token AS token, url, type, created_at FROM media_attachments
 		WHERE id IN (SELECT value FROM json_each(?)) AND status_id IS NULL AND gc_at IS NOT NULL AND gc_at <= ?
 			AND ${notEmojiSql("media_attachments")}`,
     JSON.stringify(ids.slice(0, SWEEP_BATCH)),
-    iso(now),
+    iso(writerTime(now, storeNow)),
   );
   for (const row of swept) {
     if (row.token !== null && row.url === "") {
@@ -638,15 +674,16 @@ export type Orphan = { id: string; token: string };
 
 // Reconciliation (the cron, mastodon/media.ts): tombstones that fell due. Nothing else is ever deleted by it; an R2
 // object no row names but no tombstone records stays.
-export const dueOrphans = mediaDeleteOperation<{ now: number }, Orphan[]>((db, { now }) =>
-  setUp(db)
-    ? db.all<Orphan>(
-        `SELECT media_id AS id, file_token AS token FROM media_orphans WHERE delete_after <= ?
+export const dueOrphans = mediaDeleteOperation.atStoreTime("storeNow")<{ now: number; storeNow: number }, Orphan[]>(
+  (db, { now, storeNow }) =>
+    setUp(db)
+      ? db.all<Orphan>(
+          `SELECT media_id AS id, file_token AS token FROM media_orphans WHERE delete_after <= ?
 				ORDER BY delete_after LIMIT ?`,
-        iso(now),
-        RECONCILE_BATCH,
-      )
-    : [],
+          iso(writerTime(now, storeNow)),
+          RECONCILE_BATCH,
+        )
+      : [],
 );
 
 export const forgetOrphans = mediaDeleteOperation<{ tokens: string[] }, number>((db, { tokens }) =>

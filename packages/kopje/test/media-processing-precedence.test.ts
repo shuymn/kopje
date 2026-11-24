@@ -13,7 +13,7 @@ import {
   V2_PROCESS_MS,
 } from "../src/domain/media-processing";
 import { restoreMarkerKey } from "../src/platform/media-files";
-import { sql } from "./api-helpers";
+import { bearer, json, sql } from "./api-helpers";
 import { BUILD } from "./helpers";
 import {
   ACTIVE,
@@ -244,7 +244,8 @@ const TABLE: Record<Op, Record<Phase, Cell>> = {
     running: { answer: { status: "ok", value: "deleted" }, after: { row: null, att: "doomed" } },
     failed: { answer: { status: "ok", value: "deleted" }, after: { row: null, att: "doomed" } },
     completed: { answer: { status: "ok", value: "deleted" }, after: { att: "doomed" } },
-    none: same({ status: "ok", value: "not_found" }),
+    // An unfinished reservation with no processing row is doomed as well (the spec's S11 on res, ps = none).
+    none: { answer: { status: "ok", value: "deleted" }, after: { att: "doomed" } },
   },
   S12: {
     staging: same({ runs: [] }),
@@ -444,9 +445,9 @@ describe("with the reservation at or before the restore marker (K3)", () => {
       S8: { answer: { status: "released" } },
       S9: { answer: { status: "ended" } },
       S10: { answer: { status: 503 }, after: { att: "doomed" } },
-      // K3 deleted the staging row: an unfinished reservation with no row is not found (table 1.2, "no row"), as for
-      // DELETE; the sweep takes it at its gc_at.
-      S11: { answer: { status: "ok", value: "not_found" } },
+      // K3 deleted the staging row: the reservation is unfinished and no longer staging, so S11 dooms it (the spec's
+      // S11 after Norm); its input waits for the sweep.
+      S11: { answer: { status: "ok", value: "deleted" }, after: { att: "doomed" } },
       S12: { answer: { runs: [], counts: { restored: 1 } } },
     },
     pending: {
@@ -720,6 +721,100 @@ describe("named cells", () => {
       value: "in_use",
     });
     expect(await held(w.store, c.id)).toEqual(before);
+  });
+
+  const imageCompletion = (id: string, now: number) => ({
+    id,
+    contentType: "image/webp",
+    original: { width: 10, height: 10 },
+    small: { width: 10, height: 10 },
+    animated: false,
+    blurhash: null,
+    description: "",
+    focus: undefined,
+    now,
+  });
+
+  it("the image path cannot complete an upload the processor holds: completeMedia answers null and changes nothing", async () => {
+    const w = await avWorld();
+    const c = await queued(w);
+    clock(T0 + 5 * SECOND);
+    const before = await held(w.store, c.id);
+    expect(
+      await w.store.completeMedia(BUILD, { credential: w.alice, ...imageCompletion(c.id, T0 + 5 * SECOND) }),
+    ).toEqual({ status: "ok", value: null });
+    expect(await held(w.store, c.id)).toEqual(before);
+  });
+
+  it("the image path cannot abandon an upload the processor holds: abandonMedia keeps it, its keys the processor's", async () => {
+    const w = await avWorld();
+    const c = await queued(w);
+    clock(T0 + 5 * SECOND);
+    const before = await held(w.store, c.id);
+    expect(await w.store.abandonMedia(BUILD, { credential: w.alice, id: c.id, now: T0 + 5 * SECOND })).toEqual({
+      status: "ok",
+      value: "kept",
+    });
+    expect(await held(w.store, c.id)).toEqual(before);
+  });
+
+  it("S11's unfinished branch requires an unfinished reservation: a row left abandoned answers not_found", async () => {
+    const w = await avWorld();
+    const c = await queued(w);
+    clock(T0 + 5 * SECOND);
+    // What abandonMedia left before the paths were exclusive: the processing row kept, the attachment abandoned.
+    const gcAt = new Date(T0 + 5 * SECOND).toISOString();
+    await sql(w.store, "UPDATE media_attachments SET processed = 1, gc_at = ? WHERE id = ?", gcAt, c.id);
+    expect(await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id })).toEqual({
+      status: "ok",
+      value: "not_found",
+    });
+    expect((await held(w.store, c.id)).att).toMatchObject({ gc_at: gcAt });
+  });
+
+  it("S11's unfinished branch requires no status: a row completed by the image path and attached is in_use", async () => {
+    const w = await avWorld();
+    const c = await queued(w);
+    vi.useRealTimers();
+    const posted = await w.h.request("/api/v1/statuses", bearer(w.h.users.alice.token, json({ status: "holds it" })));
+    const { id: statusId } = await posted.json<{ id: string }>();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock(T0 + 5 * SECOND);
+    // What completeMedia left before the paths were exclusive: the processing row kept, the upload completed and then
+    // attached.
+    await sql(
+      w.store,
+      "UPDATE media_attachments SET processed = 1, url = 'https://kopje.test/media/x', gc_at = NULL, status_id = ? WHERE id = ?",
+      statusId,
+      c.id,
+    );
+    const before = await held(w.store, c.id);
+    expect(await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id })).toEqual({
+      status: "ok",
+      value: "in_use",
+    });
+    expect(await held(w.store, c.id)).toEqual(before);
+  });
+
+  it("S10 under a gate that admits reads answers 200 for a completed upload when the restore marker cannot be read", async () => {
+    const w = await avWorld();
+    const c = await completed(w, { v1: true });
+    await env.MEDIA.put(restoreMarkerKey(w.store.id.toString()), "not json");
+    await gate(w.store, "maintenance", true);
+    clock(T0 + 10 * SECOND);
+    expect(await OPS.S10(w, { ...c, stagedAt: 0 })).toMatchObject({ status: 200 });
+  });
+
+  it("S11 dooms a reservation whose staging S2 released (the spec's S11: res, not staging)", async () => {
+    const w = await avWorld();
+    const c = await staged(w);
+    clock(T0 + 5 * SECOND);
+    await w.store.releaseStaging(BUILD, { id: c.id, token: c.token, stagedAt: c.stagedAt });
+    expect(await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id })).toEqual({
+      status: "ok",
+      value: "deleted",
+    });
+    expect((await held(w.store, c.id)).att).toMatchObject({ gc_at: DOOMED_AT });
   });
 
   it("S4 with less than T_MIN_ENCODE left after the remaining fixed parts fails the job timeout", async () => {
