@@ -59,7 +59,7 @@ catalog:
   tla-ts: 0.0.10
 
   # Lint, format, unused files, dependencies and exports (knip.json), and the Git hooks.
-  knip: 6.46.1
+  knip: 6.47.0
   lefthook: 2.2.1
   oxfmt: 0.79.0
   oxlint: 1.94.0
