@@ -196,7 +196,7 @@ export async function rebuildMedia(
     case "ok":
       break;
   }
-  const control: Lease = { holder, lease, lost: false };
+  const control: Lease = { holder, lease, lost: false, renewal: null };
   let result: RebuildStep | undefined;
   try {
     result = await pass(deps, input, control);
@@ -210,7 +210,14 @@ export async function rebuildMedia(
   }
 }
 
-type Lease = { holder: string; lease: (release: boolean) => Promise<RebuildLeaseResult>; lost: boolean };
+// `renewal`: a heartbeat renewal still in flight, which the next write's confirmation waits for, so a renewal that
+// fails is seen before any further write starts. Renewals never overlap.
+type Lease = {
+  holder: string;
+  lease: (release: boolean) => Promise<RebuildLeaseResult>;
+  lost: boolean;
+  renewal: Promise<void> | null;
+};
 
 // Why an emoji whose two files exist may not stay published, or null: its files' sizes past the emoji limits
 // (emoji-too-large); and, in a real run, its served image as it actually is, read within EMOJI_IMAGE_LIMIT bytes (the
@@ -275,26 +282,41 @@ async function pass(
     if (control === null) {
       return start();
     }
+    // A heartbeat of an earlier write may still be in flight: its answer counts before this write's confirmation.
+    if (control.renewal !== null) {
+      await within(() => control.renewal ?? Promise.resolve(), deadline, now);
+    }
     if (control.lost) {
       throw new Overrun();
     }
     const owned = await within(() => control.lease(false), deadline, now);
     if (owned.status !== "ok") {
       control.lost = true;
+    }
+    // Checked again after the confirmation: a renewal that failed meanwhile stops the write too.
+    if (control.lost) {
       throw new Overrun();
     }
     const work = start();
     const timer = setInterval(() => {
-      control.lease(false).then(
-        (renewed) => {
-          if (renewed.status !== "ok") {
+      if (control.renewal !== null) {
+        return;
+      }
+      control.renewal = control
+        .lease(false)
+        .then(
+          (renewed) => {
+            if (renewed.status !== "ok") {
+              control.lost = true;
+            }
+          },
+          () => {
             control.lost = true;
-          }
-        },
-        () => {
-          control.lost = true;
-        },
-      );
+          },
+        )
+        .finally(() => {
+          control.renewal = null;
+        });
     }, deps.heartbeatMs ?? REBUILD_HEARTBEAT_MS);
     try {
       return await work;

@@ -1,6 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { REBUILD_LEASE_MS, REBUILD_SETTLE_MS } from "../src/domain/media-rebuild";
 import { MAX_BUILDS_PER_CALL, rebuildMedia, type RebuildStep } from "../src/mastodon/media-rebuild";
@@ -176,6 +176,7 @@ type RunOptions = {
   after?: string | null;
   holder?: string;
   now?: () => number;
+  heartbeatMs?: number;
 };
 
 function run(store: StoreStub, options: RunOptions = {}): Promise<RebuildStep> {
@@ -191,6 +192,7 @@ function run(store: StoreStub, options: RunOptions = {}): Promise<RebuildStep> {
       monthlyUploads: options.uploads ?? 10,
       stills: options.stills === undefined ? maker().stills : options.stills,
       ...(options.holder === undefined ? {} : { holder: options.holder }),
+      ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
     },
     { after: options.after ?? null, dryRun: false, stills: options.publish === true },
   );
@@ -518,6 +520,57 @@ describe("media rebuild of video rows: interruptions and lease loss (#1828 P25)"
     held.open();
     expect(await running).toMatchObject({ ok: false, code: "rebuild-lease-lost" });
     expect(await expectStill(store, row)).toEqual(adopted);
+  });
+
+  // A renewal sent while one write is pending may still be unanswered when the next write is confirmed: its failure
+  // must stop that write (a race present before #1828 too).
+  it("starts no further write once a heartbeat that was in flight at the confirmation fails", async () => {
+    const store = await setup();
+    const row = await addAv(store, "video");
+    let writing = false;
+    let fail = (_error: Error) => {};
+    let heldHeartbeat = false;
+    const heartbeat = new Promise<never>((_resolve, reject) => {
+      fail = reject;
+    });
+    heartbeat.catch(() => {});
+    const proxied = new Proxy(store, {
+      get: (target, property, receiver) =>
+        property === "mediaRebuildLease"
+          ? (...args: Parameters<StoreStub["mediaRebuildLease"]>) => {
+              if (writing && !heldHeartbeat) {
+                heldHeartbeat = true;
+                return heartbeat;
+              }
+              return target.mediaRebuildLease(...args);
+            }
+          : (Reflect.get(target, property, receiver) as unknown),
+    });
+    const writes: string[] = [];
+    const bucket = {
+      head: (key: string) => env.MEDIA.head(key),
+      get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
+      delete: async (keys: string | string[]) => {
+        writes.push(`delete ${String(keys)}`);
+        return env.MEDIA.delete(keys);
+      },
+      put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+        writes.push(`put ${key}`);
+        // The first put stays pending until a heartbeat was sent (and held).
+        writing = true;
+        await vi.waitFor(() => expect(heldHeartbeat).toBe(true));
+        writing = false;
+        return env.MEDIA.put(key, value, options);
+      },
+    } as unknown as R2Bucket;
+    const running = run(proxied, { bucket, heartbeatMs: 5 });
+    await vi.waitFor(() => expect(heldHeartbeat).toBe(true));
+    // The put has settled and the call goes on to its next write while that heartbeat is still unanswered.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    fail(new Error("renewal lost"));
+    expect(await running).toMatchObject({ ok: true, stopped: "lease-overrun" });
+    // The full file's put, during which the heartbeat was held; the probe copy's put never started.
+    expect(writes).toEqual([`put files/${row.token}/full`]);
   });
 
   it("a restored row whose preview metadata predates the small an interrupted rebuild wrote ends with the object's", async () => {
