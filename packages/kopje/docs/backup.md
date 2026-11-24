@@ -90,12 +90,14 @@ request and its retries end in time for a last checkpoint.
    whatever its size; any failure aborts that upload, and a copy is recorded only once its upload completed. An
    original larger than 64 MiB fails the run as `media-too-large`, and one whose body does not match its stated size
    as `media-changed`. When the invocation nears its deadline, or the next original would take it past its byte
-   budget, it stops, and the next cron continues. Nothing is ever deleted from R2.
+   budget, it stops, and the next cron continues; a read of an original that stalls is given up at that deadline, with
+   time left to abort its upload. Nothing is ever deleted from R2.
 3. **Media index**, then **manifest**, then **retention**.
 
 A backup that is interrupted resumes where it stopped. The one exception is an interrupted dump: age's stream state
 cannot be saved, so its upload is aborted and the dump starts again. Each invocation first aborts the multipart uploads
-under `backups/` and `media/` that it can list, since no live invocation is writing them. A failure is recorded with a
+under `backups/` and `media/` that it can list, since no live invocation is writing them: each prefix is listed on its
+own, and at most 100 uploads are aborted an invocation, the rest by the next. A failure is recorded with a
 reason code and retried after an hour. A run that dies three times in a row is recorded as `interrupted`.
 
 A run is tied to the bucket settings (endpoint, bucket, region, prefix) and the recipients it started with. If either

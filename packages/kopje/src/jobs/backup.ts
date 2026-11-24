@@ -11,6 +11,7 @@ import {
   type ObjectDigest,
 } from "../platform/backup-state";
 import { envInMaintenance } from "../platform/config";
+import { DeadlinePassed, within } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { toHex } from "../platform/hex";
 import { consoleSink, type LogSink } from "../platform/log";
@@ -75,6 +76,8 @@ export const MAX_MEDIA_PER_RUN = 2000;
 export const MAX_MEDIA_BYTES = 64 * MIB;
 // Originals larger than this are copied by streaming (copyStreamed) rather than read whole.
 export const STREAM_COPY_BYTES = 16 * MIB;
+// The stray multipart uploads a run lists and aborts (abortStrayUploads); the lifecycle rule bounds what is left.
+export const MAX_STRAY_ABORTS = 100;
 const RETRY_MS = 60 * 60 * 1000;
 // Invocations that may die holding one run before it is recorded as failed.
 const MAX_ATTEMPTS = 3;
@@ -456,16 +459,23 @@ class BackupJob {
   // Multipart uploads under backups/ and media/ that no live invocation is writing: this one holds the lease, so any
   // upload there is from an invocation that died or lost the lease. A media copy is recorded only once its upload
   // completed, so no recorded object is an incomplete upload.
+  // Each prefix is listed on its own, so a listing that fails leaves the other's strays to be aborted; at most
+  // MAX_STRAY_ABORTS are listed and aborted a run, and the rest are left to the next.
   async #abortStrayUploads(): Promise<void> {
+    let left = MAX_STRAY_ABORTS;
     for (const prefix of [backupPrefix(this.#config), mediaPrefix(this.#config)]) {
+      if (left === 0) {
+        return;
+      }
       let uploads: { key: string; uploadId: string }[];
       try {
-        uploads = await this.#s3.listUploads(prefix);
+        uploads = await this.#s3.listUploads(prefix, left);
       } catch (error) {
         // Not every store or policy lists uploads; the bucket's lifecycle rule then cleans up (docs/backup.md).
         this.#log({ event: "kopje.backup.list_uploads_failed", reason: failureReason(error) }, "warn");
-        return;
+        continue;
       }
+      left -= uploads.length;
       for (const upload of uploads) {
         await this.#s3.abortMultipart(upload.key, upload.uploadId);
         this.#log({ event: "kopje.backup.upload_aborted" });
@@ -759,7 +769,14 @@ class BackupJob {
     const reader = (object.body as ReadableStream<Uint8Array>).getReader();
     let read = 0;
     const next = async (): Promise<Uint8Array | null> => {
-      const { done, value } = await reader.read();
+      // A read is given up with the time left for requests, so the reserve is kept to abort the upload.
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await within(() => reader.read(), this.#deps.now() + this.#budget(), this.#deps.now);
+      } catch (error) {
+        throw error instanceof DeadlinePassed ? new OutOfTime() : error;
+      }
+      const { done, value } = chunk;
       if (done) {
         if (read !== object.size) {
           throw new BackupError("media-changed");

@@ -152,12 +152,13 @@ export class S3Client {
     return objects;
   }
 
-  // Multipart uploads in progress under the prefix (ListMultipartUploads, all pages).
-  async listUploads(prefix: string): Promise<{ key: string; uploadId: string }[]> {
+  // Multipart uploads in progress under the prefix (ListMultipartUploads), at most `max` of them: pages are read until
+  // that many are listed or none is left.
+  async listUploads(prefix: string, max: number): Promise<{ key: string; uploadId: string }[]> {
     const uploads: { key: string; uploadId: string }[] = [];
     let marker: { key: string; uploadId: string } | undefined;
     do {
-      const query: Record<string, string> = { uploads: "", prefix };
+      const query: Record<string, string> = { uploads: "", prefix, "max-uploads": String(max - uploads.length) };
       if (marker !== undefined) {
         query["key-marker"] = marker.key;
         query["upload-id-marker"] = marker.uploadId;
@@ -168,6 +169,9 @@ export class S3Client {
         const uploadId = elements(block, "UploadId")[0];
         if (key !== undefined && key.startsWith(prefix) && uploadId !== undefined && uploadId !== "") {
           uploads.push({ key, uploadId });
+        }
+        if (uploads.length === max) {
+          return uploads;
         }
       }
       const truncated = elements(xml, "IsTruncated")[0] === "true";
