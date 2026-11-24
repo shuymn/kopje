@@ -166,7 +166,8 @@ function adminRefused(db: Db, authority: ImportAuthority): string | null {
 // The rebuild's lease (REBUILD_LEASE in kopje_state; not dumped, imported or reset). Every rebuild operation runs at
 // the Store's own time (atStoreTime, whatever the Worker's clock says), so acquisition, ownership and the fences of
 // store-admin.ts read one clock. A call renews it before each row and, while an R2 write it started is pending,
-// every REBUILD_HEARTBEAT_MS (mastodon/media-rebuild.ts), so it never expires under a write while the call runs.
+// every REBUILD_HEARTBEAT_MS (mastodon/media-rebuild.ts), so it never expires under a write while the call runs; each
+// renewal names the generation of the call's take (rebuildLease), so none outlives the take it was for.
 export const REBUILD_LEASE_MS = 10 * 60 * 1000;
 
 // How long the Store's readonly maintenance must have lasted before a rebuild writes: longer than any invocation that
@@ -176,11 +177,22 @@ export const REBUILD_LEASE_MS = 10 * 60 * 1000;
 // Store and every write has been refused since it was verified, so no deletion was ever decided for a row it brought.
 export const REBUILD_SETTLE_MS = 20 * 60 * 1000;
 
-type Lease = { holder: string; until: number };
+// `generation`: the fencing token of one take of the lease, one more than the take before it. A release keeps it with
+// `until` 0, so the next take is a new generation and no renewal of the released one succeeds. A lease stored without
+// one (before generations) is generation 0.
+type Lease = { holder: string; until: number; generation: number };
 
 function readLease(db: Db): Lease | null {
   const value = db.first<{ value: string }>("SELECT value FROM kopje_state WHERE name = ?", REBUILD_LEASE)?.value;
-  return value === undefined ? null : (JSON.parse(value) as Lease);
+  if (value === undefined) {
+    return null;
+  }
+  const lease = JSON.parse(value) as Partial<Lease> & { holder: string; until: number };
+  return { ...lease, generation: Number.isSafeInteger(lease.generation) ? lease.generation! : 0 };
+}
+
+function writeLease(db: Db, lease: Lease): void {
+  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", REBUILD_LEASE, JSON.stringify(lease));
 }
 
 function holds(db: Db, holder: string, now: number): boolean {
@@ -219,44 +231,59 @@ function readiness(
 }
 
 export type RebuildLeaseResult =
-  | { status: "ok"; remainingMs: number }
+  | { status: "ok"; remainingMs: number; generation: number }
   | { status: "released" }
+  // A renewal or release of a generation that is not the live one (released, expired or taken since).
+  | { status: "lost" }
   | { status: "needs-readonly" }
   | { status: "settling"; readyAt: number }
   | { status: "restoring" }
   | { status: "busy"; remainingMs: number }
   | { status: "denied"; reason: string };
 
-// Takes or renews the lease for `holder` (for REBUILD_LEASE_MS from the Store's `now`), or releases it. A release by a
-// holder that no longer holds it changes nothing.
+// Takes the lease for `holder` (for REBUILD_LEASE_MS from the Store's `now`) as a new generation, renews it, or releases
+// it. With `generation` (the take's answer) a renewal or release succeeds only for that generation while it is live
+// and the holder's: a renewal that arrives after the release, after the lease ended or after another call took it is
+// `lost` and changes nothing, so it can never take the lease back. Without one, a holder that holds the live lease
+// renews it and a release by a holder that no longer holds it changes nothing.
 export const rebuildLease = mediaRebuildOperation.atStoreTime("now")<
-  { authority: ImportAuthority; holder: string; release?: boolean; restoredAt: number | null; now: number },
+  {
+    authority: ImportAuthority;
+    holder: string;
+    generation?: number;
+    release?: boolean;
+    restoredAt: number | null;
+    now: number;
+  },
   RebuildLeaseResult
->((db, { authority, holder, release, restoredAt, now }) => {
+>((db, { authority, holder, generation, release, restoredAt, now }) => {
   const refused = adminRefused(db, authority);
   if (refused !== null) {
     return { status: "denied", reason: refused };
   }
   const lease = readLease(db);
+  const mine =
+    lease !== null && lease.holder === holder && (generation === undefined || lease.generation === generation);
   if (release === true) {
-    if (lease?.holder === holder) {
-      db.run("DELETE FROM kopje_state WHERE name = ?", REBUILD_LEASE);
+    if (mine && lease.until > 0) {
+      writeLease(db, { ...lease, until: 0 });
     }
     return { status: "released" };
+  }
+  const live = lease !== null && lease.until > now;
+  if (generation !== undefined && !(mine && live)) {
+    return { status: "lost" };
   }
   const ready = readiness(db, now, restoredAt);
   if (ready.status !== "ok") {
     return ready;
   }
-  if (lease !== null && lease.holder !== holder && lease.until > now) {
+  if (live && lease.holder !== holder) {
     return { status: "busy", remainingMs: lease.until - now };
   }
-  db.run(
-    "INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)",
-    REBUILD_LEASE,
-    JSON.stringify({ holder, until: now + REBUILD_LEASE_MS } satisfies Lease),
-  );
-  return { status: "ok", remainingMs: REBUILD_LEASE_MS };
+  const next = live ? lease.generation : (lease?.generation ?? 0) + 1;
+  writeLease(db, { holder, until: now + REBUILD_LEASE_MS, generation: next });
+  return { status: "ok", remainingMs: REBUILD_LEASE_MS, generation: next };
 });
 
 export type RebuildCharge =

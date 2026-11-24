@@ -37,8 +37,13 @@ import { type AvCall, avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./me
 // effect (R2 reads, Images, Store calls, whose writes check the lease again) are given up LEASE_MARGIN_MS before the
 // renewed lease would end; R2 writes and deletes are never given up: each is awaited to completion while a heartbeat
 // renews the lease every REBUILD_HEARTBEAT_MS, so the lease cannot end under a write this call started while the call
-// runs. Each write or delete starts only after the Store confirms the lease is still this call's; once a renewal or that
-// check fails, the call starts no further write, reports `lease-overrun` and does not release the lease.
+// runs. Every renewal, confirmation and the release name the generation the Store gave the call's take, and succeed
+// only while that generation is the live lease: a renewal that arrives late (after the release, or after another call
+// took an expired lease) changes nothing. Each heartbeat is given up after REBUILD_HEARTBEAT_STALL_MS, which says nothing
+// of the lease, and the next one is sent on time whatever the earlier one does, so one that hangs cannot let the lease
+// end under a write. Each write or delete starts only after the heartbeats in flight have answered or been given up
+// and the Store confirms the lease is still this call's; once a renewal or that check fails, the call starts no further
+// write, reports `lease-overrun` and does not release the lease.
 // A call that gave up a step keeps the lease until it expires. The bound: per row, at most two R2 reads, six Images
 // calls (an emoji's: the preflight info() and processImage's five; any other row's: processImage's six, its preview's
 // RGBA included) and five Store calls, each given up within the lease, then at most three R2 writes, each awaited.
@@ -80,6 +85,7 @@ export const MAX_BUILDS_PER_CALL = 10;
 // What a row leaves of its renewed lease unused, against clock differences between the Worker and the Store.
 const LEASE_MARGIN_MS = 60_000;
 const REBUILD_HEARTBEAT_MS = 60_000;
+const REBUILD_HEARTBEAT_STALL_MS = 30_000;
 
 type RebuildOutcome =
   | "built"
@@ -131,6 +137,7 @@ export type RebuildDeps = {
   // The lease holder of this call (a fresh id by default), and the heartbeat while a write is pending.
   holder?: string;
   heartbeatMs?: number;
+  heartbeatStallMs?: number;
 };
 
 // This call no longer holds the lease: it starts no further R2 write.
@@ -172,9 +179,11 @@ export async function rebuildMedia(
     return pass(deps, input, null);
   }
   const holder = deps.holder ?? crypto.randomUUID();
-  const lease = async (release: boolean): Promise<RebuildLeaseResult> =>
-    await store.mediaRebuildLease(build, { authority: deps.authority, holder, release });
-  const taken = await within(() => lease(false), now() + REBUILD_LEASE_MS - LEASE_MARGIN_MS, now);
+  const taken = await within<RebuildLeaseResult>(
+    async () => await store.mediaRebuildLease(build, { authority: deps.authority, holder }),
+    now() + REBUILD_LEASE_MS - LEASE_MARGIN_MS,
+    now,
+  );
   switch (taken.status) {
     case "denied":
       return { ok: false, code: "wrong-authority", message: taken.reason };
@@ -193,14 +202,20 @@ export async function rebuildMedia(
         readyAt: taken.readyAt,
       };
     case "busy":
+    case "lost":
       return { ok: false, code: "rebuild-busy", message: "another media-rebuild call holds the lease; try again" };
     case "restoring":
       return { ok: false, code: "rebuild-busy", message: "a PITR restore is being scheduled; try again" };
     case "released":
+      return { ok: false, code: "rebuild-busy", message: "the rebuild lease was not taken; try again" };
     case "ok":
       break;
   }
-  const control: Lease = { holder, lease, lost: false, renewal: null };
+  // This take's generation: every later lease call names it.
+  const { generation } = taken;
+  const lease = async (release: boolean): Promise<RebuildLeaseResult> =>
+    await store.mediaRebuildLease(build, { authority: deps.authority, holder, generation, release });
+  const control: Lease = { holder, lease, lost: false, renewals: new Set() };
   let result: RebuildStep | undefined;
   try {
     result = await pass(deps, input, control);
@@ -214,13 +229,13 @@ export async function rebuildMedia(
   }
 }
 
-// `renewal`: a heartbeat renewal still in flight, which the next write's confirmation waits for, so a renewal that
-// fails is seen before any further write starts. Renewals never overlap.
+// `renewals`: the heartbeats in flight, each given up after REBUILD_HEARTBEAT_STALL_MS; the next write's confirmation
+// waits for them, so a renewal that fails is seen before any further write starts.
 type Lease = {
   holder: string;
   lease: (release: boolean) => Promise<RebuildLeaseResult>;
   lost: boolean;
-  renewal: Promise<void> | null;
+  renewals: Set<Promise<void>>;
 };
 
 // Why an emoji whose two files exist may not stay published, or null: its files' sizes past the emoji limits
@@ -286,9 +301,10 @@ async function pass(
     if (control === null) {
       return start();
     }
-    // A heartbeat of an earlier write may still be in flight: its answer counts before this write's confirmation.
-    if (control.renewal !== null) {
-      await within(() => control.renewal ?? Promise.resolve(), deadline, now);
+    // Heartbeats of an earlier write may still be in flight: their answers count before this write's confirmation.
+    // Each settles by its stall bound.
+    if (control.renewals.size > 0) {
+      await within(() => Promise.all(control.renewals), deadline, now);
     }
     if (control.lost) {
       throw new Overrun();
@@ -302,25 +318,27 @@ async function pass(
       throw new Overrun();
     }
     const work = start();
+    const stall = deps.heartbeatStallMs ?? REBUILD_HEARTBEAT_STALL_MS;
+    // A heartbeat on every tick, whatever the ones before it do. One given up (DeadlinePassed) says nothing of the
+    // lease; one the Store refuses, or that fails, marks it lost.
     const timer = setInterval(() => {
-      if (control.renewal !== null) {
-        return;
-      }
-      control.renewal = control
-        .lease(false)
+      const renewal: Promise<void> = within(() => control.lease(false), now() + stall, now)
         .then(
           (renewed) => {
             if (renewed.status !== "ok") {
               control.lost = true;
             }
           },
-          () => {
-            control.lost = true;
+          (error: unknown) => {
+            if (!(error instanceof DeadlinePassed)) {
+              control.lost = true;
+            }
           },
         )
         .finally(() => {
-          control.renewal = null;
+          control.renewals.delete(renewal);
         });
+      control.renewals.add(renewal);
     }, deps.heartbeatMs ?? REBUILD_HEARTBEAT_MS);
     try {
       return await work;
