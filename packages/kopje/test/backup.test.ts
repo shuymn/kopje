@@ -950,18 +950,9 @@ describe("backup of large originals (#1828 P24)", () => {
 
   it("aborts the upload of an original whose stream breaks off, as media-changed", async () => {
     const h = await harness();
-    const source = await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
-    h.env = {
-      ...h.env,
-      MEDIA: {
-        get: async (key: string) => {
-          const object = await env.MEDIA.get(key);
-          // The object states one byte more than its body holds.
-          return object === null ? null : { size: object.size + 1, body: object.body };
-        },
-      },
-    } as unknown as Env;
-    expect(source).toBeDefined();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
+    // The object states one byte more than its body holds.
+    mediaAnswering(h, (object) => ({ size: object.size + 1, body: object.body }));
     expect(await h.run()).toBe("failed");
     expect((await backupState(h.store)).lastFailure?.reason).toBe("media-changed");
     expect(h.s3.uploads.size).toBe(0);
@@ -982,7 +973,7 @@ describe("backup of large originals (#1828 P24)", () => {
 
   it("stops reading a body longer than its object's size, as media-changed", async () => {
     const h = await harness();
-    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(1));
     let read = 0;
     // A body that never ends.
     mediaAnswering(h, (object) => {
@@ -1005,7 +996,7 @@ describe("backup of large originals (#1828 P24)", () => {
 
   it("gives up a read of the original that stalls when the time left runs out, aborting its upload", async () => {
     const h = await harness();
-    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(1));
     let sent = false;
     // One chunk, then nothing.
     mediaAnswering(h, (object) => {

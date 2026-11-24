@@ -18,7 +18,7 @@ import { type AccessTeam, adminClaims, adminHarness, adminTeam, serviceClaims, s
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { ANIMATED_WEBP, JPEG_ORIENTATION_6, PNG_PLAIN, WIDE_PNG } from "./fixtures/images";
-import { BUILD, completeSetup, migratedStore, rejectionOf } from "./helpers";
+import { BUILD, completeSetup, deferred, migratedStore, rejectionOf } from "./helpers";
 import { pngOf, pngOfBytes } from "./local-emoji-helpers";
 import { bytes, framesKeepingCodec, recordRgba, TestCodec } from "./media-helpers";
 import {
@@ -1084,10 +1084,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     const h = await setup();
     const row = await addRow(h.store);
     const admin = { ...ACCESS, teamDomain: team.teamDomain };
-    let release = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const gate = deferred();
     let writing = false;
     let hung: number | null = null;
     // The first lease call while the full's put is pending (its first heartbeat) never reaches the Store.
@@ -1105,7 +1102,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
       put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
         if (key.endsWith("/full")) {
           writing = true;
-          await gate;
+          await gate.promise;
         }
         return env.MEDIA.put(key, value, options);
       },
@@ -1135,7 +1132,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(await lease(h.store, "other", admin)).toMatchObject({ status: "busy" });
-    release();
+    gate.resolve();
     expect(await running).toMatchObject({ ok: true, stopped: null, counts: { built: 1 } });
     expect(await files(row)).toEqual([true, true]);
   });
@@ -1157,8 +1154,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
       }) as unknown as R2Bucket;
     // A's third lease call, the confirmation of its first put (after the take and the row's renewal), is answered by
     // the Store at once; the reply reaches A only once `deliver` opens.
-    let deliver = () => {};
-    const delivered = new Promise<void>((resolve) => (deliver = resolve));
+    const delivered = deferred();
     let held = false;
     let calls = 0;
     const store = new Proxy(h.store, {
@@ -1168,7 +1164,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
               const answer = await target.mediaRebuildLease(...args);
               if (++calls === 3) {
                 held = true;
-                await delivered;
+                await delivered.promise;
               }
               return answer;
             }
@@ -1211,7 +1207,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
       { after: null, dryRun: false },
     );
     expect(b).toMatchObject({ ok: true, counts: { built: 1 } });
-    deliver();
+    delivered.resolve();
     expect(await a).toMatchObject({ ok: true, stopped: "lease-overrun" });
     expect(order).toEqual(["B full", "B small"]);
   });
@@ -1220,10 +1216,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     const h = await setup();
     await addRow(h.store);
     const admin = { ...ACCESS, teamDomain: team.teamDomain };
-    let open = () => {};
-    const late = new Promise<void>((resolve) => {
-      open = resolve;
-    });
+    const late = deferred();
     let writing = false;
     let delayed = false;
     let arrived = false;
@@ -1231,7 +1224,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     const store = holding(h.store, () => {
       if (writing && !delayed) {
         delayed = true;
-        return late.then(() => {
+        return late.promise.then(() => {
           arrived = true;
         });
       }
@@ -1267,7 +1260,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     );
     expect(step).toMatchObject({ ok: true, counts: { built: 1 } });
     expect(await leaseRow(h.store)).toEqual([expect.objectContaining({ holder: "writer", until: 0 })]);
-    open();
+    late.resolve();
     await vi.waitFor(() => expect(arrived).toBe(true));
     await new Promise((resolve) => setTimeout(resolve, 50));
     // The late renewal named a released generation: nothing changed, and another call takes the lease.

@@ -16,7 +16,7 @@ import { type AccessTeam, adminTeam, setTeamAccess } from "./access-helpers";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { avFixture, concat } from "./av-helpers";
-import { BUILD, migratedStore } from "./helpers";
+import { BUILD, deferred, migratedStore } from "./helpers";
 import { pngOf } from "./local-emoji-helpers";
 import { TestCodec } from "./media-helpers";
 import { ACCESS, dumpViaRpc, memoryIO } from "./ops-helpers";
@@ -833,15 +833,9 @@ describe("media rebuild of video rows: interruptions and lease loss (#1828 P25)"
   }
 
   function gate() {
-    let open = () => {};
-    let reached = () => {};
-    const opened = new Promise<void>((resolve) => {
-      open = resolve;
-    });
-    const arrived = new Promise<void>((resolve) => {
-      reached = resolve;
-    });
-    return { open, opened, reached, arrived };
+    const opened = deferred();
+    const arrived = deferred();
+    return { open: opened.resolve, opened: opened.promise, reached: arrived.resolve, arrived: arrived.promise };
   }
 
   it("a call that loses its lease after `full`, held at the still, writes nothing once the next call finished the row", async () => {
@@ -917,32 +911,25 @@ describe("media rebuild of video rows: interruptions and lease loss (#1828 P25)"
     const store = await setup();
     const row = await addAv(store, "video");
     let writing = false;
-    let fail = (_error: Error) => {};
     let heldHeartbeat = false;
-    const heartbeat = new Promise<never>((_resolve, reject) => {
-      fail = reject;
-    });
-    heartbeat.catch(() => {});
+    const heartbeat = deferred<never>();
+    heartbeat.promise.catch(() => {});
     const proxied = new Proxy(store, {
       get: (target, property, receiver) =>
         property === "mediaRebuildLease"
           ? (...args: Parameters<StoreStub["mediaRebuildLease"]>) => {
               if (writing && !heldHeartbeat) {
                 heldHeartbeat = true;
-                return heartbeat;
+                return heartbeat.promise;
               }
               return target.mediaRebuildLease(...args);
             }
           : (Reflect.get(target, property, receiver) as unknown),
     });
-    const writes: string[] = [];
+    const recorded = recordingBucket();
+    const writes = recorded.writes;
     const bucket = {
-      head: (key: string) => env.MEDIA.head(key),
-      get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
-      delete: async (keys: string | string[]) => {
-        writes.push(`delete ${String(keys)}`);
-        return env.MEDIA.delete(keys);
-      },
+      ...recorded.bucket,
       put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
         writes.push(`put ${key}`);
         // The first put stays pending until a heartbeat was sent (and held).
@@ -951,12 +938,12 @@ describe("media rebuild of video rows: interruptions and lease loss (#1828 P25)"
         writing = false;
         return env.MEDIA.put(key, value, options);
       },
-    } as unknown as R2Bucket;
+    };
     const running = run(proxied, { bucket, heartbeatMs: 5 });
     await vi.waitFor(() => expect(heldHeartbeat).toBe(true));
     // The put has settled and the call goes on to its next write while that heartbeat is still unanswered.
     await new Promise((resolve) => setTimeout(resolve, 200));
-    fail(new Error("renewal lost"));
+    heartbeat.reject(new Error("renewal lost"));
     expect(await running).toMatchObject({ ok: true, stopped: "lease-overrun" });
     // The full file's put, during which the heartbeat was held; the probe copy's put never started.
     expect(writes).toEqual([`put files/${row.token}/full`]);

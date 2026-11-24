@@ -22,7 +22,7 @@ import {
 import { PROBE_PROFILES, type ProbeProfile, type ProbeReport, type StillMaker } from "../src/platform/media-transcoder";
 import { accessToken, adminClaims, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
 import { NOW } from "./app-helpers";
-import { BUILD, migratedStore } from "./helpers";
+import { BUILD, deferred, migratedStore } from "./helpers";
 import { memoryIO } from "./ops-helpers";
 
 type Handler = (request: Request) => Response | Promise<Response>;
@@ -837,7 +837,7 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     expect(fake.calls.at(-1)).toBe("destroy");
   });
 
-  it("is not ok, and reports its teardown pending, when the destroy ends past the call's deadline", async () => {
+  it("reports its teardown pending when the destroy ends past the call's deadline, and its alarm removes the storage", async () => {
     await env.MEDIA.put("originals/140000000000000012", new Uint8Array([1]));
     const time = frozen(1_000_000);
     const fake = counted(() => {
@@ -845,13 +845,19 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
       return Promise.resolve();
     });
     const state = fakeState(fake.container);
-    const outcome = await unit({ ...state.ctx, bucket: bucket() }, time.deps).stillNow(
-      "originals/140000000000000012",
-      60_000,
-    );
-    expect(outcome).toMatchObject({ ok: false, failure: "destroy", pending: true });
+    const object = unit({ ...state.ctx, bucket: bucket() }, time.deps);
+    expect(await object.stillNow("originals/140000000000000012", 60_000)).toMatchObject({
+      ok: false,
+      failure: "destroy",
+      pending: true,
+    });
     expect(state.alarm()).not.toBeNull();
     expect(state.cleared()).toBe(0);
+    // The destroy finished after the answer: no container runs when the alarm comes.
+    expect(fake.container.running).toBe(false);
+    await state.fire(object);
+    expect(state.cleared()).toBe(1);
+    expect(state.alarm()).toBeNull();
   });
 
   it("is not ok when removing its storage ends past the call's deadline", async () => {
@@ -883,24 +889,6 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     // The alarm is kept: it is removed only after the storage.
     expect(state.alarm()).not.toBeNull();
     stalled = false;
-    await state.fire(object);
-    expect(state.cleared()).toBe(1);
-    expect(state.alarm()).toBeNull();
-  });
-
-  it("removes the storage at its alarm once a destroy that was pending at the answer has finished", async () => {
-    await env.MEDIA.put("originals/140000000000000023", new Uint8Array([1]));
-    const time = frozen(1_000_000);
-    const fake = counted(() => {
-      time.t = 1_000_000 + 60_000 + 1;
-      return Promise.resolve();
-    });
-    const state = fakeState(fake.container);
-    const object = unit({ ...state.ctx, bucket: bucket() }, time.deps);
-    expect(await object.stillNow("originals/140000000000000023", 60_000)).toMatchObject({ pending: true });
-    // The destroy finished after the answer: no container runs when the alarm comes.
-    expect(fake.container.running).toBe(false);
-    expect(state.cleared()).toBe(0);
     await state.fire(object);
     expect(state.cleared()).toBe(1);
     expect(state.alarm()).toBeNull();
@@ -943,15 +931,15 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     const object = unit({ ...state.ctx, bucket: bucket() }, time);
     // The first still's removal took effect, but its reply comes after the call answered.
     expect(await object.stillNow("originals/140000000000000025", 60_000)).toMatchObject({ failure: "late" });
-    let releaseNext = () => {};
-    gate = new Promise<void>((resolve) => (releaseNext = resolve));
+    const next = deferred();
+    gate = next.promise;
     const second = object.stillNow("originals/140000000000000025", 60_000);
     await vi.waitFor(() => expect(state.alarm()).not.toBeNull());
     answer();
     await new Promise((resolve) => setTimeout(resolve, 20));
     // The second call's alarm stands while it runs.
     expect(state.alarm()).not.toBeNull();
-    releaseNext();
+    next.resolve();
     await second;
   });
 
@@ -1008,11 +996,10 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
 
   it("is busy while a probe runs on its object, and the probe is busy while a still runs: one container", async () => {
     await env.MEDIA.put("incoming/probe-0123456789abcdef0123456789abcdef", new Uint8Array([1, 2, 3]));
-    let release = () => {};
-    const held = new Promise<void>((resolve) => (release = resolve));
+    const held = deferred();
     const fake = counted(undefined, {
       "/still": async () => {
-        await held;
+        await held.promise;
         return ok(PNG, "image/png");
       },
     });
@@ -1024,7 +1011,7 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
       ok: false,
       failure: "busy",
     });
-    release();
+    held.resolve();
     expect((await first).ok).toBe(true);
     expect(fake.starts()).toBe(1);
   });
