@@ -656,6 +656,27 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     expect(later.calls.filter((c) => c.startsWith("probe"))).toHaveLength(1);
   });
 
+  it("lets a new attempt that reaches no verdict stand over an older failure: the calls in its hour stop", async () => {
+    const store = await setup();
+    const row = await addAv(store, "video");
+    const before = await rowOf(store, row.id);
+    // A failure for this build, older than the cooldown.
+    await sql(
+      store,
+      "INSERT INTO kopje_state (name, value) VALUES ('media_probe:still@standard-1', ?), ('media_probe_attempt:still@standard-1', ?)",
+      JSON.stringify({ version: BUILD, imageTag: null, at: Date.now() - PROBE_RETRY_MS - 1, ok: false }),
+      JSON.stringify({ version: BUILD, at: Date.now() - PROBE_RETRY_MS - 1 }),
+    );
+    const busy = maker({ probe: { ok: false, failure: "busy", image: null } });
+    expect(await run(store, { stills: busy.stills })).toMatchObject({ stopped: "retry", next: null });
+    expect(busy.calls.filter((c) => c.startsWith("probe"))).toHaveLength(1);
+    // Within the new attempt's hour, the old failure does not give the row the poster.
+    const again = maker();
+    expect(await run(store, { stills: again.stills })).toMatchObject({ stopped: "retry", next: null });
+    expect(again.calls).toEqual([]);
+    expect(await rowOf(store, row.id)).toEqual(before);
+  });
+
   it.each([
     ["not JSON", "{", "{"],
     [

@@ -563,8 +563,8 @@ export const probeRecord = readOperation.atStoreTime("now")<
   };
 });
 
-// Records, under the rebuild's lease, the start of a probe (`ok` null: the attempt, before the probe runs) or its
-// verdict.
+// Records, under the rebuild's lease, the start of a probe (`ok` null: the attempt, before the probe runs, which
+// removes the verdict before it) or its verdict.
 export const recordProbe = mediaRebuildOperation.atStoreTime("now")<
   {
     authority: ImportAuthority;
@@ -594,5 +594,10 @@ export const recordProbe = mediaRebuildOperation.atStoreTime("now")<
     throw new Error("probe record out of bounds");
   }
   db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, text);
+  // A new attempt supersedes the verdict before it, in the same transaction: within its cooldown only its own verdict
+  // counts, so an older failure cannot stand for an attempt that reached none.
+  if (ok === null) {
+    db.run("DELETE FROM kopje_state WHERE name = ?", probeName(PROBE_RECORD, profile));
+  }
   return { status: "ok" };
 });
