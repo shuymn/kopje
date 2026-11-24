@@ -1166,7 +1166,7 @@ describe("a scheduled status holds at most four media (RES-6)", () => {
     const detach = /^UPDATE media_attachments SET scheduled_status_id = NULL/;
     const recount = /^UPDATE accounts SET statuses_count = /;
     const callers = {
-      delete: (id: string) => measuredStatements(h, deleteScheduled, { credential, id, now: NOW, storeNow: NOW }, true),
+      delete: (id: string) => measuredStatements(h, deleteScheduled, { credential, id, now: NOW }, true),
       publication: (id: string) =>
         measuredStatements(
           h,

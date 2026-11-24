@@ -188,27 +188,47 @@ type Attachment = {
   type: string;
   created_at: string;
   gc_at: string | null;
-  status_id: string | null;
   scheduled_status_id: string | null;
 };
 
-type ProcessingRow = {
-  state: "staging" | "pending" | "running" | "failed";
-  staged_at: number;
-  staged_until: number;
-  queued_at: number | null;
-  dispatched_at: number | null;
-  deadline_at: number | null;
-  reply_by: number | null;
-  start_id: string | null;
-  started_by: string | null;
-  input_bytes: number | null;
-  failure: Failure | null;
-};
+// A processing row as migration 0121's CHECKs hold each state to its columns.
+type RowBase = { staged_at: number; staged_until: number; reply_by: number | null };
+type ProcessingRow =
+  | (RowBase & {
+      state: "staging";
+      deadline_at: null;
+      input_bytes: null;
+      start_id: null;
+      started_by: null;
+      failure: null;
+    })
+  | (RowBase & {
+      state: "pending";
+      deadline_at: number;
+      input_bytes: number;
+      start_id: null;
+      started_by: null;
+      failure: null;
+    })
+  | (RowBase & {
+      state: "running";
+      deadline_at: number;
+      input_bytes: number;
+      start_id: string;
+      started_by: string;
+      failure: null;
+    })
+  | (RowBase & {
+      state: "failed";
+      deadline_at: number;
+      input_bytes: number;
+      start_id: string | null;
+      started_by: string | null;
+      failure: Failure;
+    });
 
 type Slot = {
   phase: "staging" | "processing";
-  held_until: number;
   teardown_id: string | null;
   granted_at: number | null;
 };
@@ -218,19 +238,18 @@ type UploadRecord = { att: Attachment | null; row: ProcessingRow | null; slot: S
 function load(db: Db, id: string): UploadRecord {
   const att =
     db.first<Attachment>(
-      `SELECT id, account_id, file_token, processed, url, type, created_at, gc_at, status_id, scheduled_status_id
+      `SELECT id, account_id, file_token, processed, url, type, created_at, gc_at, scheduled_status_id
 		FROM media_attachments INDEXED BY ${MEDIA_ID_INDEX} WHERE id = ?`,
       id,
     ) ?? null;
   const row =
     db.first<ProcessingRow>(
-      `SELECT state, staged_at, staged_until, queued_at, dispatched_at, deadline_at, reply_by, start_id, started_by,
-			input_bytes, failure FROM media_processing WHERE media_id = ?`,
+      `SELECT state, staged_at, staged_until, deadline_at, reply_by, start_id, started_by, input_bytes, failure
+			FROM media_processing WHERE media_id = ?`,
       id,
     ) ?? null;
   const slot =
-    db.first<Slot>("SELECT phase, held_until, teardown_id, granted_at FROM media_av_slots WHERE media_id = ?", id) ??
-    null;
+    db.first<Slot>("SELECT phase, teardown_id, granted_at FROM media_av_slots WHERE media_id = ?", id) ?? null;
   return { att, row, slot };
 }
 
@@ -318,7 +337,7 @@ function effectOf(record: UploadRecord, now: number, restoredAt: number | null):
       return "k3-restored";
     }
   }
-  if ((row.state === "pending" || row.state === "running") && row.deadline_at !== null && now >= row.deadline_at) {
+  if ((row.state === "pending" || row.state === "running") && now >= row.deadline_at) {
     return row.reply_by !== null ? "k4-doom" : "k4-deadline";
   }
   return null;
@@ -363,8 +382,12 @@ function normalized(record: UploadRecord, now: number, restoredAt: number | null
   if (effect === "k4-doom") {
     return { att: att === null ? null : { ...att, gc_at: DOOMED_AT }, row: null, slot };
   }
+  // K3's `restored` and K4's `deadline` fail only a pending or running row.
+  if (row.state !== "pending" && row.state !== "running") {
+    return record;
+  }
   const failure = effect === "k3-restored" ? "restored" : "deadline";
-  return { att, row: { ...row, state: "failed", failure, dispatched_at: null }, slot };
+  return { att, row: { ...row, state: "failed", failure }, slot };
 }
 
 // ---- Activation and capacity
@@ -619,7 +642,7 @@ export const queueNormalize = writeOperation.atStoreTime("now")<
   if (row?.state === "running") {
     return { status: "settled", outcome: "running" };
   }
-  if (row?.state === "failed" && row.failure !== null) {
+  if (row?.state === "failed") {
     return { status: "settled", outcome: { failed: row.failure } };
   }
   if (row === null && attachmentState(att, token) === "done" && onAvPath(att)) {
@@ -651,7 +674,7 @@ export const startNormalize = writeOperation.atStoreTime("now")<
   const { att: loaded, row, slot } = normalize(db, id, now, restoredAt);
   const att = avAttachment(loaded);
   const mine = attachmentState(att, token) !== "none";
-  if (mine && row?.state === "pending" && row.deadline_at !== null && row.input_bytes !== null) {
+  if (mine && row?.state === "pending") {
     const endpoint: Endpoint = row.reply_by !== null ? "v1" : "v2";
     const allocation = allocate(endpoint, now, row.deadline_at + (endpoint === "v1" ? T_REPLY : 0), row.input_bytes);
     if (encodeLeft(allocation, now, "start") < T_MIN_ENCODE) {
@@ -670,12 +693,12 @@ export const startNormalize = writeOperation.atStoreTime("now")<
     }
     return { status: "started", startId, msLeft: row.deadline_at - now, inputBytes: row.input_bytes, endpoint };
   }
-  if (mine && row?.state === "running" && row.started_by === invocation && row.start_id !== null) {
+  if (mine && row?.state === "running" && row.started_by === invocation) {
     return {
       status: "started",
       startId: row.start_id,
-      msLeft: (row.deadline_at ?? now) - now,
-      inputBytes: row.input_bytes ?? 0,
+      msLeft: row.deadline_at - now,
+      inputBytes: row.input_bytes,
       endpoint: row.reply_by !== null ? "v1" : "v2",
     };
   }
@@ -689,7 +712,7 @@ function settledOf(att: Attachment | null, row: ProcessingRow | null, token: str
   if (row?.state === "running") {
     return { status: "settled", state: "running" };
   }
-  if (row?.state === "failed" && row.failure !== null) {
+  if (row?.state === "failed") {
     return { status: "settled", state: { failed: row.failure } };
   }
   if (row === null && attachmentState(att, token) === "done") {
@@ -714,7 +737,7 @@ export const confirmAvWrite = writeOperation.atStoreTime("now")<
   }
   // K4 has failed or doomed a row at its deadline_at, so a running row here is before it.
   const { row } = normalize(db, id, now, restoredAt);
-  if (row?.state === "running" && row.start_id === startId && row.deadline_at !== null) {
+  if (row?.state === "running" && row.start_id === startId) {
     return { status: "grant", ms: Math.min(AV_GRANT_MS, row.deadline_at - now) };
   }
   return { status: "refused" };
@@ -835,7 +858,7 @@ export const failNormalize = writeOperation.atStoreTime("now")<
     fail(db, id, cause);
     return { status: "recorded", cause };
   }
-  if (row?.state === "failed" && row.failure !== null) {
+  if (row?.state === "failed") {
     return { status: "recorded", cause: row.failure };
   }
   if (row === null && attachmentState(avAttachment(att)) === "done") {
@@ -927,7 +950,7 @@ export const v1Final = writeOperation.atStoreTime("now")<{ id: string; token: st
   if (kind === "done") {
     return { status: 503 };
   }
-  if (kind === "res" && row?.state === "failed" && row.failure !== null && httpOf(row.failure) !== 503) {
+  if (kind === "res" && row?.state === "failed" && httpOf(row.failure) !== 503) {
     return { status: httpOf(row.failure) };
   }
   if (kind === "res") {
@@ -1160,8 +1183,8 @@ export const incomingClassify = mediaDeleteOperation.atStoreTime("now")<
   return { status: "ok", orphans };
 });
 
-export const incomingSwept = mediaDeleteOperation.atStoreTime("now")<
-  { claim: number; cursor: string | null } & Fence,
+export const incomingSwept = mediaDeleteOperation<
+  { claim: number; cursor: string | null; restoredAt: number | null },
   { status: "swept" } | { status: "stale" }
 >((db, { claim, cursor, restoredAt }) => {
   const sweep = sweepState(db);

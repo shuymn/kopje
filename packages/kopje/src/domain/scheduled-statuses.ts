@@ -558,15 +558,16 @@ export const updateScheduled = userWriteOperation<
 
 // DELETE /api/v1/scheduled_statuses/:id: its uploads are detached (attachable again for a day), as Mastodon nullifies
 // them, its params read or not. Whether it was the viewer's.
-export const deleteScheduled = userWriteOperation.atStoreTime("storeNow")<
-  { id: string; now: number; storeNow: number },
-  boolean
->((db, input, { accountId }) => {
+export const deleteScheduled = userWriteOperation.atStoreTime("now")<{ id: string; now: number }, boolean>((
+  db,
+  input,
+  { accountId },
+) => {
   const row = ownScheduled(db, accountId, input.id);
   if (row === undefined) {
     return false;
   }
-  removeScheduled(db, row.id, input.storeNow);
+  removeScheduled(db, row.id, input.now);
   return true;
 });
 
