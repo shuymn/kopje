@@ -3246,13 +3246,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `incoming/<id>` of the reservation's id (`incomingKey` in `src/platform/media-files.ts`). The sweep and
   reconciliation delete it with the upload's other keys (`sweptKeys`), in chunks of `R2_DELETE_KEYS` (1,000) keys a
   call; a failed image or emoji upload's own cleanup deletes only its original and served files (`mediaKeys`), never
-  an input. A reservation that may become a video or audio upload is made as a candidate at the Store's time (type
-  `unknown`), every other at the Worker's, and only a candidate is staged (`takeAvSlot`). The Store judges a
-  reservation's write deadline, and the sweep, its purge and reconciliation the `gc_at` and tombstone deadlines, at the
-  earlier of the Worker's and the Store's times (`writerTime`): a reservation stays open while either clock is before
-  its deadline, and a row or a tombstone is taken only once both have passed it. The image path's completion and
-  abandonment refuse an upload a processing row holds, so the two paths stay exclusive, and the owner's delete
-  (`deleteAvUpload`) dooms only an unfinished, unattached reservation of the AV path. An AV write deadline is
+  an input. One media clock: every time stored on `media_attachments` (a reservation's time, its write deadline,
+  `gc_at`, a purge tombstone's `delete_after`) is written and compared in a Store transaction at the Store's time, for
+  every upload: the reservation, the image path's start and completion, abandonment, the owner's reads and deletions,
+  the attach check of posting and of a profile update (`liveMediaSql`), a status's or scheduled status's detach, and
+  the sweep's selection, its purge (the tombstone at `max(t, write deadline) + ORPHAN_GRACE_MS`) and reconciliation;
+  the Worker counts its own deadline from its own reading. One path per reservation: a candidate (`avCandidate`, type
+  `unknown`) takes the image path (`startTransforms` sets `image`) or the AV path (`takeAvSlot` sets the provisional
+  AV type), whichever comes first; each refuses a reservation the other chose, a doomed one and a finished one, and
+  `completeMedia` takes only an image-path row not doomed. A doom (`DOOMED_AT`: the owner's delete, a candidate's
+  abandonment, S10) is never revived, and a row without a URL is never live, so an abandoned reservation is neither
+  shown nor attachable. The owner's delete of an upload in progress (`deleteAvUpload`) dooms only a reservation on
+  the AV path or still a candidate; one the image path took is left to `deleteMedia`'s rules. An AV write deadline is
   `AV_WRITE_WINDOW_MS` (30 minutes) after the reservation (`writeDeadline` in `src/domain/media.ts`), and the tombstone
   of a purged AV upload keeps that deadline. Only the
   staging row of the caller's `staged_at` hands the caller its input to delete (`releaseStaging`'s `released`,
@@ -3270,7 +3275,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/media-processing-ownership.test.ts` ("table 1.1, the Store's side"), `test/media-processing-precedence.test.ts`
   ("with the reservation at or before the restore marker (K3)", "named cells"), `test/media-processing-replay.test.ts`
   ("table 1.4: a repeat after a lost reply"), `test/media-processing-clock.test.ts` ("the reservation's time is the
-  Store's (H1)", "one clock per reservation"), `test/media-processing.test.ts` ("the incoming/ orphan pass (W4)",
+  Store's (H1)", "one media clock: the Store's"), `test/media-processing-path.test.ts` ("one path per reservation",
+  "interleavings, each actor held"), `test/media-processing.test.ts` ("the incoming/ orphan pass (W4)",
   "W13: a restore between the sweep's selection and its deletion", "the dispatch round", "the completion's own facts
   and the text (P7, P9)"), `test/image-bytes.test.ts` ("media keys (MEDIA-2)"), `test/media.test.ts` ("a failed
   upload deletes its own keys only, never its incoming/ input (#1828 plan 1.1)").

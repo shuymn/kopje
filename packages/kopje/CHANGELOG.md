@@ -44,6 +44,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- A post sent while the sweep was deleting an expired upload could still attach it and keep a broken attachment, when
+  the posting Worker's clock was behind the sweep's. The Store now decides on its own clock both whether an upload can
+  be attached and whether the sweep can take it.
 - Cached remote media answers 304 to a matching `If-None-Match` whatever its `Range`, as RFC 9110 orders them; an
   unsatisfiable range answered 416.
 - A video or gifv from another server that comes without a preview image is playable in clients such as Elk: its
