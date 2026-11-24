@@ -496,12 +496,12 @@ async function make(
   return facts;
 }
 
-// Whether the `still@standard-1` probe has passed for this build. It runs at most once a call (one AV row a call), when no pass for this
-// build is recorded and none was started for it within PROBE_RETRY_MS (at the Store's clock): the attempt is recorded
-// before the probe starts, so a failing profile, and a probe that reached no verdict, cost at most one container and
-// Images call an hour whatever the budgets. The profile fails only when the container refuses the packaged
-// clip as input, verifyStill refuses its PNG, or Images refuses that PNG or its output fails the checks; any other
-// failure of the processor or Images is no verdict, and the call stops.
+// Whether the `still@standard-1` probe has passed for this build. It runs at most once a call (one AV row a call), when
+// no pass for this build is recorded and none was started for it within PROBE_RETRY_MS (at the Store's clock): the
+// attempt is recorded before the probe starts, so a failing profile, and a probe that reached no verdict, cost at most
+// one container and Images call an hour whatever the budgets. The profile fails only when the container refuses the
+// packaged clip as input, verifyStill refuses its PNG, or Images refuses that PNG or its output fails the checks; any
+// other failure of the processor or Images is no verdict, and the call stops.
 async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => number): Promise<boolean | AvOutcome> {
   const { record, attempt, now } = await call.bounded<{
     record: ProbeRecord | null;
