@@ -17,7 +17,7 @@ import { readOperation, writeOperation } from "./operation";
 // the CLI and the cron's probe round: claimProbe refuses within PROBE_RETRY_MS of the last claim for the same build, and
 // recordProbeResult records only under the claim it is given, so two probers never both record. The media rebuild
 // probes `still@standard-1` under its own lease (domain/media-rebuild.ts probeRecord and recordProbe) over the same
-// records, with PR3's rule: its attempt removes the verdict before the probe runs.
+// records: its attempt removes the verdict before the probe runs.
 
 const PROBE_PROFILES = ["normalize@standard-4", "still@standard-1"] as const;
 export type ProbeProfile = (typeof PROBE_PROFILES)[number];

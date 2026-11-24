@@ -746,7 +746,6 @@ export const confirmAvWrite = writeOperation.atStoreTime("now")<
 
 // ---- S6 completeAvUpload
 
-// The verified facts of the full file (the processor's verifier), and the WebP preview's, or none.
 // The verified facts of the full file, as the processor's output verifier states them (src/platform/av-bytes.ts), and
 // the WebP preview's, or none.
 export type AvFacts = (
