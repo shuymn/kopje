@@ -45,7 +45,7 @@ catalog:
   "@playwright/test": 1.65.1
   "@vitest/coverage-v8": 5.1.1
   css-tree: 3.2.1
-  fast-check: 4.10.3
+  fast-check: 4.11.0
   jsonld: 9.0.0
   mdast-util-from-markdown: 2.1.0
   mdast-util-gfm: 3.1.0
