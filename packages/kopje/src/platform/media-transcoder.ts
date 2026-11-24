@@ -46,8 +46,9 @@ export type MediaProcessorClient = {
 // container's destroy has not finished, so the caller keeps its lease until the object's alarm has cleaned up.
 // The container's refusals of a still's input itself (container/server: the plan's refusals /still answers with 422,
 // no_frame when ffmpeg read the input and wrote no frame at the seek nor at 0, and 413 for an input past its limit).
-// The server answers unreadable only when ffprobe ran and exited with a status, and 500 internal when it did not start
-// or was killed. Only these are about the input; every other failure of a still is the processor's or the platform's,
+// The server answers unreadable only when ffprobe ran and exited with a status, no_frame only when ffmpeg succeeded and
+// its output is absent or empty, and 500 internal when ffprobe or ffmpeg did not start, was killed, or the output could
+// not be read back. Only these are about the input; every other failure of a still is the processor's or the platform's,
 // and says nothing of the row.
 export const STILL_INPUT_REFUSALS = [
   "unreadable",

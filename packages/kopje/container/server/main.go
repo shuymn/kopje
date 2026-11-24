@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"math"
 	"net/http"
@@ -364,7 +365,13 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeFailure(w, ffmpegFailure(ctx, "still_failed"))
+		// ffmpeg exiting with a status is about the input; one that did not start, was killed by the host, or whose
+		// output could not be read back is the container's.
+		code := "still_failed"
+		if !exitedWithStatus(err) {
+			code = "internal"
+		}
+		writeFailure(w, ffmpegFailure(ctx, code))
 		return
 	}
 	setWrite()
@@ -410,15 +417,21 @@ func runStill(ctx context.Context, videoIndex int, hdr, icc bool, seek float64, 
 
 var errNoFrame = errors.New("no frame written")
 
+// statOutput reads an output's size (a variable so a test can fail it as the filesystem can).
+var statOutput = os.Stat
+
+// writeStill runs one still. errNoFrame only when ffmpeg succeeded and its output is absent or empty; an output that
+// cannot be read back (an I/O error) is that error, which is not the input's.
 func writeStill(ctx context.Context, args []string, out string) error {
 	_ = os.Remove(out)
 	if _, err := runFFmpeg(ctx, args); err != nil {
 		return err
 	}
-	if st, err := os.Stat(out); err != nil || st.Size() == 0 {
+	st, err := statOutput(out)
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && st.Size() == 0) {
 		return errNoFrame
 	}
-	return nil
+	return err
 }
 
 func ffmpegFailure(ctx context.Context, code string) *failure {

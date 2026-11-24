@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -40,6 +41,7 @@ cat "$FAKE_PROBE"
 const fakeFFmpeg = `#!/bin/sh
 echo "SECRET-FFMPEG-STDERR" >&2
 [ -n "$FAKE_LOG" ] && echo "$*" >> "$FAKE_LOG"
+[ -n "$FAKE_FFMPEG_KILL" ] && case "$*" in *"$FAKE_FFMPEG_KILL"*) kill -KILL $$ ;; esac
 case "$FAKE_OVERSIZE" in
   dav1d) echo "[libdav1d @ 0x1] Frame size 4096x2160 exceeds limit 8294400" >&2 ;;
   ?*) echo "[IMGUTILS @ 0x1] Picture size 4096x2160 exceeds specified max pixel count 8294400" >&2 ;;
@@ -84,6 +86,7 @@ func fakeTools(t *testing.T, probe *probeResult) {
 	t.Setenv("FAKE_OVERSIZE", "")
 	t.Setenv("FAKE_DISCOVERY_FAIL", "")
 	t.Setenv("FAKE_PROBE_KILL", "")
+	t.Setenv("FAKE_FFMPEG_KILL", "")
 	oldProbe, oldFF, oldWork, oldStill := probeBin, ffmpegBin, workRoot, stillPath
 	probeBin, ffmpegBin = write("ffprobe", fakeProbe), write("ffmpeg", fakeFFmpeg)
 	workRoot = filepath.Join(dir, "work")
@@ -209,6 +212,21 @@ func TestFailuresAnswerCodesOnly(t *testing.T) {
 			fakeTools(t, videoProbe())
 			t.Setenv("FAKE_FAIL_ON", "-c:v png")
 		}, "/still", []byte("x"), 500, "still_failed"},
+		// Not the input's: ffmpeg that does not start, that the host kills, or whose output cannot be read back.
+		{"still whose ffmpeg does not start", func(t *testing.T) {
+			fakeTools(t, videoProbe())
+			ffmpegBin = filepath.Join(t.TempDir(), "missing")
+		}, "/still", []byte("x"), 500, "internal"},
+		{"still whose ffmpeg is killed", func(t *testing.T) {
+			fakeTools(t, videoProbe())
+			t.Setenv("FAKE_FFMPEG_KILL", "-c:v png")
+		}, "/still", []byte("x"), 500, "internal"},
+		{"still whose output cannot be read back", func(t *testing.T) {
+			fakeTools(t, videoProbe())
+			old := statOutput
+			statOutput = func(string) (os.FileInfo, error) { return nil, syscall.EIO }
+			t.Cleanup(func() { statOutput = old })
+		}, "/still", []byte("x"), 500, "internal"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
