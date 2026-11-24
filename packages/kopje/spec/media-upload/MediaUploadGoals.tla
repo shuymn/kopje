@@ -22,6 +22,13 @@ Goals ==
    LateLanding |-> "LateLanding" \in ev /\ \E u \in U : gh[u].ret /\ r2[u].obj # {},
    \* W3: a container runs without a counting slot after a restore to a bookmark taken before its grant.
    W3 |-> \E u \in Running : ~Live(st, u, now) /\ W3(u) /\ ~W10(u),
+   \* W3 ends (D24): a restore forgot a running container's grant, and a later one brought it back, so its granted slot
+   \* covers it again.
+   W3Cleared |->
+     "W3Forgot" \in ev /\ \E u \in Running : ~W3(u) /\ Live(st, u, now) /\ st[u].slot.ga >= 0 /\ gh[u].s4At >= 0,
+   \* W3 counts grants, not containers (D24): the container of a grant the restore forgot starts after it, beside an
+   \* upload admitted after it (Codex r4 CH1).
+   W3LateStart |-> "W3Start" \in ev /\ Cardinality(Running) > MaxInflight,
    \* W3 puts more containers than MAX_AV_INFLIGHT to work: a later upload is admitted beside it (Codex r2 CH2, D9).
    W3Cap |-> Cardinality(Running) > MaxInflight /\ \E u \in Running : ~Live(st, u, now) /\ W3(u),
    \* Two restores to one bookmark, each forgetting one running container's grant: two containers more than
@@ -38,8 +45,8 @@ Goals ==
    W5Swept |-> \E u \in U : rt[u].v1 /\ rt[u].ans = 503 /\ rt[u].kind \in W5Kinds /\ "W5" \in ev /\ st[u].att = "gone",
    \* W6: S2 released the staging, its reply was lost, and the input waits for the sweep.
    W6 |-> \E u \in U : rt[u].kind = "s2lost" /\ r2[u].inc /\ st[u].ps = "none" /\ ~gh[u].q /\ st[u].att = "res",
-   \* W9: the processor's record-age stop.
-   W9 |-> "W9" \in ev,
+   \* W9: the processor's record-age stop, after maintenance refused its stop confirmation (D26).
+   W9 |-> "W9Refused" \in ev,
    \* W10: a container whose processor is gone runs past HARD_HOLD after its grant, and its slot no longer counts.
    W10 |-> \E u \in Running : ~Live(st, u, now) /\ W10(u) /\ ~W3(u) /\ dd[u].gone,
    \* W10 is an admission trade-off: a later upload is admitted beside that container (D17).
@@ -57,6 +64,8 @@ Goals ==
    \* W11: the route sends a 200 for an upload a restore since S10's commit rewound; its keys are then deleted with
    \* the restored reservation, or forgotten (no row, no tombstone) when the bookmark predates the reservation.
    W11 |-> "W11" \in ev,
+   \* W11 across two restores in one time unit, the first before S10's commit and the second after it (D28).
+   W11Tick |-> "W11Tick" \in ev,
    W11Swept |-> "W11" \in ev /\ \E u \in U : rt[u].ans = 200 /\ st[u].att = "gone" /\ r2[u].obj = {},
    W11Forgotten |-> "W11" \in ev /\ \E u \in U : rt[u].ans = 200 /\ st[u].att = "none" /\ r2[u].obj # {},
    \* Keys a restore forgot (the bookmark predates the reservation) of an upload nobody was answered 200 for or shown
@@ -64,6 +73,8 @@ Goals ==
    Forgotten |-> \E u \in U : st[u].att = "none" /\ r2[u].obj # {} /\ rt[u].ans # 200 /\ ~gh[u].tok,
    \* W12: an S10 the route stopped waiting for decides 200 for a completed row restored without its files (D12).
    W12 |-> "W12" \in ev,
+   \* W12 for an S10 still out when its route died (D28).
+   W12Dead |-> "W12Dead" \in ev,
    \* Codex r4 H1: S10 decides at the route's cut, before the Store's deadline of a job whose container started.
    H1 |-> "H1" \in ev,
    \* Codex r4 H3: a later invocation starts a job an earlier one did not.

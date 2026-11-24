@@ -38,7 +38,7 @@
     },
     {
       "name": "DLW",
-      "distinct": 1444689,
+      "distinct": 2463942,
       "depth": 59
     },
     {
@@ -48,17 +48,17 @@
     },
     {
       "name": "MT2",
-      "distinct": 546868,
+      "distinct": 547131,
       "depth": 57
     },
     {
       "name": "MTX",
-      "distinct": 3561944,
+      "distinct": 3564236,
       "depth": 55
     },
     {
       "name": "MTR",
-      "distinct": 280177,
+      "distinct": 296876,
       "depth": 51
     },
     {
@@ -68,37 +68,52 @@
     },
     {
       "name": "H1W",
-      "distinct": 1549253,
+      "distinct": 1549909,
       "depth": 56
     },
     {
       "name": "RS",
-      "distinct": 2335559,
+      "distinct": 2372733,
       "depth": 50
     },
     {
+      "name": "RSW",
+      "distinct": 82956,
+      "depth": 43
+    },
+    {
       "name": "RS2",
-      "distinct": 1809551,
+      "distinct": 1844663,
       "depth": 44
     },
     {
+      "name": "RSB",
+      "distinct": 15493,
+      "depth": 31
+    },
+    {
+      "name": "RST",
+      "distinct": 29208,
+      "depth": 30
+    },
+    {
       "name": "RSL",
-      "distinct": 2361645,
+      "distinct": 2398450,
       "depth": 48
     },
     {
       "name": "RSS",
-      "distinct": 17416,
+      "distinct": 19150,
       "depth": 59
     },
     {
       "name": "RSD",
-      "distinct": 143220,
+      "distinct": 183549,
       "depth": 73
     },
     {
       "name": "RS3",
-      "distinct": 3379719,
+      "distinct": 3424626,
       "depth": 46
     },
     {
@@ -108,7 +123,7 @@
     },
     {
       "name": "CAP2",
-      "distinct": 2035311,
+      "distinct": 2093365,
       "depth": 61
     },
     {
@@ -128,12 +143,12 @@
     },
     {
       "name": "CAP6",
-      "distinct": 12751,
+      "distinct": 14665,
       "depth": 51
     },
     {
       "name": "OR",
-      "distinct": 1444062,
+      "distinct": 1549657,
       "depth": 45
     },
     {
@@ -155,7 +170,7 @@
     },
     {
       "name": "L3",
-      "distinct": 194560,
+      "distinct": 198189,
       "depth": 50
     },
     {
@@ -371,7 +386,7 @@
       "scenario": "L3",
       "variant": "NoExpiry",
       "property": "SlotsReleased",
-      "trace": 35,
+      "trace": 40,
       "liveness": true,
       "breaks": "the dispatch round never deletes a slot past held_until (W2)"
     },
@@ -428,7 +443,7 @@
       "scenario": "L2",
       "variant": "SweepNoIncoming",
       "property": "InputsDeleted",
-      "trace": 17,
+      "trace": 21,
       "liveness": true,
       "breaks": "the sweep, reconciliation and the retirement leave incoming/<id> (Gemini r1 GM5)"
     },
@@ -521,6 +536,38 @@
       "property": "V1Answer",
       "trace": 19,
       "breaks": "S10 decides 200 for a restored reservation that never completed, once the route has answered: the late invalid 200 the r2 W12 excused (Codex r3 CM1, Gemini r3 GM1, D19)"
+    },
+    {
+      "name": "ContainerCovered-RestoreDropsGrant",
+      "scenario": "RSB",
+      "variant": "RestoreDropsGrant",
+      "property": "ContainerCovered",
+      "trace": 17,
+      "breaks": "a restore that brings back a grant an earlier restore forgot drops its slot, so the running container has no counting slot once W3 ends (Codex r4 CH1, D24)"
+    },
+    {
+      "name": "StartNeedsSlot-W3AbsStart",
+      "scenario": "RS2",
+      "variant": "W3AbsStart",
+      "property": "StartNeedsSlot",
+      "trace": 17,
+      "breaks": "a start W3 excuses compares the Store's deadline with the processor's clock, so a processor behind the Store starts a container at the deadline (Codex r4 CM2, D25)"
+    },
+    {
+      "name": "MaintInert-MaintConfirmsDone",
+      "scenario": "MT2",
+      "variant": "MaintConfirmsDone",
+      "property": "MaintInert",
+      "trace": 25,
+      "breaks": "S8 skips K1 for a completed upload, so a stop confirmation in maintenance deletes the slot (Codex r4 CM3, D26)"
+    },
+    {
+      "name": "NoLateObject-RetireIgnoresPurge",
+      "scenario": "DLW",
+      "variant": "RetireIgnoresPurge",
+      "property": "NoLateObject",
+      "trace": 23,
+      "breaks": "the tombstone is retired at the write cut + ORPHAN_GRACE_MS whatever the purge's time, before main's max(purge, write deadline) + ORPHAN_GRACE_MS (Codex r4 CM4, D27)"
     }
   ],
   "goals": [
@@ -594,7 +641,7 @@
       "name": "L2-W9",
       "scenario": "L2",
       "goal": "W9",
-      "trace": 37
+      "trace": 45
     },
     {
       "name": "CAP3-W10",
@@ -721,6 +768,30 @@
       "scenario": "RSD",
       "goal": "W3Twice",
       "trace": 53
+    },
+    {
+      "name": "RSB-W3Cleared",
+      "scenario": "RSB",
+      "goal": "W3Cleared",
+      "trace": 17
+    },
+    {
+      "name": "CAP6-W3LateStart",
+      "scenario": "CAP6",
+      "goal": "W3LateStart",
+      "trace": 30
+    },
+    {
+      "name": "RST-W11Tick",
+      "scenario": "RST",
+      "goal": "W11Tick",
+      "trace": 26
+    },
+    {
+      "name": "RSW-W12Dead",
+      "scenario": "RSW",
+      "goal": "W12Dead",
+      "trace": 31
     }
   ]
 }

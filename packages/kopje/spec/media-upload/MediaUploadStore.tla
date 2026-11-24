@@ -10,7 +10,7 @@
 (* order:                                                                  *)
 (*  K1 maintenance: nothing changes and the answer is "maint"; a read      *)
 (*     answers from the record. S8, the stop confirmation, is a write like *)
-(*     any other (D8, D16).                                                *)
+(*     any other (D8, D16); MaintInert checks every write (D26).           *)
 (*  K3 restored (Fenced: the attachment was reserved at or before the last *)
 (*     restore): a staging row and its staging slot are deleted; a pending *)
 (*     or running row becomes failed "restored", its slot kept.            *)
@@ -45,7 +45,12 @@ GC == WW \* gc_at of an unfinished reservation (RESERVATION_MS), after every wri
 \* image's does (src/domain/media.ts). The model lets a write land at most this long after it starts; one landing
 \* later stays, as an image's does (docs/threat-model.md, "stays for good").
 LAND == 1
-RETIRE == WW + LAND \* the tombstone is retired this long after the reservation (M3)
+RETIRE == WW + LAND \* the tombstone's authority after the reservation, for a purge before the write deadline (M3)
+\* The tombstone's delete_after, as purgeMedia stores it: max(purge, write deadline) + ORPHAN_GRACE_MS (D27), the write
+\* deadline the AV one, the reservation + AV_WRITE_WINDOW_MS, past every write cut (deadline_at). Only scenarios with
+\* purge keep a purge's time past the write deadline (it adds a state per purge time); the others take every purge as
+\* before it, so their tombstone retires no later than main's.
+DeleteAfter(x, t) == (IF P.purge /\ t > x.resAt + WW THEN t ELSE x.resAt + WW) + LAND
 \* DETACHED_GRACE_MS: the gc_at completion gives an unattached upload (completeMedia), longer than the v1 wait.
 DGRACE == IF Variant = "ShortGrace" THEN V1 ELSE V1 + 1
 \* HARD_HOLD_MS: how long a granted slot counts at most, from the grant's stored time (D16, D17).
@@ -67,10 +72,11 @@ Counts(slot, t) ==
 \* An upload's Store record. att: none (no attachment row: never reserved, or its tombstone retired), res (reserved,
 \* processed = 0), done (processed = 1), gone (swept: the tombstone). staged: S1 ran for this reservation (Codex r4 M1).
 \* ps: the media_processing row's state. gcAt: the gc_at completion sets. chg: the units S3 charged for the upload, in
-\* the Store's own counter (Codex r1 CM5).
+\* the Store's own counter (Codex r1 CM5). dA: the tombstone's delete_after, max(purge, write deadline) +
+\* ORPHAN_GRACE_MS, as purgeMedia stores it (D27).
 Fresh == [att |-> "none", resAt |-> 0, doomed |-> FALSE, staged |-> FALSE, ps |-> "none", v1 |-> FALSE, sAt |-> 0,
           sUntil |-> 0, rb |-> 0, dl |-> 0, disp |-> 0, sid |-> 0, cause |-> "none", slot |-> NoSlot, gcAt |-> 0,
-          chg |-> 0]
+          chg |-> 0, dA |-> 0]
 
 RowNone(x) ==
   [x EXCEPT !.ps = "none", !.v1 = FALSE, !.sAt = 0, !.sUntil = 0, !.rb = 0, !.dl = 0, !.disp = 0, !.sid = 0,
@@ -197,10 +203,11 @@ S7(x0, t, ra, maint, inv, cause) ==
 \* S8 releaseAvSlot(id, teardown_id): the stop confirmation (D16). The processor calls it only once its container is
 \* confirmed stopped (destroy() answered and running is false), with the teardown_id its record holds; it deletes the
 \* slot of that teardown identity, unless a pending row still needs it. A wrong teardown_id leaves the slot as it is
-\* (ConfirmFenced; ConfirmNoFence drops the identity check).
+\* (ConfirmFenced; ConfirmNoFence drops the identity check). Under K1 it changes nothing (MaintInert;
+\* MaintConfirmsDone exempts a completed upload's row from K1, Codex r4 CM3).
 S8(x0, t, ra, maint, td) ==
   LET x == IF Variant = "ReleaseK3Stops" THEN x0 ELSE Norm(x0, t, ra) IN
-  IF maint THEN Res(x0, "maint")
+  IF maint /\ ~(Variant = "MaintConfirmsDone" /\ x0.att = "done") THEN Res(x0, "maint")
   ELSE IF Variant = "ReleaseK3Stops" /\ Fenced(x0, ra) /\ x0.ps \in {"pending", "running"}
   THEN Res(Norm(x0, t, ra), "settled")
   ELSE IF td = 0 \/ (x.slot.td # td /\ Variant # "ConfirmNoFence") THEN Res(x, "released")

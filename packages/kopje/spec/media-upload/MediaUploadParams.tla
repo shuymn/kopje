@@ -44,6 +44,10 @@
 (*          sweep never takes it once completed (an attached upload has no  *)
 (*          gc_at)                                                          *)
 (*  gc      the sweep, reconciliation and the tombstone's retirement run    *)
+(*  purge   the tombstone keeps a purge's time past the write deadline in   *)
+(*          its delete_after, as main's does (D27); elsewhere every purge   *)
+(*          counts as before the write deadline, so the tombstone retires  *)
+(*          no later than main's                                            *)
 (*  skd     the processor's clock offset from the Store's                   *)
 (*  skr     the route's clock offset from the Store's                       *)
 (*  prompt  the kinds of actor ("route", "do", "cron") whose steps that can *)
@@ -70,7 +74,8 @@ Base ==
   [up |-> {"u1"}, v1 |-> {}, max |-> 2, arr |-> 0, late |-> {}, lateAt |-> 0, later |-> {}, laterAt |-> 0, c |-> C0, nw |-> 1, loss |-> 0, loseRun |-> FALSE, kill |-> 0,
    dfail |-> 0, gone |-> 0, lag |-> 0, stale |-> 0, perr |-> 0, rdie |-> 0, del |-> 0, mOn |-> 0, mAt |-> 0, bm |-> 0,
    rs |-> 0, rsAt |-> 0, rev |-> 0, bad |-> FALSE,
-   fails |-> FALSE, orphan |-> FALSE, kept |-> FALSE, gc |-> TRUE, skd |-> 0, skr |-> 0, prompt |-> {}, tmax |-> 6]
+   fails |-> FALSE, orphan |-> FALSE, kept |-> FALSE, gc |-> TRUE, purge |-> FALSE, skd |-> 0, skr |-> 0, prompt |-> {},
+   tmax |-> 6]
 
 Params ==
   [\* v1 with lost replies and calls that fail before their commit, on every call.
@@ -85,8 +90,9 @@ Params ==
    V2K |-> [Base EXCEPT !.kill = 1, !.dfail = 1, !.perr = 1, !.tmax = 7],
    \* v2, a lost reply and a kill in one behaviour (Gemini r1 GH4).
    LK |-> [Base EXCEPT !.loss = 1, !.kill = 1, !.tmax = 7],
-   \* v2, three writes, each granted on its own, with the deadline at AV_WRITE_WINDOW_MS and DELETE (D5).
-   DLW |-> [Base EXCEPT !.c = CD, !.nw = 3, !.del = 1, !.tmax = 7],
+   \* v2, three writes, each granted on its own, with the deadline at AV_WRITE_WINDOW_MS and DELETE (D5), and the
+   \* purge's time in the tombstone's delete_after (Codex r4 CM4, D27).
+   DLW |-> [Base EXCEPT !.c = CD, !.nw = 3, !.del = 1, !.purge = TRUE, !.tmax = 7],
    \* v2, two writes, DELETE, a failed write and a route that dies.
    V2D |-> [Base EXCEPT !.nw = 2, !.del = 1, !.perr = 1, !.rdie = 1, !.tmax = 7],
    \* Maintenance across a v1 upload, with a kill.
@@ -115,8 +121,16 @@ Params ==
    H1W |-> [Base EXCEPT !.v1 = {"u1"}, !.c = CW, !.mOn = 1, !.tmax = 7],
    \* A PITR restore across a v1 upload.
    RS |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 1, !.rs = 1, !.prompt = {"cron"}],
-   \* A PITR restore across a v2 upload whose processor runs on, with a kill.
-   RS2 |-> [Base EXCEPT !.bm = 1, !.rs = 1, !.kill = 1, !.gc = FALSE],
+   \* A PITR restore across a v1 upload whose route dies with its S10 still out (Codex r4 CM5, D28).
+   RSW |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 1, !.rs = 1, !.rdie = 1, !.prompt = {"cron", "do"}],
+   \* A PITR restore across a v2 upload whose processor runs on, with a kill, the processor's clock one unit behind the
+   \* Store's (Codex r4 CM2: a start W3 excuses still meets the job's deadline).
+   RS2 |-> [Base EXCEPT !.bm = 1, !.rs = 1, !.kill = 1, !.skd = -1, !.gc = FALSE],
+   \* Two restores across a v2 upload, each to any of two bookmarks, with stops that are not confirmed: one before the
+   \* grant and one after it, in either order (Codex r4 CH1: W3 ends when a restore brings the grant back, D24).
+   RSB |-> [Base EXCEPT !.c = CT, !.bm = 2, !.rs = 2, !.dfail = 2, !.gc = FALSE, !.prompt = All, !.tmax = 3],
+   \* Two restores in one time unit across a v1 upload, each to any of two bookmarks (Codex r4 CM5, D28).
+   RST |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 2, !.rs = 2, !.tmax = 0],
    \* A PITR restore across a v2 upload, with a lost reply (Gemini r1 GH4).
    RSL |-> [Base EXCEPT !.bm = 1, !.rs = 1, !.loss = 1, !.gc = FALSE, !.prompt = {"cron"}],
    \* A PITR restore across a v2 upload, with DELETE.

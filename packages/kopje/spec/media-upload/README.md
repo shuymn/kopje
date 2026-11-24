@@ -15,7 +15,8 @@ replays and accepted windows that PR4's Store, processor and route implement. Pa
 | `checks.json`           | every check's expected outcome: each scenario's state count and depth, each mutation's broken property and trace length, each goal's witness length |
 
 `MediaUpload.tla`'s `Mutations` declares each mutation as the property it breaks and the scenario it breaks it in;
-`checks.json` must list exactly those.
+`checks.json` must list exactly those (`test-node/media-upload-spec-plan.test.ts`, in the Node suite, which every Kopje
+change runs).
 
 ## The checks
 
@@ -27,8 +28,9 @@ pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2 test-node/media-up
 ```
 
 A change of the specification that changes a count changes `checks.json` in the same commit, which says why. Every named
-invariant and property has a mutation that the checker is seen to violate (`variants` in `checks.json`); the spec test
-fails for a property without one.
+invariant and property has a mutation that the checker is seen to violate (`variants` in `checks.json`); the plan test
+fails for a property without one. `test-node/media-upload-spec-parts.test.ts` checks that the `kopje-spec` project
+collects every part's file and that each lies in a CI shard of its own.
 
 ## What the model abstracts
 
@@ -40,13 +42,15 @@ fails for a property without one.
   route's and the processor's constant offsets (`skr`, `skd`) cancel; drift is not modelled.
 - An R2 write may land at any time after it starts, or never. `LAND` stands for `ORPHAN_GRACE_MS`. Main's rule for an
   image (`src/domain/media.ts`, `purgeMedia`, `dueOrphans`) keeps the authority to delete an unfinished upload's keys
-  until a successful reconciliation after max(purge, write deadline) + `ORPHAN_GRACE_MS`; the model retires the
-  tombstone, with a last deletion, at the reservation + `AV_WRITE_WINDOW_MS` + `LAND` once swept, which is no later,
-  so it checks the shorter authority. Neither Cloudflare nor main bounds when a started put lands (the alarm's wall
-  limit ends the writer, not the put), so the lasting residual is a key that lands after the last authorized deletion,
-  or one a restore forgot (no row, no tombstone): it stays, as an image's does (`docs/threat-model.md`). The goal
-  `DLW-LateLanding` reaches the first, `RS2-Forgotten` the second, and `NoLateObject` checks every landing within `LAND`
-  of its write's start.
+  until a successful reconciliation after the tombstone's `delete_after`, max(purge, write deadline) +
+  `ORPHAN_GRACE_MS`. The model's tombstone keeps that `delete_after` and is retired, with a last deletion, once it is
+  due. `DLW` keeps a purge's time past the write deadline; the other scenarios count every purge as before it, which
+  retires the tombstone no later than main's and keeps their state space as it was. Neither Cloudflare nor main bounds
+  when a started put lands (the alarm's wall limit ends the writer, not the put), so the lasting residual is a key that
+  lands after that last deletion, or one a restore forgot (no row, no tombstone): it stays, as an image's does
+  (`docs/threat-model.md`). The goal `DLW-LateLanding` reaches the first, `RS2-Forgotten` the second, and
+  `NoLateObject` checks that nothing lands, and no write is in flight, between the retirement and the `delete_after`
+  (mutation `RetireIgnoresPurge`, retiring before it after a late purge).
 - One to three uploads. `MAX_AV_INFLIGHT` is 1 where two or three uploads compete, so a later one meets a full
   instance, and 2 in `CAP4` and `CAP5`, where a third arrives while two stops are retried; the capacity rules do not
   depend on the number.
@@ -72,6 +76,12 @@ fails for a property without one.
   its stop) wait `lag` units (`CAP4`: three, `CAP5`: one with a killed invocation). `HARD_HOLD` lies past the time of
   the scenarios that check this (`CT`), and within it where W10 is reached (`CAP3`: a processor gone for good, and a
   second upload admitted beside its container).
+- W3, the other exception, is derived from the Store's state: the latest restore's bookmark holds no grant of an
+  upload granted before it, and the Store holds none since. A later restore to a bookmark that holds the grant ends it
+  (`RSB`: two restores, each to either of two bookmarks). It counts one container for each forgotten grant, whether
+  the container ran at the restore or starts after it, and such a start still meets the job's deadline.
+- A restore's time (`ra`, `restoredAt`) fences reservations; replies are ordered against restores by the restores'
+  sequence number (`rn`), so two restores in one time unit (`RST`) are two.
 - The number of invocations is bounded only by the clock: an alarm fires at most once a time unit, so no bound of the
   model cuts a retry sequence short (Codex r2 CM8; `L5` retries seven stops).
 - A restore and a maintenance window may be held back to `rsAt` and `mAt`, so that `RSS`, `MTS` and `MTR` begin them

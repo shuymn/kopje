@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vitest/config";
 
-// The checks of the TLA+ specifications spec/collection-consent/ and spec/media-upload/ under tla-ts (about 7 and 19
+// The checks of the TLA+ specifications spec/collection-consent/ and spec/media-upload/ under tla-ts (about 7 and 20
 // minutes, each split over four files, one in each of CI's test shards: test-node/collection-consent-spec/checks.ts,
 // test-node/media-upload-spec/checks.ts), apart from the Node suite so that CI runs them only for a change they read
 // (scripts/test-affected.sh, kopje_spec). The drift check of the code the
