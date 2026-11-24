@@ -390,9 +390,13 @@ function fakeState(
   container: Container | undefined,
   options: {
     failAlarmOn?: number[];
-    failDeleteAlarm?: boolean;
+    failDeleteAll?: boolean;
     sync?: () => Promise<void>;
     deleteAll?: () => Promise<void>;
+    // The removal takes effect at once and answers once this settles (an ordered write whose reply is late).
+    deleteAllAnswers?: () => Promise<void>;
+    // setAlarm never answers while this is true.
+    holdAlarm?: () => boolean;
   } = {},
 ) {
   let alarm: number | null = null;
@@ -401,6 +405,9 @@ function fakeState(
   let cleared = 0;
   const storage = {
     setAlarm: (at: number) => {
+      if (options.holdAlarm?.() === true) {
+        return new Promise<void>(() => {});
+      }
       alarms++;
       if (options.failAlarmOn?.includes(alarms) === true) {
         return Promise.reject(new Error("storage unavailable"));
@@ -408,14 +415,18 @@ function fakeState(
       alarm = at;
       return Promise.resolve();
     },
-    deleteAlarm: () =>
-      options.failDeleteAlarm === true
-        ? Promise.reject(new Error("storage unavailable"))
-        : Promise.resolve(void (alarm = null)),
+    // Removes the alarm too, in the same step (compatibility date 2026-02-24 and later).
     deleteAll: async () => {
+      if (options.failDeleteAll === true) {
+        throw new Error("storage unavailable");
+      }
       await options.deleteAll?.();
       cleared++;
+      alarm = null;
+      await options.deleteAllAnswers?.();
     },
+    // Not part of what the unit uses (UnitState): here for a test that would call it.
+    deleteAlarm: () => Promise.resolve(void (alarm = null)),
     sync: () => options.sync?.() ?? Promise.resolve(),
   };
   return {
@@ -719,10 +730,10 @@ describe("MediaProcessor", () => {
     expect(fake.starts()).toBe(1);
   });
 
-  // An alarm left after a confirmed teardown finds nothing to do; the next probe starts at once.
-  it("starts the next probe at once when the alarm cannot be deleted after a teardown", async () => {
+  // An alarm left after a confirmed teardown finds nothing to destroy; the next probe starts at once.
+  it("starts the next probe at once when the storage cannot be removed after a teardown", async () => {
     const fake = flaky(() => false);
-    const state = fakeState(fake.container, { failDeleteAlarm: true });
+    const state = fakeState(fake.container, { failDeleteAll: true });
     const object = unit(state.ctx);
     expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: true, destroyed: true });
     expect(state.alarm()).not.toBeNull();
@@ -893,6 +904,55 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     await state.fire(object);
     expect(state.cleared()).toBe(1);
     expect(state.alarm()).toBeNull();
+  });
+
+  it("answers busy by its deadline when it finds an orphan and setting the alarm does not answer", async () => {
+    const time = clock();
+    const fake = counted();
+    const state = fakeState(fake.container, { holdAlarm: () => true });
+    const object = unit({ ...state.ctx, bucket: bucket() }, time);
+    // A container left running by an earlier instance.
+    fake.container.start({ image: "x", instance: "standard-1", enableInternet: false });
+    expect(await object.stillNow("originals/140000000000000024", 60_000)).toMatchObject({
+      ok: false,
+      failure: "busy",
+    });
+  });
+
+  it("removes the storage and the alarm in one step, so a late reply cannot remove the next call's alarm", async () => {
+    await env.MEDIA.put("originals/140000000000000025", new Uint8Array([1]));
+    let answer = () => {};
+    let late = true;
+    const time = clock();
+    let gate: Promise<void> = Promise.resolve();
+    const fake = counted(undefined, {
+      "/still": async () => {
+        await gate;
+        return ok(PNG, "image/png");
+      },
+    });
+    const state = fakeState(fake.container, {
+      deleteAllAnswers: () =>
+        late
+          ? new Promise<void>((resolve) => {
+              late = false;
+              answer = resolve;
+            })
+          : Promise.resolve(),
+    });
+    const object = unit({ ...state.ctx, bucket: bucket() }, time);
+    // The first still's removal took effect, but its reply comes after the call answered.
+    expect(await object.stillNow("originals/140000000000000025", 60_000)).toMatchObject({ failure: "late" });
+    let releaseNext = () => {};
+    gate = new Promise<void>((resolve) => (releaseNext = resolve));
+    const second = object.stillNow("originals/140000000000000025", 60_000);
+    await vi.waitFor(() => expect(state.alarm()).not.toBeNull());
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The second call's alarm stands while it runs.
+    expect(state.alarm()).not.toBeNull();
+    releaseNext();
+    await second;
   });
 
   it("cancels a read of its input that answers past the operation's end, and gives the container nothing", async () => {

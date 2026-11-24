@@ -454,7 +454,7 @@ export type UnitState = {
   readonly container?: Container | undefined;
   // The media bucket, which stillNow reads its input from.
   readonly bucket?: Pick<R2Bucket, "get">;
-  readonly storage: Pick<DurableObjectStorage, "setAlarm" | "deleteAlarm" | "deleteAll" | "sync">;
+  readonly storage: Pick<DurableObjectStorage, "setAlarm" | "deleteAll" | "sync">;
 };
 
 // What MediaProcessor does, over the parts of its state it uses.
@@ -528,13 +528,13 @@ export class ProcessorUnit {
     if (this.#inFlight !== null || this.#cleaning) {
       return { refused: "busy", destroyed: true };
     }
+    const deadline = this.deps.now() + ms;
     if (container.running) {
-      // An orphan; the alarm owns it.
-      await this.alarmNow();
+      // An orphan; the alarm owns it. Setting it for now is awaited only until the call's deadline.
+      await before(this.alarmNow(), deadline, this.deps);
       return { refused: "busy", destroyed: false };
     }
     // No await since the checks above: two calls cannot both pass.
-    const deadline = this.deps.now() + ms;
     this.#inFlight = deadline;
     try {
       // The alarm's write and its commit are awaited within the call's deadline too.
@@ -578,11 +578,11 @@ export class ProcessorUnit {
     }
   }
 
-  // No container runs: the object's storage is removed, then its alarm. The alarm goes last, so a removal that fails or
-  // never finishes leaves it to run the removal again.
+  // No container runs: the object's storage and its alarm are removed, in one step (deleteAll removes the alarm too
+  // from compatibility date 2026-02-24; this Worker's is 2026-10-11). A removal that fails or never finishes leaves the
+  // alarm to run it again, and no separate alarm delete can land after a later call set its own.
   async #clear(): Promise<void> {
     await this.state.storage.deleteAll();
-    await this.state.storage.deleteAlarm();
   }
 
   // The alarm: with a probe call in flight, again after its bound; otherwise any running container is an orphan, and
