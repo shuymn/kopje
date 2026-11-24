@@ -1,6 +1,7 @@
 // Part 0 of the specification's checks (./checks.ts says how they are split): its share of the checks of checks.json,
 // and the plan's own consistency: every .cfg is a check, every named property has a mutation that breaks it, the
-// mutations and the goals of checks.json are exactly the ones the specification defines, and every goal is checked.
+// mutations of checks.json are exactly the (property, mutation, scenario) triples MediaUpload.tla's Mutations declares,
+// and its goals exactly the ones MediaUploadGoals.tla defines.
 import { readdirSync, readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
@@ -23,13 +24,20 @@ const defined = (heading: string) => {
     .map((m) => m[1] ?? "");
 };
 // The operators of the sections that are no named property.
-const HELPERS = new Set(["Running", "Excused", "PendingRoom"]);
+const HELPERS = new Set(["Running", "Excused", "PendingRoom", "Mutations"]);
 // Every mutation the modules name: Variant = "X" or Variant # "X".
 const variantsInSpec = new Set(
   ["MediaUpload", "MediaUploadStore"].flatMap((m) =>
     [...read(m).matchAll(/Variant (?:=|#) "(\w+)"/g)].map((match) => match[1] ?? ""),
   ),
 );
+// The (property, mutation, scenario) triples MediaUpload.tla's Mutations declares, each as "property variant scenario".
+const declared = (() => {
+  const from = main.indexOf("Mutations ==");
+  if (from < 0) throw new Error("MediaUpload.tla declares no Mutations");
+  const set = main.slice(from, main.indexOf("}", from));
+  return [...set.matchAll(/<<"(\w+)", "(\w+)", "(\w+)">>/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
+})();
 // The goals MediaUploadGoals.tla's Goals record names.
 const goalsInSpec = (() => {
   const source = read("MediaUploadGoals");
@@ -71,6 +79,13 @@ describe("the plan of spec/media-upload", () => {
     const named = [...defined("Safety."), ...defined("Liveness (LSpec).")].filter((name) => !HELPERS.has(name));
     const broken = new Set(plan.variants.map((v) => v.property));
     expect(named.filter((name) => !broken.has(name))).toEqual([]);
+  });
+
+  it("runs exactly the mutations MediaUpload.tla declares, each once", () => {
+    const run = plan.variants.map((v) => `${v.property} ${v.variant} ${v.scenario}`);
+    expect(new Set(run).size).toBe(run.length);
+    expect(run.toSorted()).toEqual(declared.toSorted());
+    for (const v of plan.variants) expect(v.name, v.name).toBe(`${v.property}-${v.variant}`);
   });
 
   it("names exactly the mutations the specification defines, each with the rule it breaks", () => {

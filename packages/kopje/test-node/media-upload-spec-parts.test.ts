@@ -1,7 +1,7 @@
 // The parts the specification's checks are split into (media-upload-spec/checks.ts): each check of checks.json runs in
 // a part that has a file, and each part's file has a shard of its own among CI's test shards.
 import { createHash } from "node:crypto";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -21,6 +21,14 @@ const files = readdirSync(new URL("media-upload-spec/", import.meta.url))
 describe("the parts of the media upload specification's checks", () => {
   it("have a file each", () => {
     expect(files).toEqual(Array.from({ length: PARTS }, (_, part) => `${part}.test.ts`));
+  });
+
+  // A part's file that did not declare its share would leave those checks unrun with every test passing.
+  it("declare their share of the checks", () => {
+    for (const file of files) {
+      const source = readFileSync(new URL(`media-upload-spec/${file}`, import.meta.url), "utf8");
+      expect(source, file).toMatch(/^tlaTsChecks\(import\.meta\.url\);$/m);
+    }
   });
 
   it("are given by hand only for checks that exist", () => {
