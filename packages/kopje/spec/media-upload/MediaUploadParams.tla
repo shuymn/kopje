@@ -22,11 +22,15 @@
 (*  dfail   container stops that fail (destroy not confirmed)               *)
 (*  gone    processors that stop for good with their container running     *)
 (*          (no alarm or request runs again: W10)                           *)
+(*  lag     clock units a live processor's due alarm may wait while its     *)
+(*          container runs (Cloudflare bounds an alarm's delay nowhere)     *)
+(*  stale   renewals (S14) carrying a teardown_id that is not the slot's   *)
 (*  perr    R2 writes that answer an error (and may still land)             *)
 (*  rdie    route requests that die                                         *)
 (*  del     owner DELETEs                                                   *)
-(*  mOn     maintenance windows                                             *)
-(*  bm, rs  bookmarks taken and PITR restores, each to any bookmark taken   *)
+(*  mOn     maintenance windows, none beginning before mAt                  *)
+(*  bm, rs  bookmarks taken and PITR restores, each to any bookmark taken,  *)
+(*          no restore before rsAt                                          *)
 (*  rev     revocations of the normalize probe's verdict (M5)               *)
 (*  bad     a body or text field the route refuses                          *)
 (*  fails   an encode the input fails (cause refused)                       *)
@@ -41,8 +45,6 @@
 (*          be taken now are taken before the clock moves: all of them in  *)
 (*          the liveness scenarios (MediaUpload.tla, LIVENESS), some in    *)
 (*          the two-upload ones to bound their size; the others may wait   *)
-(*  ninv    the invocations of one processor a behaviour may run (a bound  *)
-(*          of the model, above what the scenario's time allows)           *)
 (*  tmax    the last time of the behaviour                                  *)
 (***************************************************************************)
 EXTENDS Integers
@@ -58,8 +60,9 @@ CD == [C0 EXCEPT !.v2p = 3]
 CT == [C0 EXCEPT !.teardown = 2]
 
 Base ==
-  [up |-> {"u1"}, v1 |-> {}, max |-> 2, arr |-> 0, late |-> {}, lateAt |-> 0, ninv |-> 6, c |-> C0, nw |-> 1, loss |-> 0, loseRun |-> FALSE, kill |-> 0,
-   dfail |-> 0, gone |-> 0, perr |-> 0, rdie |-> 0, del |-> 0, mOn |-> 0, bm |-> 0, rs |-> 0, rev |-> 0, bad |-> FALSE,
+  [up |-> {"u1"}, v1 |-> {}, max |-> 2, arr |-> 0, late |-> {}, lateAt |-> 0, c |-> C0, nw |-> 1, loss |-> 0, loseRun |-> FALSE, kill |-> 0,
+   dfail |-> 0, gone |-> 0, lag |-> 0, stale |-> 0, perr |-> 0, rdie |-> 0, del |-> 0, mOn |-> 0, mAt |-> 0, bm |-> 0,
+   rs |-> 0, rsAt |-> 0, rev |-> 0, bad |-> FALSE,
    fails |-> FALSE, orphan |-> FALSE, kept |-> FALSE, gc |-> TRUE, skd |-> 0, skr |-> 0, prompt |-> {}, tmax |-> 6]
 
 Params ==
@@ -85,12 +88,19 @@ Params ==
    MT2 |-> [Base EXCEPT !.nw = 2, !.mOn = 1, !.tmax = 7],
    \* Maintenance across a v2 upload with DELETE and a stop that is not confirmed (Gemini r1 GH4).
    MTX |-> [Base EXCEPT !.mOn = 1, !.del = 1, !.dfail = 1, !.tmax = 7],
-   \* Maintenance across a v2 upload with a restore and the incomingOrphans pass (Gemini r1 GH4).
-   MTR |-> [Base EXCEPT !.mOn = 1, !.bm = 1, !.rs = 1, !.orphan = TRUE, !.prompt = All],
+   \* Maintenance from t = 1 across a v2 upload whose stop is retried, with a restore and the incomingOrphans pass
+   \* (Gemini r1 GH4, r2 GM4).
+   MTR |-> [Base EXCEPT !.mOn = 1, !.mAt = 1, !.dfail = 2, !.bm = 1, !.rs = 1, !.orphan = TRUE, !.prompt = All],
+   \* Maintenance from t = 1 across a stop that is retried, and an upload that arrives after it (D8).
+   MTS |-> [Base EXCEPT !.up = {"u1", "u2"}, !.max = 1, !.c = CT, !.arr = 9, !.late = {"u2"}, !.lateAt = 5, !.mOn = 1,
+                        !.mAt = 1, !.dfail = 7, !.gc = FALSE, !.prompt = All, !.tmax = 9],
+   \* A restore from t = 1 across a stop that is retried, and an upload that arrives after it (D8).
+   RSS |-> [Base EXCEPT !.up = {"u1", "u2"}, !.max = 1, !.c = CT, !.arr = 7, !.late = {"u2"}, !.lateAt = 2, !.bm = 1,
+                        !.rs = 1, !.rsAt = 1, !.dfail = 3, !.gc = FALSE, !.prompt = All, !.tmax = 7],
    \* v1 on the wider clock CW, across maintenance: the route's cut before the Store's deadline (Codex r1 CM1).
    H1W |-> [Base EXCEPT !.v1 = {"u1"}, !.c = CW, !.mOn = 1, !.tmax = 7],
    \* A PITR restore across a v1 upload.
-   RS |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 1, !.rs = 1],
+   RS |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 1, !.rs = 1, !.prompt = {"cron"}],
    \* A PITR restore across a v2 upload whose processor runs on, with a kill.
    RS2 |-> [Base EXCEPT !.bm = 1, !.rs = 1, !.kill = 1, !.gc = FALSE],
    \* A PITR restore across a v2 upload, with a lost reply (Gemini r1 GH4).
@@ -103,18 +113,28 @@ Params ==
    \* Two v2 uploads competing for one slot across a restore.
    CAP2 |-> [Base EXCEPT !.up = {"u1", "u2"}, !.max = 1, !.arr = 1, !.bm = 1, !.rs = 1, !.gc = FALSE,
                          !.prompt = {"cron", "route"}, !.tmax = 5],
+   \* Two v2 uploads, one slot: the first's stop is retried across a restore, and the second arrives after it (Codex r2
+   \* CH2: W3 over the cap).
+   CAP6 |-> [Base EXCEPT !.up = {"u1", "u2"}, !.max = 1, !.arr = 1, !.late = {"u2"}, !.lateAt = 1, !.bm = 1, !.rs = 1,
+                         !.dfail = 2, !.gc = FALSE, !.prompt = All, !.tmax = 5],
    \* Two v2 uploads competing for one slot, with a stop that is not confirmed and a processor that stops for good.
    CAP3 |-> [Base EXCEPT !.up = {"u1", "u2"}, !.max = 1, !.arr = 1, !.dfail = 1, !.gone = 1, !.gc = FALSE,
                          !.prompt = {"cron", "route"}, !.tmax = 5],
-   \* Three v2 uploads, two slots, stops that are not confirmed, and arrivals while they are retried (Codex r1 CH3).
-   CAP4 |-> [Base EXCEPT !.up = {"u1", "u2", "u3"}, !.c = CT, !.arr = 5, !.late = {"u3"}, !.lateAt = 4, !.dfail = 8, !.ninv = 9,
-                         !.gc = FALSE, !.prompt = All, !.tmax = 7],
+   \* Three v2 uploads, two slots, stops that are not confirmed, arrivals while they are retried (Codex r1 CH3), and a
+   \* renewal of another teardown (Gemini r2 GM3, Codex r2 CM3).
+   CAP4 |-> [Base EXCEPT !.up = {"u1", "u2", "u3"}, !.c = CT, !.arr = 5, !.late = {"u3"}, !.lateAt = 4, !.dfail = 8,
+                         !.stale = 1, !.gc = FALSE, !.prompt = All, !.tmax = 7],
+   \* CAP4 with a killed invocation and an alarm one unit late (Gemini r2 GH1, Codex r2 CH1).
+   CAP5 |-> [Base EXCEPT !.up = {"u1", "u2", "u3"}, !.c = CT, !.arr = 5, !.late = {"u3"}, !.lateAt = 4, !.dfail = 8,
+                         !.kill = 1, !.lag = 1, !.gc = FALSE, !.prompt = All, !.tmax = 7],
    \* The incomingOrphans pass across two restores, with a route that dies.
    OR |-> [Base EXCEPT !.orphan = TRUE, !.bm = 2, !.rs = 2, !.rdie = 1, !.prompt = All],
    \* The processor's clock one unit behind the Store's and the route's one ahead, two writes, DELETE.
    SK |-> [Base EXCEPT !.nw = 2, !.skd = -1, !.skr = 1, !.del = 1, !.tmax = 7],
    \* Liveness: a v2 upload with a lost reply, a kill, a stop that is not confirmed and a failed write.
    L1 |-> [Base EXCEPT !.loss = 1, !.kill = 1, !.dfail = 1, !.perr = 1, !.prompt = All, !.tmax = 10],
+   \* Liveness: L1 with seven stops that are not confirmed in a row (Codex r2 CM8).
+   L5 |-> [Base EXCEPT !.loss = 1, !.kill = 1, !.dfail = 7, !.perr = 1, !.prompt = All, !.tmax = 10],
    \* Liveness: a v2 upload whose run is lost (W7).
    L4 |-> [Base EXCEPT !.loss = 1, !.loseRun = TRUE, !.prompt = All, !.tmax = 10],
    \* Liveness: a v1 upload across maintenance with a lost reply and a refused body.

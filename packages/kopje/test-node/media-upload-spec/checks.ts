@@ -22,29 +22,35 @@ export const PARTS = 2;
 
 // A check's title (its kind and name) and its part.
 export const PLACED = new Map<string, number>([
-  ["scenario RS", 1],
   ["scenario CAP2", 0],
-  ["scenario RS3", 0],
+  ["scenario RS3", 1],
   ["scenario RSL", 1],
-  ["goal RS-W11Swept", 1],
-  ["scenario OR", 0],
-  ["scenario MTX", 1],
+  ["scenario RS", 0],
+  ["scenario MTX", 0],
+  ["scenario CAP5", 1],
+  ["scenario DLW", 1],
   ["scenario RS2", 0],
+  ["scenario OR", 1],
   ["scenario H1W", 0],
-  ["scenario MT", 1],
-  ["scenario DLW", 0],
-  ["goal RS-W11Forgotten", 1],
-  ["scenario LK", 0],
-  ["goal RS-W11", 1],
-  ["scenario V1R", 0],
+  ["scenario MT", 0],
   ["scenario V2D", 1],
+  ["goal RS-W11Swept", 1],
+  ["goal RS-W12", 0],
+  ["liveness L3", 0],
+  ["scenario LK", 1],
+  ["scenario V1R", 1],
   ["scenario V1L", 0],
-  ["liveness L3", 1],
+  ["scenario SK", 0],
+  ["variant SlotsReleased-NoExpiry", 1],
+  ["scenario V2L", 0],
+  ["variant MaxContainers-ShortStopHold", 1],
+  ["scenario MT2", 1],
+  ["scenario CAP", 0],
 ]);
 
 export const plan = readPlan();
-// The largest scenario, RS (2,372,061 distinct states), took 80 s on a laptop running three checks at once; the timeout
-// leaves CI more than three times that.
+// The longest check, scenario CAP2 (2,184,761 distinct states), took 93 s on a laptop running three checks at once; the
+// timeout leaves CI more than three times that.
 const CHECK_TIMEOUT_MS = 300_000;
 
 /** The part that runs a check of checks.json, by its title. */

@@ -9,8 +9,7 @@
 (* PRECEDENCE. A writing operation applies, in its transaction and in this *)
 (* order:                                                                  *)
 (*  K1 maintenance: nothing changes and the answer is "maint"; a read      *)
-(*     answers from the record. S14, which writes only a slot's            *)
-(*     held_until, is the one write maintenance does not refuse.           *)
+(*     answers from the record. S14 is a write like any other (D8).        *)
 (*  K3 restored (Fenced: the attachment was reserved at or before the last *)
 (*     restore): a staging row and its staging slot are deleted; a pending *)
 (*     or running row becomes failed "restored", its slot kept.            *)
@@ -48,7 +47,11 @@ LAND == 1
 RETIRE == WW + LAND \* the tombstone is retired this long after the reservation (M3)
 \* DETACHED_GRACE_MS: the gc_at completion gives an unattached upload (completeMedia), longer than the v1 wait.
 DGRACE == IF Variant = "ShortGrace" THEN V1 ELSE V1 + 1
-RENEW == 2 \* the held_until S14 gives, from the Store's t: longer than CLEANUP_RETRY_MS
+\* STOP_HOLD_MS: the held_until S14 gives, from the Store's t, to the slot of a stop not yet confirmed (D7). It spans
+\* several CLEANUP_RETRY_MS (MediaUpload.tla's RETRY) so that a killed invocation and a late alarm (scenario CAP5's
+\* kill and lag) do not let the slot of a live processor lapse; ShortStopHold gives the two units of one retry and a
+\* margin.
+STOP_HOLD == IF Variant = "ShortStopHold" THEN 2 ELSE 4
 
 \* A slot: its phase, held_until and teardown_id (0 for none; the queue issues 1, one queue per reservation).
 NoSlot == [ph |-> "none", hu |-> 0, td |-> 0]
@@ -132,7 +135,7 @@ S3(x0, t, ra, maint, active, sAt) ==
   THEN IF t >= x.sUntil THEN Res([RowNone(x) EXCEPT !.slot = NoSlot], "refused_time")
        ELSE IF ~active THEN Res([RowNone(x) EXCEPT !.slot = NoSlot], "refused_inactive")
        ELSE IF dl - t < MINLEFT THEN Res([RowNone(x) EXCEPT !.slot = NoSlot], "refused_time")
-       ELSE Res([x EXCEPT !.ps = "pending", !.dl = dl, !.disp = t, !.chg = x.chg + 1,
+       ELSE Res([x EXCEPT !.ps = "pending", !.dl = dl, !.disp = t, !.chg = IF Variant = "NoCharge" THEN x.chg ELSE x.chg + 1,
                           !.slot = [ph |-> "processing",
                                     hu |-> IF Variant = "ShortHold" THEN dl ELSE dl + TEARDOWN, td |-> 1]],
                 "queued")
@@ -157,6 +160,9 @@ S5(x0, t, ra, maint, inv) ==
   IF maint THEN [x |-> x0, a |-> "maint", g |-> 0]
   ELSE IF x.ps = "running" /\ x.sid = inv /\ t < x.dl
   THEN [x |-> x, a |-> "grant", g |-> IF x.dl - t < AV_GRANT THEN x.dl - t ELSE AV_GRANT]
+  \* K3FreesSlotAtGrant: K3 deletes a restored row's slot in S5 alone (Codex r2 CM4).
+  ELSE IF Variant = "K3FreesSlotAtGrant" /\ Fenced(x0, ra) /\ x0.ps \in {"pending", "running"}
+  THEN [x |-> [x EXCEPT !.slot = NoSlot], a |-> "refused", g |-> 0]
   ELSE [x |-> x, a |-> "refused", g |-> 0]
 
 \* S6 completeAvUpload(id, start_id, token, facts): completed, with the gc_at of a completed unattached upload; the row
@@ -189,13 +195,16 @@ S8(x0, t, ra, maint, td) ==
   ELSE IF x.ps = "pending" THEN Res(x, "held")
   ELSE Res([x EXCEPT !.slot = NoSlot], "released")
 
-\* S14 renewAvSlot(id, teardown_id): a cleanup replay whose stop was not confirmed keeps its slot counting (D3): a live
-\* slot of that teardown identity is held until t + RENEW at least. It reads and writes the slot only, so maintenance
-\* does not refuse it: a slot left to lapse in a long maintenance would admit a container over MAX_AV_INFLIGHT after it.
-S14(x0, t, td) ==
-  IF td # 0 /\ x0.slot.td = td /\ x0.slot.hu > t /\ Variant # "NoRenew"
-  THEN Res([x0 EXCEPT !.slot.hu = IF x0.slot.hu > t + RENEW THEN x0.slot.hu ELSE t + RENEW], "renewed")
-  ELSE Res(x0, "gone")
+\* S14 renewAvSlot(id, teardown_id): a cleanup replay whose stop was not confirmed keeps its slot counting (D3, D7): a
+\* live slot of that teardown identity is held until t + STOP_HOLD at least. A write like any other, under K1, K3 and
+\* K4 (D8): a slot that lapses because maintenance refuses its renewals is W10. A wrong teardown_id leaves held_until
+\* as it is (RenewFenced; RenewNoFence drops the identity check).
+S14(x0, t, ra, maint, td) ==
+  LET x == Norm(x0, t, ra) IN
+  IF maint THEN Res(x0, "maint")
+  ELSE IF td # 0 /\ (x.slot.td = td \/ Variant = "RenewNoFence") /\ x.slot.hu > t /\ Variant # "NoRenew"
+  THEN Res([x EXCEPT !.slot.hu = IF x.slot.hu > t + STOP_HOLD THEN x.slot.hu ELSE t + STOP_HOLD], "renewed")
+  ELSE Res(x, "gone")
 
 \* S9 v1Outcome: a read, at the Store's time, of what the upload's record shows.
 S9(x0, t, ra) ==
@@ -216,8 +225,11 @@ S10Code(c) ==
 S10(x0, t, ra, maint) ==
   LET x == Norm(x0, t, ra) IN
   IF maint THEN Res(x0, IF x.att = "done" /\ ~x.doomed THEN "200" ELSE "maint")
-  ELSE IF x.att = "done" /\ ~x.doomed THEN Res(x, "200")
+  \* Done503: S10 answers 503 for a completed upload and leaves it completed (Codex r2 CM5).
+  ELSE IF x.att = "done" /\ ~x.doomed THEN Res(x, IF Variant = "Done503" THEN "503" ELSE "200")
   ELSE IF x.ps = "failed" /\ x.cause = "restored" /\ Variant = "RestoredAnswers500" THEN Res(x, "500")
+  \* RestoredAnswers200: S10 answers 200 for a restored reservation that never completed (Codex r2 CM6).
+  ELSE IF Fenced(x0, ra) /\ x.att = "res" /\ Variant = "RestoredAnswers200" THEN Res(x, "200")
   ELSE IF x.ps = "failed" /\ S10Code(x.cause) # "503" THEN Res(x, S10Code(x.cause))
   ELSE IF x.ps \in {"pending", "running"} /\ t < x.dl /\ Variant = "WaitForStoreDeadline" THEN Res(x, "not_yet")
   ELSE IF x.att \in {"res", "done"} /\ ~x.doomed THEN Res(Doom(x), "503")

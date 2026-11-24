@@ -3,124 +3,144 @@
   "scenarios": [
     {
       "name": "V1L",
-      "distinct": 356624,
+      "distinct": 529690,
       "depth": 47
     },
     {
       "name": "V1K",
-      "distinct": 136379,
+      "distinct": 208969,
       "depth": 46
     },
     {
       "name": "V1R",
-      "distinct": 447518,
+      "distinct": 625394,
       "depth": 48
     },
     {
       "name": "V2L",
-      "distinct": 230327,
+      "distinct": 385478,
       "depth": 51
     },
     {
       "name": "V2K",
-      "distinct": 154736,
+      "distinct": 286842,
       "depth": 46
     },
     {
       "name": "LK",
-      "distinct": 475097,
+      "distinct": 714749,
       "depth": 49
     },
     {
       "name": "V2D",
-      "distinct": 389761,
+      "distinct": 947782,
       "depth": 49
     },
     {
       "name": "DLW",
-      "distinct": 657082,
+      "distinct": 1563474,
       "depth": 59
     },
     {
       "name": "MT",
-      "distinct": 673383,
-      "depth": 49
+      "distinct": 1066052,
+      "depth": 52
     },
     {
       "name": "MT2",
-      "distinct": 223764,
-      "depth": 52
+      "distinct": 383669,
+      "depth": 55
     },
     {
       "name": "MTX",
-      "distinct": 1512848,
-      "depth": 49
-    },
-    {
-      "name": "MTR",
-      "distinct": 206386,
+      "distinct": 2222110,
       "depth": 52
     },
     {
-      "name": "H1W",
-      "distinct": 701978,
+      "name": "MTR",
+      "distinct": 212227,
       "depth": 51
     },
     {
+      "name": "MTS",
+      "distinct": 14093,
+      "depth": 76
+    },
+    {
+      "name": "H1W",
+      "distinct": 1064950,
+      "depth": 54
+    },
+    {
       "name": "RS",
-      "distinct": 2372061,
+      "distinct": 1865647,
       "depth": 50
     },
     {
       "name": "RS2",
-      "distinct": 1212693,
+      "distinct": 1736001,
       "depth": 44
     },
     {
       "name": "RSL",
-      "distinct": 1792770,
+      "distinct": 2356287,
       "depth": 48
     },
     {
+      "name": "RSS",
+      "distinct": 18751,
+      "depth": 58
+    },
+    {
       "name": "RS3",
-      "distinct": 2215952,
+      "distinct": 3094222,
       "depth": 46
     },
     {
       "name": "CAP",
-      "distinct": 200289,
+      "distinct": 260403,
       "depth": 58
     },
     {
       "name": "CAP2",
-      "distinct": 1673051,
+      "distinct": 2184761,
       "depth": 61
     },
     {
       "name": "CAP3",
-      "distinct": 24933,
+      "distinct": 30105,
       "depth": 57
     },
     {
       "name": "CAP4",
-      "distinct": 5388,
-      "depth": 90
+      "distinct": 10767,
+      "depth": 91
+    },
+    {
+      "name": "CAP5",
+      "distinct": 958835,
+      "depth": 100
+    },
+    {
+      "name": "CAP6",
+      "distinct": 13105,
+      "depth": 52
     },
     {
       "name": "OR",
-      "distinct": 1484146,
+      "distinct": 1487168,
       "depth": 44
     },
     {
       "name": "SK",
-      "distinct": 269050,
+      "distinct": 510698,
       "depth": 49
     }
   ],
   "liveness": [
     {
       "name": "L1",
-      "distinct": 1626,
+      "distinct": 2319,
       "depth": 44
     },
     {
@@ -130,13 +150,18 @@
     },
     {
       "name": "L3",
-      "distinct": 132767,
+      "distinct": 168848,
       "depth": 50
     },
     {
       "name": "L4",
       "distinct": 223,
       "depth": 36
+    },
+    {
+      "name": "L5",
+      "distinct": 4638,
+      "depth": 60
     }
   ],
   "variants": [
@@ -434,6 +459,79 @@
       "trace": 36,
       "liveness": true,
       "breaks": "the sweep never takes a completed unattached upload at its gc_at (D2)"
+    },
+    {
+      "name": "ContainerCovered-ShortStopHold",
+      "scenario": "CAP5",
+      "variant": "ShortStopHold",
+      "property": "ContainerCovered",
+      "trace": 43,
+      "breaks": "S14 holds the slot two units, one retry and a margin: a killed invocation or an alarm a unit late lets a live processor's slot lapse while its container runs (Gemini r2 GH1, Codex r2 CH1, D7)"
+    },
+    {
+      "name": "MaxContainers-ShortStopHold",
+      "scenario": "CAP5",
+      "variant": "ShortStopHold",
+      "property": "MaxContainers",
+      "trace": 59,
+      "breaks": "as above: a later upload is admitted beside the container whose stop is retried (Gemini r2 GH1, Codex r2 CH1, D7)"
+    },
+    {
+      "name": "RenewFenced-RenewNoFence",
+      "scenario": "CAP4",
+      "variant": "RenewNoFence",
+      "property": "RenewFenced",
+      "trace": 5,
+      "breaks": "S14 renews a live slot whatever its teardown_id, so a call of another teardown holds it (Gemini r2 GM3, Codex r2 CM3, D7)"
+    },
+    {
+      "name": "RecordDropSafe-AgeIgnoresRenewal",
+      "scenario": "CAP5",
+      "variant": "AgeIgnoresRenewal",
+      "property": "RecordDropSafe",
+      "trace": 46,
+      "breaks": "the record-age stop does not wait out the last renewal, so the processor drops its record while a renewed slot of its teardown counts (found with D7)"
+    },
+    {
+      "name": "ChargeOnce-NoCharge",
+      "scenario": "V1L",
+      "variant": "NoCharge",
+      "property": "ChargeOnce",
+      "trace": 8,
+      "breaks": "S3 accepts an upload without charging it (Gemini r2 GM1, Codex r2 CM4, D10)"
+    },
+    {
+      "name": "SlotRelease-K3FreesSlotAtGrant",
+      "scenario": "RS2",
+      "variant": "K3FreesSlotAtGrant",
+      "property": "SlotRelease",
+      "trace": 17,
+      "breaks": "K3 deletes a restored row's slot in S5 alone (Codex r2 CM4, D10)"
+    },
+    {
+      "name": "V1Answer-Done503",
+      "scenario": "V1L",
+      "variant": "Done503",
+      "property": "V1Answer",
+      "trace": 22,
+      "breaks": "S10 decides 503 for a completed upload and leaves it completed (Codex r2 CM5, D11)"
+    },
+    {
+      "name": "V1Answer-RestoredAnswers200",
+      "scenario": "RS",
+      "variant": "RestoredAnswers200",
+      "property": "V1Answer",
+      "trace": 14,
+      "breaks": "S10 decides 200 for a restored reservation that never completed (Codex r2 CM6, D12)"
+    },
+    {
+      "name": "CompletedSwept-LateSweep",
+      "scenario": "L2",
+      "variant": "LateSweep",
+      "property": "CompletedSwept",
+      "trace": 38,
+      "liveness": true,
+      "breaks": "the sweep takes a completed unattached upload one unit after its gc_at instead of at it (Codex r2 CM5, D11)"
     }
   ],
   "goals": [
@@ -574,6 +672,54 @@
       "scenario": "DLW",
       "goal": "Published",
       "trace": 28
+    },
+    {
+      "name": "DLW-LateLanding",
+      "scenario": "DLW",
+      "goal": "LateLanding",
+      "trace": 24
+    },
+    {
+      "name": "CAP6-W3Cap",
+      "scenario": "CAP6",
+      "goal": "W3Cap",
+      "trace": 30
+    },
+    {
+      "name": "MTS-W10Maint",
+      "scenario": "MTS",
+      "goal": "W10Maint",
+      "trace": 50
+    },
+    {
+      "name": "RS2-Forgotten",
+      "scenario": "RS2",
+      "goal": "Forgotten",
+      "trace": 19
+    },
+    {
+      "name": "RSS-W3",
+      "scenario": "RSS",
+      "goal": "W3",
+      "trace": 18
+    },
+    {
+      "name": "CAP5-HoldSpansFaults",
+      "scenario": "CAP5",
+      "goal": "HoldSpansFaults",
+      "trace": 33
+    },
+    {
+      "name": "MTR-MaintLate",
+      "scenario": "MTR",
+      "goal": "MaintLate",
+      "trace": 19
+    },
+    {
+      "name": "RS-W12",
+      "scenario": "RS",
+      "goal": "W12",
+      "trace": 31
     }
   ]
 }

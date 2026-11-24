@@ -14,6 +14,9 @@ replays and accepted windows that PR4's Store, processor and route implement. Pa
 | `<scenario>.cfg`        | one scenario each, with every safety invariant (or, `L1`-`L4`, every liveness property under `LSpec`)                                               |
 | `checks.json`           | every check's expected outcome: each scenario's state count and depth, each mutation's broken property and trace length, each goal's witness length |
 
+`MediaUpload.tla`'s `Mutations` declares each mutation as the property it breaks and the scenario it breaks it in;
+`checks.json` must list exactly those.
+
 ## The checks
 
 `scripts/media-upload-plan.mjs` turns `checks.json` into checks, and `test-node/media-upload-spec/` runs them under
@@ -35,11 +38,14 @@ fails for a property without one.
   delayed first S1 still leaves time to write and the Store's deadline falls after the route's cut, and `DLW` lengthens
   `V2_PROCESS_MS` so that a v2 deadline reaches `AV_WRITE_WINDOW_MS`. Only durations cross a clock boundary, so the
   route's and the processor's constant offsets (`skr`, `skd`) cancel; drift is not modelled.
-- `LAND`, the longest an R2 write takes to land, stands for `ORPHAN_GRACE_MS`, the time after the write cut that the
-  tombstone keeps the authority to delete an upload's keys, as an image's tombstone does (`src/domain/media.ts`). A
-  write that lands later stays, as an image's does (`docs/threat-model.md`).
+- An R2 write may land at any time after it starts, or never. `LAND` stands for `ORPHAN_GRACE_MS`, how long after the
+  write cut the tombstone keeps the authority to delete an upload's keys, as an image's tombstone does
+  (`src/domain/media.ts`). Neither Cloudflare nor main bounds when a started put lands (the alarm's wall limit ends
+  the writer, not the put), so a write that lands more than `LAND` after it started stays, as an image's does
+  (`docs/threat-model.md`); the goal `DLW-LateLanding` reaches it and `NoLateObject` checks every earlier landing.
 - One to three uploads. `MAX_AV_INFLIGHT` is 1 where two uploads compete, so the second meets a full instance, and 2
-  in `CAP4`, where a third arrives while two stops are retried; the capacity rules do not depend on the number.
+  in `CAP4` and `CAP5`, where a third arrives while two stops are retried; the capacity rules do not depend on the
+  number.
 - A cron round is one step per upload; the incomingOrphans pass's page is every key and one pass runs at a time, so
   its cursor, the checkpoint and overlapping claims decide nothing here (they bound which keys a round lists, not
   which it may delete); PR4-2's tests carry them.
@@ -56,9 +62,14 @@ fails for a property without one.
   `deadline_at` - now - `T_MIN_ENCODE`); without it the job may wait past its deadline. Some safety scenarios are
   prompt for the route or the cron, to bound their size.
 - A live processor takes its due alarm, and its replay's stop or slot renewal, before the clock moves while its
-  container runs: the margin `RENEW - CLEANUP_RETRY_MS` stands for the platform running a due alarm. A processor that
-  stops for good is the fault `gone` (W10).
-- A behaviour runs at most `NINV` invocations of one processor.
+  container runs, except for `lag` units a scenario allows (`CAP5`: one, with one killed invocation). `STOP_HOLD`
+  (`STOP_HOLD_MS`) outlasts both; Cloudflare documents no bound on an alarm's delay, so an alarm later than
+  `STOP_HOLD_MS`, like a processor that stops for good (the fault `gone`), is W10. A renewal that maintenance refuses
+  is W10 too once the slot lapses (`MTS`).
+- The number of invocations is bounded only by the clock: an alarm fires at most once a time unit, so no bound of the
+  model cuts a retry sequence short (Codex r2 CM8; `L5` retries seven stops).
+- A restore and a maintenance window may be held back to `rsAt` and `mAt`, so that `RSS`, `MTS` and `MTR` begin them
+  on an upload already under way rather than at time 0.
 
 ## What the specification will describe
 
