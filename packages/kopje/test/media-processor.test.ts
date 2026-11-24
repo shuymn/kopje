@@ -16,6 +16,7 @@ import {
   READY_MS,
   smokeProbe,
   STILL_CALL_MS,
+  STILL_TEARDOWN_MS,
   type UnitState,
 } from "../src/media-processor";
 import { PROBE_PROFILES, type ProbeProfile, type ProbeReport, type StillMaker } from "../src/platform/media-transcoder";
@@ -391,6 +392,8 @@ function fakeState(
 ) {
   let alarm: number | null = null;
   let alarms = 0;
+  // deleteAll() calls: the object's storage removed.
+  let cleared = 0;
   const storage = {
     setAlarm: (at: number) => {
       alarms++;
@@ -404,11 +407,16 @@ function fakeState(
       options.failDeleteAlarm === true
         ? Promise.reject(new Error("storage unavailable"))
         : Promise.resolve(void (alarm = null)),
+    deleteAll: () => {
+      cleared++;
+      return Promise.resolve();
+    },
     sync: () => options.sync?.() ?? Promise.resolve(),
   };
   return {
     ctx: { container, storage } as UnitState,
     alarm: () => alarm,
+    cleared: () => cleared,
     fire: async (object: ProcessorUnit) => {
       alarm = null;
       await object.alarm();
@@ -622,9 +630,12 @@ describe("MediaProcessor", () => {
     expect(fake.container.running).toBe(true);
     expect(state.alarm()).not.toBeNull();
 
+    expect(state.cleared()).toBe(0);
     failing = false;
     await state.fire(object);
     expect(fake.container.running).toBe(false);
+    // The orphan is gone: the object's storage goes with it.
+    expect(state.cleared()).toBe(1);
     expect((await object.probeNow("still@standard-1")).ok).toBe(true);
     expect(fake.starts()).toBe(2);
   });
@@ -765,6 +776,82 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     expect(fake.calls).toEqual(["start", "GET /healthz", "POST /still", "destroy"]);
     expect(fake.container.running).toBe(false);
     expect(state.alarm()).toBeNull();
+    // Its storage goes too, so a fresh rb: object leaves nothing billed behind.
+    expect(state.cleared()).toBe(1);
+  });
+
+  it("is not ok when the PNG arrives past the operation's end, which keeps time for the destroy", async () => {
+    await env.MEDIA.put("originals/140000000000000011", new Uint8Array([1]));
+    const time = frozen(1_000_000);
+    const fake = counted(undefined, {
+      "/still": () => {
+        time.t = 1_000_000 + 60_000 - STILL_TEARDOWN_MS;
+        return ok(PNG, "image/png");
+      },
+    });
+    const outcome = await unit({ ...fakeState(fake.container).ctx, bucket: bucket() }, time.deps).stillNow(
+      "originals/140000000000000011",
+      60_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "operation-deadline" });
+    expect(fake.calls.at(-1)).toBe("destroy");
+  });
+
+  it("is not ok, and reports its teardown pending, when the destroy ends past the call's deadline", async () => {
+    await env.MEDIA.put("originals/140000000000000012", new Uint8Array([1]));
+    const time = frozen(1_000_000);
+    const fake = counted(() => {
+      time.t = 1_000_000 + 60_000 + 1;
+      return Promise.resolve();
+    });
+    const state = fakeState(fake.container);
+    const outcome = await unit({ ...state.ctx, bucket: bucket() }, time.deps).stillNow(
+      "originals/140000000000000012",
+      60_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "destroy", pending: true });
+    expect(state.alarm()).not.toBeNull();
+    expect(state.cleared()).toBe(0);
+  });
+
+  it("cancels a read of its input that answers past the operation's end, and gives the container nothing", async () => {
+    await env.MEDIA.put("originals/140000000000000013", new Uint8Array([1, 2, 3]));
+    const time = frozen(1_000_000);
+    let cancelled = false;
+    const late = {
+      get: async () => {
+        await Promise.resolve();
+        time.t = 1_000_000 + 60_000 - STILL_TEARDOWN_MS;
+        const body = new ReadableStream<Uint8Array>({
+          pull: () => {},
+          cancel: () => {
+            cancelled = true;
+          },
+        });
+        return { size: 3, body } as unknown as R2ObjectBody;
+      },
+    };
+    const fake = counted();
+    const outcome = await unit({ ...fakeState(fake.container).ctx, bucket: late }, time.deps).stillNow(
+      "originals/140000000000000013",
+      60_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "operation-deadline" });
+    expect(cancelled).toBe(true);
+    expect(fake.calls).not.toContain("POST /still");
+    expect(fake.calls.at(-1)).toBe("destroy");
+  });
+
+  it("starts nothing when the alarm's commit does not settle within the call's deadline", async () => {
+    const time = clock();
+    const fake = counted();
+    const state = fakeState(fake.container, { sync: () => new Promise<void>(() => {}) });
+    const outcome = await unit({ ...state.ctx, bucket: bucket() }, time).stillNow(
+      "originals/140000000000000014",
+      60_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "storage-late" });
+    expect(fake.starts()).toBe(0);
   });
 
   it("answers input-missing for a key the bucket lacks, and destroys the container", async () => {

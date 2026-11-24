@@ -51,6 +51,8 @@ export const DESTROY_MS = 30_000;
 export const PROBE_MS = READY_MS + OPERATION_MS;
 // The most a stillNow call is given, readiness included: the rebuild's still stage (mastodon/media-rebuild-av.ts).
 export const STILL_CALL_MS = 75_000;
+// Of a stillNow call's time, what is kept for the destroy after the operation.
+export const STILL_TEARDOWN_MS = 10_000;
 const STILL_PROFILE = "still@standard-1" satisfies ProbeProfile;
 
 const OPERATIONS = {
@@ -316,8 +318,10 @@ async function startReady(
 }
 
 // The still of the object at `key` on a container that is not running: start on standard-1, readiness, one read of the
-// key streamed into /still with its length, the PNG read back, and destroy, every stage ending at `deadline`. It never
-// throws; the destroy is attempted whatever happened before it.
+// key streamed into /still with its length, the PNG read back, and destroy. Everything ends at one absolute `deadline`:
+// the operation by STILL_TEARDOWN_MS before it (a read of the key that answers later has its body cancelled and nothing
+// is sent to the container), the destroy by the deadline itself, and an answer whose teardown ended past it is not ok.
+// It never throws; the destroy is attempted whatever happened before it, and one that did not finish is `pending`.
 async function runStill(
   container: Container,
   bucket: Pick<R2Bucket, "get">,
@@ -326,19 +330,25 @@ async function runStill(
   deadline: number,
 ): Promise<StillOutcome & { destroyed: boolean }> {
   const started = deps.now();
+  const operationEnd = deadline - STILL_TEARDOWN_MS;
   let image: string | null = container.images.media ?? null;
   let result: StillOutcome;
   try {
     if (image === null) {
       throw new ProbeFailure("no-image");
     }
-    const ready = await startReady(container, image, "still", "standard-1", deps, started, deadline);
+    const ready = await startReady(container, image, "still", "standard-1", deps, started, operationEnd);
     image = ready.running ?? image;
     const aborted = new AbortController();
     const run = async () => {
       const object = await bucket.get(key);
       if (object === null) {
         throw new ProbeFailure("input-missing");
+      }
+      // Answered at or past the operation's end: the call has given up, so the container is not given the input.
+      if (aborted.signal.aborted || deps.now() >= operationEnd) {
+        await object.body.cancel();
+        throw new ProbeFailure("operation-deadline");
       }
       const response = await ready.port.fetch("http://container/still", {
         method: "POST",
@@ -348,7 +358,7 @@ async function runStill(
       });
       return readStill(response);
     };
-    const png = await before(run(), deadline, deps, aborted);
+    const png = await before(run(), operationEnd, deps, aborted);
     if (png === TIMED_OUT) {
       throw new ProbeFailure("operation-deadline");
     }
@@ -359,15 +369,21 @@ async function runStill(
       console.warn({ event: "kopje.media.still.failed", ...errorFields(error) });
     }
   }
-  const destroyed = await destroyContainer(container, deps);
-  return destroyed ? { ...result, destroyed } : { ok: false, failure: "destroy", image, destroyed };
+  const destroyed = await destroyContainer(container, deps, deadline);
+  if (!destroyed) {
+    return { ok: false, failure: "destroy", image, pending: true, destroyed };
+  }
+  if (result.ok && deps.now() > deadline) {
+    return { ok: false, failure: "late", image, destroyed };
+  }
+  return { ...result, destroyed };
 }
 
-// Destroys a running container within DESTROY_MS; true once it no longer runs.
-async function destroyContainer(container: Container, deps: ProbeDeps): Promise<boolean> {
+// Destroys a running container within DESTROY_MS (and by `by`, when given); true once it no longer runs.
+async function destroyContainer(container: Container, deps: ProbeDeps, by?: number): Promise<boolean> {
   try {
     if (container.running) {
-      const settled = await before(container.destroy(), deps.now() + DESTROY_MS, deps);
+      const settled = await before(container.destroy(), Math.min(by ?? Infinity, deps.now() + DESTROY_MS), deps);
       if (settled === TIMED_OUT) {
         console.warn({ event: "kopje.media.destroy.failed", reason: "timeout" });
         return false;
@@ -402,7 +418,7 @@ export type UnitState = {
   readonly container?: Container | undefined;
   // The media bucket, which stillNow reads its input from.
   readonly bucket?: Pick<R2Bucket, "get">;
-  readonly storage: Pick<DurableObjectStorage, "setAlarm" | "deleteAlarm" | "sync">;
+  readonly storage: Pick<DurableObjectStorage, "setAlarm" | "deleteAlarm" | "deleteAll" | "sync">;
 };
 
 // What MediaProcessor does, over the parts of its state it uses.
@@ -471,22 +487,30 @@ export class ProcessorUnit {
     const deadline = this.deps.now() + ms;
     this.#inFlight = deadline;
     try {
-      try {
-        await this.state.storage.setAlarm(deadline + DESTROY_MS);
-        await this.state.storage.sync();
-      } catch (error) {
-        console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
+      // The alarm's write and its commit are awaited within the call's deadline too.
+      const stored = await before(
+        (async () => {
+          await this.state.storage.setAlarm(deadline + DESTROY_MS);
+          await this.state.storage.sync();
+          return true;
+        })().catch((error: unknown) => {
+          console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
+          return false;
+        }),
+        deadline,
+        this.deps,
+      );
+      if (stored === false) {
         return { refused: "storage", destroyed: true };
       }
       // A commit that settled past the deadline leaves no time: nothing is started.
-      if (this.deps.now() >= deadline) {
+      if (stored === TIMED_OUT || this.deps.now() >= deadline) {
         return { refused: "storage-late", destroyed: true };
       }
       const report = await run(deadline, container);
-      // Nothing to clean up once the container is gone; otherwise the alarm comes sooner than its bound when it can.
-      const after = report.destroyed
-        ? this.state.storage.deleteAlarm()
-        : this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS);
+      // Nothing to clean up once the container is gone (the object's storage goes too, so a fresh object leaves
+      // nothing billed behind); otherwise the alarm comes sooner than its bound when it can.
+      const after = report.destroyed ? this.#clear() : this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS);
       await after.catch((error: unknown) => {
         console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
       });
@@ -494,6 +518,12 @@ export class ProcessorUnit {
     } finally {
       this.#inFlight = null;
     }
+  }
+
+  // No container runs: the alarm and the object's storage are removed.
+  async #clear(): Promise<void> {
+    await this.state.storage.deleteAlarm();
+    await this.state.storage.deleteAll();
   }
 
   // The alarm: with a probe call in flight, again after its bound; otherwise any running container is an orphan.
@@ -508,7 +538,9 @@ export class ProcessorUnit {
     }
     this.#cleaning = true;
     try {
-      if (!(await destroyContainer(container, this.deps))) {
+      if (await destroyContainer(container, this.deps)) {
+        await this.#clear();
+      } else {
         await this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS);
       }
     } finally {
