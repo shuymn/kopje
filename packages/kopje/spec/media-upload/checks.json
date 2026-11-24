@@ -3,105 +3,140 @@
   "scenarios": [
     {
       "name": "V1L",
-      "distinct": 246804,
-      "depth": 45
+      "distinct": 356624,
+      "depth": 47
     },
     {
       "name": "V1K",
-      "distinct": 135159,
-      "depth": 44
+      "distinct": 136379,
+      "depth": 46
     },
     {
       "name": "V1R",
-      "distinct": 346390,
+      "distinct": 447518,
       "depth": 48
     },
     {
       "name": "V2L",
-      "distinct": 205851,
-      "depth": 49
+      "distinct": 230327,
+      "depth": 51
     },
     {
       "name": "V2K",
-      "distinct": 166160,
-      "depth": 44
+      "distinct": 154736,
+      "depth": 46
+    },
+    {
+      "name": "LK",
+      "distinct": 475097,
+      "depth": 49
     },
     {
       "name": "V2D",
-      "distinct": 362724,
+      "distinct": 389761,
       "depth": 49
+    },
+    {
+      "name": "DLW",
+      "distinct": 657082,
+      "depth": 59
     },
     {
       "name": "MT",
-      "distinct": 680597,
-      "depth": 48
-    },
-    {
-      "name": "MT2",
-      "distinct": 193884,
-      "depth": 50
-    },
-    {
-      "name": "RS",
-      "distinct": 2027455,
+      "distinct": 673383,
       "depth": 49
     },
     {
+      "name": "MT2",
+      "distinct": 223764,
+      "depth": 52
+    },
+    {
+      "name": "MTX",
+      "distinct": 1512848,
+      "depth": 49
+    },
+    {
+      "name": "MTR",
+      "distinct": 206386,
+      "depth": 52
+    },
+    {
+      "name": "H1W",
+      "distinct": 701978,
+      "depth": 51
+    },
+    {
+      "name": "RS",
+      "distinct": 2372061,
+      "depth": 50
+    },
+    {
       "name": "RS2",
-      "distinct": 1147721,
+      "distinct": 1212693,
       "depth": 44
     },
     {
+      "name": "RSL",
+      "distinct": 1792770,
+      "depth": 48
+    },
+    {
       "name": "RS3",
-      "distinct": 2027941,
+      "distinct": 2215952,
       "depth": 46
     },
     {
       "name": "CAP",
-      "distinct": 192593,
+      "distinct": 200289,
       "depth": 58
     },
     {
       "name": "CAP2",
-      "distinct": 1490727,
+      "distinct": 1673051,
       "depth": 61
     },
     {
       "name": "CAP3",
-      "distinct": 26997,
+      "distinct": 24933,
       "depth": 57
     },
     {
+      "name": "CAP4",
+      "distinct": 5388,
+      "depth": 90
+    },
+    {
       "name": "OR",
-      "distinct": 485018,
-      "depth": 41
+      "distinct": 1484146,
+      "depth": 44
     },
     {
       "name": "SK",
-      "distinct": 242168,
+      "distinct": 269050,
       "depth": 49
     }
   ],
   "liveness": [
     {
       "name": "L1",
-      "distinct": 1473,
-      "depth": 43
+      "distinct": 1626,
+      "depth": 44
     },
     {
       "name": "L2",
-      "distinct": 3843,
-      "depth": 46
+      "distinct": 4850,
+      "depth": 48
     },
     {
       "name": "L3",
-      "distinct": 267969,
-      "depth": 51
+      "distinct": 132767,
+      "depth": 50
     },
     {
       "name": "L4",
-      "distinct": 167,
-      "depth": 34
+      "distinct": 223,
+      "depth": 36
     }
   ],
   "variants": [
@@ -223,7 +258,7 @@
       "variant": "ChargeTwice",
       "property": "ChargeOnce",
       "trace": 11,
-      "breaks": "S3's repeat on a pending row charges again (H3, GH1, RES-6)"
+      "breaks": "S3's repeat on a pending row charges the Store's counter again (Codex r1 CM5)"
     },
     {
       "name": "RestoredInert-StartNoK3",
@@ -274,14 +309,6 @@
       "breaks": "S1 stages again after its staging row was removed (Codex r4 M1)"
     },
     {
-      "name": "NoLateObject-EarlyRetire",
-      "scenario": "V2D",
-      "variant": "EarlyRetire",
-      "property": "NoLateObject",
-      "trace": 22,
-      "breaks": "the tombstone is retired before a started write can land (Codex r4 M3)"
-    },
-    {
       "name": "PendingStarts-LongAlarm",
       "scenario": "L1",
       "variant": "LongAlarm",
@@ -322,9 +349,91 @@
       "scenario": "L3",
       "variant": "NoExpiry",
       "property": "SlotsReleased",
-      "trace": 42,
+      "trace": 40,
       "liveness": true,
       "breaks": "the dispatch round never deletes a slot past held_until (W2)"
+    },
+    {
+      "name": "ContainerCovered-K3FreesSlot",
+      "scenario": "RS2",
+      "variant": "K3FreesSlot",
+      "property": "ContainerCovered",
+      "trace": 16,
+      "breaks": "K3 deletes the slot of a restored pending or running row (C2-M1): the running container is no longer covered, and W3 does not excuse it, since the restore kept the slot (Gemini r1 GH1)"
+    },
+    {
+      "name": "SlotRelease-K3FreesSlot",
+      "scenario": "RS2",
+      "variant": "K3FreesSlot",
+      "property": "SlotRelease",
+      "trace": 11,
+      "breaks": "as above: a transaction other than S8 after the stop, or the expiry, removes a processing slot (Gemini r1 GH1)"
+    },
+    {
+      "name": "RestoredInert-QueueNoFence",
+      "scenario": "RS3",
+      "variant": "QueueNoFence",
+      "property": "RestoredInert",
+      "trace": 10,
+      "breaks": "S3 queues a staging row reserved before the restore, without K3 or refused_cleanup_yours(restored) (Gemini r1 GH3)"
+    },
+    {
+      "name": "StartNeedsSlot-AbsStart",
+      "scenario": "SK",
+      "variant": "AbsStart",
+      "property": "StartNeedsSlot",
+      "trace": 15,
+      "breaks": "the processor compares the Store's deadline_at with its own clock before the container start, so a processor behind the Store starts one at the deadline (Gemini r1 GH4)"
+    },
+    {
+      "name": "ContainerCovered-NoRenew",
+      "scenario": "CAP4",
+      "variant": "NoRenew",
+      "property": "ContainerCovered",
+      "trace": 49,
+      "breaks": "S14 does not renew the slot of a stop that is not confirmed, so the container runs past held_until while its processor lives (D3, Codex r1 CH3)"
+    },
+    {
+      "name": "MaxContainers-NoRenew",
+      "scenario": "CAP4",
+      "variant": "NoRenew",
+      "property": "MaxContainers",
+      "trace": 69,
+      "breaks": "as above: a later upload is admitted beside a container whose stop is retried (D3, Codex r1 CH3)"
+    },
+    {
+      "name": "V1Answer-ShortGrace",
+      "scenario": "V1L",
+      "variant": "ShortGrace",
+      "property": "V1Answer",
+      "trace": 28,
+      "breaks": "completion's gc_at no longer outlasts the v1 wait, so the sweep takes the upload between S10's 200 and the route's answer (Codex r1 CH1)"
+    },
+    {
+      "name": "NoLateObject-EarlyRetire",
+      "scenario": "DLW",
+      "variant": "EarlyRetire",
+      "property": "NoLateObject",
+      "trace": 22,
+      "breaks": "the tombstone retires at the reservation + AV_WRITE_WINDOW_MS instead of + ORPHAN_GRACE_MS beyond it (Codex r4 M3; Gemini r1 GM1, Codex r1 CM4)"
+    },
+    {
+      "name": "InputsDeleted-SweepNoIncoming",
+      "scenario": "L2",
+      "variant": "SweepNoIncoming",
+      "property": "InputsDeleted",
+      "trace": 17,
+      "liveness": true,
+      "breaks": "the sweep, reconciliation and the retirement leave incoming/<id> (Gemini r1 GM5)"
+    },
+    {
+      "name": "CompletedSwept-DoneNeverSwept",
+      "scenario": "L2",
+      "variant": "DoneNeverSwept",
+      "property": "CompletedSwept",
+      "trace": 36,
+      "liveness": true,
+      "breaks": "the sweep never takes a completed unattached upload at its gc_at (D2)"
     }
   ],
   "goals": [
@@ -335,16 +444,58 @@
       "trace": 18
     },
     {
+      "name": "RS-W1R",
+      "scenario": "RS",
+      "goal": "W1R",
+      "trace": 23
+    },
+    {
       "name": "RS2-W3",
       "scenario": "RS2",
       "goal": "W3",
       "trace": 15
     },
     {
-      "name": "V1L-W5",
+      "name": "OR-W4",
+      "scenario": "OR",
+      "goal": "W4",
+      "trace": 15
+    },
+    {
+      "name": "V1L-W5Lost",
       "scenario": "V1L",
-      "goal": "W5",
-      "trace": 28
+      "goal": "W5Lost",
+      "trace": 23
+    },
+    {
+      "name": "V1L-W5Fail",
+      "scenario": "V1L",
+      "goal": "W5Fail",
+      "trace": 23
+    },
+    {
+      "name": "V1L-W5GiveUp",
+      "scenario": "V1L",
+      "goal": "W5GiveUp",
+      "trace": 23
+    },
+    {
+      "name": "H1W-W5Maint",
+      "scenario": "H1W",
+      "goal": "W5Maint",
+      "trace": 27
+    },
+    {
+      "name": "V1L-W5S3Lost",
+      "scenario": "V1L",
+      "goal": "W5S3Lost",
+      "trace": 24
+    },
+    {
+      "name": "V1L-W5Swept",
+      "scenario": "V1L",
+      "goal": "W5Swept",
+      "trace": 29
     },
     {
       "name": "L2-W6",
@@ -363,6 +514,30 @@
       "scenario": "CAP3",
       "goal": "W10",
       "trace": 24
+    },
+    {
+      "name": "RS-W11",
+      "scenario": "RS",
+      "goal": "W11",
+      "trace": 25
+    },
+    {
+      "name": "RS-W11Swept",
+      "scenario": "RS",
+      "goal": "W11Swept",
+      "trace": 31
+    },
+    {
+      "name": "RS-W11Forgotten",
+      "scenario": "RS",
+      "goal": "W11Forgotten",
+      "trace": 25
+    },
+    {
+      "name": "H1W-H1",
+      "scenario": "H1W",
+      "goal": "H1",
+      "trace": 17
     },
     {
       "name": "V2K-H3",
@@ -395,10 +570,10 @@
       "trace": 3
     },
     {
-      "name": "V2D-Published",
-      "scenario": "V2D",
+      "name": "DLW-Published",
+      "scenario": "DLW",
       "goal": "Published",
-      "trace": 24
+      "trace": 28
     }
   ]
 }

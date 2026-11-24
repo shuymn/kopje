@@ -4,12 +4,13 @@
 (* operator per Store transaction, at the Store's time t, over the upload's *)
 (* record x (its media_attachments row, its media_processing row and its    *)
 (* media_av_slots row). MediaUpload.tla runs them; the PR4 plan's section 1 *)
-(* cites them by their operation names (S1-S13).                            *)
+(* cites them by their operation names (S1-S14).                            *)
 (*                                                                         *)
 (* PRECEDENCE. A writing operation applies, in its transaction and in this *)
 (* order:                                                                  *)
 (*  K1 maintenance: nothing changes and the answer is "maint"; a read      *)
-(*     answers from the record.                                            *)
+(*     answers from the record. S14, which writes only a slot's            *)
+(*     held_until, is the one write maintenance does not refuse.           *)
 (*  K3 restored (Fenced: the attachment was reserved at or before the last *)
 (*     restore): a staging row and its staging slot are deleted; a pending *)
 (*     or running row becomes failed "restored", its slot kept.            *)
@@ -27,30 +28,38 @@
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, MediaUploadParams
 
-\* Abstract durations (MediaUpload.tla, TIME).
-STAGING == 1 \* STAGING_MS
-V1 == 3 \* V1_TIME_MS, from the request's arrival
+\* Abstract durations (MediaUpload.tla, TIME); the scenario's c gives the first five.
+STAGING == P.c.staging \* STAGING_MS
+V1 == P.c.v1 \* V1_TIME_MS, from the request's arrival
 T_REPLY == 1 \* T_REPLY
-V2P == 2 \* V2_PROCESS_MS
-TEARDOWN == 3 \* TEARDOWN_MS, the alarm's wall limit, longer than V2_PROCESS_MS as in the design
-WW == 4 \* AV_WRITE_WINDOW_MS from the reservation; caps deadline_at
+V2P == P.c.v2p \* V2_PROCESS_MS
+TEARDOWN == P.c.teardown \* TEARDOWN_MS, the alarm's wall limit, at least V2_PROCESS_MS as in the design
+WW == P.c.ww \* AV_WRITE_WINDOW_MS from the reservation; caps deadline_at
 IW == WW - STAGING - 1 \* WRITE_WINDOW_MS, the reservation's write deadline before S1 sets the AV one
 MINLEFT == 1 \* T_FIXED + T_MIN_ENCODE, checked by S3
 MINENC == 1 \* T_MIN_ENCODE after the remaining fixed parts, checked by S4
 AV_GRANT == 1 \* AV_GRANT_MS
 DISPATCH == 1 \* DISPATCH_MS
 GC == WW \* gc_at of an unfinished reservation (RESERVATION_MS), after every write cut
-LAND == 1 \* the longest an R2 write lands after it starts (assumed bound)
+\* ORPHAN_GRACE_MS: how long after the write cut the tombstone keeps the authority to delete an upload's keys, as an
+\* image's does (src/domain/media.ts). The model lets a write land at most this long after it starts; one landing
+\* later stays, as an image's does (docs/threat-model.md, "stays for good").
+LAND == 1
 RETIRE == WW + LAND \* the tombstone is retired this long after the reservation (M3)
+\* DETACHED_GRACE_MS: the gc_at completion gives an unattached upload (completeMedia), longer than the v1 wait.
+DGRACE == IF Variant = "ShortGrace" THEN V1 ELSE V1 + 1
+RENEW == 2 \* the held_until S14 gives, from the Store's t: longer than CLEANUP_RETRY_MS
 
-NoSlot == [ph |-> "none", hu |-> 0, tdn |-> FALSE]
+\* A slot: its phase, held_until and teardown_id (0 for none; the queue issues 1, one queue per reservation).
+NoSlot == [ph |-> "none", hu |-> 0, td |-> 0]
 
 \* An upload's Store record. att: none (no attachment row: never reserved, or its tombstone retired), res (reserved,
 \* processed = 0), done (processed = 1), gone (swept: the tombstone). staged: S1 ran for this reservation (Codex r4 M1).
-\* ps: the media_processing row's state.
+\* ps: the media_processing row's state. gcAt: the gc_at completion sets. chg: the units S3 charged for the upload, in
+\* the Store's own counter (Codex r1 CM5).
 Fresh == [att |-> "none", resAt |-> 0, doomed |-> FALSE, staged |-> FALSE, ps |-> "none", v1 |-> FALSE, sAt |-> 0,
-          sUntil |-> 0, rb |-> 0, dl |-> 0, disp |-> 0, sid |-> 0, cause |-> "none", slot |-> NoSlot,
-          charged |-> FALSE]
+          sUntil |-> 0, rb |-> 0, dl |-> 0, disp |-> 0, sid |-> 0, cause |-> "none", slot |-> NoSlot, gcAt |-> 0,
+          chg |-> 0]
 
 RowNone(x) ==
   [x EXCEPT !.ps = "none", !.v1 = FALSE, !.sAt = 0, !.sUntil = 0, !.rb = 0, !.dl = 0, !.disp = 0, !.sid = 0,
@@ -65,7 +74,9 @@ Fenced(x, restoredAt) == x.att # "none" /\ x.resAt <= restoredAt
 K3(x, restoredAt) ==
   IF ~Fenced(x, restoredAt) THEN x
   ELSE IF x.ps = "staging" THEN [RowNone(x) EXCEPT !.slot = IF x.slot.ph = "staging" THEN NoSlot ELSE x.slot]
-  ELSE IF x.ps \in {"pending", "running"} THEN [x EXCEPT !.ps = "failed", !.cause = "restored", !.disp = 0]
+  ELSE IF x.ps \in {"pending", "running"}
+  THEN [x EXCEPT !.ps = "failed", !.cause = "restored", !.disp = 0,
+                 !.slot = IF Variant = "K3FreesSlot" THEN NoSlot ELSE x.slot]
   ELSE x
 
 K4(x, t) ==
@@ -96,7 +107,7 @@ S1(S, u, t, ra, maint, active, v1, left) ==
   ELSE LET rb == IF v1 THEN t + left ELSE 0
            until == IF v1 THEN (IF t + STAGING < rb - T_REPLY THEN t + STAGING ELSE rb - T_REPLY) ELSE t + STAGING
        IN Res([x EXCEPT !.staged = TRUE, !.ps = "staging", !.v1 = v1, !.sAt = t, !.sUntil = until, !.rb = rb,
-                        !.slot = [ph |-> "staging", hu |-> until, tdn |-> FALSE]], "taken")
+                        !.slot = [ph |-> "staging", hu |-> until, td |-> 0]], "taken")
 \* S2 releaseStaging(id, staged_at): cleanup authority only for the staging row of that staged_at.
 S2(x0, t, ra, maint, sAt) ==
   LET x == Norm(x0, t, ra) IN
@@ -112,20 +123,20 @@ QueueDeadline(x, t) ==
 \* S3 queueNormalize(id, token, staged_at). A restored staging row (K3) answers refused_cleanup_yours(restored):
 \* its row and slot are deleted in this transaction, so the input is the route's to delete (Gemini r4 GH3).
 S3(x0, t, ra, maint, active, sAt) ==
-  LET x == Norm(x0, t, ra)
+  LET x == IF Variant = "QueueNoFence" THEN K4(x0, t) ELSE Norm(x0, t, ra)
       dl == QueueDeadline(x, t)
   IN
   IF maint THEN Res(x0, "maint")
-  ELSE IF x0.ps = "staging" /\ x0.sAt = sAt /\ Fenced(x0, ra) THEN Res(x, "refused_restored")
+  ELSE IF x0.ps = "staging" /\ x0.sAt = sAt /\ Fenced(x0, ra) /\ Variant # "QueueNoFence" THEN Res(x, "refused_restored")
   ELSE IF x.ps = "staging" /\ x.sAt = sAt
   THEN IF t >= x.sUntil THEN Res([RowNone(x) EXCEPT !.slot = NoSlot], "refused_time")
        ELSE IF ~active THEN Res([RowNone(x) EXCEPT !.slot = NoSlot], "refused_inactive")
        ELSE IF dl - t < MINLEFT THEN Res([RowNone(x) EXCEPT !.slot = NoSlot], "refused_time")
-       ELSE Res([x EXCEPT !.ps = "pending", !.dl = dl, !.disp = t, !.charged = TRUE,
+       ELSE Res([x EXCEPT !.ps = "pending", !.dl = dl, !.disp = t, !.chg = x.chg + 1,
                           !.slot = [ph |-> "processing",
-                                    hu |-> IF Variant = "ShortHold" THEN dl ELSE dl + TEARDOWN, tdn |-> TRUE]],
+                                    hu |-> IF Variant = "ShortHold" THEN dl ELSE dl + TEARDOWN, td |-> 1]],
                 "queued")
-  ELSE IF x.ps = "pending" THEN Res(x, "queued")
+  ELSE IF x.ps = "pending" THEN Res(IF Variant = "ChargeTwice" THEN [x EXCEPT !.chg = x.chg + 1] ELSE x, "queued")
   ELSE IF x.ps \in {"running", "failed"} \/ (x.att = "done" /\ ~x.doomed) THEN Res(x, "settled")
   ELSE Res(x, "gone")
 
@@ -148,11 +159,12 @@ S5(x0, t, ra, maint, inv) ==
   THEN [x |-> x, a |-> "grant", g |-> IF x.dl - t < AV_GRANT THEN x.dl - t ELSE AV_GRANT]
   ELSE [x |-> x, a |-> "refused", g |-> 0]
 
-\* S6 completeAvUpload(id, start_id, token, facts): completed; the row deleted, the slot kept for S8.
+\* S6 completeAvUpload(id, start_id, token, facts): completed, with the gc_at of a completed unattached upload; the row
+\* deleted, the slot kept for S8.
 S6(x0, t, ra, maint, inv) ==
   LET x == Norm(x0, t, ra) IN
   IF maint THEN Res(x0, "maint")
-  ELSE IF x.ps = "running" /\ x.sid = inv /\ t < x.dl THEN Res([RowNone(x) EXCEPT !.att = "done"], "done")
+  ELSE IF x.ps = "running" /\ x.sid = inv /\ t < x.dl THEN Res([RowNone(x) EXCEPT !.att = "done", !.gcAt = t + DGRACE], "done")
   ELSE IF x.att = "done" /\ ~x.doomed /\ x.ps = "none" THEN Res(x, "done")
   ELSE Res(x, "refused")
 
@@ -166,14 +178,24 @@ S7(x0, t, ra, maint, inv, cause) ==
   ELSE Res(x, "gone")
 
 \* S8 releaseAvSlot(id, teardown_id): the slot of that teardown identity, unless a pending row still needs it.
-S8(x0, t, ra, maint) ==
+S8(x0, t, ra, maint, td) ==
   LET x == IF Variant = "ReleaseK3Stops" THEN x0 ELSE Norm(x0, t, ra) IN
   IF maint THEN Res(x0, "maint")
   ELSE IF Variant = "ReleaseK3Stops" /\ Fenced(x0, ra) /\ x0.ps \in {"pending", "running"}
   THEN Res(Norm(x0, t, ra), "settled")
-  ELSE IF x.ps = "pending" /\ x.slot.tdn THEN Res(x, "held")
-  ELSE IF x.slot.tdn THEN Res([x EXCEPT !.slot = NoSlot], "released")
-  ELSE Res(x, "released")
+  ELSE IF td = 0 \/ x.slot.td # td THEN Res(x, "released")
+  \* No pending row meets S8 in the model (S8 follows its invocation's own S4, which leaves pending): a defence the
+  \* PR4-1 test carries.
+  ELSE IF x.ps = "pending" THEN Res(x, "held")
+  ELSE Res([x EXCEPT !.slot = NoSlot], "released")
+
+\* S14 renewAvSlot(id, teardown_id): a cleanup replay whose stop was not confirmed keeps its slot counting (D3): a live
+\* slot of that teardown identity is held until t + RENEW at least. It reads and writes the slot only, so maintenance
+\* does not refuse it: a slot left to lapse in a long maintenance would admit a container over MAX_AV_INFLIGHT after it.
+S14(x0, t, td) ==
+  IF td # 0 /\ x0.slot.td = td /\ x0.slot.hu > t /\ Variant # "NoRenew"
+  THEN Res([x0 EXCEPT !.slot.hu = IF x0.slot.hu > t + RENEW THEN x0.slot.hu ELSE t + RENEW], "renewed")
+  ELSE Res(x0, "gone")
 
 \* S9 v1Outcome: a read, at the Store's time, of what the upload's record shows.
 S9(x0, t, ra) ==

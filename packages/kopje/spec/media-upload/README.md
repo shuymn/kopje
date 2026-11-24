@@ -7,7 +7,7 @@ replays and accepted windows that PR4's Store, processor and route implement. Pa
 
 | File                    | Holds                                                                                                                                               |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MediaUploadStore.tla`  | the Store's operations S1-S13, one operator per transaction, under the precedence K1, K3, K4 then each operation's own rule (K2 included)           |
+| `MediaUploadStore.tla`  | the Store's operations S1-S14, one operator per transaction, under the precedence K1, K3, K4 then each operation's own rule (K2 included)           |
 | `MediaUpload.tla`       | the actors and their steps, the safety invariants and the liveness properties, each with the finding or design claim it stands for                  |
 | `MediaUploadParams.tla` | the scenarios: the uploads, their endpoints and each fault's budget                                                                                 |
 | `MediaUploadGoals.tla`  | reachability goals: each accepted window and each order the plan names is reached                                                                   |
@@ -31,23 +31,40 @@ fails for a property without one.
 
 - Time is a small integer clock; the constants keep the design's order (`STAGING_MS` < `V2_PROCESS_MS` <=
   `TEARDOWN_MS`, the reservation's write deadline plus `STAGING_MS` within `AV_WRITE_WINDOW_MS`, `gc_at` after it).
-  Only durations cross a clock boundary, so a constant offset (`skd`) cancels; drift is not modelled.
-- One or two uploads. `MAX_AV_INFLIGHT` is 1 where two uploads compete, so the second meets a full instance; the
-  capacity rules do not depend on the number.
-- A cron round is one step per upload; the incomingOrphans pass's page is every key, so its cursor and the checkpoint's
-  fence decide nothing here (they bound which keys a round lists, not which it may delete).
-- The encode, the container's input read and the still are one step with its outcome; the final writes are one or two
-  (`files/<token>/full`, and `originals/<id>` before it), each behind its own S5. The Images still and its charge are
-  not modelled.
+  Most scenarios use the narrowest durations (`C0` in `MediaUploadParams.tla`); `H1W` widens `STAGING_MS` so that a
+  delayed first S1 still leaves time to write and the Store's deadline falls after the route's cut, and `DLW` lengthens
+  `V2_PROCESS_MS` so that a v2 deadline reaches `AV_WRITE_WINDOW_MS`. Only durations cross a clock boundary, so the
+  route's and the processor's constant offsets (`skr`, `skd`) cancel; drift is not modelled.
+- `LAND`, the longest an R2 write takes to land, stands for `ORPHAN_GRACE_MS`, the time after the write cut that the
+  tombstone keeps the authority to delete an upload's keys, as an image's tombstone does (`src/domain/media.ts`). A
+  write that lands later stays, as an image's does (`docs/threat-model.md`).
+- One to three uploads. `MAX_AV_INFLIGHT` is 1 where two uploads compete, so the second meets a full instance, and 2
+  in `CAP4`, where a third arrives while two stops are retried; the capacity rules do not depend on the number.
+- A cron round is one step per upload; the incomingOrphans pass's page is every key and one pass runs at a time, so
+  its cursor, the checkpoint and overlapping claims decide nothing here (they bound which keys a round lists, not
+  which it may delete); PR4-2's tests carry them.
+- The encode, the container's input read and the still are one step with its outcome; the final writes are one to
+  three (`originals/<id>`, `files/<token>/full`, `files/<token>/small`), each behind its own S5. The Images still and
+  its charge are not modelled.
 - Probes are one flag (the verdict S1 and S3 read) that an operator may revoke; their claim and cooldown are not here.
-- Budgets bound every fault, so no fault recurs for ever; the liveness scenarios take every step that can be taken now
-  before the clock moves (`prompt`), and the two-upload scenarios do so for the route and the cron, to bound their size.
+- The budget's allocation is not modelled: S3 charges one unit in the Store's own counter, and `ChargeOnce` reads it.
+- S9 is read in the step that acts on it. It only sends the route to S10, which decides at its own commit, so a lost
+  or late S9 reply is a poll not taken, or taken earlier, which the free order of `RoutePoll` and `RouteCut` covers.
+- Budgets bound every fault, so no fault recurs for ever. The liveness scenarios take every step that can be taken now
+  before the clock moves (`prompt`); `PendingStarts` needs that, since the cron's round, the run and the alarm's entry
+  must fit in `ROOM - MINENC` (in production, `DISPATCH_MS` + the cron period + the processor's startup <
+  `deadline_at` - now - `T_MIN_ENCODE`); without it the job may wait past its deadline. Some safety scenarios are
+  prompt for the route or the cron, to bound their size.
+- A live processor takes its due alarm, and its replay's stop or slot renewal, before the clock moves while its
+  container runs: the margin `RENEW - CLEANUP_RETRY_MS` stands for the platform running a due alarm. A processor that
+  stops for good is the fault `gone` (W10).
+- A behaviour runs at most `NINV` invocations of one processor.
 
 ## What the specification will describe
 
 `coverage.json`, the drift record of the code the specification describes, starts with PR4-1. It will list:
 
-- `migrations/0121_media_processing.sql`, `src/domain/media-processing.ts` (S1-S13, K1-K4, `allocate`),
+- `migrations/0121_media_processing.sql`, `src/domain/media-processing.ts` (S1-S14, K1-K4, `allocate`),
   `src/store.ts` and `src/store-rpc.ts` (the RPCs and the restore marker they read), `src/domain/media.ts`
   (the reservation's write deadline, the sweep, the tombstone's retirement), `src/platform/media-files.ts`
   (`mediaKeys`, `incomingKey`);
