@@ -548,11 +548,7 @@ func runProbe(ctx context.Context, args []string) (*probeResult, *failure) {
 // the job's own kill comes with its context's end, which callers check first) are not.
 func exitedWithStatus(err error) bool {
 	var exit *exec.ExitError
-	if !errors.As(err, &exit) {
-		return false
-	}
-	status, ok := exit.Sys().(syscall.WaitStatus)
-	return ok && status.Exited()
+	return errors.As(err, &exit) && exit.Exited()
 }
 
 // frameICC runs the frame probe, after the header probe's limits passed: whether the stream at index has an ICC

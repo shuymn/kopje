@@ -765,9 +765,7 @@ class BackupJob {
     };
   }
 
-  // The original as it streams from R2, through age into a multipart upload (#upload: both digests in the same pass,
-  // a save before each part, the upload aborted on any failure). The object must hold exactly the bytes its size
-  // states; otherwise the copy fails as media-changed and its upload is aborted.
+  // The original as it streams from R2, through #upload. A body whose length differs from the size R2 states fails.
   async #copyStreamed(run: BackupRun, key: string, object: R2ObjectBody): Promise<ObjectDigest> {
     const reader = (object.body as ReadableStream<Uint8Array>).getReader();
     let read = 0;

@@ -488,12 +488,7 @@ export async function stillEncodes(
     await encodeChecked(codec, png, { ...fit(size, SMALL_EDGE), format: "image/webp", still: true, guard });
     return "passed";
   } catch (error) {
-    if (!(error instanceof ImageCodecError)) {
-      throw error;
-    }
-    if (error instanceof ImageOutputError || (error.code !== null && INPUT_ERRORS.has(error.code))) {
-      return "failed";
-    }
-    return error.code === QUOTA_ERROR ? "quota" : "retry";
+    const reason = codecFailure(error);
+    return reason === "output" || reason === "unsupported" ? "failed" : reason === "quota" ? "quota" : "retry";
   }
 }

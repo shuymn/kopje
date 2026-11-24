@@ -169,7 +169,10 @@ export class S3Client {
         query["upload-id-marker"] = marker.uploadId;
       }
       const response = await this.#send("list-uploads", "GET", null, query);
-      const read = await body("list-uploads", readBodyPrefix(response.body, LIST_PAGE_BYTES));
+      const read = await body(
+        "list-uploads",
+        readBodyPrefix(response.body, LIST_PAGE_BYTES, undefined, { copy: false }),
+      );
       if (read.limitReached) {
         throw new S3Error("list-uploads", 0);
       }

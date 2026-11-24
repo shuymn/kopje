@@ -392,16 +392,15 @@ async function runStill(
     }
     result = { ok: true, png, image };
   } catch (error) {
-    result =
-      error instanceof ProbeFailure
-        ? {
-            ok: false,
-            failure: error.failure,
-            image,
-            ...(error.input === undefined ? {} : { input: error.input }),
-          }
-        : { ok: false, failure: "operation", image };
-    if (!(error instanceof ProbeFailure)) {
+    if (error instanceof ProbeFailure) {
+      result = {
+        ok: false,
+        failure: error.failure,
+        image,
+        ...(error.input === undefined ? {} : { input: error.input }),
+      };
+    } else {
+      result = { ok: false, failure: "operation", image };
       console.warn({ event: "kopje.media.still.failed", ...errorFields(error) });
     }
   }
