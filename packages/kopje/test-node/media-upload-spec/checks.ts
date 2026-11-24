@@ -69,9 +69,9 @@ export const PLACED = new Map<string, number>([
 ]);
 
 export const plan = readPlan();
-// The longest check, scenario MTX (3,578,157 distinct states), took 120 s on a laptop running three checks at once; the
-// timeout leaves CI over twice that.
-const CHECK_TIMEOUT_MS = 300_000;
+// The longest check, scenario MTX (3,578,157 distinct states), took 210 s to 353 s on CI's runners with the same
+// states, so the timeout leaves it about twice its slowest time.
+const CHECK_TIMEOUT_MS = 720_000;
 
 // The title of the describe block tlaTsChecks declares.
 const SUITE = "spec/media-upload under tla-ts";
