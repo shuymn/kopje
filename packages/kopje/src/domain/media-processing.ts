@@ -302,68 +302,69 @@ function doom(db: Db, id: string): void {
   db.run("UPDATE media_attachments SET gc_at = ? WHERE id = ? AND status_id IS NULL", DOOMED_AT, id);
 }
 
-// K3 then K4 on the upload's record, written: a read computes them without writing (normalized).
+// K3, else K4, on the upload's record: at most one applies, since K3 leaves no row pending or running for K4.
 type Effect = "k3-staging" | "k3-restored" | "k4-doom" | "k4-deadline";
 
-function effects(record: UploadRecord, now: number, restoredAt: number | null): Effect[] {
+function effectOf(record: UploadRecord, now: number, restoredAt: number | null): Effect | null {
   const { att, row } = record;
   if (row === null) {
-    return [];
+    return null;
   }
-  const out: Effect[] = [];
-  let live = row.state;
   if (fenced(att, restoredAt)) {
     if (row.state === "staging") {
-      return ["k3-staging"];
+      return "k3-staging";
     }
     if (row.state === "pending" || row.state === "running") {
-      out.push("k3-restored");
-      live = "failed";
+      return "k3-restored";
     }
   }
-  if ((live === "pending" || live === "running") && row.deadline_at !== null && now >= row.deadline_at) {
-    out.push(row.reply_by !== null ? "k4-doom" : "k4-deadline");
+  if ((row.state === "pending" || row.state === "running") && row.deadline_at !== null && now >= row.deadline_at) {
+    return row.reply_by !== null ? "k4-doom" : "k4-deadline";
   }
-  return out;
+  return null;
 }
 
+// Writes `effect` on the record already loaded, and answers the record after it.
+function apply(db: Db, id: string, record: UploadRecord, effect: Effect | null): UploadRecord {
+  if (effect === null) {
+    return record;
+  }
+  if (effect === "k3-staging") {
+    deleteRow(db, id);
+    if (record.slot?.phase === "staging") {
+      deleteSlot(db, id);
+    }
+  } else if (effect === "k3-restored") {
+    fail(db, id, "restored");
+  } else if (effect === "k4-doom") {
+    doom(db, id);
+  } else {
+    fail(db, id, "deadline");
+  }
+  return load(db, id);
+}
+
+// K3 and K4 on the upload's record, written: a read computes them without writing (normalized).
 function normalize(db: Db, id: string, now: number, restoredAt: number | null): UploadRecord {
   const record = load(db, id);
-  const due = effects(record, now, restoredAt);
-  for (const effect of due) {
-    if (effect === "k3-staging") {
-      deleteRow(db, id);
-      if (record.slot?.phase === "staging") {
-        deleteSlot(db, id);
-      }
-    } else if (effect === "k3-restored") {
-      fail(db, id, "restored");
-    } else if (effect === "k4-doom") {
-      doom(db, id);
-    } else {
-      fail(db, id, "deadline");
-    }
-  }
-  return due.length === 0 ? record : load(db, id);
+  return apply(db, id, record, effectOf(record, now, restoredAt));
 }
 
 // The record K3 and K4 would leave, written nowhere (S9 and S10 in maintenance).
 function normalized(record: UploadRecord, now: number, restoredAt: number | null): UploadRecord {
-  let { att, row, slot } = record;
-  for (const effect of effects(record, now, restoredAt)) {
-    if (effect === "k3-staging") {
-      row = null;
-      slot = slot?.phase === "staging" ? null : slot;
-    } else if (effect === "k3-restored") {
-      row = row === null ? null : { ...row, state: "failed", failure: "restored", dispatched_at: null };
-    } else if (effect === "k4-doom") {
-      row = null;
-      att = att === null ? null : { ...att, gc_at: DOOMED_AT };
-    } else {
-      row = row === null ? null : { ...row, state: "failed", failure: "deadline", dispatched_at: null };
-    }
+  const { att, row, slot } = record;
+  const effect = effectOf(record, now, restoredAt);
+  if (row === null || effect === null) {
+    return record;
   }
-  return { att, row, slot };
+  if (effect === "k3-staging") {
+    return { att, row: null, slot: slot?.phase === "staging" ? null : slot };
+  }
+  if (effect === "k4-doom") {
+    return { att: att === null ? null : { ...att, gc_at: DOOMED_AT }, row: null, slot };
+  }
+  const failure = effect === "k3-restored" ? "restored" : "deadline";
+  return { att, row: { ...row, state: "failed", failure, dispatched_at: null }, slot };
 }
 
 // ---- Activation and capacity
@@ -553,7 +554,7 @@ export const queueNormalize = writeOperation.atStoreTime("now")<
   const mine = attachmentState(before.att, token) !== "none";
   const restoredStaging =
     mine && before.row?.state === "staging" && before.row.staged_at === stagedAt && fenced(before.att, restoredAt);
-  const { att, row, slot } = normalize(db, id, now, restoredAt);
+  const { att, row, slot } = apply(db, id, before, effectOf(before, now, restoredAt));
   if (restoredStaging) {
     return { status: "refused_cleanup_yours", reason: "restored" };
   }
@@ -1010,14 +1011,14 @@ export const mediaDispatchRound = writeOperation.atStoreTime("now")<Fence, Dispa
   };
   // K3 and K4 on one upload, counted by what they did.
   const guarded = (id: string): UploadRecord => {
-    for (const effect of effects(load(db, id), now, restoredAt)) {
-      if (effect === "k3-staging" || effect === "k3-restored") {
-        counts.restored++;
-      } else {
-        counts.deadline++;
-      }
+    const record = load(db, id);
+    const effect = effectOf(record, now, restoredAt);
+    if (effect === "k3-staging" || effect === "k3-restored") {
+      counts.restored++;
+    } else if (effect !== null) {
+      counts.deadline++;
     }
-    return normalize(db, id, now, restoredAt);
+    return apply(db, id, record, effect);
   };
   if (restoredAt !== null) {
     for (const { id } of seek<{ id: string }>(
