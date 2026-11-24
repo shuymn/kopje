@@ -439,20 +439,23 @@ export const fallbackAvRebuild = mediaRebuildOperation.atStoreTime("now")<
 export type ProbeRecord = { version: string; imageTag: string | null; at: number; ok: boolean };
 
 const PROBE_RECORD = "media_probe:";
+const PROBE_ATTEMPT = "media_probe_attempt:";
 const PROBE_PROFILES = ["still@standard-1"] as const;
 type RecordedProfile = (typeof PROBE_PROFILES)[number];
 
-function probeName(profile: RecordedProfile): string {
+function probeName(prefix: string, profile: RecordedProfile): string {
   if (!PROBE_PROFILES.includes(profile)) {
     throw new Error("not a recorded probe profile");
   }
-  return `${PROBE_RECORD}${profile}`;
+  return `${prefix}${profile}`;
 }
 
-// A record's bounds as stored (RES-2): the build a Worker version id, and the image tag as the container reported it, both
-// printable ASCII; the tag is the processor's, so the Worker keeps one past its bound as null (probeImageTag).
+// The bounds of the probe's stored values (RES-2): the build a Worker version id, and the image tag as the container
+// reported it, both printable ASCII; the tag is the processor's, so the Worker keeps one past its bound as null
+// (probeImageTag). A stored value is read only within PROBE_VALUE_BYTES and as JSON.
 const PROBE_VERSION_BYTES = 64;
 const PROBE_IMAGE_TAG_BYTES = 512;
+const PROBE_VALUE_BYTES = 1024;
 const PRINTABLE = /^[\x21-\x7e]+$/;
 
 function printable(value: unknown, bytes: number): value is string {
@@ -463,31 +466,74 @@ export function probeImageTag(tag: string | null): string | null {
   return printable(tag, PROBE_IMAGE_TAG_BYTES) ? tag : null;
 }
 
-function probeRecordValid(value: unknown): value is ProbeRecord {
+// An object of exactly `keys`, or null.
+function exactly(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
+    return null;
   }
   const record = value as Record<string, unknown>;
+  const own = Object.keys(record);
+  return own.length === keys.length && keys.every((key) => own.includes(key)) ? record : null;
+}
+
+// A time the Store stamped: a safe integer, not after `now` (a later one is not trusted to suppress anything).
+function stamped(at: unknown, now: number): boolean {
+  return Number.isSafeInteger(at) && (at as number) >= 0 && (at as number) <= now;
+}
+
+function probeRecordValid(value: unknown, now: number): value is ProbeRecord {
+  const record = exactly(value, ["version", "imageTag", "at", "ok"]);
   return (
-    Object.keys(record).length === 4 &&
+    record !== null &&
     printable(record.version, PROBE_VERSION_BYTES) &&
     (record.imageTag === null || printable(record.imageTag, PROBE_IMAGE_TAG_BYTES)) &&
-    Number.isSafeInteger(record.at) &&
+    stamped(record.at, now) &&
     typeof record.ok === "boolean"
   );
 }
 
-// The record and the Store's time, which its `at` is compared with. A stored value out of bounds reads as no record, so
-// the profile is probed again.
+// When the rebuild last started the profile's probe, whatever came of it (written before the probe runs).
+export type ProbeAttempt = { version: string; at: number };
+
+function probeAttemptValid(value: unknown, now: number): value is ProbeAttempt {
+  const attempt = exactly(value, ["version", "at"]);
+  return attempt !== null && printable(attempt.version, PROBE_VERSION_BYTES) && stamped(attempt.at, now);
+}
+
+// A stored value of kopje_state as JSON, or null when it is missing, past PROBE_VALUE_BYTES or not JSON.
+function storedJson(db: Db, name: string): unknown {
+  const value = db.first<{ value: string }>(
+    "SELECT value FROM kopje_state WHERE name = ? AND length(CAST(value AS BLOB)) <= ?",
+    name,
+    PROBE_VALUE_BYTES,
+  )?.value;
+  if (value === undefined) {
+    return null;
+  }
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+// The verdict, the last attempt, and the Store's time, which their `at` is compared with. A stored value that is out of
+// bounds, not JSON or dated after the Store's time reads as none, so it never holds the probe back.
 export const probeRecord = readOperation.atStoreTime("now")<
   { profile: RecordedProfile; now: number },
-  { record: ProbeRecord | null; now: number }
+  { record: ProbeRecord | null; attempt: ProbeAttempt | null; now: number }
 >((db, { profile, now }) => {
-  const record = flag<unknown>(db, probeName(profile));
-  return { record: probeRecordValid(record) ? record : null, now };
+  const record = storedJson(db, probeName(PROBE_RECORD, profile));
+  const attempt = storedJson(db, probeName(PROBE_ATTEMPT, profile));
+  return {
+    record: probeRecordValid(record, now) ? record : null,
+    attempt: probeAttemptValid(attempt, now) ? attempt : null,
+    now,
+  };
 });
 
-// Records a probe the rebuild ran under its lease.
+// Records, under the rebuild's lease, the start of a probe (`ok` null: the attempt, before the probe runs) or its
+// verdict.
 export const recordProbe = mediaRebuildOperation.atStoreTime("now")<
   {
     authority: ImportAuthority;
@@ -495,7 +541,7 @@ export const recordProbe = mediaRebuildOperation.atStoreTime("now")<
     profile: RecordedProfile;
     version: string;
     imageTag: string | null;
-    ok: boolean;
+    ok: boolean | null;
     now: number;
   },
   { status: "ok" } | { status: "lease-lost" } | { status: "denied"; reason: string }
@@ -507,10 +553,15 @@ export const recordProbe = mediaRebuildOperation.atStoreTime("now")<
   if (!holds(db, holder, now)) {
     return { status: "lease-lost" };
   }
-  const record: ProbeRecord = { version, imageTag, at: now, ok };
-  if (!probeRecordValid(record)) {
+  const [name, value] =
+    ok === null
+      ? [probeName(PROBE_ATTEMPT, profile), { version, at: now }]
+      : [probeName(PROBE_RECORD, profile), { version, imageTag, at: now, ok }];
+  const valid = ok === null ? probeAttemptValid(value, now) : probeRecordValid(value, now);
+  const text = JSON.stringify(value);
+  if (!valid || new TextEncoder().encode(text).byteLength > PROBE_VALUE_BYTES) {
     throw new Error("probe record out of bounds");
   }
-  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", probeName(profile), JSON.stringify(record));
+  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, text);
   return { status: "ok" };
 });

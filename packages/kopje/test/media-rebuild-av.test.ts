@@ -206,6 +206,16 @@ function run(store: StoreStub, options: RunOptions = {}): Promise<RebuildStep> {
   );
 }
 
+// Moves the probe's recorded verdict and attempt `ms` into the past.
+async function ageProbe(store: StoreStub, ms: number): Promise<void> {
+  await sql(
+    store,
+    `UPDATE kopje_state SET value = json_set(value, '$.at', json_extract(value, '$.at') - ?)
+			WHERE name IN ('media_probe:still@standard-1', 'media_probe_attempt:still@standard-1')`,
+    ms,
+  );
+}
+
 const counters = (store: StoreStub) =>
   Promise.all([stateValue(store, "images_transforms:"), stateValue(store, "media_upload_jobs:")]);
 
@@ -406,11 +416,7 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     expect(cooling.calls).toEqual([]);
     expect(await counters(store)).toEqual([[], []]);
     // Once it is PROBE_RETRY_MS old, the next call probes again.
-    await sql(
-      store,
-      "UPDATE kopje_state SET value = json_set(value, '$.at', json_extract(value, '$.at') - ?) WHERE name = 'media_probe:still@standard-1'",
-      PROBE_RETRY_MS,
-    );
+    await ageProbe(store, PROBE_RETRY_MS);
     const third = await addAv(store, "video");
     const passing = maker();
     expect(await run(store, { stills: passing.stills, after: second.id })).toMatchObject({ counts: { built: 1 } });
@@ -478,7 +484,9 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
           (await stateValue(store, "media_probe:")).map((v) => (JSON.parse(v) as { ok: boolean }).ok),
         ).not.toContain(false);
       }
-      // The processor recovers: the next call starts at that row and makes its still.
+      // The processor recovers: the next call starts at that row and makes its still (once a probe that reached no
+      // verdict is an hour old).
+      await ageProbe(store, PROBE_RETRY_MS);
       const recovered = maker();
       expect(await run(store, { stills: recovered.stills })).toMatchObject({ counts: { built: 1 }, stopped: null });
       expect(recovered.calls.at(-1)).toBe(`still originals/${row.id}`);
@@ -580,6 +588,56 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     expect(await env.MEDIA.head(`files/${row.token}/small`)).toBeNull();
   });
 
+  it("probes at most once an hour while attempts reach no verdict, and stops the calls in between", async () => {
+    const store = await setup();
+    const row = await addAv(store, "video");
+    const before = await rowOf(store, row.id);
+    const codec = new TestCodec();
+    codec.failEncode = 9422;
+    const first = maker();
+    expect(await run(store, { stills: first.stills, codec, transforms: 0, uploads: 0 })).toMatchObject({
+      stopped: "quota",
+    });
+    expect(first.calls.filter((c) => c.startsWith("probe"))).toHaveLength(1);
+    const encodes = codec.encodeCalls.length;
+    // The next calls within the hour start no container and ask nothing of Images.
+    for (let i = 0; i < 2; i++) {
+      const again = maker();
+      expect(await run(store, { stills: again.stills, codec, transforms: 0, uploads: 0 })).toMatchObject({
+        stopped: "retry",
+        next: null,
+      });
+      expect(again.calls).toEqual([]);
+    }
+    expect(codec.encodeCalls).toHaveLength(encodes);
+    expect(await rowOf(store, row.id)).toEqual(before);
+    await ageProbe(store, PROBE_RETRY_MS);
+    const later = maker();
+    await run(store, { stills: later.stills, codec });
+    expect(later.calls.filter((c) => c.startsWith("probe"))).toHaveLength(1);
+  });
+
+  it.each([
+    ["not JSON", "{", "{"],
+    [
+      "dated after the Store's time",
+      JSON.stringify({ version: BUILD, imageTag: null, at: Number.MAX_SAFE_INTEGER, ok: false }),
+      JSON.stringify({ version: BUILD, at: Number.MAX_SAFE_INTEGER }),
+    ],
+  ])("probes again over a stored verdict and attempt %s", async (_name, record, attempt) => {
+    const store = await setup();
+    await addAv(store, "video");
+    await sql(
+      store,
+      "INSERT INTO kopje_state (name, value) VALUES ('media_probe:still@standard-1', ?), ('media_probe_attempt:still@standard-1', ?)",
+      record,
+      attempt,
+    );
+    const made = maker();
+    expect(await run(store, { stills: made.stills })).toMatchObject({ counts: { built: 1 } });
+    expect(made.calls.filter((c) => c.startsWith("probe"))).toHaveLength(1);
+  });
+
   it("records no image tag past its bound, reads an out-of-bounds record as none, and never dumps the record", async () => {
     const store = await setup();
     const huge = "a".repeat(200_000);
@@ -589,9 +647,10 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     const [stored] = await stateValue(store, "media_probe:");
     expect(JSON.parse(stored!)).toMatchObject({ version: BUILD, imageTag: null, ok: true });
     const { text } = await dumpViaRpc(store);
-    expect(text).not.toContain("media_probe:");
+    expect(text).not.toContain("media_probe");
 
-    // A stored record past its bounds is no record: the next video row probes again.
+    // A stored record past its bounds is no record: the next video row probes again, once its attempt is an hour old.
+    await ageProbe(store, PROBE_RETRY_MS);
     await sql(
       store,
       "UPDATE kopje_state SET value = ? WHERE name = 'media_probe:still@standard-1'",

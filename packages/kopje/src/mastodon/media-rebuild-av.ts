@@ -1,4 +1,5 @@
 import {
+  type ProbeAttempt,
   probeImageTag,
   type ProbeRecord,
   type RebuildAv,
@@ -486,26 +487,43 @@ async function make(
   return facts;
 }
 
-// Whether the `still@standard-1` probe has passed for this build. It runs at most once a call: when its record is
-// missing, for another build, or a failure at least PROBE_RETRY_MS old (at the Store's clock), so a failing profile is
-// probed at most once an hour whatever the budgets. The profile fails only when the container refuses the packaged
+// Whether the `still@standard-1` probe has passed for this build. It runs at most once a call, when no pass for this
+// build is recorded and none was started for it within PROBE_RETRY_MS (at the Store's clock): the attempt is recorded
+// before the probe starts, so a failing profile, and a probe that reached no verdict, cost at most one container and
+// Images call an hour whatever the budgets. The profile fails only when the container refuses the packaged
 // clip as input, verifyStill refuses its PNG, or Images refuses that PNG or its output fails the checks; any other
 // failure of the processor or Images is no verdict, and the call stops.
 async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => number): Promise<boolean | AvOutcome> {
   if (call.probe.state !== "unknown") {
     return call.probe.state === "passed";
   }
-  const { record, now } = await call.bounded<{ record: ProbeRecord | null; now: number }>(
-    async () => await call.store.mediaProbeRecord(call.build, { profile: STILL_PROFILE }),
-  );
-  if (record !== null && record.version === call.build && (record.ok || now - record.at < PROBE_RETRY_MS)) {
-    call.probe.state = record.ok ? "passed" : "failed";
-    return record.ok;
+  const { record, attempt, now } = await call.bounded<{
+    record: ProbeRecord | null;
+    attempt: ProbeAttempt | null;
+    now: number;
+  }>(async () => await call.store.mediaProbeRecord(call.build, { profile: STILL_PROFILE }));
+  const verdict = record !== null && record.version === call.build ? record.ok : null;
+  if (verdict === true) {
+    call.probe.state = "passed";
+    return true;
+  }
+  // Started for this build within PROBE_RETRY_MS: its failure stands, and an attempt that reached no verdict (the
+  // processor's or Images' state, their quota) stops the call until the hour is over.
+  if (attempt !== null && attempt.version === call.build && now - attempt.at < PROBE_RETRY_MS) {
+    if (verdict === false) {
+      call.probe.state = "failed";
+      return false;
+    }
+    return RETRY;
+  }
+  const started = await recordProbe(call, null, null);
+  if (started !== null) {
+    return started;
   }
   const until = stage(AV_PROBE_MS);
   const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
   await call.settled(() => call.bucket.put(key, stills.probeInput));
-  let verdict: "passed" | "failed" | AvOutcome;
+  let outcome: "passed" | "failed" | AvOutcome;
   let image: string | null = null;
   try {
     const out = await call.bounded(() => stills.probe(key, until - call.now()), until);
@@ -515,23 +533,33 @@ async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => nu
         throw new DeadlinePassed();
       }
       // The container refusing the packaged clip says the profile cannot make stills; anything else is its state.
-      verdict = out.input === undefined ? RETRY : "failed";
+      outcome = out.input === undefined ? RETRY : "failed";
     } else if (verifyStill(out.png) !== null) {
-      verdict = "failed";
+      outcome = "failed";
     } else {
       const png = out.png;
       const encoded = await call.bounded(
         () => stillEncodes(call.images, png, pngSize(png), (work) => within(work, until, call.now)),
         until,
       );
-      verdict = encoded === "quota" ? QUOTA : encoded === "retry" ? RETRY : encoded;
+      outcome = encoded === "quota" ? QUOTA : encoded === "retry" ? RETRY : encoded;
     }
   } finally {
     await call.settled(() => call.bucket.delete(key));
   }
-  if (typeof verdict !== "string") {
-    return verdict;
+  if (typeof outcome !== "string") {
+    return outcome;
   }
+  const recorded = await recordProbe(call, outcome === "passed", image);
+  if (recorded !== null) {
+    return recorded;
+  }
+  call.probe.state = outcome;
+  return outcome === "passed";
+}
+
+// Records the probe's start (`ok` null) or its verdict, under the lease; null once recorded.
+async function recordProbe(call: AvCall, ok: boolean | null, imageTag: string | null): Promise<AvOutcome | null> {
   const recorded = await call.bounded<
     { status: "ok" } | { status: "lease-lost" } | { status: "denied"; reason: string }
   >(
@@ -541,13 +569,9 @@ async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => nu
         holder: call.holder,
         profile: STILL_PROFILE,
         version: call.build,
-        imageTag: image,
-        ok: verdict === "passed",
+        imageTag,
+        ok,
       }),
   );
-  if (recorded.status !== "ok") {
-    return refusedBy(recorded);
-  }
-  call.probe.state = verdict;
-  return verdict === "passed";
+  return recorded.status === "ok" ? null : refusedBy(recorded);
 }
