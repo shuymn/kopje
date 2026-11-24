@@ -421,9 +421,11 @@ function probeName(profile: RecordedProfile): string {
   return `${PROBE_RECORD}${profile}`;
 }
 
-export const probeRecord = readOperation<{ profile: RecordedProfile }, ProbeRecord | null>((db, { profile }) =>
-  flag<ProbeRecord>(db, probeName(profile)),
-);
+// The record and the Store's time, which its `at` is compared with.
+export const probeRecord = readOperation.atStoreTime("now")<
+  { profile: RecordedProfile; now: number },
+  { record: ProbeRecord | null; now: number }
+>((db, { profile, now }) => ({ record: flag<ProbeRecord>(db, probeName(profile)), now }));
 
 // Records a probe the rebuild ran under its lease.
 export const recordProbe = mediaRebuildOperation.atStoreTime("now")<

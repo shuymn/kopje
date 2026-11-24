@@ -467,15 +467,21 @@ export async function stillBlurhash(
 }
 
 // Whether Images re-encodes the media processor's PNG `png` of `size` into a checked still WebP within SMALL_EDGE (the
-// `still@standard-1` probe's last step, design 4.15): any failure, 9422 included, is false.
-export async function stillEncodes(codec: ImageCodec, png: Uint8Array, size: Size, guard: CallGuard): Promise<boolean> {
+// `still@standard-1` probe's last step, design 4.15): "quota" for 9422, which says nothing of the profile; any other
+// failure is "failed".
+export async function stillEncodes(
+  codec: ImageCodec,
+  png: Uint8Array,
+  size: Size,
+  guard: CallGuard,
+): Promise<"passed" | "failed" | "quota"> {
   try {
     await encodeChecked(codec, png, { ...fit(size, SMALL_EDGE), format: "image/webp", still: true, guard });
-    return true;
+    return "passed";
   } catch (error) {
     if (error instanceof DeadlinePassed) {
       throw error;
     }
-    return false;
+    return error instanceof ImageCodecError && error.code === QUOTA_ERROR ? "quota" : "failed";
   }
 }

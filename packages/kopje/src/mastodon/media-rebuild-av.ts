@@ -36,9 +36,14 @@ import { storedBlurhash } from "../platform/stored-bounds";
 //          upload and one upload unit, chargeRebuild), the StillMaker's PNG through verifyStill, Images' WebP and its
 //          RGBA blurhash (stillPreview), then the put with its metadata. Only then does the Store record meta.small and
 //          the blurhash; with `--stills` it also sets preview_url in the same call.
-//   fallback  when the small cannot be made (no processor, a failed probe, a spent budget, a still or Images that
-//          failed), the Store clears preview_url, meta.small and the blurhash, and nothing is written. A plain rebuild
-//          never revisits it; `--stills` does.
+//   fallback  when the small cannot be made for good (no processor bound, a failed probe, the configured budget
+//          spent, the processor or verifyStill refusing this row's input, Images refusing the still as input), the
+//          Store clears preview_url, meta.small and the blurhash, and nothing is written. A plain rebuild never
+//          revisits it; `--stills` does.
+//   stop   when it fails for now (the processor busy or unavailable, Images' quota or another failure of the
+//          service), the call stops at the row with `retry` or `quota`: the row keeps its preview fields and its
+//          `full`, the cursor stays before it, and units already charged stay charged. A still whose container's
+//          destroy is still pending stops the call as a deadline does, keeping the lease.
 //
 // A row is complete (skipped, nothing read, written or charged) when `full` exists and it is audio, or a video without
 // a preview (not under `--stills`), or a video whose small's metadata (one HEAD) equals its meta.small and blurhash. A
@@ -47,7 +52,8 @@ import { storedBlurhash } from "../platform/stored-bounds";
 //
 // Bounds: one AV row a call (MAX_AV_BUILDS_PER_CALL), within REBUILD_AV_MS; stages end at AV_COPY_MS (read, verify and
 // copy), AV_PROBE_MS (the probe) and AV_STILL_MS (the still) from their start, and at the row's end. The probe runs at
-// most once a call, under the rebuild's lease and whatever the budgets: the probe clip is copied to
+// most once a call, and after a failure for this build not again within PROBE_RETRY_MS, under the rebuild's lease and
+// whatever the budgets: the probe clip is copied to
 // incoming/probe-<nonce>, the StillMaker runs /still on the profile's probe object (one container per profile, design
 // 4.5), its PNG goes through verifyStill and Images (stillEncodes), the copy is deleted, and the Store records the
 // result for this build. Every R2 write and delete goes through the call's `settled` (the Store confirms the lease
@@ -59,6 +65,8 @@ const AV_PROBE_MS = 60_000;
 const AV_STILL_MS = 75_000;
 export const MAX_AV_BUILDS_PER_CALL = 1;
 const STILL_PROFILE = "still@standard-1";
+// How soon a failed probe of the still profile is run again for the same build (design 4.15, PROBE_RETRY_MS).
+export const PROBE_RETRY_MS = 60 * 60 * 1000;
 
 export type AvCall = {
   build: string;
@@ -85,7 +93,23 @@ export type AvOutcome =
   | { kind: "built" | "fallback" | "gone"; quota?: boolean }
   | { kind: "problem"; outcome: "original-missing" | "type-mismatch" | "failed"; detail?: string }
   | { kind: "refused"; code: "wrong-authority" | "rebuild-lease-lost"; message: string }
-  | { kind: "budget" };
+  | { kind: "budget" }
+  // A transient failure (the processor busy or unavailable, Images failing or out of quota): the call stops at this
+  // row, which keeps its preview fields and its written `full`, and the next call starts at it again.
+  | { kind: "stop"; stopped: "retry" | "quota" };
+
+const RETRY: AvOutcome = { kind: "stop", stopped: "retry" };
+const QUOTA: AvOutcome = { kind: "stop", stopped: "quota" };
+
+// A failure of the processor that is about this row's input: the container refused it with a code of its own, or the
+// input is gone. Anything else is the processor's state, retried by a later call. A destroy that has not finished keeps
+// the call's lease until it expires, as a step given up does.
+function stillFailure(failure: string, pending: boolean): "definitive" | "transient" {
+  if (pending) {
+    throw new DeadlinePassed();
+  }
+  return failure.startsWith("still:") || failure === "input-missing" ? "definitive" : "transient";
+}
 
 // A still's geometry and blurhash, as recorded and as the small's metadata says.
 type StillFacts = Size & { blurhash: string | null };
@@ -336,11 +360,15 @@ async function adopt(call: AvCall, row: RebuildRow, end: number): Promise<StillF
   if (hashed.stop === "deadline") {
     throw new DeadlinePassed();
   }
+  // 9422: nothing is written, so a later call computes the blurhash once Images is back.
+  if (hashed.stop === "quota") {
+    return QUOTA;
+  }
   const facts = { ...size, blurhash: hashed.blurhash };
   await call.settled(() =>
     call.bucket.put(key, bytes, { httpMetadata: { contentType: "image/webp" }, customMetadata: metadataOf(facts) }),
   );
-  return hashed.stop === "quota" ? Object.assign(facts, { quota: true }) : facts;
+  return facts;
 }
 
 // The PNG's dimensions from its IHDR, which verifyStill has walked.
@@ -382,15 +410,19 @@ async function make(
   }
   const until = stage(AV_STILL_MS);
   const made = await call.bounded(() => stills.still(originalKey(row.id), until - call.now()), until);
-  if (!made.ok || verifyStill(made.png) !== null) {
-    return new Fallback(made.ok ? "still-invalid" : made.failure);
+  if (!made.ok) {
+    return stillFailure(made.failure, made.pending === true) === "definitive" ? new Fallback(made.failure) : RETRY;
+  }
+  if (verifyStill(made.png) !== null) {
+    return new Fallback("still-invalid");
   }
   const preview = await call.bounded(
     () => stillPreview(call.images, made.png, pngSize(made.png), { end, now: call.now }),
     end,
   );
   if (!preview.ok) {
-    return new Fallback(preview.reason, preview.reason === "quota");
+    // Images refusing the still as input is about this still; 9422 or any other failure of the service is not.
+    return preview.reason === "unsupported" ? new Fallback("images") : preview.reason === "quota" ? QUOTA : RETRY;
   }
   if (preview.blurhashStop === "deadline") {
     throw new DeadlinePassed();
@@ -405,36 +437,49 @@ async function make(
   return preview.blurhashStop === "quota" ? Object.assign(facts, { quota: true }) : facts;
 }
 
-// Whether the `still@standard-1` probe has passed for this build, running it once in this call when its record is
-// missing, for another build or failed.
+// Whether the `still@standard-1` probe has passed for this build. It runs at most once a call: when its record is
+// missing, for another build, or a failure at least PROBE_RETRY_MS old (at the Store's clock), so a failing profile is
+// probed at most once an hour whatever the budgets. A failure of the processor's state (busy, unavailable, a destroy
+// still pending) or Images' quota is no verdict: nothing is recorded and the call stops.
 async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => number): Promise<boolean | AvOutcome> {
   if (call.probe.state !== "unknown") {
     return call.probe.state === "passed";
   }
-  const record: ProbeRecord | null = await call.bounded<ProbeRecord | null>(
+  const { record, now } = await call.bounded<{ record: ProbeRecord | null; now: number }>(
     async () => await call.store.mediaProbeRecord(call.build, { profile: STILL_PROFILE }),
   );
-  if (record !== null && record.version === call.build && record.ok) {
-    call.probe.state = "passed";
-    return true;
+  if (record !== null && record.version === call.build && (record.ok || now - record.at < PROBE_RETRY_MS)) {
+    call.probe.state = record.ok ? "passed" : "failed";
+    return record.ok;
   }
   const until = stage(AV_PROBE_MS);
   const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
   await call.settled(() => call.bucket.put(key, stills.probeInput));
-  let ok = false;
+  let verdict: "passed" | "failed" | AvOutcome;
   let image: string | null = null;
   try {
     const out = await call.bounded(() => stills.probe(key, until - call.now()), until);
     image = out.image;
-    if (out.ok && verifyStill(out.png) === null) {
+    if (!out.ok) {
+      verdict = PROBE_TRANSIENT.has(out.failure) || out.pending === true ? RETRY : "failed";
+      if (out.pending === true) {
+        throw new DeadlinePassed();
+      }
+    } else if (verifyStill(out.png) !== null) {
+      verdict = "failed";
+    } else {
       const png = out.png;
-      ok = await call.bounded(
+      const encoded = await call.bounded(
         () => stillEncodes(call.images, png, pngSize(png), (work) => within(work, until, call.now)),
         until,
       );
+      verdict = encoded === "quota" ? QUOTA : encoded;
     }
   } finally {
     await call.settled(() => call.bucket.delete(key));
+  }
+  if (typeof verdict !== "string") {
+    return verdict;
   }
   const recorded = await call.bounded<
     { status: "ok" } | { status: "lease-lost" } | { status: "denied"; reason: string }
@@ -446,12 +491,15 @@ async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => nu
         profile: STILL_PROFILE,
         version: call.build,
         imageTag: image,
-        ok,
+        ok: verdict === "passed",
       }),
   );
   if (recorded.status !== "ok") {
     return refusedBy(recorded);
   }
-  call.probe.state = ok ? "passed" : "failed";
-  return ok;
+  call.probe.state = verdict;
+  return verdict === "passed";
 }
+
+// Probe answers about the processor's state, not the profile: no verdict is recorded for them.
+const PROBE_TRANSIENT = new Set(["busy", "unavailable", "storage", "storage-late"]);

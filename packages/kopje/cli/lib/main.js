@@ -992,7 +992,7 @@ export async function run({
           }
           problems.push(...step.problems);
           out.progress(`media-rebuild: ${JSON.stringify(counts)}`);
-          if (step.stopped === "quota" || step.stopped === "budget") {
+          if (step.stopped === "quota" || step.stopped === "budget" || step.stopped === "retry") {
             stopped = step.stopped;
             break;
           }
@@ -1006,7 +1006,9 @@ export async function run({
           out.info(
             stopped === "quota"
               ? "stopped: Images refused for quota (9422); run it again once the allowance renews"
-              : "stopped: the monthly transformation budget (IMAGES_MONTHLY_TRANSFORMS) is spent; raise it or wait",
+              : stopped === "retry"
+                ? "stopped: the media processor or Images failed for a moment (busy or unavailable); run it again later"
+                : "stopped: the monthly transformation budget (IMAGES_MONTHLY_TRANSFORMS) is spent; raise it or wait",
           );
         }
         return stopped !== null || problems.length > 0 ? 3 : 0;

@@ -2,9 +2,10 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { run as cliRun } from "../cli/lib/main.js";
 import { REBUILD_LEASE_MS, REBUILD_SETTLE_MS } from "../src/domain/media-rebuild";
 import { MAX_BUILDS_PER_CALL, rebuildMedia, type RebuildStep } from "../src/mastodon/media-rebuild";
-import { MAX_AV_BUILDS_PER_CALL, REBUILD_AV_MS } from "../src/mastodon/media-rebuild-av";
+import { MAX_AV_BUILDS_PER_CALL, PROBE_RETRY_MS, REBUILD_AV_MS } from "../src/mastodon/media-rebuild-av";
 import type { StillMaker, StillOutcome } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
 import { randomToken } from "../src/security/tokens";
@@ -15,7 +16,7 @@ import { avFixture, concat } from "./av-helpers";
 import { BUILD, migratedStore } from "./helpers";
 import { pngOf } from "./local-emoji-helpers";
 import { TestCodec } from "./media-helpers";
-import { ACCESS } from "./ops-helpers";
+import { ACCESS, memoryIO } from "./ops-helpers";
 
 // kopje-admin media-rebuild of video and audio rows (#1828 design 4.16, P25; MEDIA-2's rebuild steps): `full` from the
 // original through the output verifier, a video's `small` adopted or made by the media processor (a fake StillMaker
@@ -381,20 +382,117 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     expect((await env.MEDIA.list({ prefix: "incoming/" })).objects).toEqual([]);
   });
 
-  it("probes once per build: a passed record for this build is not probed again, a failed one is", async () => {
+  it("probes once per build: a pass is not probed again, a failure only after PROBE_RETRY_MS", async () => {
+    const store = await setup();
+    const first = await addAv(store, "video");
+    const failing = maker({ probe: { ok: false, failure: "ready", image: null } });
+    expect(await run(store, { stills: failing.stills })).toMatchObject({ counts: { fallback: 1 } });
+    expect(JSON.parse((await stateValue(store, "media_probe:"))[0]!)).toMatchObject({ ok: false, version: BUILD });
+    // Within the cooldown a failed probe is not run again, however many calls come: the rows fall back.
+    const second = await addAv(store, "video");
+    const cooling = maker();
+    expect(await run(store, { stills: cooling.stills, after: first.id })).toMatchObject({ counts: { fallback: 1 } });
+    expect(cooling.calls).toEqual([]);
+    expect(await counters(store)).toEqual([[], []]);
+    // Once it is PROBE_RETRY_MS old, the next call probes again.
+    await sql(
+      store,
+      "UPDATE kopje_state SET value = json_set(value, '$.at', json_extract(value, '$.at') - ?) WHERE name = 'media_probe:still@standard-1'",
+      PROBE_RETRY_MS,
+    );
+    const third = await addAv(store, "video");
+    const passing = maker();
+    expect(await run(store, { stills: passing.stills, after: second.id })).toMatchObject({ counts: { built: 1 } });
+    expect(passing.calls.filter((c) => c.startsWith("probe"))).toHaveLength(1);
+    // A pass for this build is not probed again.
+    const fourth = await addAv(store, "video");
+    const later = maker();
+    await run(store, { stills: later.stills, after: third.id });
+    expect(later.calls).toEqual([`still originals/${fourth.id}`]);
+  });
+
+  it.each([
+    ["the still answers busy", { answer: { ok: false, failure: "busy", image: null } as StillOutcome }],
+    ["the processor is unavailable", { answer: { ok: false, failure: "unavailable", image: null } as StillOutcome }],
+    ["the probe answers busy", { probe: { ok: false, failure: "busy", image: null } as StillOutcome }],
+  ])(
+    "stops for a retry when %s, keeps the row's preview and its full, and the next call makes the still",
+    async (_name, answers) => {
+      const store = await setup();
+      const row = await addAv(store, "video", { blurhash: "U5D]o8-;9F00_3t7IUM{00RjoM-;00Rj%MWB" });
+      const before = await rowOf(store, row.id);
+      const step = await run(store, { stills: maker(answers).stills });
+      expect(step).toMatchObject({
+        ok: true,
+        stopped: "retry",
+        done: false,
+        next: null,
+        counts: { built: 0, fallback: 0 },
+      });
+      expect(await rowOf(store, row.id)).toEqual(before);
+      expect(await bytesOf(`files/${row.token}/full`)).toEqual(row.original);
+      expect(await env.MEDIA.head(`files/${row.token}/small`)).toBeNull();
+      // No verdict is recorded for the processor's state.
+      if ("probe" in answers) {
+        expect(await stateValue(store, "media_probe:")).toEqual([]);
+      }
+      // The processor recovers: the next call starts at that row and makes its still.
+      const recovered = maker();
+      expect(await run(store, { stills: recovered.stills })).toMatchObject({ counts: { built: 1 }, stopped: null });
+      expect(recovered.calls.at(-1)).toBe(`still originals/${row.id}`);
+      await expectStill(store, row);
+    },
+  );
+
+  it("stops on Images' quota for the still and for the probe, keeping the row as it was", async () => {
+    const store = await setup();
+    const row = await addAv(store, "video");
+    const before = await rowOf(store, row.id);
+    const codec = new TestCodec();
+    codec.failEncode = 9422;
+    expect(await run(store, { codec })).toMatchObject({ stopped: "quota", next: null });
+    // The probe's Images step refused for quota: no verdict.
+    expect(await stateValue(store, "media_probe:")).toEqual([]);
+    expect(await rowOf(store, row.id)).toEqual(before);
+    // With the probe passed, the still's own Images step.
+    await sql(
+      store,
+      "INSERT INTO kopje_state (name, value) VALUES ('media_probe:still@standard-1', ?)",
+      JSON.stringify({ version: BUILD, imageTag: null, at: Date.now(), ok: true }),
+    );
+    expect(await run(store, { codec })).toMatchObject({ stopped: "quota", next: null });
+    expect(await rowOf(store, row.id)).toEqual(before);
+    expect(await env.MEDIA.head(`files/${row.token}/small`)).toBeNull();
+  });
+
+  it("keeps the lease when the still's container teardown is still pending", async () => {
     const store = await setup();
     await addAv(store, "video");
-    const failing = maker({ probe: { ok: false, failure: "ready", image: null } });
-    await run(store, { stills: failing.stills });
-    expect(JSON.parse((await stateValue(store, "media_probe:"))[0]!)).toMatchObject({ ok: false, version: BUILD });
-    const second = await addAv(store, "video");
-    const passing = maker();
-    await run(store, { stills: passing.stills });
-    expect(passing.calls.filter((c) => c.startsWith("probe"))).toHaveLength(1);
-    const third = await addAv(store, "video");
-    const later = maker();
-    await run(store, { stills: later.stills, after: second.id });
-    expect(later.calls).toEqual([`still originals/${third.id}`]);
+    const pending = maker({ answer: { ok: false, failure: "destroy", image: null, pending: true } });
+    expect(await run(store, { stills: pending.stills, holder: "torn" })).toMatchObject({ stopped: "deadline" });
+    const [lease] = await stateValue(store, "media_rebuild_lease");
+    expect(JSON.parse(lease!)).toMatchObject({ holder: "torn" });
+  });
+
+  it("kopje-admin media-rebuild exits 3 when a call stops for a retry", async () => {
+    const out: string[] = [];
+    const code = await cliRun({
+      argv: ["media-rebuild"],
+      env: {
+        KOPJE_ADMIN_URL: "https://admin.kopje.test",
+        CF_ACCESS_CLIENT_ID: "id",
+        CF_ACCESS_CLIENT_SECRET: "secret",
+      },
+      io: memoryIO(),
+      stdout: { write: (text: string) => void out.push(text), isTTY: false },
+      stderr: { write: () => {}, isTTY: false },
+      fetch: () =>
+        Promise.resolve(
+          Response.json({ ok: true, counts: { built: 0 }, problems: [], done: false, next: null, stopped: "retry" }),
+        ),
+    });
+    expect(code).toBe(3);
+    expect(JSON.parse(out.join(""))).toMatchObject({ stopped: "retry", "quota-stopped": true });
   });
 
   it(`builds at most ${MAX_AV_BUILDS_PER_CALL} video or audio row a call and resumes by the cursor`, async () => {

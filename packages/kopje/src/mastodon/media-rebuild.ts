@@ -106,7 +106,9 @@ export type RebuildStep =
       // quota: Images refused (9422); budget: IMAGES_MONTHLY_TRANSFORMS is spent this month; deadline: a step was
       // given up (the lease is kept until it expires); lease-overrun: the lease could not be renewed while a write
       // was pending (it is not released).
-      stopped: "quota" | "budget" | "deadline" | "lease-overrun" | null;
+      // retry: the media processor or Images failed in a way a later call may not (busy, unavailable, a transient
+      // failure); the row it stopped at is the next call's first.
+      stopped: "quota" | "budget" | "retry" | "deadline" | "lease-overrun" | null;
     }
   | {
       ok: false;
@@ -333,7 +335,10 @@ async function pass(
   let quota = false;
   // The last row handled; a stop leaves the row it stopped at for the next call.
   let handled = input.after;
-  const step = (stopped: "quota" | "budget" | "deadline" | "lease-overrun" | null, done: boolean): RebuildStep => ({
+  const step = (
+    stopped: "quota" | "budget" | "retry" | "deadline" | "lease-overrun" | null,
+    done: boolean,
+  ): RebuildStep => ({
     ok: true,
     counts,
     problems,
@@ -406,6 +411,8 @@ async function pass(
             throw new Refused(outcome.code, outcome.message);
           case "budget":
             return step("budget", false);
+          case "stop":
+            return step(outcome.stopped, false);
           case "problem":
             report({
               id: row.id,
