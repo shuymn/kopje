@@ -18,12 +18,12 @@
 --
 -- Every value is the Store's own (times on its clock, tokens it draws, the input's byte count it checks), and the
 -- CHECKs below hold each column to its bound and each state to its columns. The tables are not dumped
--- (src/platform/dump-catalog.ts): a restored Store has no processing row or slot.
+-- (src/platform/dump-catalog.ts): a Store imported from a dump has no processing row or slot. A point-in-time restore
+-- rewinds both tables with the rest of the Store; the restore marker fences the rows it brings back (K3).
 --
 -- No row is written and no existing table is read or changed: the file only creates two empty tables and their
 -- indexes. A file that creates a table cannot declare foreignKeys: 'unchanged' (test/migration-sql.ts), so its upgrade
--- checks every reference of the Store. Measured on the benchmark store of test/bench/migration-cost.ts in workerd's
--- local Durable Object SQLite: see the CHANGELOG entry of this file.
+-- checks every reference of the Store, a cost that grows with the Store's rows.
 
 CREATE TABLE media_processing (
   media_id TEXT NOT NULL PRIMARY KEY REFERENCES media_attachments (id) ON DELETE CASCADE,

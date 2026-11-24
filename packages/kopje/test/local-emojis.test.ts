@@ -11,7 +11,7 @@ import { REBUILD_SETTLE_MS, rebuildCandidates } from "../src/domain/media-rebuil
 import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
 import { rebuildMedia } from "../src/mastodon/media-rebuild";
 import { EMOJI_IMAGE_LIMIT, EMOJI_PREVIEW_LIMIT } from "../src/platform/emoji-image";
-import type { EncodeOptions } from "../src/platform/images";
+import { type EncodeOptions, ImageCodecError } from "../src/platform/images";
 import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { MAX_ENABLED_EMOJIS } from "../src/platform/stored-bounds";
@@ -188,6 +188,19 @@ describe("emoji upload", () => {
     const [row] = await sql<{ processed: number; url: string }>(store, "SELECT processed, url FROM media_attachments");
     expect(row).toEqual({ processed: 1, url: "" });
     expect(await sql(store, "SELECT id FROM custom_emojis")).toEqual([]);
+  });
+
+  it("a failed emoji upload deletes its own keys only, never an incoming/ key of its id (#1828 plan 1.1)", async () => {
+    const { store } = await emojiStore();
+    const failing = new TestCodec();
+    failing.encode = async () => {
+      const [reserved] = await sql<{ id: string }>(store, "SELECT id FROM media_attachments");
+      await env.MEDIA.put(`incoming/${(reserved as { id: string }).id}`, "input");
+      throw new ImageCodecError(9412, "injected");
+    };
+    expect(await addEmoji(store, "aa", { codec: failing })).toMatchObject({ ok: false, code: "invalid-image" });
+    const [row] = await sql<{ id: string }>(store, "SELECT id FROM media_attachments");
+    expect(await env.MEDIA.head(`incoming/${(row as { id: string }).id}`)).not.toBeNull();
   });
 
   it("refuses shortcodes outside 2 to 128 ASCII letters, digits and underscores", async () => {

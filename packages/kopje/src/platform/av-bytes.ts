@@ -140,7 +140,7 @@ export type AvRule =
   | "mp3_frame"
   | "mp3_stream";
 
-type VideoFacts = {
+export type VideoFacts = {
   kind: "video";
   width: number;
   height: number;
@@ -155,7 +155,7 @@ type VideoFacts = {
   audio: boolean;
 };
 
-type AudioFacts = {
+export type AudioFacts = {
   kind: "audio";
   duration: number;
   bitrate: number;
@@ -164,6 +164,13 @@ type AudioFacts = {
   sampleRate: number;
   channels: 1 | 2;
 };
+
+// A frame rate as the verifier states it and the Store stores it (meta.original.frame_rate): "<num>/<den>", each a
+// positive safe integer without leading zeros.
+export function isFrameRate(value: unknown): value is string {
+  const terms = typeof value === "string" ? /^([1-9]\d{0,15})\/([1-9]\d{0,15})$/.exec(value) : null;
+  return terms !== null && Number.isSafeInteger(Number(terms[1])) && Number.isSafeInteger(Number(terms[2]));
+}
 
 export type AvVerdict<F = VideoFacts | AudioFacts> = { ok: true; facts: F } | { ok: false; rule: AvRule };
 
@@ -735,6 +742,7 @@ function parseMoov(b: Uint8Array, moovEnd: number, fileEnd: number): Mp4Layout {
           return `${num / d}/${video.mediaDuration / d}`;
         })()
       : `${video.timescale / g}/${video.singleDelta / g}`;
+  check(isFrameRate(frameRate), "frame_rate");
   return {
     mdatStart,
     samplesEnd: at,

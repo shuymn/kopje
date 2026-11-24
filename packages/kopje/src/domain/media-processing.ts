@@ -1,6 +1,7 @@
 import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { type AudioFacts, isFrameRate, type VideoFacts } from "../platform/av-bytes";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import { storedBlurhash, storedMediaDescription, storedMediaMeta } from "../platform/stored-bounds";
@@ -9,8 +10,11 @@ import { state, setState } from "./kopje-state";
 import {
   AV_WRITE_WINDOW_MS,
   chargeUploadJob,
+  deleteOwnMedia,
   DETACHED_GRACE_MS,
   DOOMED_AT,
+  type MediaDeleted,
+  setUp,
   uploadJobFits,
   uploadJobsSpent,
   WRITE_WINDOW_MS,
@@ -553,8 +557,9 @@ export const queueNormalize = writeOperation.atStoreTime("now")<
       return refused("spent");
     }
     const endpoint: Endpoint = row.reply_by !== null ? "v1" : "v2";
-    // The AV write deadline less the stages after the encode, which the writes take.
-    const cap = Date.parse(att.created_at) + AV_WRITE_WINDOW_MS - (T_STILL + T_PREVIEW + T_COMMIT);
+    // The AV write deadline (the spec's QueueDeadline): deadline_at, the commit's cut, never passes it, and allocate
+    // takes the stages after the encode, which make the writes, before it once.
+    const cap = Date.parse(att.created_at) + AV_WRITE_WINDOW_MS;
     const until = Math.min(row.reply_by ?? now + V2_PROCESS_MS, cap + (endpoint === "v1" ? T_REPLY : 0));
     const allocation = allocate(endpoint, now, until, bytes);
     if (allocation.encodeMs < T_MIN_ENCODE) {
@@ -697,44 +702,45 @@ export const confirmAvWrite = writeOperation.atStoreTime("now")<
 // ---- S6 completeAvUpload
 
 // The verified facts of the full file (the processor's verifier), and the WebP preview's, or none.
-export type AvFacts = {
-  kind: AvKind;
-  contentType: "video/mp4" | "audio/mpeg";
-  size: number;
-  // Seconds.
-  duration: number;
-  // Video only.
-  width?: number | undefined;
-  height?: number | undefined;
-  // Mastodon's frame rate string, for example "30/1" (video only).
-  frameRate?: string | undefined;
-  preview: { width: number; height: number; blurhash: string | null } | null;
-};
-
-const FRAME_RATE = /^[1-9]\d{0,5}\/[1-9]\d{0,5}$/;
+// The verified facts of the full file, as the processor's output verifier states them (src/platform/av-bytes.ts), and
+// the WebP preview's, or none.
+export type AvFacts = (
+  | ({ contentType: "video/mp4" } & Pick<
+      VideoFacts,
+      "kind" | "width" | "height" | "frameRate" | "duration" | "bitrate" | "bytes"
+    >)
+  | ({ contentType: "audio/mpeg" } & Pick<AudioFacts, "kind" | "duration" | "bitrate" | "bytes">)
+) & { preview: { width: number; height: number; blurhash: string | null } | null };
 
 function edge(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= 65_535;
 }
 
-// The meta a completed upload stores (design 4.13's keys): video original {width, height, frame_rate, duration,
-// bitrate} and small {width, height} with a preview; audio original {duration, bitrate}. Throws on facts that are not
-// the verifier's shape.
+// The meta a completed upload stores (design 4.13's keys), the verifier's values as it computed them: video original
+// {width, height, frame_rate, duration, bitrate} and small {width, height} with a preview; audio original {duration,
+// bitrate}. Throws on facts that are not the verifier's shape.
 function avMeta(facts: AvFacts): string | null {
-  const { kind, contentType, size, duration, preview } = facts;
+  const { kind, contentType, bytes, duration, bitrate, preview } = facts;
   const typed = (kind === "video" && contentType === "video/mp4") || (kind === "audio" && contentType === "audio/mpeg");
-  if (!typed || !Number.isSafeInteger(size) || size < 1 || !Number.isFinite(duration) || duration <= 0) {
+  if (
+    !typed ||
+    !Number.isSafeInteger(bytes) ||
+    bytes < 1 ||
+    !Number.isFinite(duration) ||
+    duration <= 0 ||
+    !Number.isSafeInteger(bitrate) ||
+    bitrate < 0
+  ) {
     throw new Error("not verified facts");
   }
-  const bitrate = Math.round((size * 8) / duration);
-  if (kind === "audio") {
+  if (facts.kind === "audio") {
     if (preview !== null) {
       throw new Error("an audio upload has no preview");
     }
     return storedMediaMeta(JSON.stringify({ original: { duration, bitrate } }));
   }
   const { width, height, frameRate } = facts;
-  if (!edge(width) || !edge(height) || typeof frameRate !== "string" || !FRAME_RATE.test(frameRate)) {
+  if (!edge(width) || !edge(height) || !isFrameRate(frameRate)) {
     throw new Error("not verified video facts");
   }
   if (preview !== null && (!edge(preview.width) || !edge(preview.height))) {
@@ -828,7 +834,7 @@ export const releaseAvSlot = writeOperation.atStoreTime("now")<
 >((db, { id, teardownId, now, restoredAt }) => {
   checkId(id);
   const { row, slot } = normalize(db, id, now, restoredAt);
-  if (slot?.teardown_id !== teardownId) {
+  if (slot?.phase !== "processing" || slot.teardown_id === null || slot.teardown_id !== teardownId) {
     return { status: "released" };
   }
   if (row?.state === "pending") {
@@ -922,29 +928,33 @@ export const v1FinalRead = readOperation.atStoreTime("now")<{ id: string; token:
 
 // ---- S11 deleteAvUpload
 
-// S11, the owner's DELETE of an unattached video or audio upload: doomed and its processing row deleted, its slot
-// kept; a staging upload, a doomed one and anything else not the owner's unattached video or audio is not found.
-export const deleteAvUpload = userMediaDeleteOperation.atStoreTime("now")<
-  { id: string } & Fence,
-  "deleted" | "not_found"
->((db, { id, now, restoredAt }, { accountId }) => {
+// S11, the owner's DELETE of an upload. An unfinished video or audio upload (queued, running or failed) that is the
+// owner's and unattached is doomed, its processing row deleted and its slot kept; a staging one is not found (its
+// request still holds it). Anything else is decided by deleteMedia's rules (media.ts deleteOwnMedia): a completed
+// upload is in use while attached or kept, not found from its gc_at on.
+export const deleteAvUpload = userMediaDeleteOperation.atStoreTime("now")<{ id: string } & Fence, MediaDeleted>((
+  db,
+  { id, now, restoredAt },
+  { accountId },
+) => {
   checkId(id);
   const { att, row } = normalize(db, id, now, restoredAt);
-  const kind = attachmentState(att);
-  if (
-    att === null ||
-    att.account_id !== accountId ||
-    att.status_id !== null ||
-    att.scheduled_status_id !== null ||
-    !staged(att) ||
-    (kind !== "res" && kind !== "done") ||
-    row?.state === "staging"
-  ) {
+  if (row?.state === "staging") {
     return "not_found";
   }
-  doom(db, id);
-  return "deleted";
+  // A processing row exists only for an unfinished staged upload: S1 inserts it, and completion, a doom and the
+  // purge's cascade delete it. A status cannot hold it (the CHECK status_id IS NULL OR processed = 1); a scheduled
+  // status's hold is the application's, so it is checked.
+  if (row !== null && att !== null && att.account_id === accountId && att.scheduled_status_id === null) {
+    doom(db, id);
+    return "deleted";
+  }
+  return deleteOwnMedia(db, accountId, id, now);
 });
+
+// Nothing: the Store runs it to learn whether an operation's kind would be admitted when it cannot read the restore
+// marker (store.ts #avWrite).
+export const avAdmission = readOperation<undefined, null>(() => null);
 
 // ---- S12 and S13 the dispatch round
 
@@ -962,8 +972,8 @@ export type DispatchRound = {
 // index, at most DISPATCH_BATCH each, the restore pass (K3) and the deadline (K4) before the redispatch: rows reserved
 // at or before the last restore are failed `restored` (or, staging, deleted with their staging slot); rows past
 // deadline_at fail `deadline` (v1: doomed); staging rows past staged_until are deleted with their slots (abandoned);
-// slots that no longer count are deleted; and a pending row whose dispatch is DISPATCH_MS old is dispatched again. A
-// row past its deadline that the K4 seek did not reach is not dispatched; the next round fails it.
+// slots that no longer count are deleted; and a pending row whose dispatch is DISPATCH_MS old is dispatched again,
+// after K3 and K4 on it, so a row their seeks did not reach is failed rather than dispatched.
 export const mediaDispatchRound = writeOperation.atStoreTime("now")<Fence, DispatchRound>((db, { now, restoredAt }) => {
   const counts = { restored: 0, deadline: 0, abandoned: 0, slots: 0 };
   let more = false;
@@ -972,16 +982,24 @@ export const mediaDispatchRound = writeOperation.atStoreTime("now")<Fence, Dispa
     more ||= rows.length >= DISPATCH_BATCH;
     return rows;
   };
+  // K3 and K4 on one upload, counted by what they did.
+  const guarded = (id: string): UploadRecord => {
+    for (const effect of effects(load(db, id), now, restoredAt)) {
+      if (effect === "k3-staging" || effect === "k3-restored") {
+        counts.restored++;
+      } else {
+        counts.deadline++;
+      }
+    }
+    return normalize(db, id, now, restoredAt);
+  };
   if (restoredAt !== null) {
     for (const { id } of seek<{ id: string }>(
       `SELECT media_id AS id FROM media_processing INDEXED BY media_processing_restore
 			WHERE state <> 'failed' AND staged_at <= ? ORDER BY staged_at LIMIT ?`,
       restoredAt,
     )) {
-      if (effects(load(db, id), now, restoredAt).some((e) => e === "k3-staging" || e === "k3-restored")) {
-        counts.restored++;
-      }
-      normalize(db, id, now, restoredAt);
+      guarded(id);
     }
   }
   for (const { id } of seek<{ id: string }>(
@@ -989,8 +1007,7 @@ export const mediaDispatchRound = writeOperation.atStoreTime("now")<Fence, Dispa
 		WHERE state IN ('pending', 'running') AND deadline_at <= ? ORDER BY deadline_at LIMIT ?`,
     now,
   )) {
-    normalize(db, id, now, restoredAt);
-    counts.deadline++;
+    guarded(id);
   }
   for (const { id } of seek<{ id: string }>(
     `SELECT media_id AS id FROM media_processing INDEXED BY media_processing_staging
@@ -1018,16 +1035,13 @@ export const mediaDispatchRound = writeOperation.atStoreTime("now")<Fence, Dispa
     counts.slots++;
   }
   const runs: DispatchRun[] = [];
-  for (const due of seek<{ id: string; deadline: number }>(
-    `SELECT media_id AS id, deadline_at AS deadline FROM media_processing INDEXED BY media_processing_dispatch
+  for (const due of seek<{ id: string }>(
+    `SELECT media_id AS id FROM media_processing INDEXED BY media_processing_dispatch
 		WHERE state = 'pending' AND dispatched_at <= ? ORDER BY dispatched_at LIMIT ?`,
     now - DISPATCH_MS,
   )) {
-    if (now >= due.deadline) {
-      continue;
-    }
-    const { att, slot } = load(db, due.id);
-    if (att?.file_token == null || slot?.teardown_id == null) {
+    const { att, row, slot } = guarded(due.id);
+    if (row?.state !== "pending" || att?.file_token == null || slot?.teardown_id == null) {
       continue;
     }
     db.run("UPDATE media_processing SET dispatched_at = ? WHERE media_id = ?", now, due.id);
@@ -1074,7 +1088,8 @@ export const incomingSweepClaim = mediaDeleteOperation.atStoreTime("now")<
   { status: "claimed"; claim: number; cursor: string } | { status: "not_due" }
 >((db, { now }) => {
   const sweep = sweepState(db);
-  if (sweep.at > 0 && now - sweep.at < INCOMING_SWEEP_MS) {
+  // As the sweep: a Store without its domain (fresh, reset or being bootstrapped) has nothing to delete.
+  if (!setUp(db) || (sweep.at > 0 && now - sweep.at < INCOMING_SWEEP_MS)) {
     return { status: "not_due" };
   }
   setState(db, INCOMING_SWEEP, JSON.stringify({ at: now, cursor: sweep.cursor, claim: now }));
@@ -1088,7 +1103,7 @@ export const incomingClassify = mediaDeleteOperation.atStoreTime("now")<
   { claim: number; keys: readonly { key: string; uploaded: number }[] } & Fence,
   { status: "ok"; orphans: string[] } | { status: "stale" }
 >((db, { claim, keys, now, restoredAt }) => {
-  if (!claimLive(sweepState(db), claim, restoredAt)) {
+  if (!setUp(db) || !claimLive(sweepState(db), claim, restoredAt)) {
     return { status: "stale" };
   }
   const orphans: string[] = [];
@@ -1097,7 +1112,7 @@ export const incomingClassify = mediaDeleteOperation.atStoreTime("now")<
     const entry = (typeof item === "object" && item !== null ? item : {}) as { key?: unknown; uploaded?: unknown };
     const key = typeof entry.key === "string" ? entry.key : "";
     const uploaded = Number.isSafeInteger(entry.uploaded) ? (entry.uploaded as number) : null;
-    if (uploaded === null || uploaded > now - INCOMING_ORPHAN_AGE_MS) {
+    if (uploaded === null || uploaded >= now - INCOMING_ORPHAN_AGE_MS) {
       continue;
     }
     const id = INCOMING_ID.exec(key)?.[1];
@@ -1119,7 +1134,7 @@ export const incomingSwept = mediaDeleteOperation.atStoreTime("now")<
   { status: "swept" } | { status: "stale" }
 >((db, { claim, cursor, restoredAt }) => {
   const sweep = sweepState(db);
-  if (!claimLive(sweep, claim, restoredAt)) {
+  if (!setUp(db) || !claimLive(sweep, claim, restoredAt)) {
     return { status: "stale" };
   }
   const next = typeof cursor === "string" && cursor.length <= INCOMING_CURSOR_BYTES ? cursor : "";

@@ -60,6 +60,7 @@ export async function reserve(w: AvWorld, at = Date.now(), who: "alice" | "bob" 
     credential: who === "alice" ? w.alice : w.bob,
     token,
     monthlyTransforms: { instance: 1_000_000, account: 1_000_000 },
+    avCandidate: { build: BUILD },
     now: at,
   });
   if (reserved.status !== "ok" || reserved.value.status !== "ok") {
@@ -86,8 +87,9 @@ export async function passProbe(store: StoreStub, build = BUILD, imagesVerified 
 export const VIDEO: AvFacts = {
   kind: "video",
   contentType: "video/mp4",
-  size: 1_000_000,
+  bytes: 1_000_000,
   duration: 8,
+  bitrate: 1_000_000,
   width: 1280,
   height: 720,
   frameRate: "30/1",
@@ -97,8 +99,9 @@ export const VIDEO: AvFacts = {
 export const AUDIO: AvFacts = {
   kind: "audio",
   contentType: "audio/mpeg",
-  size: 320_000,
+  bytes: 320_000,
   duration: 10,
+  bitrate: 256_000,
   preview: null,
 };
 

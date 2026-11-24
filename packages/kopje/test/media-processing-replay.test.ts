@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { expiredMedia, purgeMedia } from "../src/domain/media";
-import { mediaKeys } from "../src/platform/media-files";
+import { sweptKeys } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
 import { BUILD } from "./helpers";
 import {
@@ -99,7 +99,7 @@ const REPLAYS: Replay[] = [
       });
       // The reservation stays to its gc_at, when the sweep deletes its keys, incoming/<id> among them.
       const [row] = await sql<{ gc_at: string }>(w.store, "SELECT gc_at FROM media_attachments WHERE id = ?", c.id);
-      expect(mediaKeys(c.id, c.token)).toContain(`incoming/${c.id}`);
+      expect(sweptKeys(c.id, c.token)).toContain(`incoming/${c.id}`);
       await sweep(w, Date.parse(row!.gc_at));
       expect(await sql(w.store, "SELECT id FROM media_attachments WHERE id = ?", c.id)).toEqual([]);
     },

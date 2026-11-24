@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { expiredMedia, purgeMedia } from "../src/domain/media";
-import { mediaKeys } from "../src/platform/media-files";
+import { mediaKeys, sweptKeys } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
 import { BUILD } from "./helpers";
 import {
@@ -99,10 +99,11 @@ const OWNERSHIP: Row[] = [
   ],
   [
     "incoming/<id>",
-    "the sweep takes the input with the row (mediaKeys)",
+    "the sweep takes the input with the row (sweptKeys); a failed writer's own cleanup does not (mediaKeys)",
     async (w) => {
       const c = await staged(w);
-      expect(mediaKeys(c.id, c.token)[0]).toBe(`incoming/${c.id}`);
+      expect(sweptKeys(c.id, c.token)[0]).toBe(`incoming/${c.id}`);
+      expect(mediaKeys(c.id, c.token)).not.toContain(`incoming/${c.id}`);
     },
   ],
   [
@@ -172,6 +173,19 @@ const OWNERSHIP: Row[] = [
         row: { state: "failed", failure: "restored" },
         slot: { granted_at: at(3) },
       });
+    },
+  ],
+  [
+    "slot",
+    "a null teardown_id frees nothing: a staging slot, which has none, stays (L2)",
+    async (w) => {
+      const c = await staged(w);
+      clock(at(5));
+      const before = await held(w.store, c.id);
+      expect(await w.store.releaseAvSlot(BUILD, { id: c.id, teardownId: null as unknown as string })).toEqual({
+        status: "released",
+      });
+      expect(await held(w.store, c.id)).toEqual(before);
     },
   ],
   [

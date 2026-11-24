@@ -5,11 +5,14 @@ import { AV_WRITE_WINDOW_MS, expiredMedia, ORPHAN_GRACE_MS, purgeMedia } from ".
 import {
   allocate,
   AV_GRANT_MS,
+  avActivation,
   DISPATCH_BATCH,
   DISPATCH_MS,
   encodeLeft,
+  HARD_HOLD_MS,
   INCOMING_ORPHAN_AGE_MS,
   inputMs,
+  MAX_AV_INFLIGHT,
   mediaDispatchRound,
   releaseAvSlot,
   remainingOf,
@@ -18,8 +21,11 @@ import {
   T_REPLY,
   takeAvSlot,
   V2_PROCESS_MS,
+  type AvFacts,
 } from "../src/domain/media-processing";
+import type { VideoFacts } from "../src/platform/av-bytes";
 import { sql } from "./api-helpers";
+import { avFixture, syntheticMp4, verifyStream } from "./av-helpers";
 import { BUILD, rejectionOf } from "./helpers";
 import {
   ACTIVE,
@@ -43,7 +49,7 @@ import {
   VIDEO,
 } from "./media-processing-helpers";
 import { dumpViaRpc } from "./ops-helpers";
-import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
+import { type PlannedStatement, plannedRun, scansOf, staleStatistics } from "./read-helpers";
 
 // The media processor's Store operations beyond the precedence table (domain/media-processing.ts): the allocation
 // (P8), the completion's own facts and the text kept (P7, P9), the incoming/ orphan pass across a restore (W4), a
@@ -160,16 +166,34 @@ describe("the allocation (P8)", () => {
     ).toMatchObject({ status: "taken", stagingMs: STAGING_MS - 1 });
   });
 
-  it("the queue caps deadline_at at the AV write deadline less the stages after the encode", async () => {
+  it("the queue caps deadline_at at the AV write deadline, the stages after the encode taken once (L5)", async () => {
     const w = await avWorld();
     const up = await reserve(w, T0);
-    // Staged late in the reservation's write window: queued_at + V2_PROCESS_MS passes the cap.
-    const c = await staged(w, { up, at: T0 + 14 * MINUTE });
-    clock(T0 + 23 * MINUTE);
-    expect(await w.store.queueNormalize(BUILD, { ...c, bytes: 2 * MiB, text: TEXT, activation: ACTIVE })).toMatchObject(
-      { status: "queued" },
-    );
-    expect((await held(w.store, c.id)).row!.deadline_at).toBe(T0 + 30 * MINUTE - 10 * SECOND);
+    const c = await staged(w, { up, at: T0 + 14 * MINUTE + 59 * SECOND });
+    const queuedAt = T0 + 24 * MINUTE + 58 * SECOND;
+    clock(queuedAt);
+    expect(
+      await w.store.queueNormalize(BUILD, { ...c, bytes: 90 * MiB, text: TEXT, activation: ACTIVE }),
+    ).toMatchObject({ status: "queued" });
+    const deadline = (await held(w.store, c.id)).row!.deadline_at!;
+    expect(deadline).toBe(T0 + AV_WRITE_WINDOW_MS);
+    expect(allocate("v2", queuedAt, deadline, 90 * MiB).encodeMs).toBe(282_400);
+    // No write grant is valid past the AV write deadline: the last is answered a millisecond before it, for that
+    // millisecond, and none at it.
+    clock(T0 + 25 * MINUTE);
+    const start = await w.store.startNormalize(BUILD, { id: c.id, token: c.token, invocation: "inv" });
+    if (start.status !== "started") {
+      throw new Error(start.status);
+    }
+    clock(deadline - 1);
+    expect(await w.store.confirmAvWrite(BUILD, { id: c.id, startId: start.startId, write: "full" })).toEqual({
+      status: "grant",
+      ms: 1,
+    });
+    clock(deadline);
+    expect(await w.store.confirmAvWrite(BUILD, { id: c.id, startId: start.startId, write: "full" })).toEqual({
+      status: "refused",
+    });
   });
 });
 
@@ -243,6 +267,35 @@ describe("the completion's own facts and the text (P7, P9)", () => {
     expect(JSON.parse(row.meta)).toEqual({ original: { duration: 10, bitrate: 256_000 } });
   });
 
+  // What the processor passes S6 of a file the output verifier accepted (verifyStream's facts).
+  const factsOf = (facts: VideoFacts): AvFacts => ({ ...facts, contentType: "video/mp4", preview: null });
+
+  it.each([
+    ["a frame rate of 7-digit terms", { samples: 30, size: 64, delta: 1_000_003, timescale: 30_000_000 }],
+    ["a bitrate the verifier rounds down", { samples: 30, size: 64, delta: 1001, timescale: 30_000 }],
+  ])("completes every file the verifier accepts, with its facts as computed: %s (M2)", async (_name, shape) => {
+    const file = syntheticMp4(await avFixture("r1-silent.mp4"), shape);
+    const verified = await verifyStream("video/mp4", file.stream(), file.length);
+    if (!verified.ok) {
+      throw new Error(verified.rule);
+    }
+    const w = await avWorld();
+    const c = await started(w);
+    clock(at(4));
+    expect(
+      await w.store.completeAvUpload(BUILD, {
+        id: c.id,
+        token: c.token,
+        startId: c.startId,
+        facts: factsOf(verified.facts as VideoFacts),
+      }),
+    ).toEqual({ status: "done" });
+    const facts = verified.facts as VideoFacts;
+    expect(JSON.parse((await stored(w, c.id)).meta)).toMatchObject({
+      original: { frame_rate: facts.frameRate, bitrate: facts.bitrate, duration: facts.duration },
+    });
+  });
+
   it("refuses facts that are not the verifier's (an audio preview, a video without its geometry)", async () => {
     const w = await avWorld();
     const c = await started(w);
@@ -250,8 +303,10 @@ describe("the completion's own facts and the text (P7, P9)", () => {
     for (const facts of [
       { ...AUDIO, preview: VIDEO.preview },
       { ...VIDEO, width: undefined },
-      { ...VIDEO, contentType: "audio/mpeg" as const },
-    ]) {
+      { ...VIDEO, contentType: "audio/mpeg" },
+      { ...VIDEO, frameRate: "30000/01" },
+      { ...VIDEO, bitrate: 1.5 },
+    ] as unknown as AvFacts[]) {
       expect(
         await rejectionOf(w.store.completeAvUpload(BUILD, { id: c.id, token: c.token, startId: c.startId, facts })),
       ).toBeInstanceOf(Error);
@@ -288,6 +343,31 @@ describe("the incoming/ orphan pass (W4)", () => {
       status: "ok",
       orphans: ["incoming/100000000000000001", `incoming/probe-${"a".repeat(32)}`],
     });
+  });
+
+  it("classifies only keys strictly older than INCOMING_ORPHAN_AGE_MS (L3)", async () => {
+    const w = await avWorld();
+    const claimed = await claim(w, at(5));
+    const keys = [
+      { key: "incoming/100000000000000001", uploaded: at(5) - INCOMING_ORPHAN_AGE_MS },
+      { key: "incoming/100000000000000002", uploaded: at(5) - INCOMING_ORPHAN_AGE_MS - 1 },
+    ];
+    expect(await w.store.incomingClassify(BUILD, { claim: claimed.claim, keys })).toEqual({
+      status: "ok",
+      orphans: ["incoming/100000000000000002"],
+    });
+  });
+
+  it("a Store not set up gives no claim and classifies nothing, as the sweep (L3)", async () => {
+    const w = await avWorld();
+    const claimed = await claim(w, at(5));
+    await sql(w.store, "DELETE FROM instance_settings WHERE name = 'domain'");
+    clock(at(6));
+    expect(
+      await w.store.incomingClassify(BUILD, { claim: claimed.claim, keys: [old("incoming/100000000000000001")] }),
+    ).toEqual({ status: "stale" });
+    clock(at(5) + 2 * HOUR);
+    expect(await w.store.incomingSweepClaim(BUILD)).toEqual({ status: "not_due" });
   });
 
   it("a restore with a claim held: the claim's classification and checkpoint are refused", async () => {
@@ -436,15 +516,70 @@ describe("the dispatch round", () => {
   it("reaches a pending row behind more than DISPATCH_BATCH overdue rows by a later round", async () => {
     const w = await avWorld();
     const c = await queued(w);
-    await overdue(w, 2 * DISPATCH_BATCH, T0);
+    await overdue(w, 3 * DISPATCH_BATCH, T0);
     clock(T0 + 5 * MINUTE);
+    // The K4 seek fails a batch, and the redispatch seek's batch, overdue too, is failed by K4 before any dispatch.
     const first = await w.store.mediaDispatchRound(BUILD);
-    expect(first).toMatchObject({ runs: [], counts: { deadline: DISPATCH_BATCH }, more: true });
+    expect(first).toMatchObject({ runs: [], counts: { deadline: 2 * DISPATCH_BATCH }, more: true });
     const second = await w.store.mediaDispatchRound(BUILD);
     expect(second).toMatchObject({ runs: [{ id: c.id }], counts: { deadline: DISPATCH_BATCH } });
     expect(await sql(w.store, "SELECT count(*) AS n FROM media_processing WHERE failure = 'deadline'")).toEqual([
-      { n: 2 * DISPATCH_BATCH },
+      { n: 3 * DISPATCH_BATCH },
     ]);
+  });
+
+  it("never dispatches a restored row, even past a K3 batch that did not reach it (M3)", async () => {
+    const w = await avWorld();
+    await reserve(w, T0);
+    await runInDurableObject(w.store, (_instance, state) => {
+      const alice = state.storage.sql
+        .exec<{ account_id: string }>("SELECT account_id FROM media_attachments LIMIT 1")
+        .one();
+      const attachment = (id: string, i: number) =>
+        state.storage.sql.exec(
+          `INSERT INTO media_attachments (id, account_id, type, url, file_token, processed, gc_at, created_at)
+					VALUES (?, ?, 'video', '', ?, 0, ?, ?)`,
+          id,
+          alice.account_id,
+          `restored${String(i).padStart(4, "0")}${"z".repeat(30)}`,
+          new Date(T0 + HOUR).toISOString(),
+          new Date(T0).toISOString(),
+        );
+      // DISPATCH_BATCH staging rows reserved before the marker, staged before the pending row: the K3 seek's batch.
+      for (let i = 0; i < DISPATCH_BATCH; i++) {
+        const id = String(300_000_000_000_000_000n + BigInt(i));
+        attachment(id, i);
+        state.storage.sql.exec(
+          `INSERT INTO media_processing (media_id, state, staged_at, staged_until) VALUES (?, 'staging', ?, ?)`,
+          id,
+          T0,
+          T0 + HOUR,
+        );
+      }
+      // A pending row reserved before the marker, due for redispatch, before its deadline, with its live slot.
+      const id = "300000000000001000";
+      attachment(id, DISPATCH_BATCH);
+      state.storage.sql.exec(
+        `INSERT INTO media_processing (media_id, state, staged_at, staged_until, queued_at, dispatched_at, deadline_at,
+					input_bytes) VALUES (?, 'pending', ?, ?, ?, ?, ?, 1)`,
+        id,
+        T0 + SECOND,
+        T0 + MINUTE,
+        T0 + SECOND,
+        T0 + SECOND,
+        T0 + 10 * MINUTE,
+      );
+      state.storage.sql.exec(
+        `INSERT INTO media_av_slots (media_id, phase, held_until, teardown_id) VALUES (?, 'processing', ?, 'teardown')`,
+        id,
+        T0 + 10 * MINUTE,
+      );
+    });
+    await restore(w.store, await bookmark(w.store), T0 + 2 * SECOND);
+    clock(T0 + DISPATCH_MS + 3 * SECOND);
+    const round = await w.store.mediaDispatchRound(BUILD);
+    expect(round).toMatchObject({ runs: [], more: true });
+    expect(await held(w.store, "300000000000001000")).toMatchObject({ row: { state: "failed", failure: "restored" } });
   });
 
   it("runs nothing in maintenance", async () => {
@@ -457,76 +592,145 @@ describe("the dispatch round", () => {
 });
 
 describe("the plans of the new statements at saturation", () => {
-  it("seek their partial indexes under stale statistics: slot count, dispatch, K3 and K4 seeks, teardown release", async () => {
+  // Every range a statement searches holds GROWN rows, more than any LIMIT, so a statement that reads past its LIMIT,
+  // or scans, reads more than its bound.
+  const GROWN = 3 * DISPATCH_BATCH;
+  const NOW_AT = T0 + 2 * HOUR;
+  const RESTORED_AT = T0 + HOUR;
+
+  async function grow(w: AvWorld): Promise<void> {
+    await runInDurableObject(w.store, (_instance, state) => {
+      const exec = (query: string, ...values: SqlStorageValue[]) => state.storage.sql.exec(query, ...values);
+      const alice = exec("SELECT account_id FROM media_attachments LIMIT 1").one().account_id as string;
+      let n = 0;
+      const upload = (created: number) => {
+        const id = String(300_000_000_000_000_000n + BigInt(n++));
+        exec(
+          `INSERT INTO media_attachments (id, account_id, type, url, file_token, processed, gc_at, created_at)
+					VALUES (?, ?, 'video', '', ?, 0, ?, ?)`,
+          id,
+          alice,
+          `grown${String(n).padStart(5, "0")}${"z".repeat(30)}`,
+          new Date(T0 + 30 * 24 * HOUR).toISOString(),
+          new Date(created).toISOString(),
+        );
+        return id;
+      };
+      const processing = (id: string, row: Record<string, SqlStorageValue>) => {
+        const columns = Object.keys(row);
+        exec(
+          `INSERT INTO media_processing (media_id, ${columns.join(", ")}) VALUES (?, ${columns.map(() => "?").join(", ")})`,
+          id,
+          ...Object.values(row),
+        );
+      };
+      const slot = (heldUntil: number, grantedAt: number | null) =>
+        exec(
+          "INSERT INTO media_av_slots (media_id, phase, held_until, teardown_id, granted_at) VALUES (?, 'processing', ?, 't', ?)",
+          String(400_000_000_000_000_000n + BigInt(n++)),
+          heldUntil,
+          grantedAt,
+        );
+      for (let i = 0; i < GROWN; i++) {
+        // K3's range (reserved and staged before the marker) and the redispatch's (dispatched DISPATCH_MS ago).
+        processing(upload(T0), {
+          state: "pending",
+          staged_at: T0,
+          staged_until: T0 + MINUTE,
+          queued_at: T0 + i,
+          dispatched_at: T0 + i,
+          deadline_at: T0 + 10 * HOUR,
+          input_bytes: 1,
+        });
+        // K4's range: running past its deadline, staged after the marker.
+        processing(upload(T0 + 90 * MINUTE), {
+          state: "running",
+          staged_at: T0 + 90 * MINUTE,
+          staged_until: T0 + 95 * MINUTE,
+          queued_at: T0 + 90 * MINUTE,
+          deadline_at: NOW_AT - i - 1,
+          start_id: "s",
+          started_by: "i",
+          input_bytes: 1,
+        });
+        // The abandoned staging's range.
+        processing(upload(T0 + 90 * MINUTE), {
+          state: "staging",
+          staged_at: T0 + 90 * MINUTE,
+          staged_until: NOW_AT - i - 1,
+        });
+        // The slots: expired, ungranted and granted, and counting, ungranted and granted.
+        slot(NOW_AT - i - 1, null);
+        slot(NOW_AT, NOW_AT - HARD_HOLD_MS - i - 1);
+        slot(NOW_AT + HOUR, null);
+        slot(NOW_AT + HOUR, NOW_AT - i);
+      }
+    });
+  }
+
+  it("each statement reads within its LIMIT under stale statistics, every searched range grown past it", async () => {
     const w = await avWorld();
     const c = await completed(w);
+    // A reservation S1 takes to the slot count: after the marker, within its write window, the probe passed.
+    const fresh = { before: await reserve(w, NOW_AT - MINUTE), after: await reserve(w, NOW_AT - MINUTE) };
     const PATTERN = /media_processing|media_av_slots/;
-    const run = async () => {
-      const plans = [];
+    const answers: unknown[] = [];
+    const run = async (phase: "before" | "after") => {
+      answers.length = 0;
+      const plans: PlannedStatement[] = [];
       for (const [operation, input] of [
-        [takeAvSlot, { id: "100000000000000009", token: "t", kind: "video", v1Left: null, activation: ACTIVE }],
-        [mediaDispatchRound, {}],
-        [releaseAvSlot, { id: c.id, teardownId: c.teardownId }],
+        [takeAvSlot, { ...fresh[phase], kind: "video", v1Left: null, activation: ACTIVE, restoredAt: RESTORED_AT }],
+        [avActivation, ACTIVE],
+        [mediaDispatchRound, { restoredAt: RESTORED_AT }],
+        [releaseAvSlot, { id: c.id, teardownId: c.teardownId, restoredAt: RESTORED_AT }],
       ] as const) {
-        const planned = await plannedRun(
-          w.h,
-          PATTERN,
-          operation as never,
-          { ...input, now: T0 + 2 * HOUR, restoredAt: T0 + HOUR } as never,
-          true,
-        );
+        const planned = await plannedRun(w.h, PATTERN, operation as never, { ...input, now: NOW_AT } as never, true);
+        answers.push(planned.result);
         plans.push(...planned.plans);
       }
       return plans;
     };
-    const { after } = await staleStatistics(w.h, {
-      capture: async () => run(),
-      grow: async () => {
-        await runInDurableObject(w.store, (_instance, state) => {
-          const alice = state.storage.sql
-            .exec<{ account_id: string }>("SELECT account_id FROM media_attachments LIMIT 1")
-            .one();
-          for (let i = 0; i < 3000; i++) {
-            const id = String(300_000_000_000_000_000n + BigInt(i));
-            state.storage.sql.exec(
-              `INSERT INTO media_attachments (id, account_id, type, url, file_token, processed, gc_at, created_at)
-							VALUES (?, ?, 'video', '', ?, 0, ?, ?)`,
-              id,
-              alice.account_id,
-              `grown${String(i).padStart(5, "0")}${"z".repeat(30)}`,
-              new Date(T0 + 30 * 24 * HOUR).toISOString(),
-              new Date(T0 + 3 * HOUR).toISOString(),
-            );
-            const state_ = ["failed", "running", "staging"][i % 3]!;
-            state.storage.sql.exec(
-              `INSERT INTO media_processing (media_id, state, staged_at, staged_until, queued_at, deadline_at, start_id,
-								started_by, input_bytes, failure) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              id,
-              state_,
-              T0 + 3 * HOUR,
-              T0 + 4 * HOUR,
-              state_ === "staging" ? null : T0 + 3 * HOUR,
-              state_ === "staging" ? null : T0 + 4 * HOUR,
-              state_ === "running" ? "s" : null,
-              state_ === "running" ? "i" : null,
-              state_ === "staging" ? null : 1,
-              state_ === "failed" ? "verifier" : null,
-            );
-            state.storage.sql.exec(
-              "INSERT INTO media_av_slots (media_id, phase, held_until, teardown_id, granted_at) VALUES (?, 'processing', ?, 't', ?)",
-              id,
-              T0 + 4 * HOUR,
-              i % 2 === 0 ? T0 + 3 * HOUR : null,
-            );
-          }
-        });
+    const { after } = await staleStatistics(w.h, { capture: run, grow: async () => grow(w) });
+    const reads = (marker: RegExp) => {
+      const found = after.filter((p) => marker.test(p.query));
+      expect(found.length, String(marker)).toBeGreaterThan(0);
+      return found;
+    };
+    const bounded: [RegExp, number][] = [
+      // The slot count, from S1 (answering busy) and avActivation: MAX_AV_INFLIGHT + 1 a part.
+      [/count\(\*\)[\s\S]*media_av_slots_held[\s\S]*media_av_slots_granted/, 2 * (MAX_AV_INFLIGHT + 1)],
+      [/media_processing_restore/, DISPATCH_BATCH],
+      [/media_processing_deadline/, DISPATCH_BATCH],
+      [/media_processing_staging/, DISPATCH_BATCH],
+      [/media_av_slots_held\s+WHERE granted_at IS NULL AND held_until <=/, DISPATCH_BATCH],
+      [/media_av_slots_granted\s+WHERE granted_at IS NOT NULL AND granted_at <=/, DISPATCH_BATCH],
+      [/media_processing_dispatch/, DISPATCH_BATCH],
+    ];
+    for (const [marker, limit] of bounded) {
+      for (const planned of reads(marker)) {
+        expect(scansOf(planned.plan, ["media_processing", "media_av_slots"]), planned.query).toEqual([]);
+        expect(planned.rows, planned.query).toBeLessThanOrEqual(limit);
+      }
+    }
+    // The answers show each statement met its grown range: S1 reached the count (busy), each part of it full, and each
+    // of the round's batches full (the redispatch's met K3's rows past its batch, failed before any dispatch).
+    expect(answers).toMatchObject([
+      { status: "busy" },
+      { slots: 2 * (MAX_AV_INFLIGHT + 1) },
+      {
+        runs: [],
+        counts: {
+          restored: 2 * DISPATCH_BATCH,
+          deadline: DISPATCH_BATCH,
+          abandoned: DISPATCH_BATCH,
+          slots: 2 * DISPATCH_BATCH,
+        },
+        more: true,
       },
-    });
-    expect(after.length).toBeGreaterThan(8);
+      { status: "released" },
+    ]);
     for (const planned of after) {
       expect(scansOf(planned.plan, ["media_processing", "media_av_slots"]), planned.query).toEqual([]);
-      // Each seek reads at most its cap (and the slot count MAX_AV_INFLIGHT + 1 each part), not the grown tables.
-      expect(planned.rows, planned.query).toBeLessThanOrEqual(2 * (DISPATCH_BATCH + 1));
     }
   });
 });

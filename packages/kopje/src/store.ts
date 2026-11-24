@@ -53,6 +53,19 @@ const AV_MAINTENANCE: ReadonlySet<MaintenanceReason> = new Set<MaintenanceReason
 
 type AvMaintenance = { status: "maintenance" };
 
+// `run`, a refusal in AV_MAINTENANCE answered `maintenance`.
+async function avRefusal<T>(run: () => Promise<T>): Promise<T | AvMaintenance> {
+  try {
+    return await run();
+  } catch (error) {
+    const reason = toStoreUnavailable(error)?.reason;
+    if (reason !== undefined && AV_MAINTENANCE.has(reason)) {
+      return { status: "maintenance" };
+    }
+    throw error;
+  }
+}
+
 // A media processing operation's input as its Store method takes it: the Store fills its time and the restore marker.
 type AvInput<Op> = Omit<OperationInput<Op>, "restoredAt">;
 
@@ -526,15 +539,22 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, mediaProcessing.v1Outcome, { ...input, restoredAt });
   }
 
-  // S10 decides with a write; while the Store refuses writes it is a read that answers 200 for a completed upload and
-  // `maintenance` otherwise, dooming nothing.
+  // S10 decides with a write; while the Store refuses writes but admits reads it is a read that answers 200 for a
+  // completed upload and `maintenance` otherwise, dooming nothing; a Store that refuses reads too answers
+  // `maintenance`.
   async v1Final(callerBuild: string, input: AvInput<typeof mediaProcessing.v1Final>) {
     const decided = await this.#avWrite(callerBuild, mediaProcessing.v1Final, input);
     if (decided.status !== "maintenance") {
       return decided;
     }
-    const restoredAt = await this.#restoredAt();
-    return this.#kernel.execute(callerBuild, mediaProcessing.v1FinalRead, { ...input, restoredAt });
+    // Writes are refused, so `maintenance` is S10's answer wherever the read cannot decide (no marker read).
+    let restoredAt: number | null;
+    try {
+      restoredAt = await this.#restoredAt();
+    } catch {
+      return decided;
+    }
+    return this.#avRun(callerBuild, mediaProcessing.v1FinalRead, input, restoredAt);
   }
 
   deleteAvUpload(callerBuild: string, input: AvInput<typeof mediaProcessing.deleteAvUpload>) {
@@ -561,24 +581,41 @@ export class Store extends DurableObject<Env> {
     return lastRestore(this.env.MEDIA, restoreMarkerKey(this.ctx.id.toString()));
   }
 
+  // Runs a media processing operation with the restore marker, a refusal in AV_MAINTENANCE answered `maintenance` (K1).
+  // A marker that cannot be read fails the call only where the operation would be admitted: a Store that refuses it
+  // answers `maintenance` as it would with the marker.
   async #avWrite<O>(
     callerBuild: string,
     operation: StoreOperation<never, O>,
     input: unknown,
   ): Promise<O | AvMaintenance> {
-    const restoredAt = await this.#restoredAt();
+    let restoredAt: number | null;
     try {
-      return await this.#kernel.execute(callerBuild, operation as StoreOperation<unknown, O>, {
-        ...(input as object | undefined),
-        restoredAt,
-      });
+      restoredAt = await this.#restoredAt();
     } catch (error) {
-      const reason = toStoreUnavailable(error)?.reason;
-      if (reason !== undefined && AV_MAINTENANCE.has(reason)) {
+      const probed = await avRefusal(() =>
+        this.#kernel.executeProbing(callerBuild, mediaProcessing.avAdmission, undefined, operation.kind),
+      );
+      if ("status" in probed || (probed.refused !== null && AV_MAINTENANCE.has(probed.refused))) {
         return { status: "maintenance" };
       }
       throw error;
     }
+    return this.#avRun(callerBuild, operation, input, restoredAt);
+  }
+
+  #avRun<O>(
+    callerBuild: string,
+    operation: StoreOperation<never, O>,
+    input: unknown,
+    restoredAt: number | null,
+  ): Promise<O | AvMaintenance> {
+    return avRefusal(() =>
+      this.#kernel.execute(callerBuild, operation as StoreOperation<unknown, O>, {
+        ...(input as object | undefined),
+        restoredAt,
+      }),
+    );
   }
 
   // Search with resolve=true, before any network work and as the first read after the host check's domain read

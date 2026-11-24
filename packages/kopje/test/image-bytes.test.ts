@@ -9,6 +9,7 @@ import {
   mediaPath,
   originalKey,
   R2_DELETE_KEYS,
+  sweptKeys,
 } from "../src/platform/media-files";
 import {
   ANIMATED_WEBP,
@@ -214,13 +215,17 @@ describe("media keys (MEDIA-2)", () => {
 
   it("builds keys from server ids and tokens only", () => {
     expect(mediaKeys("100000000000000001", token)).toEqual([
-      "incoming/100000000000000001",
       "originals/100000000000000001",
       `files/${token}/full`,
       `files/${token}/small`,
     ]);
     expect(() => originalKey("../x")).toThrow("media id is not a server id");
     expect(() => incomingKey("../x")).toThrow("media id is not a server id");
+    // The sweep and reconciliation delete the input too; a failed upload's own cleanup does not (#1828 plan 1.1).
+    expect(sweptKeys("100000000000000001", token)).toEqual([
+      "incoming/100000000000000001",
+      ...mediaKeys("100000000000000001", token),
+    ]);
   });
 
   it("deletes keys in calls of at most R2_DELETE_KEYS, in order", async () => {

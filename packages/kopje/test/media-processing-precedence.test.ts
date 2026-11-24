@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DETACHED_GRACE_MS, DOOMED_AT } from "../src/domain/media";
@@ -11,6 +12,7 @@ import {
   T_REPLY,
   V2_PROCESS_MS,
 } from "../src/domain/media-processing";
+import { restoreMarkerKey } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
 import { BUILD } from "./helpers";
 import {
@@ -442,8 +444,9 @@ describe("with the reservation at or before the restore marker (K3)", () => {
       S8: { answer: { status: "released" } },
       S9: { answer: { status: "ended" } },
       S10: { answer: { status: 503 }, after: { att: "doomed" } },
-      // K3 deleted the staging row, so the upload is no longer staging.
-      S11: { answer: { status: "ok", value: "deleted" }, after: { att: "doomed" } },
+      // K3 deleted the staging row: an unfinished reservation with no row is not found (table 1.2, "no row"), as for
+      // DELETE; the sweep takes it at its gc_at.
+      S11: { answer: { status: "ok", value: "not_found" } },
       S12: { answer: { runs: [], counts: { restored: 1 } } },
     },
     pending: {
@@ -614,6 +617,109 @@ describe("named cells", () => {
     expect(await OPS.S10(w, { ...c, stagedAt: 0 })).toMatchObject({ status: 200 });
     clock(T0 + 4 * SECOND + DETACHED_GRACE_MS);
     expect(await OPS.S10(w, { ...c, stagedAt: 0 })).toEqual({ status: "maintenance" });
+  });
+
+  it.each(Object.keys(GATES) as (keyof typeof GATES)[])(
+    "S10 under the %s gate answers maintenance for a running job and changes nothing (K1, M5)",
+    async (name) => {
+      const w = await avWorld();
+      const c = await started(w, { v1: true });
+      await gate(w.store, name, true);
+      clock(T0 + 10 * SECOND);
+      const before = await held(w.store, c.id);
+      expect(await OPS.S10(w, { ...c, stagedAt: 0 })).toEqual({ status: "maintenance" });
+      expect(await held(w.store, c.id)).toEqual(before);
+    },
+  );
+
+  it.each([
+    ["maintenance", 200],
+    ["dump", 200],
+    ["unpublished", 200],
+    ["import", "maintenance"],
+  ] as const)(
+    "S10 under the %s gate on a completed upload answers %s (reads admitted or not)",
+    async (name, answer) => {
+      const w = await avWorld();
+      const c = await completed(w, { v1: true });
+      await gate(w.store, name, true);
+      clock(T0 + 10 * SECOND);
+      expect(await OPS.S10(w, { ...c, stagedAt: 0 })).toMatchObject({ status: answer });
+    },
+  );
+
+  it.each(Object.keys(GATES) as (keyof typeof GATES)[])(
+    "S10 under the %s gate answers maintenance when the restore marker cannot be read",
+    async (name) => {
+      const w = await avWorld();
+      const c = await started(w, { v1: true });
+      await env.MEDIA.put(restoreMarkerKey(w.store.id.toString()), "not json");
+      await gate(w.store, name, true);
+      clock(T0 + 10 * SECOND);
+      expect(await OPS.S10(w, { ...c, stagedAt: 0 })).toEqual({ status: "maintenance" });
+    },
+  );
+
+  it.each([
+    ["kept (gc_at NULL)", null, "in_use"],
+    ["at its gc_at", "now", "not_found"],
+  ] as const)(
+    "S11 on a completed upload %s answers as DELETE does: %s, nothing doomed (M6)",
+    async (_name, gcAt, answer) => {
+      const w = await avWorld();
+      const c = await completed(w);
+      clock(T0 + 10 * SECOND);
+      await sql(
+        w.store,
+        "UPDATE media_attachments SET gc_at = ? WHERE id = ?",
+        gcAt === null ? null : new Date(T0 + 10 * SECOND).toISOString(),
+        c.id,
+      );
+      const before = await held(w.store, c.id);
+      expect(await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id })).toEqual({
+        status: "ok",
+        value: answer,
+      });
+      expect(await held(w.store, c.id)).toEqual(before);
+    },
+  );
+
+  it("S11 by another account on an unfinished upload answers not_found and changes nothing", async () => {
+    const w = await avWorld();
+    const c = await started(w);
+    clock(T0 + 10 * SECOND);
+    const before = await held(w.store, c.id);
+    expect(await w.store.deleteAvUpload(BUILD, { credential: w.bob, id: c.id })).toEqual({
+      status: "ok",
+      value: "not_found",
+    });
+    expect(await held(w.store, c.id)).toEqual(before);
+  });
+
+  it("S11 on an unfinished upload a scheduled status holds answers in_use and changes nothing", async () => {
+    const w = await avWorld();
+    const c = await started(w);
+    clock(T0 + 10 * SECOND);
+    // A status cannot hold an unfinished upload (CHECK status_id IS NULL OR processed = 1); a scheduled one is held
+    // only by the application's rules, so the Store's DELETE checks it.
+    const [owner] = await sql<{ account_id: string }>(
+      w.store,
+      "SELECT account_id FROM media_attachments WHERE id = ?",
+      c.id,
+    );
+    await sql(
+      w.store,
+      "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES ('600000000000000001', ?, ?, '{}')",
+      owner!.account_id,
+      new Date(T0 + 60 * 60 * SECOND).toISOString(),
+    );
+    await sql(w.store, "UPDATE media_attachments SET scheduled_status_id = '600000000000000001' WHERE id = ?", c.id);
+    const before = await held(w.store, c.id);
+    expect(await w.store.deleteAvUpload(BUILD, { credential: w.alice, id: c.id })).toEqual({
+      status: "ok",
+      value: "in_use",
+    });
+    expect(await held(w.store, c.id)).toEqual(before);
   });
 
   it("S4 with less than T_MIN_ENCODE left after the remaining fixed parts fails the job timeout", async () => {

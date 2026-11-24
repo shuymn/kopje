@@ -183,6 +183,15 @@ function probeDue(state: ProbeState, build: string): boolean {
   return failure !== null && failure.version === build && failure.at >= record.at;
 }
 
+// The generic probe operations below (the CLI's and the probe round's) write NORMALIZE_PROFILE only: the still
+// profile's record and attempt are the media rebuild's, written under its lease (media-rebuild.ts), until both share
+// one claim.
+function genericProfile(profile: ProbeProfile): void {
+  if (profile !== NORMALIZE_PROFILE) {
+    throw new Error("not a profile the generic probe records");
+  }
+}
+
 export type ProbeClaim =
   | { status: "claimed"; claim: string }
   // The profile was claimed for this build within PROBE_RETRY_MS: no claim before `retryAt`.
@@ -197,6 +206,7 @@ export const claimProbe = writeOperation.atStoreTime("now")<
   { profile: ProbeProfile; build: string; due: boolean; now: number },
   ProbeClaim
 >((db, { profile, build, due, now }) => {
+  genericProfile(profile);
   const state = probeState(db, profile, now);
   if (due && !probeDue(state, build)) {
     return { status: "not_due" };
@@ -226,6 +236,7 @@ export const recordProbeResult = writeOperation.atStoreTime("now")<
   },
   { status: "recorded" } | { status: "stale" }
 >((db, { profile, claim, outcome, imagesVerified, imageTag, now }) => {
+  genericProfile(profile);
   const { attempt } = probeState(db, profile, now);
   if (attempt === null || attempt.claim === undefined || attempt.claim !== claim || !OUTCOMES.includes(outcome)) {
     return { status: "stale" };
@@ -255,6 +266,7 @@ export const recordInfrastructureFailure = writeOperation.atStoreTime("now")<
   { profile: ProbeProfile; build: string; now: number },
   { status: "recorded" }
 >((db, { profile, build, now }) => {
+  genericProfile(profile);
   const failure: ProbeFailure = { version: build, at: now };
   writeProbeValue(db, probeName("failure", profile), failure, probeFailureValid(failure, now));
   return { status: "recorded" };

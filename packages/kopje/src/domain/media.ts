@@ -156,18 +156,27 @@ export type MonthlyTransforms = { instance: number; account: number };
 // and a positive upload budget; with it and a passed probe of NORMALIZE_PROFILE for its build, the Images budgets do
 // not refuse the reservation (a video or audio upload needs them only for its still): the attempt is counted, the row
 // reserved, and the answer names the budget an image would be refused for (imagesRefusal). Otherwise the reservation
-// is the one above.
-export const reserveMedia = userWriteOperation<
-  { token: string; monthlyTransforms: MonthlyTransforms; avCandidate?: { build: string } | undefined; now: number },
+// is the one above. A reservation with `avCandidate` may go down the video and audio path, whose fences compare the
+// reservation's time with the Store's (the restore marker, the staging and the queue, plan section 1 rules 2 and 5):
+// it is stamped at the Store's time (`storeNow`), and the probe is judged at it. The answer's deadline is the Worker's,
+// as for every upload.
+export const reserveMedia = userWriteOperation.atStoreTime("storeNow")<
+  {
+    token: string;
+    monthlyTransforms: MonthlyTransforms;
+    avCandidate?: { build: string } | undefined;
+    now: number;
+    storeNow: number;
+  },
   Reserved
->((db, { token, monthlyTransforms, avCandidate, now }, { accountId }) => {
+>((db, { token, monthlyTransforms, avCandidate, now, storeNow }, { accountId }) => {
   const attemptsName = `${ATTEMPTS}${accountId}`;
   const since = now - UPLOAD_BUDGET.windowMs;
   const attempts = (JSON.parse(state(db, attemptsName) ?? "[]") as number[]).filter((at) => at > since);
   if (attempts.length >= UPLOAD_BUDGET.count) {
     return { status: "rate_limited" };
   }
-  const active = avCandidate !== undefined && probePassed(db, NORMALIZE_PROFILE, avCandidate.build, now);
+  const active = avCandidate !== undefined && probePassed(db, NORMALIZE_PROFILE, avCandidate.build, storeNow);
   const refused = budgetRefusal(db, accountId, monthlyTransforms, now);
   if (refused !== null && !active) {
     return refused;
@@ -176,7 +185,7 @@ export const reserveMedia = userWriteOperation<
     return { status: "retry" };
   }
   setState(db, attemptsName, JSON.stringify([...attempts, now]));
-  const reserved = insertReservation(db, accountId, token, now);
+  const reserved = insertReservation(db, accountId, token, avCandidate === undefined ? now : storeNow);
   if ("retry" in reserved) {
     return { status: "retry" };
   }
@@ -545,29 +554,32 @@ export type MediaDeleted = "deleted" | "in_use" | "not_found";
 // kept unattached, or one that earlier versions of no single status name (migration 0015_media_shown links the
 // others). No Kopje write leaves such a row, so it is refused as in use too.
 export const deleteMedia = userMediaDeleteOperation<{ id: string; now: number }, MediaDeleted>(
-  (db, { id, now }, { accountId }) => {
-    const row = db.first<{ used: number; kept: number }>(
-      `SELECT status_id IS NOT NULL OR scheduled_status_id IS NOT NULL AS used, gc_at IS NULL AS kept
-			FROM media_attachments WHERE id = ? AND account_id = ?`,
-      id,
-      accountId,
-    );
-    if (row === undefined) {
-      return "not_found";
-    }
-    if (row.used === 1) {
-      return "in_use";
-    }
-    if (ownUpload(db, accountId, id, now) === undefined) {
-      return "not_found";
-    }
-    if (row.kept === 1) {
-      return "in_use";
-    }
-    db.run("UPDATE media_attachments SET gc_at = ? WHERE id = ?", DOOMED_AT, id);
-    return "deleted";
-  },
+  (db, { id, now }, { accountId }) => deleteOwnMedia(db, accountId, id, now),
 );
+
+// deleteMedia's rules for one row of `accountId`, at `now` (also S11's for a finished upload, media-processing.ts).
+export function deleteOwnMedia(db: Db, accountId: string, id: string, now: number): MediaDeleted {
+  const row = db.first<{ used: number; kept: number }>(
+    `SELECT status_id IS NOT NULL OR scheduled_status_id IS NOT NULL AS used, gc_at IS NULL AS kept
+			FROM media_attachments WHERE id = ? AND account_id = ?`,
+    id,
+    accountId,
+  );
+  if (row === undefined) {
+    return "not_found";
+  }
+  if (row.used === 1) {
+    return "in_use";
+  }
+  if (ownUpload(db, accountId, id, now) === undefined) {
+    return "not_found";
+  }
+  if (row.kept === 1) {
+    return "in_use";
+  }
+  db.run("UPDATE media_attachments SET gc_at = ? WHERE id = ?", DOOMED_AT, id);
+  return "deleted";
+}
 
 // token is null for rows with no R2 files (migrated media), which are only deleted.
 export type ExpiredMedia = { id: string; token: string | null };
@@ -575,7 +587,7 @@ export type ExpiredMedia = { id: string; token: string | null };
 // Background work that deletes R2 objects runs only in a set-up Store: it is a write operation, so the kernel refuses
 // it during maintenance, a dump or an import, and a Store without its domain (fresh, reset, or being bootstrapped)
 // answers with nothing to do.
-function setUp(db: Db): boolean {
+export function setUp(db: Db): boolean {
   return db.first("SELECT 1 AS found FROM instance_settings WHERE name = 'domain'") !== undefined;
 }
 

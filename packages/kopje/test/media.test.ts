@@ -6,7 +6,7 @@ import { handleScheduled } from "../src/jobs/scheduled";
 import { sweepMedia, THUMBNAIL_MUST_BE_BLANK, UPLOAD_SAVE_RESERVE_MS } from "../src/mastodon/media";
 import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
 import { retainedMetadata } from "../src/platform/image-bytes";
-import { RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
+import { ImageCodecError, RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
 import { remoteImageMetadata } from "../src/platform/remote-media-bytes";
 import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
@@ -204,6 +204,24 @@ describe("POST /api/v2/media", () => {
     expect(attach.status).toBe(422);
     expect(await sweep(h, NOW)).toBe(1);
     expect(await row(h, id)).toBeUndefined();
+  });
+
+  it("a failed upload deletes its own keys only, never its incoming/ input (#1828 plan 1.1)", async () => {
+    const h = await users();
+    // The input key of the reservation exists when the transformation fails (an AV route's input, a stray object).
+    h.codec.encode = async () => {
+      const [reserved] = await sql<{ id: string }>(h.store, "SELECT id FROM media_attachments");
+      await env.MEDIA.put(`incoming/${(reserved as { id: string }).id}`, "input");
+      throw new ImageCodecError(9523, "injected");
+    };
+    const response = await upload(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));
+    expect(response.status).toBe(500);
+    const [doomed] = await sql<{ id: string }>(h.store, "SELECT id FROM media_attachments");
+    const id = (doomed as { id: string }).id;
+    expect(await env.MEDIA.head(`incoming/${id}`)).not.toBeNull();
+    // The sweep, which holds the row's authority, deletes it with the row.
+    expect(await sweep(h, NOW)).toBe(1);
+    expect(await env.MEDIA.head(`incoming/${id}`)).toBeNull();
   });
 
   // The codec stands in for an Images output that kept metadata; each is stripped before the check (MEDIA-3).

@@ -84,9 +84,16 @@ export function incomingKey(id: string): string {
   return `incoming/${id}`;
 }
 
-// Every key of one upload, for deleting it: its input (a video or audio upload's), original and served files.
+// The keys an upload's own writer deletes when it fails (its original and served files). Its input, a video or audio
+// upload's `incoming/<id>`, is not among them: only the staging's cleanup answers hand that to a request (#1828 plan
+// 1.1), and the sweep and reconciliation, which hold the row's authority, delete it (sweptKeys).
 export function mediaKeys(id: string, token: string): string[] {
-  return [incomingKey(id), originalKey(id), ...MEDIA_VARIANTS.map((variant) => fileKey(token, variant))];
+  return [originalKey(id), ...MEDIA_VARIANTS.map((variant) => fileKey(token, variant))];
+}
+
+// Every key of one upload, for the sweep and reconciliation: its input, original and served files.
+export function sweptKeys(id: string, token: string): string[] {
+  return [incomingKey(id), ...mediaKeys(id, token)];
 }
 
 // The most keys one R2 delete takes (R2's bulk delete limit).
