@@ -4,12 +4,13 @@
 (* operator per Store transaction, at the Store's time t, over the upload's *)
 (* record x (its media_attachments row, its media_processing row and its    *)
 (* media_av_slots row). MediaUpload.tla runs them; the PR4 plan's section 1 *)
-(* cites them by their operation names (S1-S14).                            *)
+(* cites them by their operation names (S1-S13).                            *)
 (*                                                                         *)
 (* PRECEDENCE. A writing operation applies, in its transaction and in this *)
 (* order:                                                                  *)
 (*  K1 maintenance: nothing changes and the answer is "maint"; a read      *)
-(*     answers from the record. S14 is a write like any other (D8).        *)
+(*     answers from the record. S8, the stop confirmation, is a write like *)
+(*     any other (D8, D16).                                                *)
 (*  K3 restored (Fenced: the attachment was reserved at or before the last *)
 (*     restore): a staging row and its staging slot are deleted; a pending *)
 (*     or running row becomes failed "restored", its slot kept.            *)
@@ -27,7 +28,7 @@
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, MediaUploadParams
 
-\* Abstract durations (MediaUpload.tla, TIME); the scenario's c gives the first five.
+\* Abstract durations (MediaUpload.tla, TIME); the scenario's c gives the first five and HARD_HOLD.
 STAGING == P.c.staging \* STAGING_MS
 V1 == P.c.v1 \* V1_TIME_MS, from the request's arrival
 T_REPLY == 1 \* T_REPLY
@@ -47,14 +48,21 @@ LAND == 1
 RETIRE == WW + LAND \* the tombstone is retired this long after the reservation (M3)
 \* DETACHED_GRACE_MS: the gc_at completion gives an unattached upload (completeMedia), longer than the v1 wait.
 DGRACE == IF Variant = "ShortGrace" THEN V1 ELSE V1 + 1
-\* STOP_HOLD_MS: the held_until S14 gives, from the Store's t, to the slot of a stop not yet confirmed (D7). It spans
-\* several CLEANUP_RETRY_MS (MediaUpload.tla's RETRY) so that a killed invocation and a late alarm (scenario CAP5's
-\* kill and lag) do not let the slot of a live processor lapse; ShortStopHold gives the two units of one retry and a
-\* margin.
-STOP_HOLD == IF Variant = "ShortStopHold" THEN 2 ELSE 4
+\* HARD_HOLD_MS: how long a granted slot counts at most, from the grant's stored time (D16, D17).
+HARD_HOLD == P.c.hh
 
-\* A slot: its phase, held_until and teardown_id (0 for none; the queue issues 1, one queue per reservation).
-NoSlot == [ph |-> "none", hu |-> 0, td |-> 0]
+\* A slot: its phase, held_until, teardown_id (0 for none; the queue issues 1, one queue per reservation) and ga, the
+\* Store's time of the grant: S4's start, stored in its transaction whatever becomes of its reply (-1: not granted).
+NoSlot == [ph |-> "none", hu |-> 0, td |-> 0, ga |-> -1]
+
+\* Capacity by confirmation (D16). A slot never granted counts until its held_until: a staging slot until
+\* staged_until, a processing slot until deadline_at, the admission deadline, after which no container starts
+\* (StartNeedsSlot). A granted slot counts until the stop confirmation (S8) deletes it, and time frees it only at
+\* HARD_HOLD past its grant, a stored time no later write moves, so a restore cannot shorten it below what the restored
+\* row says (D18). GrantedLapses lets time free a granted slot at its held_until.
+Counts(slot, t) ==
+  /\ slot.ph # "none"
+  /\ IF slot.ga >= 0 /\ Variant # "GrantedLapses" THEN t < slot.ga + HARD_HOLD ELSE slot.hu > t
 
 \* An upload's Store record. att: none (no attachment row: never reserved, or its tombstone retired), res (reserved,
 \* processed = 0), done (processed = 1), gone (swept: the tombstone). staged: S1 ran for this reservation (Codex r4 M1).
@@ -91,7 +99,7 @@ Norm(x, t, restoredAt) == K4(K3(x, restoredAt), t)
 
 Res(x, a) == [x |-> x, a |-> a]
 
-Live(S, v, t) == S[v].slot.ph # "none" /\ S[v].slot.hu > t
+Live(S, v, t) == Counts(S[v].slot, t)
 
 \* S1 takeAvSlot(id, v1Left): the staging row and slot. left is the route's remaining v1 time as a duration (0 for v2).
 \* A repeat after a lost reply finds the staging row and answers its staged_at; once S1 has run for the reservation
@@ -110,7 +118,7 @@ S1(S, u, t, ra, maint, active, v1, left) ==
   ELSE LET rb == IF v1 THEN t + left ELSE 0
            until == IF v1 THEN (IF t + STAGING < rb - T_REPLY THEN t + STAGING ELSE rb - T_REPLY) ELSE t + STAGING
        IN Res([x EXCEPT !.staged = TRUE, !.ps = "staging", !.v1 = v1, !.sAt = t, !.sUntil = until, !.rb = rb,
-                        !.slot = [ph |-> "staging", hu |-> until, td |-> 0]], "taken")
+                        !.slot = [ph |-> "staging", hu |-> until, td |-> 0, ga |-> -1]], "taken")
 \* S2 releaseStaging(id, staged_at): cleanup authority only for the staging row of that staged_at.
 S2(x0, t, ra, maint, sAt) ==
   LET x == Norm(x0, t, ra) IN
@@ -136,19 +144,22 @@ S3(x0, t, ra, maint, active, sAt) ==
        ELSE IF ~active THEN Res([RowNone(x) EXCEPT !.slot = NoSlot], "refused_inactive")
        ELSE IF dl - t < MINLEFT THEN Res([RowNone(x) EXCEPT !.slot = NoSlot], "refused_time")
        ELSE Res([x EXCEPT !.ps = "pending", !.dl = dl, !.disp = t, !.chg = IF Variant = "NoCharge" THEN x.chg ELSE x.chg + 1,
-                          !.slot = [ph |-> "processing",
-                                    hu |-> IF Variant = "ShortHold" THEN dl ELSE dl + TEARDOWN, td |-> 1]],
+                          !.slot = [ph |-> "processing", hu |-> dl, td |-> 1, ga |-> -1]],
                 "queued")
   ELSE IF x.ps = "pending" THEN Res(IF Variant = "ChargeTwice" THEN [x EXCEPT !.chg = x.chg + 1] ELSE x, "queued")
   ELSE IF x.ps \in {"running", "failed"} \/ (x.att = "done" /\ ~x.doomed) THEN Res(x, "settled")
   ELSE Res(x, "gone")
 
-\* S4 startNormalize(id, invocation): the start rule. sid is the invocation that started it (start_id).
+\* S4 startNormalize(id, invocation): the start rule. sid is the invocation that started it (start_id). The start is
+\* the slot's grant: its time is stored on the slot in this transaction (D16).
 S4(x0, t, ra, maint, inv) ==
   LET x == IF Variant = "StartNoK3" THEN K4(x0, t) ELSE Norm(x0, t, ra) IN
   IF maint THEN Res(x0, "maint")
   ELSE IF x.ps = "pending"
-  THEN IF x.dl - t >= MINENC THEN Res([x EXCEPT !.ps = "running", !.sid = inv, !.disp = 0], "started")
+  THEN IF x.dl - t >= MINENC
+       THEN Res([x EXCEPT !.ps = "running", !.sid = inv, !.disp = 0,
+                          !.slot = IF x.slot.ph = "processing" /\ x.slot.ga < 0 THEN [x.slot EXCEPT !.ga = t] ELSE x.slot],
+                "started")
        ELSE Res([x EXCEPT !.ps = "failed", !.cause = "timeout", !.disp = 0], "settled")
   ELSE IF x.ps = "running" /\ x.sid = inv THEN Res(x, "started")
   ELSE IF x.ps \in {"running", "failed"} \/ x.att = "done" THEN Res(x, "settled")
@@ -183,28 +194,20 @@ S7(x0, t, ra, maint, inv, cause) ==
   ELSE IF x.att = "done" THEN Res(x, "settled")
   ELSE Res(x, "gone")
 
-\* S8 releaseAvSlot(id, teardown_id): the slot of that teardown identity, unless a pending row still needs it.
+\* S8 releaseAvSlot(id, teardown_id): the stop confirmation (D16). The processor calls it only once its container is
+\* confirmed stopped (destroy() answered and running is false), with the teardown_id its record holds; it deletes the
+\* slot of that teardown identity, unless a pending row still needs it. A wrong teardown_id leaves the slot as it is
+\* (ConfirmFenced; ConfirmNoFence drops the identity check).
 S8(x0, t, ra, maint, td) ==
   LET x == IF Variant = "ReleaseK3Stops" THEN x0 ELSE Norm(x0, t, ra) IN
   IF maint THEN Res(x0, "maint")
   ELSE IF Variant = "ReleaseK3Stops" /\ Fenced(x0, ra) /\ x0.ps \in {"pending", "running"}
   THEN Res(Norm(x0, t, ra), "settled")
-  ELSE IF td = 0 \/ x.slot.td # td THEN Res(x, "released")
+  ELSE IF td = 0 \/ (x.slot.td # td /\ Variant # "ConfirmNoFence") THEN Res(x, "released")
   \* No pending row meets S8 in the model (S8 follows its invocation's own S4, which leaves pending): a defence the
   \* PR4-1 test carries.
   ELSE IF x.ps = "pending" THEN Res(x, "held")
   ELSE Res([x EXCEPT !.slot = NoSlot], "released")
-
-\* S14 renewAvSlot(id, teardown_id): a cleanup replay whose stop was not confirmed keeps its slot counting (D3, D7): a
-\* live slot of that teardown identity is held until t + STOP_HOLD at least. A write like any other, under K1, K3 and
-\* K4 (D8): a slot that lapses because maintenance refuses its renewals is W10. A wrong teardown_id leaves held_until
-\* as it is (RenewFenced; RenewNoFence drops the identity check).
-S14(x0, t, ra, maint, td) ==
-  LET x == Norm(x0, t, ra) IN
-  IF maint THEN Res(x0, "maint")
-  ELSE IF td # 0 /\ (x.slot.td = td \/ Variant = "RenewNoFence") /\ x.slot.hu > t /\ Variant # "NoRenew"
-  THEN Res([x EXCEPT !.slot.hu = IF x.slot.hu > t + STOP_HOLD THEN x.slot.hu ELSE t + STOP_HOLD], "renewed")
-  ELSE Res(x, "gone")
 
 \* S9 v1Outcome: a read, at the Store's time, of what the upload's record shows.
 S9(x0, t, ra) ==
@@ -230,6 +233,9 @@ S10(x0, t, ra, maint) ==
   ELSE IF x.ps = "failed" /\ x.cause = "restored" /\ Variant = "RestoredAnswers500" THEN Res(x, "500")
   \* RestoredAnswers200: S10 answers 200 for a restored reservation that never completed (Codex r2 CM6).
   ELSE IF Fenced(x0, ra) /\ x.att = "res" /\ Variant = "RestoredAnswers200" THEN Res(x, "200")
+  \* LateRestored200: the same, only once the v1 wait is over on the Store's clock, so for a call that commits after the
+  \* route answered (Codex r3 CM1, Gemini r3 GM1, D19).
+  ELSE IF Fenced(x0, ra) /\ x.att = "res" /\ Variant = "LateRestored200" /\ t > x0.resAt + V1 THEN Res(x, "200")
   ELSE IF x.ps = "failed" /\ S10Code(x.cause) # "503" THEN Res(x, S10Code(x.cause))
   ELSE IF x.ps \in {"pending", "running"} /\ t < x.dl /\ Variant = "WaitForStoreDeadline" THEN Res(x, "not_yet")
   ELSE IF x.att \in {"res", "done"} /\ ~x.doomed THEN Res(Doom(x), "503")
@@ -246,11 +252,11 @@ S11(x0, t, ra, maint) ==
   ELSE Res(x, "404")
 
 \* S12 and S13, the dispatch round's step for one upload (the restore pass is its K3): abandoned staging deleted,
-\* an expired slot deleted, a pending row whose dispatch is DISPATCH_MS old dispatched again ("run").
+\* a slot that no longer counts deleted, a pending row whose dispatch is DISPATCH_MS old dispatched again ("run").
 S12(x0, t, ra) ==
   LET x1 == Norm(x0, t, ra)
       x2 == IF x1.ps = "staging" /\ t >= x1.sUntil THEN [RowNone(x1) EXCEPT !.slot = NoSlot] ELSE x1
-      x3 == IF x2.slot.ph # "none" /\ x2.slot.hu <= t /\ Variant # "NoExpiry" THEN [x2 EXCEPT !.slot = NoSlot] ELSE x2
+      x3 == IF x2.slot.ph # "none" /\ ~Counts(x2.slot, t) /\ Variant # "NoExpiry" THEN [x2 EXCEPT !.slot = NoSlot] ELSE x2
   IN IF x3.ps = "pending" /\ t - x3.disp >= DISPATCH THEN Res([x3 EXCEPT !.disp = t], "run") ELSE Res(x3, "none")
 
 =============================================================================

@@ -20,10 +20,13 @@ Goals ==
    W1R |-> "W1R" \in ev /\ \E u \in U : st[u].att = "gone" /\ r2[u].obj = {},
    \* A write that lands more than LAND after it started, past the retired tombstone, and stays (D5, D13).
    LateLanding |-> "LateLanding" \in ev /\ \E u \in U : gh[u].ret /\ r2[u].obj # {},
-   \* W3: a container runs without a live slot after a restore since its start that left none.
+   \* W3: a container runs without a counting slot after a restore to a bookmark taken before its grant.
    W3 |-> \E u \in Running : ~Live(st, u, now) /\ W3(u) /\ ~W10(u),
    \* W3 puts more containers than MAX_AV_INFLIGHT to work: a later upload is admitted beside it (Codex r2 CH2, D9).
    W3Cap |-> Cardinality(Running) > MaxInflight /\ \E u \in Running : ~Live(st, u, now) /\ W3(u),
+   \* Two restores to one bookmark, each forgetting one running container's grant: two containers more than
+   \* MAX_AV_INFLIGHT, one for each restore (Codex r3 CH2, D18).
+   W3Twice |-> Cardinality(Running) > MaxInflight + 1 /\ Cardinality({u \in Running : W3(u) /\ ~Live(st, u, now)}) >= 2,
    \* W4: incomingOrphans deletes a key a restored row holds again.
    W4 |-> "W4" \in ev,
    \* W5, one goal for each cause of a 503 the Store did not decide, and the completed upload swept at its gc_at.
@@ -37,13 +40,20 @@ Goals ==
    W6 |-> \E u \in U : rt[u].kind = "s2lost" /\ r2[u].inc /\ st[u].ps = "none" /\ ~gh[u].q /\ st[u].att = "res",
    \* W9: the processor's record-age stop.
    W9 |-> "W9" \in ev,
-   \* W10: a container runs past its slot's held_until because its processor is gone.
-   W10 |-> \E u \in Running : ~Live(st, u, now) /\ W10(u) /\ ~W3(u),
-   \* W10 by maintenance: the slot of a live processor's retried stop lapsed after maintenance refused its renewal, and
-   \* a later upload is admitted beside the container (D8).
-   \* CAP5 reaches its kill and its late alarm with a renewed slot still live while its container runs (D7).
-   HoldSpansFaults |-> bud.kill = 0 /\ bud.lag = 0 /\ \E u \in Running : Live(st, u, now) /\ dd[u].rn >= 0,
-   W10Maint |-> Cardinality(Running) > MaxInflight /\ \E u \in Running : ~Live(st, u, now) /\ gh[u].w10m /\ ~dd[u].gone,
+   \* W10: a container whose processor is gone runs past HARD_HOLD after its grant, and its slot no longer counts.
+   W10 |-> \E u \in Running : ~Live(st, u, now) /\ W10(u) /\ ~W3(u) /\ dd[u].gone,
+   \* W10 is an admission trade-off: a later upload is admitted beside that container (D17).
+   W10Cap |-> Cardinality(Running) > MaxInflight /\ \E u \in Running : ~Live(st, u, now) /\ W10(u),
+   \* One upload's invocation killed and its processor's step late, its stop retried past the job's deadline, and its
+   \* granted slot still counting its running container (Codex r3 CM3, D20).
+   HoldSpansFaults |->
+     \E u \in Running : gh[u].kl /\ gh[u].lg /\ Live(st, u, now) /\ now >= st[u].slot.hu /\ st[u].slot.ga >= 0,
+   \* Maintenance refused a stop confirmation, and after it a later upload is refused while the granted slot of the
+   \* retried stop still counts past the job's deadline (D8, D16).
+   MaintHolds |->
+     /\ "ConfirmMaint" \in ev /\ ~Maint
+     /\ \E u, v \in U : /\ Live(st, u, now) /\ now >= st[u].slot.hu /\ st[u].slot.ga >= 0
+                        /\ v # u /\ rt[v].ans = 503 /\ rt[v].kind = "route",
    \* W11: the route sends a 200 for an upload a restore since S10's commit rewound; its keys are then deleted with
    \* the restored reservation, or forgotten (no row, no tombstone) when the bookmark predates the reservation.
    W11 |-> "W11" \in ev,

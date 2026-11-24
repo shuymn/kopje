@@ -34,7 +34,8 @@
 (*    deadline. The encode and the stop's outcome are one step (DOWork): a *)
 (*    kill between them is a kill before the step, with the container on.  *)
 (*    A processor that stops for good (DOGone) runs no alarm or request    *)
-(*    again; its container runs on (W10).                                  *)
+(*    again; its container runs on (W10 once HARD_HOLD has passed since    *)
+(*    the grant).                                                          *)
 (*  - R2: an incoming key per upload, the objects of the final writes, and *)
 (*    the writes in flight, each landing at any time, or never, whatever   *)
 (*    its writer does meanwhile. The tombstone's authority covers a        *)
@@ -56,36 +57,39 @@
 (* only shortens what it grants (variants AbsGrant and AbsStart compare an *)
 (* absolute Store time on the processor's clock instead). A v1 request     *)
 (* answers no later than arrival + V1 on its own clock: the clock does not *)
-(* move past it. A live processor runs a due alarm, and its replay's stop  *)
-(* or renewal, before the clock moves while its container runs, except for *)
-(* lag units (the scenario's budget: Cloudflare bounds an alarm's delay    *)
-(* nowhere); STOP_HOLD outlasts a killed invocation and that lag, and an   *)
-(* alarm later than STOP_HOLD is W10.                                      *)
+(* move past it. Where the processor is a prompt actor, the cleanup of a  *)
+(* container that still runs may wait lag units (the scenario's budget:    *)
+(* Cloudflare bounds an alarm's delay nowhere).                            *)
+(* Capacity needs no bound on that delay: a granted slot counts until its  *)
+(* stop is confirmed, or HARD_HOLD after its grant (D16).                  *)
 (*                                                                         *)
 (* SAFETY (each a named invariant; Mutations names the mutations that      *)
 (* break it, checks.json their outcomes):                                  *)
-(*  SlotBound         live slots (held_until in the future) never exceed   *)
-(*                    MAX_AV_INFLIGHT (design 4.5 "Capacity").             *)
-(*  ContainerCovered  a running container has its upload's live slot,      *)
-(*                    except W3 (a restore since its start that left no    *)
-(*                    live processing slot) and W10 (its processor gone,   *)
-(*                    its alarm later than STOP_HOLD, or its slot lapsed   *)
-(*                    after maintenance refused the renewal: D7, D8).      *)
+(*  SlotBound         counting slots (Counts: a slot never granted until   *)
+(*                    its held_until, a granted one until its stop is      *)
+(*                    confirmed or HARD_HOLD after its grant) never exceed *)
+(*                    MAX_AV_INFLIGHT (design 4.5 "Capacity", D16).        *)
+(*  ContainerCovered  a running container has its upload's counting slot,  *)
+(*                    except W3 (a restore to a bookmark taken before its  *)
+(*                    grant, D18) and W10 (HARD_HOLD has passed since its  *)
+(*                    grant with no confirmed stop, D17).                  *)
 (*  MaxContainers     at most MAX_AV_INFLIGHT containers run, plus one for *)
 (*                    each container in W3 or W10, the capacity claim's    *)
-(*                    two exceptions (D9): W3 until its processor stops    *)
-(*                    the container (at D4 by the job's deadline, or by a  *)
-(*                    cleanup replay once S4 answers settled); W10 for     *)
-(*                    STOP_HOLD after the last renewal, then unbounded by  *)
-(*                    Kopje.                                               *)
+(*                    two exceptions: W3 at most one container more for    *)
+(*                    each upload running at a restore whose bookmark      *)
+(*                    predates its grant, so repeated restores add (D18;   *)
+(*                    until its processor stops the container, at D4 by    *)
+(*                    the job's deadline or by a cleanup replay once S4    *)
+(*                    answers settled); W10 from HARD_HOLD after the grant *)
+(*                    on, unbounded by Kopje (D17).                        *)
 (*  StartNeedsSlot    a container starts only before the job's deadline on *)
-(*                    the Store's clock, with a live processing slot (W3   *)
-(*                    excepted).                                           *)
+(*                    the Store's clock, with a counting processing slot   *)
+(*                    (W3 excepted).                                       *)
 (*  SlotRelease       a processing slot is removed only by S8 after the    *)
 (*                    stop is confirmed and while no pending row needs it, *)
-(*                    or at held_until: every Store step is checked, K3    *)
-(*                    included (C2-H2, GM3, GH1, Gemini r1 GH1, Codex r2   *)
-(*                    CM4).                                                *)
+(*                    or once it no longer counts: every Store step is     *)
+(*                    checked, K3 included (C2-H2, GM3, GH1, Gemini r1     *)
+(*                    GH1, Codex r2 CM4).                                  *)
 (*  RouteDeleteAuthority  the route deletes incoming/<id> only on S2's     *)
 (*                    released or S3's refused_cleanup_yours, never after  *)
 (*                    a queue commit a restore has not fenced (C1, C2-H3,  *)
@@ -105,9 +109,10 @@
 (*                    URL was never issued (W1's ground, M3).              *)
 (*  V1Answer          S10 decides 200, at its commit, exactly for a        *)
 (*                    completed, undoomed upload whose writes have all     *)
-(*                    landed, fenced or not, except a call the route       *)
-(*                    stopped waiting for that meets a completed row       *)
-(*                    restored without its files (W12); the route sends    *)
+(*                    landed, fenced or not, except a call committing      *)
+(*                    after the route answered that meets a completed,     *)
+(*                    undoomed row a restore brought back without its      *)
+(*                    files (W12, D19); the route sends                    *)
 (*                    S10's decision unchanged in that sense, and only a   *)
 (*                    restore between the commit and the answer excuses    *)
 (*                    the answer (W11; D1, D11, D12).                      *)
@@ -122,16 +127,16 @@
 (*                    is 503 and dooms it, whichever of S10 and the round  *)
 (*                    meets the restore first.                             *)
 (*  RecordDropSafe    the processor deletes its storage only with its      *)
-(*                    container stopped and no live slot of its teardown   *)
-(*                    left behind a row that is not pending (Codex r4 H4;  *)
-(*                    the record-age stop, W9, only past held_until, a     *)
-(*                    renewal's included).                                 *)
+(*                    container stopped and no counting slot of its        *)
+(*                    teardown left behind a row that is not pending       *)
+(*                    (Codex r4 H4; the record-age stop, W9, only once a   *)
+(*                    grant's HARD_HOLD has passed).                       *)
 (*  SingleStaging     a reservation stages at most once (Codex r4 M1).     *)
 (*  NoLateObject      once the tombstone is retired, no object of the      *)
 (*                    upload lands within LAND of its write's start, and   *)
 (*                    no such write is in flight (Codex r4 M3, D13).       *)
-(*  RenewFenced       a renewal carrying another teardown's id leaves the  *)
-(*                    slot as it is (D7).                                  *)
+(*  ConfirmFenced     a stop confirmation (S8) carrying another teardown's *)
+(*                    id leaves the slot as it is (D16, D20).              *)
 (*                                                                         *)
 (* LIVENESS (scenarios L1-L5, under LSpec's fairness: weak fairness on     *)
 (* every step but a fault, so alarms fire, rounds run, replies arrive and  *)
@@ -151,7 +156,13 @@
 EXTENDS Integers, FiniteSets, MediaUploadStore
 
 RETRY == 1 \* CLEANUP_RETRY_MS: D1's alarm, before S4
-RECMAX == V2P + TEARDOWN \* D1's record-age stop (W9), on the processor's clock
+\* D1's record-age stop (W9), on the processor's clock from the record's D0. The grant (S4) falls before deadline_at,
+\* which S3 sets at most V2_PROCESS_MS after the queue, and D0 follows the queue, so by V2_PROCESS_MS + HARD_HOLD_MS
+\* after D0 no grant of this teardown counts. AgeBeforeHardHold keeps the earlier V2_PROCESS_MS + TEARDOWN_MS.
+RECMAX ==
+  CASE Variant = "ShortRecord" -> 1
+    [] Variant = "AgeBeforeHardHold" -> V2P + TEARDOWN
+    [] OTHER -> V2P + HARD_HOLD
 ROOM == DISPATCH + MINENC
 
 \* ev: the windows and orders a behaviour has gone through (MediaUploadGoals.tla), a ghost no step reads.
@@ -175,8 +186,7 @@ Init ==
   /\ ra = -1
   /\ rt = [u \in U |-> [pc |-> "idle", v1 |-> u \in P.v1, arr |-> 0, call |-> "none", sent |-> 0, left |-> 0, sAt |-> 0,
                         sx |-> 0, rep |-> NoRep, tries |-> 0, ans |-> 0, kind |-> "none", want |-> 0]]
-  \* rn: when the last renewal (S14) began, stored before the call (-1: none).
-  /\ dd = [u \in U |-> [rec |-> FALSE, at |-> 0, alarm |-> -1, cont |-> "off", td |-> 0, gone |-> FALSE, rn |-> -1]]
+  /\ dd = [u \in U |-> [rec |-> FALSE, at |-> 0, alarm |-> -1, cont |-> "off", td |-> 0, gone |-> FALSE]]
   /\ iv = [u \in U |-> NoInv]
   /\ nInv = [u \in U |-> 0]
   /\ runReq = [u \in U |-> FALSE]
@@ -185,23 +195,25 @@ Init ==
   /\ bud = [loss |-> P.loss, kill |-> P.kill, dfail |-> P.dfail, gone |-> P.gone, lag |-> P.lag, stale |-> P.stale,
             perr |-> P.perr, rdie |-> P.rdie, del |-> P.del, mOn |-> P.mOn, bm |-> P.bm, rs |-> P.rs, rev |-> P.rev,
             bad |-> IF P.bad THEN 1 ELSE 0]
-  \* s4At: the first start's time; w3: a restore since it left no live processing slot; mref: maintenance refused the
-  \* last renewal (S14) of the slot; w10m: the slot of a running container lapsed after such a refusal (W10).
+  \* s4At: the first start's time, the grant's; w3: a restore since then to a bookmark taken before it; kl, lg: a kill
+  \* ended one of the upload's invocations, a step of its processor waited past a tick (HoldSpansFaults).
   /\ gh = [u \in U |-> [doomAt |-> -1, tok |-> FALSE, q |-> FALSE, s4At |-> -1, w3 |-> FALSE, take |-> -1,
-                        ret |-> FALSE, k3 |-> "", mref |-> FALSE, w10m |-> FALSE]]
+                        ret |-> FALSE, k3 |-> "", kl |-> FALSE, lg |-> FALSE]]
   /\ err = {}
   /\ ev = {}
 
 Maint == sg.maint
+\* A late upload's request arrives no earlier than its scenario's time for it.
+Arrives(u) == (u \in P.late => now >= P.lateAt) /\ (u \in P.later => now >= P.laterAt)
 IsFenced(u) == Fenced(st[u], ra)
 \* The route's clock.
 RNow == now + P.skr
-\* W3: a restore since the job's start left no live processing slot (forgotten, staging, or expired at the bookmark).
+\* W3: a restore since the job's start (its grant) to a bookmark taken before it: the restored Store has no record of
+\* a running container (D18).
 W3(u) == gh[u].w3
-\* W10: the processor stopped for good with its container running, so no replay renews its slot or stops it; or its
-\* slot lapsed after maintenance refused its renewal (D8). An alarm later than STOP_HOLD is W10 too; the model lets one
-\* wait at most lag units, which STOP_HOLD outlasts.
-W10(u) == dd[u].gone \/ gh[u].w10m
+\* W10: HARD_HOLD has passed since the grant, and the slot no longer counts the container if its stop is still not
+\* confirmed: its processor stopped for good, or its stops failed that long (D17).
+W10(u) == gh[u].s4At >= 0 /\ now >= gh[u].s4At + HARD_HOLD
 \* The 503s of a v1 request the Store did not decide (W5): S10's reply lost after its commit, S10 failed before it,
 \* the route's give-up at V1_TIME_MS, maintenance, and S3 lost twice.
 W5Kinds == {"lost", "fail", "giveup", "maint", "s3lost"}
@@ -242,7 +254,7 @@ RouteDel(u, ok) ==
   /\ IF (gh[u].q /\ ~IsFenced(u)) \/ ~ok THEN Flag("RouteDeleteNoAuthority") ELSE UNCHANGED err
 
 RouteArrive(u) ==
-  /\ rt[u].pc = "idle" /\ now <= P.arr /\ (u \in P.late => now >= P.lateAt)
+  /\ rt[u].pc = "idle" /\ now <= P.arr /\ Arrives(u)
   /\ IF Maint
      THEN /\ rt' = [rt EXCEPT ![u].pc = "done", ![u].arr = RNow, ![u].ans = 503, ![u].kind = "maint"]
           /\ UNCHANGED st
@@ -271,11 +283,13 @@ RouteGhost(u, res) ==
         !.q = gh[u].q \/ (c = "s3" /\ res.a = "queued"),
         !.k3 = IF c = "s10" THEN K3By(u, "s10") ELSE gh[u].k3]
 
-\* W12: S10's call commits after the route answered (its give-up, W5) and decides 200 for a completed row a restore
-\* brought back after a later sweep deleted its files. The sweep takes a completed upload DGRACE after completion,
-\* past the v1 wait, so only a call the route stopped waiting for meets such a row, and no client receives its 200.
+\* W12: S10's call commits after the route answered (its give-up, W5) and decides 200 for a completed, undoomed row a
+\* restore brought back after a later sweep deleted its files (D19). The sweep takes a completed upload DGRACE after
+\* completion, past the v1 wait, so only a call the route stopped waiting for meets such a row, and no client receives
+\* its 200. Any other 200 for an unpublished upload, a late one included, is a V1Answer violation (LateRestored200).
 W12(u, res) ==
-  rt[u].call = "s10" /\ rt[u].pc \in {"done", "dead"} /\ res.a = "200" /\ ra >= 0 /\ ~Published(u, res.x)
+  /\ rt[u].call = "s10" /\ rt[u].pc = "done" /\ res.a = "200" /\ ra >= 0
+  /\ res.x.att = "done" /\ ~res.x.doomed /\ r2[u].obj # Writes
 
 RouteFlags(u, res) ==
   LET c == rt[u].call
@@ -472,13 +486,13 @@ LoseRun(u) ==
 Go(u, pc) == iv' = [iv EXCEPT ![u].pc = pc]
 EndInv(u) == iv' = [iv EXCEPT ![u] = NoInv]
 
-\* deleteAll(): the record, teardown_id and alarm. RecordDropSafe: only with the container stopped, and no live slot
-\* of this teardown left behind a row that is not pending (slot is the slot after this step).
+\* deleteAll(): the record, teardown_id and alarm. RecordDropSafe: only with the container stopped, and no counting
+\* slot of this teardown left behind a row that is not pending (slot is the slot after this step).
 DeleteAll(u) ==
-  /\ dd' = [dd EXCEPT ![u] = [dd[u] EXCEPT !.rec = FALSE, !.at = 0, !.alarm = -1, !.td = 0, !.rn = -1]]
+  /\ dd' = [dd EXCEPT ![u] = [dd[u] EXCEPT !.rec = FALSE, !.at = 0, !.alarm = -1, !.td = 0]]
   /\ EndInv(u)
 DropFlags(u, slot, ps) ==
-  IF dd[u].cont = "on" \/ (slot.td # 0 /\ slot.hu > now /\ ps # "pending") THEN {"RecordDropped"} ELSE {}
+  IF dd[u].cont = "on" \/ (slot.td # 0 /\ Counts(slot, now) /\ ps # "pending") THEN {"RecordDropped"} ELSE {}
 
 \* An alarm() begins (one at a time) and takes D1 at once: the record-age stop (W9), else the alarm for
 \* CLEANUP_RETRY_MS set and confirmed before S4 (Codex r4 H3: one for TEARDOWN_MS would leave a job interrupted
@@ -488,10 +502,7 @@ DropFlags(u, slot, ps) ==
 Fire(u) ==
   /\ dd[u].rec /\ ~dd[u].gone /\ dd[u].alarm >= 0 /\ dd[u].alarm <= now /\ iv[u].pc = "none"
   /\ nInv' = [nInv EXCEPT ![u] = nInv[u] + 1]
-  \* The record-age stop waits out the slot's last renewal too: S14 commits within the invocation that began it, so
-  \* by TEARDOWN + STOP_HOLD after rn no renewal holds the slot (AgeIgnoresRenewal drops that wait).
-  /\ IF /\ now - dd[u].at >= (IF Variant = "ShortRecord" THEN 1 ELSE RECMAX) /\ dd[u].cont = "off"
-        /\ dd[u].rn < 0 \/ now >= dd[u].rn + TEARDOWN + STOP_HOLD \/ Variant = "AgeIgnoresRenewal"
+  /\ IF now - dd[u].at >= RECMAX /\ dd[u].cont = "off"
      \* The record-age stop deletes the input too (D8): no later step of this object would (a completed upload's
      \* input is held by its row from the orphan pass and is no sweep's).
      THEN /\ DeleteAll(u)
@@ -532,7 +543,7 @@ NoFlags(a) == {}
 \* S4. started: the job is this invocation's, with its deadline from the remaining time S4 answers, counted on the
 \* processor's clock (M2). settled or gone: cleanup only. maint: the invocation ends and D1's alarm repeats it; the
 \* record stays, since a start or a teardown may have committed (Codex r4 H4); a container left running is stopped
-\* first, or its slot renewed (DOClean), since the stop needs no Store write.
+\* first (DOClean), since the stop needs no Store write, while its confirmation (S8) waits for maintenance to end.
 DOS4(u) ==
   /\ iv[u].pc = "s4"
   /\ LET res == S4(st[u], now, ra, Maint, iv[u].id)
@@ -652,9 +663,10 @@ DOS7(u) ==
      IN DOCall(u, res, {}, NoFlags, reply)
   /\ UNCHANGED <<ev, now, sg, bm, ra, rt, nInv, runReq, orp, gh>>
 
-\* D8 and D9: incoming/<id> deleted (the processor's own from the queue's commit), then S8 with the record's
-\* teardown_id; released (or, with ReleaseK3Stops, settled) ends in deleteAll; held and maint end the invocation, whose
-\* alarm repeats it. S8 may remove the slot only with the container stopped and no pending row left (SlotRelease).
+\* D8 and D9: incoming/<id> deleted (the processor's own from the queue's commit), then S8, the stop confirmation, with
+\* the record's teardown_id; released (or, with ReleaseK3Stops, settled) ends in deleteAll; held and maint end the
+\* invocation, whose alarm repeats it. S8 may remove the slot only with the container stopped and no pending row left
+\* (SlotRelease).
 \* D8 is done whatever becomes of S8's reply; a death between the two is a death before both, since deleting the key
 \* again is idempotent and nothing else waits on it (Codex r1 CM6).
 DOS8(u) ==
@@ -664,11 +676,12 @@ DOS8(u) ==
          reply(a) == IF a \in {"released", "settled"} THEN DeleteAll(u) ELSE EndInv(u) /\ UNCHANGED dd
      IN /\ DOCallR(u, res, FreedEarly(st[u], res.x, dd[u].cont = "off" /\ res.x.ps # "pending"), drops, reply)
         /\ r2' = [r2 EXCEPT ![u].inc = FALSE]
-  /\ UNCHANGED <<ev, now, sg, bm, ra, rt, nInv, runReq, orp, gh>>
+        /\ Ev("ConfirmMaint", res.a = "maint")
+  /\ UNCHANGED <<now, sg, bm, ra, rt, nInv, runReq, orp, gh>>
 
 \* The cleanup replay of an invocation whose S4 was not started: the container stopped (D4's rule), then D8 and D9 (in
-\* maintenance, the invocation ends there). A stop that is not confirmed renews the slot (S14, D3) and ends the
-\* invocation, whose alarm repeats it.
+\* maintenance, the invocation ends there). A stop that is not confirmed ends the invocation, whose alarm repeats it;
+\* the slot counts meanwhile, granted (D16), with no Store write.
 DOClean(u) ==
   /\ iv[u].pc = "clean"
   /\ IF dd[u].cont = "on"
@@ -677,20 +690,10 @@ DOClean(u) ==
              /\ UNCHANGED bud
           \/ /\ bud.dfail > 0
              /\ bud' = [bud EXCEPT !.dfail = bud.dfail - 1]
-             /\ IF Variant = "StopNoRetry"
-                THEN dd' = [dd EXCEPT ![u].alarm = -1] /\ EndInv(u)
-                ELSE Go(u, "renew") /\ dd' = [dd EXCEPT ![u].rn = now]
+             /\ EndInv(u)
+             /\ IF Variant = "StopNoRetry" THEN dd' = [dd EXCEPT ![u].alarm = -1] ELSE UNCHANGED dd
      ELSE Go(u, "s8") /\ UNCHANGED <<dd, bud>>
   /\ UNCHANGED <<ev, now, st, sg, bm, ra, rt, nInv, runReq, r2, orp, gh, err>>
-
-\* S14 with the record's teardown_id; the invocation ends whatever it answers, and its alarm repeats the stop.
-DORenew(u) ==
-  /\ iv[u].pc = "renew"
-  /\ LET res == S14(st[u], now, ra, Maint, dd[u].td)
-         reply(a) == EndInv(u) /\ UNCHANGED <<dd, r2>>
-     IN /\ DOCall(u, res, {}, NoFlags, reply)
-        /\ gh' = [gh EXCEPT ![u].mref = CASE res.a = "maint" -> TRUE [] res.a = "renewed" -> FALSE [] OTHER -> gh[u].mref]
-  /\ UNCHANGED <<ev, now, sg, bm, ra, rt, nInv, runReq, orp>>
 
 \* An invocation dies; its D1 alarm runs it again.
 EndByDeath(u) ==
@@ -701,7 +704,8 @@ DOKill(u) ==
   /\ iv[u].pc # "none" /\ bud.kill > 0
   /\ EndByDeath(u)
   /\ bud' = [bud EXCEPT !.kill = bud.kill - 1]
-  /\ UNCHANGED <<ev, now, st, sg, bm, ra, rt, nInv, runReq, r2, orp, gh, err>>
+  /\ gh' = [gh EXCEPT ![u].kl = TRUE]
+  /\ UNCHANGED <<ev, now, st, sg, bm, ra, rt, nInv, runReq, r2, orp, err>>
 
 \* The platform ends an alarm() at its wall limit, TEARDOWN_MS after it began.
 WallKill(u) ==
@@ -709,13 +713,14 @@ WallKill(u) ==
   /\ EndByDeath(u)
   /\ UNCHANGED <<ev, now, st, sg, bm, ra, rt, nInv, runReq, r2, orp, bud, gh, err>>
 
-\* A renewal that carries a teardown_id other than the slot's (a call of another teardown, delayed): it must leave the
-\* slot's held_until as it is (RenewFenced; GM3, Codex r2 CM3).
-StaleRenew(u) ==
-  /\ bud.stale > 0 /\ Live(st, u, now)
-  /\ LET res == S14(st[u], now, ra, Maint, 2) IN
+\* A stop confirmation (S8) that carries a teardown_id other than the processing slot's (a call of another teardown,
+\* delayed): the slot after it must be the slot before it, whatever it answers (ConfirmFenced; GM3, Codex r2 CM3, r3
+\* CM2, D20).
+StaleConfirm(u) ==
+  /\ bud.stale > 0 /\ st[u].slot.ph = "processing"
+  /\ LET res == S8(st[u], now, ra, Maint, 2) IN
      /\ st' = [st EXCEPT ![u] = res.x]
-     /\ err' = err \cup FreedEarly(st[u], res.x, FALSE) \cup (IF res.a = "renewed" THEN {"StaleRenewed"} ELSE {})
+     /\ err' = err \cup FreedEarly(st[u], res.x, FALSE) \cup (IF res.x.slot # st[u].slot THEN {"ConfirmUnfenced"} ELSE {})
   /\ bud' = [bud EXCEPT !.stale = bud.stale - 1]
   /\ UNCHANGED <<ev, now, sg, bm, ra, rt, dd, iv, nInv, runReq, r2, orp, gh>>
 
@@ -755,7 +760,7 @@ R2Drop(u) ==
 (* The cron.                                                               *)
 
 \* S12 and S13 for one upload, when they change something; "run" is the redispatch. It removes a processing slot only
-\* at its held_until (SlotRelease).
+\* once it no longer counts (SlotRelease).
 Dispatch(u) ==
   /\ ~Maint
   /\ LET res == S12(st[u], now, ra) IN
@@ -763,7 +768,7 @@ Dispatch(u) ==
      /\ st' = [st EXCEPT ![u] = res.x]
      /\ runReq' = [runReq EXCEPT ![u] = runReq[u] \/ res.a = "run"]
      /\ gh' = [gh EXCEPT ![u].k3 = K3By(u, "round")]
-     /\ err' = err \cup FreedEarly(st[u], res.x, st[u].slot.hu <= now)
+     /\ err' = err \cup FreedEarly(st[u], res.x, ~Counts(st[u].slot, now))
   /\ UNCHANGED <<ev, now, sg, bm, ra, rt, dd, iv, nInv, r2, orp, bud>>
 
 \* What the sweep takes: a doomed upload, an unfinished one at its gc_at, and a completed unattached one at the gc_at
@@ -849,15 +854,15 @@ Bookmark ==
   /\ bud' = [bud EXCEPT !.bm = bud.bm - 1]
   /\ UNCHANGED <<ev, now, st, sg, ra, rt, dd, iv, nInv, runReq, r2, orp, gh, err>>
 
-\* A restore to any bookmark taken. It sets W3 for a job started before it whose processing slot the bookmark lacks
-\* or holds past its held_until.
+\* A restore to any bookmark taken. It sets W3 for a job started before it whose grant the bookmark does not hold (D18):
+\* a bookmark taken after the grant restores the slot with its grant's time, so the slot counts as it did.
 Restore ==
   /\ bud.rs > 0 /\ now >= P.rsAt
   /\ \E i \in DOMAIN bm :
        /\ bm[i].has
        /\ st' = bm[i].st /\ sg' = bm[i].sg /\ ra' = now
        /\ gh' = [u \in U |-> [gh[u] EXCEPT !.w3 = gh[u].w3 \/ (gh[u].s4At >= 0
-                                                  /\ ~(bm[i].st[u].slot.ph = "processing" /\ bm[i].st[u].slot.hu > now))]]
+                                                  /\ ~(bm[i].st[u].slot.ph = "processing" /\ bm[i].st[u].slot.ga >= 0))]]
   /\ bud' = [bud EXCEPT !.rs = bud.rs - 1]
   \* Bookmarks no later restore can use are forgotten (a bound of the model).
   /\ bm' = IF bud.rs = 1 /\ bud.bm = 0 THEN [i \in DOMAIN bm |-> NoBm] ELSE bm
@@ -883,24 +888,18 @@ DueRoute(u) ==
   \/ rt[u].call # "none" \/ rt[u].rep.a # "none"
   \/ rt[u].pc \in {"s1", "stream", "s2", "s3", "s10"}
   \/ rt[u].pc = "wait" /\ (S9(st[u], now, ra) # "processing" \/ RNow >= rt[u].arr + V1 - T_REPLY)
-  \/ rt[u].pc = "idle" /\ now <= P.arr /\ (u \in P.late => now >= P.lateAt)
+  \/ rt[u].pc = "idle" /\ now <= P.arr /\ Arrives(u)
 DueCron(u) ==
   \/ ~Maint /\ (S12(st[u], now, ra).x # st[u] \/ S12(st[u], now, ra).a = "run")
   \/ P.gc /\ ~Maint /\ Sweepable(u, st[u], now)
   \/ P.gc /\ ~Maint /\ st[u].att = "gone" /\ (r2[u].obj # {} \/ r2[u].inc)
-\* A live processor whose container runs takes its due alarm, and its replay's stop or renewal, before the clock
-\* moves, unless its lag budget lets it wait (TIME).
-DueRenew(u) ==
-  dd[u].cont = "on" /\ ~dd[u].gone /\ (FireDue(u) \/ iv[u].pc \in {"s4", "clean", "renew"})
 Due(u) ==
   \/ "route" \in P.prompt /\ DueRoute(u)
   \/ "cron" \in P.prompt /\ DueCron(u)
-\* The processor steps the clock waits for; lag lets it move past them only for a processor whose container runs.
-DOWaits(u) == ("do" \in P.prompt /\ DueDO(u)) \/ DueRenew(u)
-
-\* The slot of a running container whose processor lives lapses at this tick, after maintenance refused its renewal
-\* (W10, D8).
-Lapses(u) == dd[u].cont = "on" /\ ~dd[u].gone /\ Live(st, u, now) /\ ~Live(st, u, now + 1) /\ gh[u].mref
+\* The processor steps the clock waits for; lag lets it move past them only while they are the cleanup of a container
+\* that still runs (its due alarm, the replay's S4 or its stop), the delay that could matter to capacity (TIME).
+DOWaits(u) == "do" \in P.prompt /\ DueDO(u)
+LateCleanup(u) == dd[u].cont = "on" /\ (FireDue(u) \/ iv[u].pc \in {"s4", "clean"})
 
 Tick ==
   /\ now < P.tmax
@@ -911,11 +910,11 @@ Tick ==
   /\ ~(\E u \in U : Due(u))
   /\ "cron" \in P.prompt => orp.pc = "none"
   /\ IF \E u \in U : DOWaits(u)
-     THEN /\ bud.lag > 0 /\ \A u \in U : DOWaits(u) => DueRenew(u)
+     THEN /\ bud.lag > 0 /\ \A u \in U : DOWaits(u) => LateCleanup(u)
           /\ bud' = [bud EXCEPT !.lag = bud.lag - 1]
-     ELSE UNCHANGED bud
+          /\ gh' = [u \in U |-> [gh[u] EXCEPT !.lg = gh[u].lg \/ DOWaits(u)]]
+     ELSE UNCHANGED <<bud, gh>>
   /\ now' = now + 1
-  /\ gh' = [u \in U |-> [gh[u] EXCEPT !.w10m = gh[u].w10m \/ Lapses(u)]]
   /\ UNCHANGED <<st, sg, bm, ra, rt, dd, iv, nInv, runReq, r2, orp, err, ev>>
 
 ---------------------------------------------------------------------------
@@ -926,13 +925,13 @@ RouteStep(u) ==
 
 DOStep(u) ==
   \/ DeliverRun(u) \/ Fire(u) \/ DOS4(u) \/ DOStart(u) \/ DOWork(u) \/ DOGrant(u) \/ DOPut(u) \/ DOAck(u)
-  \/ DOS6(u) \/ DOS7(u) \/ DOS8(u) \/ DOClean(u) \/ DORenew(u)
+  \/ DOS6(u) \/ DOS7(u) \/ DOS8(u) \/ DOClean(u)
 
 CronStep(u) == Dispatch(u) \/ Sweep(u) \/ Reconcile(u) \/ Retire(u)
 
 Faults(u) ==
   \/ RouteBad(u) \/ RouteDie(u) \/ OwnerDelete(u) \/ OwnerGet(u) \/ LoseRun(u) \/ DOPutErr(u) \/ DOKill(u)
-  \/ WallKill(u) \/ DOGone(u) \/ StaleRenew(u) \/ R2Drop(u)
+  \/ WallKill(u) \/ DOGone(u) \/ StaleConfirm(u) \/ R2Drop(u)
 
 Next ==
   \/ \E u \in U : RouteStep(u) \/ DOStep(u) \/ CronStep(u) \/ R2Land(u) \/ Faults(u)
@@ -975,7 +974,7 @@ Q4 == "Q4" \notin err
 RecordDropSafe == "RecordDropped" \notin err
 SingleStaging == "Restaged" \notin err
 NoLateObject == "LateObject" \notin err /\ \A u \in U : gh[u].ret => \A w \in r2[u].fly : now > w.st + LAND
-RenewFenced == "StaleRenewed" \notin err
+ConfirmFenced == "ConfirmUnfenced" \notin err
 
 ---------------------------------------------------------------------------
 (* Liveness (LSpec).                                                       *)
@@ -1006,7 +1005,7 @@ PendingStarts ==
 \* match (test-node/media-upload-spec/0.test.ts), so a mutation dropped from either fails the plan's test.
 Mutations ==
   {<<"SlotBound", "SlotNoCount", "CAP">>, <<"ContainerCovered", "DeleteFreesSlot", "CAP">>,
-   <<"MaxContainers", "DeleteFreesSlot", "CAP">>, <<"ContainerCovered", "ShortHold", "CAP3">>,
+   <<"MaxContainers", "DeleteFreesSlot", "CAP">>,
    <<"StartNeedsSlot", "SlotById", "V1L">>, <<"SlotRelease", "SlotById", "V1L">>,
    <<"RouteDeleteAuthority", "RouteCleansOnLost", "V1L">>, <<"InputKept", "OrphanStagingUnheld", "OR">>,
    <<"InputKept", "NoWriteWindow", "V2L">>, <<"NoPublishAfterDelete", "DeleteKeepsRow", "V2D">>,
@@ -1020,13 +1019,12 @@ Mutations ==
    <<"InputsDeleted", "AgedKeepsInput", "L2">>, <<"SlotsReleased", "NoExpiry", "L3">>,
    <<"ContainerCovered", "K3FreesSlot", "RS2">>, <<"SlotRelease", "K3FreesSlot", "RS2">>,
    <<"RestoredInert", "QueueNoFence", "RS3">>, <<"StartNeedsSlot", "AbsStart", "SK">>,
-   <<"ContainerCovered", "NoRenew", "CAP4">>, <<"MaxContainers", "NoRenew", "CAP4">>,
    <<"V1Answer", "ShortGrace", "V1L">>, <<"NoLateObject", "EarlyRetire", "DLW">>,
    <<"InputsDeleted", "SweepNoIncoming", "L2">>, <<"CompletedSwept", "DoneNeverSwept", "L2">>,
-   <<"ContainerCovered", "ShortStopHold", "CAP5">>, <<"MaxContainers", "ShortStopHold", "CAP5">>,
-   <<"RenewFenced", "RenewNoFence", "CAP4">>, <<"RecordDropSafe", "AgeIgnoresRenewal", "CAP5">>,
    <<"ChargeOnce", "NoCharge", "V1L">>, <<"SlotRelease", "K3FreesSlotAtGrant", "RS2">>,
    <<"V1Answer", "Done503", "V1L">>, <<"V1Answer", "RestoredAnswers200", "RS">>,
-   <<"CompletedSwept", "LateSweep", "L2">>}
+   <<"CompletedSwept", "LateSweep", "L2">>, <<"ContainerCovered", "GrantedLapses", "CAP4">>,
+   <<"MaxContainers", "GrantedLapses", "CAP4">>, <<"ConfirmFenced", "ConfirmNoFence", "CAP4">>,
+   <<"RecordDropSafe", "AgeBeforeHardHold", "MT">>, <<"V1Answer", "LateRestored200", "RS">>}
 
 =============================================================================

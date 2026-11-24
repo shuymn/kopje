@@ -3,63 +3,106 @@
 // distinct-state count and depth are fixed: a change means the state space changed, which the commit that changes
 // checks.json explains. Each check logs its time and the process's RSS.
 //
-// The checks are split over PARTS files, <part>.test.ts beside this module, so that CI's test shards share them:
+// The checks are split over PARTS files, checks-<part>.test.ts beside this module, so that CI's test shards share them:
 // `vitest --shard` deals out whole files, and each part's file has a shard of its own
-// (test-node/media-upload-spec-parts.test.ts). A check runs in the part PLACED gives it, or else in the part the SHA-256
-// of its title picks, so a new check moves no other. PLACED holds the checks that took 10 s or more in a run of the
-// parts on a laptop: those, the longest first, each went to the part with the least time so far, the other checks
-// counted in the part their hash picks.
+// (test-node/media-upload-spec-parts.test.ts; the names are the ones whose paths hash into four different quarters).
+// A check runs in the part PLACED gives it, or else in the part the SHA-256 of its title picks, so a new check moves no
+// other. PLACED holds the checks that took 5 s or more in a run of the parts on a laptop: those, the longest first,
+// each went to the part with the least time so far, the other checks counted in the part their hash picks. Before a
+// part's checks run, its file must have declared exactly its share of them (below), so a part file that stops calling
+// tlaTsChecks fails instead of passing with its checks unrun.
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { check } from "tla-ts";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { checks, readModule, readPlan } from "../../scripts/media-upload-plan.mjs";
 
-export const PARTS = 2;
+export const PARTS = 4;
 
 // A check's title (its kind and name) and its part.
 export const PLACED = new Map<string, number>([
-  ["scenario CAP2", 0],
-  ["scenario RS3", 1],
-  ["scenario RSL", 1],
-  ["scenario RS", 0],
   ["scenario MTX", 0],
-  ["scenario CAP5", 1],
-  ["scenario DLW", 1],
+  ["scenario RS3", 2],
+  ["scenario CAP2", 1],
+  ["scenario RS", 3],
+  ["scenario RSL", 1],
+  ["scenario CAP4", 3],
   ["scenario RS2", 0],
-  ["scenario OR", 1],
-  ["scenario H1W", 0],
-  ["scenario MT", 0],
-  ["scenario V2D", 1],
+  ["scenario MT", 2],
+  ["scenario H1W", 2],
+  ["scenario DLW", 0],
+  ["scenario OR", 3],
+  ["scenario CAP5", 1],
+  ["scenario V2D", 0],
+  ["liveness L3", 2],
   ["goal RS-W11Swept", 1],
-  ["goal RS-W12", 0],
-  ["liveness L3", 0],
-  ["scenario LK", 1],
-  ["scenario V1R", 1],
-  ["scenario V1L", 0],
-  ["scenario SK", 0],
-  ["variant SlotsReleased-NoExpiry", 1],
-  ["scenario V2L", 0],
-  ["variant MaxContainers-ShortStopHold", 1],
+  ["scenario LK", 3],
+  ["goal RS-W12", 2],
+  ["scenario V1R", 0],
+  ["scenario V1L", 1],
+  ["scenario SK", 3],
   ["scenario MT2", 1],
-  ["scenario CAP", 0],
+  ["variant SlotsReleased-NoExpiry", 3],
+  ["scenario V2L", 0],
+  ["scenario V2K", 2],
+  ["scenario CAP", 2],
+  ["goal V1L-W5Swept", 1],
+  ["goal RS-W11Forgotten", 3],
+  ["goal H1W-W5Maint", 0],
+  ["scenario RSD", 2],
+  ["scenario V1K", 3],
+  ["scenario MTR", 0],
+  ["variant V1Answer-ShortGrace", 1],
+  ["goal RS-W11", 2],
+  ["goal DLW-Published", 1],
+  ["variant NoPublishAfterNon200-WaitForStoreDeadline", 0],
 ]);
 
 export const plan = readPlan();
-// The longest check, scenario CAP2 (2,184,761 distinct states), took 93 s on a laptop running three checks at once; the
+// The longest check, scenario MTX (3,561,944 distinct states), took 94 s on a laptop running three checks at once; the
 // timeout leaves CI more than three times that.
 const CHECK_TIMEOUT_MS = 300_000;
+
+// The title of the describe block tlaTsChecks declares.
+const SUITE = "spec/media-upload under tla-ts";
 
 /** The part that runs a check of checks.json, by its title. */
 const partOf = (title: string): number =>
   PLACED.get(title) ?? createHash("sha256").update(title).digest().readUInt32BE(0) % PARTS;
 
-/** Declares the checks of checks.json that run in the part whose file is file (part 0 is 0.test.ts). */
+/** The part whose file is the given path or file URL (part 0 is checks-0.test.ts), or undefined for another file. */
+const partOfFile = (file: string): number | undefined => {
+  const match = /^checks-(\d+)\.test\.ts$/.exec(basename(file.startsWith("file:") ? fileURLToPath(file) : file));
+  return match === null ? undefined : Number(match[1]);
+};
+
+/** The titles of the checks the given part runs. */
+const titlesOf = (part: number): string[] =>
+  checks(plan)
+    .map((c) => `${c.kind} ${c.name}`)
+    .filter((title) => partOf(title) === part);
+
+// Registered in every file that imports this module: a part's file must have collected exactly its share of the
+// checks (Codex r3 CM5, D22).
+// oxlint-disable-next-line eslint/no-empty-pattern -- vitest wants the context destructured; the file is the second
+beforeAll(({}, file) => {
+  const part = "filepath" in file ? partOfFile(file.filepath) : undefined;
+  if (part === undefined) return;
+  const collected = file.tasks
+    .filter((task) => task.type === "suite" && task.name === SUITE)
+    .flatMap((suite) => (suite.type === "suite" ? suite.tasks.map((task) => task.name) : []));
+  expect(collected.toSorted(), `checks-${part}.test.ts declares its share of the checks`).toEqual(
+    titlesOf(part).toSorted(),
+  );
+});
+
+/** Declares the checks of checks.json that run in the part whose file is file. */
 export function tlaTsChecks(file: string): void {
-  const part = Number(basename(fileURLToPath(file), ".test.ts"));
+  const part = partOfFile(file);
+  if (part === undefined) throw new Error(`${file} is no part's file`);
   describe("spec/media-upload under tla-ts", () => {
     for (const c of checks(plan).filter((c) => partOf(`${c.kind} ${c.name}`) === part)) {
       it(`${c.kind} ${c.name}`, { timeout: CHECK_TIMEOUT_MS }, async () => {

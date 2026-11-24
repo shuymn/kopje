@@ -3,154 +3,159 @@
   "scenarios": [
     {
       "name": "V1L",
-      "distinct": 529690,
+      "distinct": 549809,
       "depth": 47
     },
     {
       "name": "V1K",
-      "distinct": 208969,
+      "distinct": 224352,
       "depth": 46
     },
     {
       "name": "V1R",
-      "distinct": 625394,
+      "distinct": 648856,
       "depth": 48
     },
     {
       "name": "V2L",
-      "distinct": 385478,
+      "distinct": 421778,
       "depth": 51
     },
     {
       "name": "V2K",
-      "distinct": 286842,
+      "distinct": 327003,
       "depth": 46
     },
     {
       "name": "LK",
-      "distinct": 714749,
+      "distinct": 823883,
       "depth": 49
     },
     {
       "name": "V2D",
-      "distinct": 947782,
+      "distinct": 1025581,
       "depth": 49
     },
     {
       "name": "DLW",
-      "distinct": 1563474,
+      "distinct": 1444689,
       "depth": 59
     },
     {
       "name": "MT",
-      "distinct": 1066052,
-      "depth": 52
-    },
-    {
-      "name": "MT2",
-      "distinct": 383669,
+      "distinct": 1513817,
       "depth": 55
     },
     {
+      "name": "MT2",
+      "distinct": 546868,
+      "depth": 57
+    },
+    {
       "name": "MTX",
-      "distinct": 2222110,
-      "depth": 52
+      "distinct": 3561944,
+      "depth": 55
     },
     {
       "name": "MTR",
-      "distinct": 212227,
+      "distinct": 280177,
       "depth": 51
     },
     {
       "name": "MTS",
-      "distinct": 14093,
-      "depth": 76
+      "distinct": 8690,
+      "depth": 72
     },
     {
       "name": "H1W",
-      "distinct": 1064950,
-      "depth": 54
+      "distinct": 1549253,
+      "depth": 56
     },
     {
       "name": "RS",
-      "distinct": 1865647,
+      "distinct": 2335559,
       "depth": 50
     },
     {
       "name": "RS2",
-      "distinct": 1736001,
+      "distinct": 1809551,
       "depth": 44
     },
     {
       "name": "RSL",
-      "distinct": 2356287,
+      "distinct": 2361645,
       "depth": 48
     },
     {
       "name": "RSS",
-      "distinct": 18751,
-      "depth": 58
+      "distinct": 17416,
+      "depth": 59
+    },
+    {
+      "name": "RSD",
+      "distinct": 143220,
+      "depth": 73
     },
     {
       "name": "RS3",
-      "distinct": 3094222,
+      "distinct": 3379719,
       "depth": 46
     },
     {
       "name": "CAP",
-      "distinct": 260403,
+      "distinct": 226731,
       "depth": 58
     },
     {
       "name": "CAP2",
-      "distinct": 2184761,
+      "distinct": 2035311,
       "depth": 61
     },
     {
       "name": "CAP3",
-      "distinct": 30105,
+      "distinct": 45701,
       "depth": 57
     },
     {
       "name": "CAP4",
-      "distinct": 10767,
-      "depth": 91
+      "distinct": 892807,
+      "depth": 90
     },
     {
       "name": "CAP5",
-      "distinct": 958835,
-      "depth": 100
+      "distinct": 544993,
+      "depth": 94
     },
     {
       "name": "CAP6",
-      "distinct": 13105,
-      "depth": 52
+      "distinct": 12751,
+      "depth": 51
     },
     {
       "name": "OR",
-      "distinct": 1487168,
-      "depth": 44
+      "distinct": 1444062,
+      "depth": 45
     },
     {
       "name": "SK",
-      "distinct": 510698,
+      "distinct": 554535,
       "depth": 49
     }
   ],
   "liveness": [
     {
       "name": "L1",
-      "distinct": 2319,
+      "distinct": 2316,
       "depth": 44
     },
     {
       "name": "L2",
-      "distinct": 4850,
-      "depth": 48
+      "distinct": 6216,
+      "depth": 52
     },
     {
       "name": "L3",
-      "distinct": 168848,
+      "distinct": 194560,
       "depth": 50
     },
     {
@@ -160,8 +165,8 @@
     },
     {
       "name": "L5",
-      "distinct": 4638,
-      "depth": 60
+      "distinct": 4166,
+      "depth": 55
     }
   ],
   "variants": [
@@ -188,14 +193,6 @@
       "property": "MaxContainers",
       "trace": 26,
       "breaks": "DELETE frees the slot with the row, so a second upload's container starts beside the first"
-    },
-    {
-      "name": "ContainerCovered-ShortHold",
-      "scenario": "CAP3",
-      "variant": "ShortHold",
-      "property": "ContainerCovered",
-      "trace": 20,
-      "breaks": "held_until is deadline_at, without TEARDOWN_MS for the stop (W10's bound)"
     },
     {
       "name": "StartNeedsSlot-SlotById",
@@ -306,7 +303,7 @@
       "scenario": "MT",
       "variant": "MaintDropsRecord",
       "property": "RecordDropSafe",
-      "trace": 16,
+      "trace": 17,
       "breaks": "S4 answering maint with no container ends in deleteAll without D9 (Codex r4 H4)"
     },
     {
@@ -314,7 +311,7 @@
       "scenario": "RS2",
       "variant": "ReleaseK3Stops",
       "property": "RecordDropSafe",
-      "trace": 18,
+      "trace": 19,
       "breaks": "S8 stops at K3 for a restored live row and the processor deletes its record (Codex r4 H2, Gemini r4 GH1)"
     },
     {
@@ -322,7 +319,7 @@
       "scenario": "V2K",
       "variant": "ShortRecord",
       "property": "RecordDropSafe",
-      "trace": 14,
+      "trace": 15,
       "breaks": "the record-age stop before held_until (W9)"
     },
     {
@@ -365,7 +362,7 @@
       "scenario": "L2",
       "variant": "AgedKeepsInput",
       "property": "InputsDeleted",
-      "trace": 46,
+      "trace": 50,
       "liveness": true,
       "breaks": "the record-age stop leaves incoming/<id> of a completed upload"
     },
@@ -374,7 +371,7 @@
       "scenario": "L3",
       "variant": "NoExpiry",
       "property": "SlotsReleased",
-      "trace": 40,
+      "trace": 35,
       "liveness": true,
       "breaks": "the dispatch round never deletes a slot past held_until (W2)"
     },
@@ -411,22 +408,6 @@
       "breaks": "the processor compares the Store's deadline_at with its own clock before the container start, so a processor behind the Store starts one at the deadline (Gemini r1 GH4)"
     },
     {
-      "name": "ContainerCovered-NoRenew",
-      "scenario": "CAP4",
-      "variant": "NoRenew",
-      "property": "ContainerCovered",
-      "trace": 49,
-      "breaks": "S14 does not renew the slot of a stop that is not confirmed, so the container runs past held_until while its processor lives (D3, Codex r1 CH3)"
-    },
-    {
-      "name": "MaxContainers-NoRenew",
-      "scenario": "CAP4",
-      "variant": "NoRenew",
-      "property": "MaxContainers",
-      "trace": 69,
-      "breaks": "as above: a later upload is admitted beside a container whose stop is retried (D3, Codex r1 CH3)"
-    },
-    {
       "name": "V1Answer-ShortGrace",
       "scenario": "V1L",
       "variant": "ShortGrace",
@@ -459,38 +440,6 @@
       "trace": 36,
       "liveness": true,
       "breaks": "the sweep never takes a completed unattached upload at its gc_at (D2)"
-    },
-    {
-      "name": "ContainerCovered-ShortStopHold",
-      "scenario": "CAP5",
-      "variant": "ShortStopHold",
-      "property": "ContainerCovered",
-      "trace": 43,
-      "breaks": "S14 holds the slot two units, one retry and a margin: a killed invocation or an alarm a unit late lets a live processor's slot lapse while its container runs (Gemini r2 GH1, Codex r2 CH1, D7)"
-    },
-    {
-      "name": "MaxContainers-ShortStopHold",
-      "scenario": "CAP5",
-      "variant": "ShortStopHold",
-      "property": "MaxContainers",
-      "trace": 59,
-      "breaks": "as above: a later upload is admitted beside the container whose stop is retried (Gemini r2 GH1, Codex r2 CH1, D7)"
-    },
-    {
-      "name": "RenewFenced-RenewNoFence",
-      "scenario": "CAP4",
-      "variant": "RenewNoFence",
-      "property": "RenewFenced",
-      "trace": 5,
-      "breaks": "S14 renews a live slot whatever its teardown_id, so a call of another teardown holds it (Gemini r2 GM3, Codex r2 CM3, D7)"
-    },
-    {
-      "name": "RecordDropSafe-AgeIgnoresRenewal",
-      "scenario": "CAP5",
-      "variant": "AgeIgnoresRenewal",
-      "property": "RecordDropSafe",
-      "trace": 46,
-      "breaks": "the record-age stop does not wait out the last renewal, so the processor drops its record while a renewed slot of its teardown counts (found with D7)"
     },
     {
       "name": "ChargeOnce-NoCharge",
@@ -532,6 +481,46 @@
       "trace": 38,
       "liveness": true,
       "breaks": "the sweep takes a completed unattached upload one unit after its gc_at instead of at it (Codex r2 CM5, D11)"
+    },
+    {
+      "name": "ContainerCovered-GrantedLapses",
+      "scenario": "CAP4",
+      "variant": "GrantedLapses",
+      "property": "ContainerCovered",
+      "trace": 31,
+      "breaks": "time frees a granted slot at its held_until, before HARD_HOLD_MS, so the container of a stop retried past the deadline runs without a counting slot (Codex r3 CH1, D16)"
+    },
+    {
+      "name": "MaxContainers-GrantedLapses",
+      "scenario": "CAP4",
+      "variant": "GrantedLapses",
+      "property": "MaxContainers",
+      "trace": 47,
+      "breaks": "as above: a later upload is admitted beside the container whose stop is retried (Codex r3 CH1, D16)"
+    },
+    {
+      "name": "ConfirmFenced-ConfirmNoFence",
+      "scenario": "CAP4",
+      "variant": "ConfirmNoFence",
+      "property": "ConfirmFenced",
+      "trace": 13,
+      "breaks": "S8, the stop confirmation, deletes the slot whatever its teardown_id, so a delayed call of another teardown frees it (Gemini r2 GM3, Codex r2 CM3, r3 CM2, D16, D20)"
+    },
+    {
+      "name": "RecordDropSafe-AgeBeforeHardHold",
+      "scenario": "MT",
+      "variant": "AgeBeforeHardHold",
+      "property": "RecordDropSafe",
+      "trace": 20,
+      "breaks": "the record-age stop at V2_PROCESS_MS + TEARDOWN_MS drops the record while the granted slot of a stop maintenance kept from confirming still counts (D16)"
+    },
+    {
+      "name": "V1Answer-LateRestored200",
+      "scenario": "RS",
+      "variant": "LateRestored200",
+      "property": "V1Answer",
+      "trace": 19,
+      "breaks": "S10 decides 200 for a restored reservation that never completed, once the route has answered: the late invalid 200 the r2 W12 excused (Codex r3 CM1, Gemini r3 GM1, D19)"
     }
   ],
   "goals": [
@@ -602,16 +591,16 @@
       "trace": 10
     },
     {
-      "name": "MT-W9",
-      "scenario": "MT",
+      "name": "L2-W9",
+      "scenario": "L2",
       "goal": "W9",
-      "trace": 17
+      "trace": 37
     },
     {
       "name": "CAP3-W10",
       "scenario": "CAP3",
       "goal": "W10",
-      "trace": 24
+      "trace": 20
     },
     {
       "name": "RS-W11",
@@ -686,12 +675,6 @@
       "trace": 30
     },
     {
-      "name": "MTS-W10Maint",
-      "scenario": "MTS",
-      "goal": "W10Maint",
-      "trace": 50
-    },
-    {
       "name": "RS2-Forgotten",
       "scenario": "RS2",
       "goal": "Forgotten",
@@ -701,13 +684,13 @@
       "name": "RSS-W3",
       "scenario": "RSS",
       "goal": "W3",
-      "trace": 18
+      "trace": 26
     },
     {
       "name": "CAP5-HoldSpansFaults",
       "scenario": "CAP5",
       "goal": "HoldSpansFaults",
-      "trace": 33
+      "trace": 30
     },
     {
       "name": "MTR-MaintLate",
@@ -720,6 +703,24 @@
       "scenario": "RS",
       "goal": "W12",
       "trace": 31
+    },
+    {
+      "name": "MTS-MaintHolds",
+      "scenario": "MTS",
+      "goal": "MaintHolds",
+      "trace": 36
+    },
+    {
+      "name": "CAP3-W10Cap",
+      "scenario": "CAP3",
+      "goal": "W10Cap",
+      "trace": 32
+    },
+    {
+      "name": "RSD-W3Twice",
+      "scenario": "RSD",
+      "goal": "W3Twice",
+      "trace": 53
     }
   ]
 }

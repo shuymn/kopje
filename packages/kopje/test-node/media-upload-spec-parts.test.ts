@@ -1,5 +1,6 @@
 // The parts the specification's checks are split into (media-upload-spec/checks.ts): each check of checks.json runs in
-// a part that has a file, and each part's file has a shard of its own among CI's test shards.
+// a part that has a file, and each part's file has a shard of its own among CI's test shards. That each part's file
+// declares its share is checked again where the checks run, against the titles vitest collected (checks.ts).
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 
@@ -20,7 +21,7 @@ const files = readdirSync(new URL("media-upload-spec/", import.meta.url))
 
 describe("the parts of the media upload specification's checks", () => {
   it("have a file each", () => {
-    expect(files).toEqual(Array.from({ length: PARTS }, (_, part) => `${part}.test.ts`));
+    expect(files).toEqual(Array.from({ length: PARTS }, (_, part) => `checks-${part}.test.ts`));
   });
 
   // A part's file that did not declare its share would leave those checks unrun with every test passing.
@@ -34,7 +35,7 @@ describe("the parts of the media upload specification's checks", () => {
   it("are given by hand only for checks that exist", () => {
     const titles = new Set(checks(plan).map((c) => `${c.kind} ${c.name}`));
     expect([...PLACED.keys()].filter((title) => !titles.has(title))).toEqual([]);
-    expect([...PLACED.values()].filter((part) => !files.includes(`${part}.test.ts`))).toEqual([]);
+    expect([...PLACED.values()].filter((part) => !files.includes(`checks-${part}.test.ts`))).toEqual([]);
   });
 
   // `vitest --shard` sorts the run's test files by the SHA-1 of their path from the repository root and cuts the list
@@ -47,7 +48,6 @@ describe("the parts of the media upload specification's checks", () => {
       const shard = Math.floor(at * SHARDS);
       return at - shard / SHARDS < MARGIN || (shard + 1) / SHARDS - at < MARGIN ? `${file} near an edge` : shard;
     });
-    expect(new Set(shards).size).toBe(files.length);
-    expect(shards.filter((shard) => typeof shard === "string")).toEqual([]);
+    expect(shards.map(String).toSorted()).toEqual(Array.from({ length: SHARDS }, (_, shard) => `${shard}`));
   });
 });
