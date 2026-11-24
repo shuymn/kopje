@@ -557,12 +557,13 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
   // the Store's maintenance once it has settled (`rebuild-needs-readonly`, `rebuild-settling` otherwise).
 
   admin.post("/media/rebuild", async (c) => {
-    const { after, dryRun } = await jsonBody(c);
+    const { after, dryRun, stills } = await jsonBody(c);
     if (
       (after !== undefined && after !== null && (typeof after !== "string" || !/^\d{18}$/.test(after))) ||
-      (dryRun !== undefined && typeof dryRun !== "boolean")
+      (dryRun !== undefined && typeof dryRun !== "boolean") ||
+      (stills !== undefined && typeof stills !== "boolean")
     ) {
-      return c.json({ error: 'expected {"after"?: media id, "dryRun"?: boolean}' }, 400);
+      return c.json({ error: 'expected {"after"?: media id, "dryRun"?: boolean, "stills"?: boolean}' }, 400);
     }
     const config = readConfig(c.env);
     const result = await rebuildMedia(
@@ -574,8 +575,10 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
         now,
         authority: c.get("auth"),
         monthlyTransforms: config.ok ? config.config.IMAGES_MONTHLY_TRANSFORMS : 0,
+        monthlyUploads: config.ok ? config.config.MEDIA_UPLOAD_MONTHLY_JOBS : 0,
+        stills: mediaProcessor(c.env)?.stills ?? null,
       },
-      { after: typeof after === "string" ? after : null, dryRun: dryRun === true },
+      { after: typeof after === "string" ? after : null, dryRun: dryRun === true, stills: stills === true },
     );
     return reply(c, result);
   });

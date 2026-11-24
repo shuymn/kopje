@@ -21,6 +21,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Local media URLs serve the processor's video (`full.mp4`) and audio (`full.mp3`) as cached remote media is served:
   HEAD, one byte range with 206, an unsatisfiable one with 416, several with the whole file, and 304 to a matching
   `If-None-Match`, so players can seek. Nothing writes such files yet; image URLs answer as before.
+- The backup copies an original larger than 16 MiB by streaming it through age into a multipart upload, so originals
+  up to 64 MiB (video and audio files) are backed up without being held in memory; each invocation now also aborts
+  stray multipart uploads under `media/`. The bucket's lifecycle rule that aborts incomplete multipart uploads
+  ([docs/backup.md](docs/backup.md), "Storage") now covers these copies too.
+- `kopje-admin media-rebuild` rebuilds video and audio rows after a restore: their file is copied from the original
+  after the output check, and a video's still is made by the media processor when its block is added, or its preview
+  is cleared to the plain poster (counted as `fallback`). The new `--stills` option gives stills to videos without one
+  later. A still costs one job of the new `MEDIA_UPLOAD_MONTHLY_JOBS` budget (default 0: none) and three Images
+  transformations ([docs/backup.md](docs/backup.md), "Restore"). Nothing writes such rows yet.
 
 ### Fixed
 

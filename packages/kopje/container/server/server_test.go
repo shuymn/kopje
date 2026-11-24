@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"hash/crc32"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -21,7 +23,7 @@ import (
 // The fake ffprobe appends its arguments to $FAKE_PROBE_LOG and prints the probe JSON in the file $FAKE_PROBE (for the
 // header probe, $FAKE_HEADERS when set; for the frame probe, $FAKE_FRAMES; for a probe of the output,
 // $FAKE_OUTPUT_PROBE when set), sleeping $FAKE_PROBE_SLEEP (frame probe:
-// $FAKE_FRAME_SLEEP) seconds first. The fake ffmpeg appends its arguments to $FAKE_LOG, fails when they contain
+// $FAKE_FRAME_SLEEP) seconds first, or killing itself when $FAKE_PROBE_KILL is set. The fake ffmpeg appends its arguments to $FAKE_LOG, fails when they contain
 // $FAKE_FAIL_ON (printing the pixel limit's refusal first when $FAKE_OVERSIZE is set), succeeds writing nothing when they contain $FAKE_EMPTY_ON, copies the file $FAKE_OUT (for a PNG
 // still, $FAKE_PNG) to its last argument (file:<path>), prints a marker on stderr, and exits $FAKE_EXIT (sleeping
 // $FAKE_SLEEP seconds first).
@@ -30,6 +32,7 @@ echo "SECRET-PROBE-STDERR" >&2
 [ -n "$FAKE_PROBE_LOG" ] && echo "$*" >> "$FAKE_PROBE_LOG"
 case "$*" in *output.*) [ -n "$FAKE_OUTPUT_PROBE" ] && { cat "$FAKE_OUTPUT_PROBE"; exit 0; } ;; esac
 case "$*" in *-show_frames*) [ -n "$FAKE_FRAME_SLEEP" ] && sleep "$FAKE_FRAME_SLEEP"; cat "${FAKE_FRAMES:-/dev/null}"; exit 0 ;; esac
+[ -n "$FAKE_PROBE_KILL" ] && kill -KILL $$
 [ -n "$FAKE_PROBE_SLEEP" ] && sleep "$FAKE_PROBE_SLEEP"
 case "$*" in *-nofind_stream_info*) ;; */input) [ -n "$FAKE_DISCOVERY_FAIL" ] && exit 1 ;; esac
 case "$*" in *-nofind_stream_info*) [ -n "$FAKE_HEADERS" ] && { cat "$FAKE_HEADERS"; exit 0; } ;; esac
@@ -39,6 +42,7 @@ cat "$FAKE_PROBE"
 const fakeFFmpeg = `#!/bin/sh
 echo "SECRET-FFMPEG-STDERR" >&2
 [ -n "$FAKE_LOG" ] && echo "$*" >> "$FAKE_LOG"
+[ -n "$FAKE_FFMPEG_KILL" ] && case "$*" in *"$FAKE_FFMPEG_KILL"*) kill -KILL $$ ;; esac
 case "$FAKE_OVERSIZE" in
   dav1d) echo "[libdav1d @ 0x1] Frame size 4096x2160 exceeds limit 8294400" >&2 ;;
   ?*) echo "[IMGUTILS @ 0x1] Picture size 4096x2160 exceeds specified max pixel count 8294400" >&2 ;;
@@ -82,6 +86,8 @@ func fakeTools(t *testing.T, probe *probeResult) {
 	t.Setenv("FAKE_OUTPUT_PROBE", "")
 	t.Setenv("FAKE_OVERSIZE", "")
 	t.Setenv("FAKE_DISCOVERY_FAIL", "")
+	t.Setenv("FAKE_PROBE_KILL", "")
+	t.Setenv("FAKE_FFMPEG_KILL", "")
 	oldProbe, oldFF, oldWork, oldStill := probeBin, ffmpegBin, workRoot, stillPath
 	probeBin, ffmpegBin = write("ffprobe", fakeProbe), write("ffmpeg", fakeFFmpeg)
 	workRoot = filepath.Join(dir, "work")
@@ -189,6 +195,39 @@ func TestFailuresAnswerCodesOnly(t *testing.T) {
 		}, "/normalize?probe_ms=5000&encode_ms=2500", []byte("x"), 504, "timeout"},
 		{"still without video", func(t *testing.T) { fakeTools(t, probeOf("2", stream("audio", "aac", 0, 0, "0/0", "2"))) },
 			"/still", []byte("x"), 422, "no_video"},
+		// Not the input's: ffprobe that does not start, or that the host kills, is the container's failure.
+		{"probe does not start", func(t *testing.T) {
+			fakeTools(t, videoProbe())
+			probeBin = filepath.Join(t.TempDir(), "missing")
+		}, "/still", []byte("x"), 500, "internal"},
+		{"probe killed", func(t *testing.T) {
+			fakeTools(t, videoProbe())
+			t.Setenv("FAKE_PROBE_KILL", "1")
+		}, "/still", []byte("x"), 500, "internal"},
+		// The input's: ffmpeg reads it and writes no frame, at the seek nor at 0.
+		{"still with no frame", func(t *testing.T) {
+			fakeTools(t, videoProbe())
+			t.Setenv("FAKE_EMPTY_ON", "-c:v png")
+		}, "/still", []byte("x"), 422, "no_frame"},
+		{"still that ffmpeg fails", func(t *testing.T) {
+			fakeTools(t, videoProbe())
+			t.Setenv("FAKE_FAIL_ON", "-c:v png")
+		}, "/still", []byte("x"), 500, "still_failed"},
+		// Not the input's: ffmpeg that does not start, that the host kills, or whose output cannot be read back.
+		{"still whose ffmpeg does not start", func(t *testing.T) {
+			fakeTools(t, videoProbe())
+			ffmpegBin = filepath.Join(t.TempDir(), "missing")
+		}, "/still", []byte("x"), 500, "internal"},
+		{"still whose ffmpeg is killed", func(t *testing.T) {
+			fakeTools(t, videoProbe())
+			t.Setenv("FAKE_FFMPEG_KILL", "-c:v png")
+		}, "/still", []byte("x"), 500, "internal"},
+		{"still whose output cannot be read back", func(t *testing.T) {
+			fakeTools(t, videoProbe())
+			old := statOutput
+			statOutput = func(string) (os.FileInfo, error) { return nil, syscall.EIO }
+			t.Cleanup(func() { statOutput = old })
+		}, "/still", []byte("x"), 500, "internal"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -481,6 +520,46 @@ func TestAnUnusableProfileFallsBackToDroppingIt(t *testing.T) {
 		if strings.Contains(lines[i], "iccdetect") != detect || !detect && !strings.Contains(lines[i], iccDrop) {
 			t.Fatalf("run %d (iccdetect %v): %q", i, detect, lines[i])
 		}
+	}
+}
+
+// An output that cannot be read back after an attempt with the profile is the container's failure, whatever a retry
+// without it would find: no retry turns it into no frame.
+func TestAnUnreadableStillIsNotRetriedIntoNoFrame(t *testing.T) {
+	fakeTools(t, videoProbe())
+	frames := filepath.Join(t.TempDir(), "frames.json")
+	if err := os.WriteFile(frames, []byte(`{"frames":[{"stream_index":0,"side_data_list":[{"side_data_type":"ICC profile"}]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_FRAMES", frames)
+	old := statOutput
+	stats := 0
+	// The first attempt's output answers EIO; any later one would find nothing.
+	statOutput = func(string) (os.FileInfo, error) {
+		stats++
+		if stats == 1 {
+			return nil, syscall.EIO
+		}
+		return nil, fs.ErrNotExist
+	}
+	t.Cleanup(func() { statOutput = old })
+	rec := do(t, newMux(threadsDefault), "POST", "/still", []byte("input"))
+	if rec.Code != 500 || rec.Header().Get("Kopje-Error") != "internal" || stats != 1 {
+		t.Fatalf("%d %q after %d stats", rec.Code, rec.Header().Get("Kopje-Error"), stats)
+	}
+}
+
+// A still PNG that cannot be stripped answers still_failed.
+func TestAStillThatCannotBeStrippedFails(t *testing.T) {
+	fakeTools(t, videoProbe())
+	bad := filepath.Join(t.TempDir(), "bad.png")
+	if err := os.WriteFile(bad, []byte("not a png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_PNG", bad)
+	rec := do(t, newMux(threadsDefault), "POST", "/still", []byte("input"))
+	if rec.Code != 500 || rec.Header().Get("Kopje-Error") != "still_failed" {
+		t.Fatalf("%d %q", rec.Code, rec.Header().Get("Kopje-Error"))
 	}
 }
 

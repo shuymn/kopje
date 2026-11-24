@@ -3186,12 +3186,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   reconciliation and an upload's cleanup are refused at their first Store write, before any R2 delete; while the
   rebuild's lease is live they are refused whatever the flags say (operation kind `media-delete`), and so is leaving
   maintenance. One call runs at a time under that lease, kept at the Store's clock: renewed before each row and, while
-  an R2 write is pending, every minute; R2 writes and deletes are never given up but awaited to completion, so the lease
-  cannot end under a write the call started while the call runs, and each starts only after the Store confirms the lease
-  is still the call's (once a renewal or that check fails, no further write starts, the call reports `lease-overrun` and
-  the lease is not released). A PITR restore is refused while the lease is live, and the lease while a restore is being
-  scheduled (`pitr_restoring`); since a restore rewinds the maintenance start and the unpublished flag, the Store
-  records each restore outside its database (an R2 object named by its id, `restoreMarkerKey` in
+  an R2 write is pending, every minute; R2 writes and deletes are never given up but awaited to completion, so while the
+  call and its heartbeats run the lease does not end under a write it started, and each starts only after the Store
+  confirms the lease is still the call's (once a renewal or that check fails, no further write starts, the call reports
+  `lease-overrun` and the lease is not released). Every renewal, confirmation and release names the generation of the
+  call's take and succeeds only while that generation is the live lease, so a renewal that reaches the Store late (after
+  the release, or after another call took an expired lease) changes nothing; a heartbeat that hangs is given up after 30
+  seconds and the next is sent on time. A PITR restore is refused while the lease is live, and the lease while a restore
+  is being scheduled (`pitr_restoring`); since a restore rewinds the maintenance start and the unpublished flag, the
+  Store records each restore outside its database (an R2 object named by its id, `restoreMarkerKey` in
   `src/platform/media-files.ts`, never served) before scheduling it, and the
   rebuild counts readiness only from it: an unpublished flag from before it is not ready, and maintenance settles from
   the later of its start and the restore. An import reset or cutover reset never writes the maintenance flag, so they
@@ -3203,9 +3206,40 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   under the env maintenance alone", "waits for maintenance to settle", "refuses leaving maintenance and every
   media-deleting write while the lease is live", "awaits a pending write past the deadline", "deletes the files it
   wrote for a row that went while it wrote them", "refuses a restore while the lease is live", "counts the settle
-  period again from a restore"). Accepted residual risk: a Worker terminated in the middle of an R2 write leaves no
-  heartbeat and no record, and that one write may land after the lease expired; it is bounded to a put already in
-  flight at termination, and its file lands under the capability URL of a row that existed when the rebuild started.
+  period again from a restore"). A confirmation whose reply leaves less than a minute of its grant, as the call's clock
+  reads it after the reply, starts nothing: `test/media-rebuild.test.ts` ("starts no write on a confirmation whose reply
+  arrives once the lease may have ended"). Accepted residual risk: R2 cannot check the lease's generation, so a write
+  already pending when its call's lease ended (a Worker terminated mid-write, which leaves no heartbeat and no record,
+  or one whose heartbeats were all delayed) can land after a newer holder's write of the same key, for image rows as
+  before #1828. It is bounded to a put already in flight, its file lands under the capability URL of a row that existed
+  when the rebuild started, and every such write passes the checks. What an overlap leaves differs by file. A video's or
+  audio's `full`: every write is a byte-identical copy of the original the verifier accepted. A video's `small`: two
+  writes may differ, each carrying its own `{width, height, blurhash}` metadata; the next rebuild that processes the
+  preview adopts the object stored last and brings the row's metadata into agreement, or gives the row the poster when
+  that object's size does not fit the row's metadata, and a row left with the poster is processed again only by
+  `--stills`: `test/media-rebuild-av.test.ts` ("converges when an earlier holder's still put
+  lands over the small a later call recorded"). An image's files: re-encodes of the same original through the same
+  checks, but the row's preview dimensions or blurhash can be left disagreeing with the stored `small`, which a later
+  run skips; this is pre-existing (#1835).
+  A video or audio row (`src/mastodon/media-rebuild-av.ts`, #1828) is rebuilt under the same lease and fences, one a
+  call, within `REBUILD_AV_MS` (120 s, its stages bounded at 60, 60 and 75 s). Its `files/<token>/full` is the original
+  read once and streamed through the output verifier (`avVerifier`, MEDIA-3) into the put; the last chunk is held until
+  the verifier accepted the whole stream and its kind is the row's, so a refused file never reaches R2 whole and the put
+  fails. A video's `files/<token>/small` is either an existing object adopted only after a bounded read shows a still
+  WebP with no retained metadata and a long edge of at most 640 (never overwritten with other bytes; one that fails is
+  reported and left), or a still made by the media processor through the injected `StillMaker` (its one input key is
+  `originals/<id>`; the PNG passes `verifyStill`, then Images' `encodeChecked`), put with custom metadata `{width,
+  height, blurhash}`. The Store records the still (`recordAvStill`) only after that put, and with `--stills` sets the
+  preview URL in the same call; when no still can be made (no processor, a spent budget, a refused input, a meta that
+  cannot take it) it clears the preview, `meta.small` and the blurhash (`fallbackAvRebuild`) and writes nothing but the
+  verified `full`, and a processor or Images failing for a moment stops the call with the row as it was. The
+  `still@standard-1` probe the call runs first when its record is not a pass for this build writes its input to
+  `incoming/probe-<nonce>` (`probeInputKey`, never served) and deletes it after; a copy left by a Worker that died in
+  between, or by a call that lost its lease before the delete, stays until removed by hand (the `incoming/` orphan pass
+  is not built yet). Every one of these R2 writes and deletes starts only after the Store confirms the lease.
+  `test/media-rebuild-av.test.ts` ("publishes nothing the verifier refuses", "a call that loses its lease after `full`",
+  "a call held right after its still's put loses the lease", "a restored row whose preview metadata predates the
+  small", "falls back without the processor"), `test/media-processor.test.ts` ("MediaProcessor stillNow").
   A custom emoji upload (`kopje-admin emoji add`, `src/mastodon/emoji-upload.ts`) builds its keys as every upload's,
   from a reservation the Store records before any write (`reserveEmoji` in `src/domain/local-emojis.ts`); completion
   and promotion are one transaction (`completeEmoji`: the row is kept, gc_at NULL, with its emoji row), and a failure

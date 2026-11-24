@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log"
 	"math"
 	"net/http"
@@ -355,11 +356,24 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 	icc := streamICC(video) || frameICC(ctx, in, video.Index)
 	err = runStill(ctx, video.Index, isHDR(video), icc, stillSeek(boundedDuration(p, video)), in, out)
 	t.set("Encode", start)
-	if err == nil {
-		err = stripPNG(out)
+	// A still that cannot be stripped is still_failed, as before the start and kill failures were told apart.
+	if err == nil && stripPNG(out) != nil {
+		writeFailure(w, ffmpegFailure(ctx, "still_failed"))
+		return
+	}
+	// No frame at the seek nor at 0 from an input ffmpeg read without failing: the input has no still to give.
+	if errors.Is(err, errNoFrame) && ctx.Err() == nil {
+		writeFailure(w, refuse(refuseNoFrame))
+		return
 	}
 	if err != nil {
-		writeFailure(w, ffmpegFailure(ctx, "still_failed"))
+		// ffmpeg exiting with a status is about the input; one that did not start, was killed by the host, or whose
+		// output could not be read back is the container's.
+		code := "still_failed"
+		if !exitedWithStatus(err) {
+			code = "internal"
+		}
+		writeFailure(w, ffmpegFailure(ctx, code))
 		return
 	}
 	setWrite()
@@ -384,7 +398,9 @@ func makeStill(ctx context.Context, pl *plan, in string) bool {
 }
 
 // runStill writes the still, reading the frame's ICC profile when it has one, and runs again without it when ffmpeg
-// fails then (a profile iccdetect cannot use): the still is made as before, its profile dropped.
+// exits with a status then (a profile iccdetect cannot use): the still is made as before, its profile dropped. Any
+// other failure (ffmpeg not starting or killed, an output that cannot be read back) is returned as it is, so a later
+// attempt cannot turn it into no frame.
 //
 // ffmpeg can succeed with no frame written: with another stream in the file, the seek can land past the video's only
 // keyframe. The still is then taken at 0.
@@ -397,7 +413,7 @@ func runStill(ctx context.Context, videoIndex int, hdr, icc bool, seek float64, 
 		return err
 	}
 	err := attempt(icc)
-	if err != nil && !errors.Is(err, errNoFrame) && icc && ctx.Err() == nil {
+	if exitedWithStatus(err) && icc && ctx.Err() == nil {
 		err = attempt(false)
 	}
 	return err
@@ -405,15 +421,21 @@ func runStill(ctx context.Context, videoIndex int, hdr, icc bool, seek float64, 
 
 var errNoFrame = errors.New("no frame written")
 
+// statOutput reads an output's size (a variable so a test can fail it as the filesystem can).
+var statOutput = os.Stat
+
+// writeStill runs one still. errNoFrame only when ffmpeg succeeded and its output is absent or empty; an output that
+// cannot be read back (an I/O error) is that error, which is not the input's.
 func writeStill(ctx context.Context, args []string, out string) error {
 	_ = os.Remove(out)
 	if _, err := runFFmpeg(ctx, args); err != nil {
 		return err
 	}
-	if st, err := os.Stat(out); err != nil || st.Size() == 0 {
+	st, err := statOutput(out)
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && st.Size() == 0) {
 		return errNoFrame
 	}
-	return nil
+	return err
 }
 
 func ffmpegFailure(ctx context.Context, code string) *failure {
@@ -505,6 +527,10 @@ func runProbe(ctx context.Context, args []string) (*probeResult, *failure) {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, fail(http.StatusGatewayTimeout, "timeout")
 		}
+		// Only ffprobe exiting with a status is about the input; one that did not start, or that the host killed, is not.
+		if !exitedWithStatus(err) {
+			return nil, fail(http.StatusInternalServerError, "internal")
+		}
 		return nil, refuse(refuseUnreadable)
 	}
 	var p probeResult
@@ -515,6 +541,14 @@ func runProbe(ctx context.Context, args []string) (*probeResult, *failure) {
 		return nil, refuse(refuseFormat)
 	}
 	return &p, nil
+}
+
+// exitedWithStatus reports whether a command's error is the process exiting with a non-zero status: it started and
+// ran to its own end. Not starting (a missing binary, no resources) and a signal from outside (the host's OOM killer;
+// the job's own kill comes with its context's end, which callers check first) are not.
+func exitedWithStatus(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.Exited()
 }
 
 // frameICC runs the frame probe, after the header probe's limits passed: whether the stream at index has an ICC

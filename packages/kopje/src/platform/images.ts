@@ -352,6 +352,10 @@ export async function inspectImage(
   }
 }
 
+// Why a blurhash is null: Images' quota (9422), the call's time, or any other failure of the RGBA output ("failed",
+// which an upload or an image's rebuild keeps as no blurhash, and a video's rebuild retries).
+export type BlurhashStop = "quota" | "deadline" | "failed" | null;
+
 // The blurhash of the preview `small`, from Images' RGBA output of the preview's own input (the full image's bytes) and
 // transformation, read within 4 × w × h of its checked size (encodeRgba), as Mastodon's BlurhashTranscoder hashes the
 // small style (app/models/media_attachment.rb:71-81, 330, lib/paperclip/blurhash_transcoder.rb:6-12, v4.5.11). Any
@@ -363,7 +367,7 @@ async function previewBlurhash(
   transform: Partial<Size>,
   small: Size,
   { end, now }: { end: number; now: () => number },
-): Promise<{ blurhash: string | null; stop: "quota" | "deadline" | null }> {
+): Promise<{ blurhash: string | null; stop: BlurhashStop }> {
   if (now() >= end - RGBA_MIN_CALL_MS) {
     return { blurhash: null, stop: "deadline" };
   }
@@ -377,7 +381,7 @@ async function previewBlurhash(
       return { blurhash: null, stop: "deadline" };
     }
     if (error instanceof ImageCodecError) {
-      return { blurhash: null, stop: error.code === QUOTA_ERROR ? "quota" : null };
+      return { blurhash: null, stop: error.code === QUOTA_ERROR ? "quota" : "failed" };
     }
     throw error;
   }
@@ -419,11 +423,72 @@ export async function processImage(
       options.blurhash === undefined
         ? { blurhash: null, stop: null }
         : await previewBlurhash(codec, full.bytes, preview, small, options.blurhash);
-    return { ok: true, image: { original, full, small, blurhash: hashed.blurhash }, blurhashStop: hashed.stop };
+    // An image keeps no blurhash on any other failure of the RGBA output, as before.
+    const stop = hashed.stop === "failed" ? null : hashed.stop;
+    return { ok: true, image: { original, full, small, blurhash: hashed.blurhash }, blurhashStop: stop };
   } catch (error) {
     if (error instanceof ImageOutputError) {
       return { ok: false, reason: "failed", detail: error.message };
     }
     return failure(error);
+  }
+}
+
+// The preview of a video from the media processor's PNG still (#1828 design 4.10, 4.16), which verifyStill has passed
+// (platform/av-bytes.ts): re-encoded as a still WebP within SMALL_EDGE (encodeBounded: read within `limit`, every call
+// under `guard`, stripped, no metadata left, one frame, its real dimensions), and its blurhash from Images' RGBA output of the same input and transformation, given
+// up as an upload's is (`blurhash`, ProcessOptions). A failure of the WebP is classified as processImage classifies
+// it; any failure of the RGBA output only leaves the blurhash null.
+export async function stillPreview(
+  codec: ImageCodec,
+  png: Uint8Array,
+  size: Size,
+  blurhash: { end: number; now: () => number },
+  limit: number,
+  guard: CallGuard,
+): Promise<
+  | { ok: true; small: EncodedImage; blurhash: string | null; blurhashStop: BlurhashStop }
+  | { ok: false; reason: ImageFailure; detail?: string }
+> {
+  const preview = fit(size, SMALL_EDGE);
+  try {
+    const small = await encodeBounded(codec, png, { ...preview, format: "image/webp", still: true }, limit, guard);
+    const hashed = await previewBlurhash(codec, png, preview, small, blurhash);
+    return { ok: true, small, blurhash: hashed.blurhash, blurhashStop: hashed.stop };
+  } catch (error) {
+    if (error instanceof ImageOutputError) {
+      return { ok: false, reason: "failed", detail: error.message };
+    }
+    return failure(error);
+  }
+}
+
+// The blurhash of a still WebP of `size` that is already served (an adopted `small`, design 4.16), from Images' RGBA
+// output of it untransformed; null when that fails or is given up. 9422 is told apart so the caller can stop.
+export async function stillBlurhash(
+  codec: ImageCodec,
+  webp: Uint8Array,
+  size: Size,
+  blurhash: { end: number; now: () => number },
+): Promise<{ blurhash: string | null; stop: BlurhashStop }> {
+  return previewBlurhash(codec, webp, {}, size, blurhash);
+}
+
+// Whether Images re-encodes the media processor's PNG `png` of `size` into a checked still WebP within SMALL_EDGE (the
+// `still@standard-1` probe's last step, design 4.15). "failed" only when the PNG is refused as input (INPUT_ERRORS) or
+// the output fails its checks, which say the profile's still is not usable; "quota" for 9422 and "retry" for any other
+// failure of the service, which say nothing of the profile.
+export async function stillEncodes(
+  codec: ImageCodec,
+  png: Uint8Array,
+  size: Size,
+  guard: CallGuard,
+): Promise<"passed" | "failed" | "quota" | "retry"> {
+  try {
+    await encodeChecked(codec, png, { ...fit(size, SMALL_EDGE), format: "image/webp", still: true, guard });
+    return "passed";
+  } catch (error) {
+    const reason = codecFailure(error);
+    return reason === "output" || reason === "unsupported" ? "failed" : reason === "quota" ? "quota" : "retry";
   }
 }

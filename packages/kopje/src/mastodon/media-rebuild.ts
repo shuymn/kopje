@@ -17,8 +17,10 @@ import {
 import { sniffImageType } from "../platform/image-bytes";
 import { type ImageCodec, IMAGE_SIZE_LIMIT, inspectImage, processImage, servedTypeOf } from "../platform/images";
 import { fileKey, MEDIA_VARIANTS, originalKey } from "../platform/media-files";
+import type { StillMaker } from "../platform/media-transcoder";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreStub } from "../platform/store-client";
+import { avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./media-rebuild-av";
 
 // Rebuilds the served files of local media from their originals (domain/media-rebuild.ts), one bounded call at a time
 // from /admin/media/rebuild; the CLI (`kopje-admin media-rebuild`) follows the cursor to the end. A row whose two files
@@ -34,9 +36,26 @@ import type { StoreStub } from "../platform/store-client";
 // The lease (REBUILD_LEASE_MS, at the Store's clock) is renewed before each row. Within a row, steps without a lasting
 // effect (R2 reads, Images, Store calls, whose writes check the lease again) are given up LEASE_MARGIN_MS before the
 // renewed lease would end; R2 writes and deletes are never given up: each is awaited to completion while a heartbeat
-// renews the lease every REBUILD_HEARTBEAT_MS, so the lease cannot end under a write this call started while the call
-// runs. Each write or delete starts only after the Store confirms the lease is still this call's; once a renewal or that
-// check fails, the call starts no further write, reports `lease-overrun` and does not release the lease.
+// renews the lease every REBUILD_HEARTBEAT_MS, so while the call and its heartbeats run the lease does not end under a
+// write it started. Every renewal, confirmation and the release name the generation the Store gave the call's take, and
+// succeed only while that generation is the live lease: a renewal that arrives late (after the release, or after
+// another call took an expired lease) changes nothing. Each heartbeat is given up after REBUILD_HEARTBEAT_STALL_MS,
+// which says nothing of the lease, and the next one is sent on time whatever the earlier one does. Each write or delete
+// starts only after the heartbeats in flight have answered or been given up and the Store confirms the lease is still
+// this call's with at least LEASE_MARGIN_MS of its grant left as this call's clock reads it after the reply; once a
+// renewal or that check fails, the call starts no further write, reports `lease-overrun` and does not release the
+// lease.
+//
+// The accepted limit: R2 cannot check a generation, so a write already pending when its call's lease ended (its
+// heartbeats all delayed, or its Worker stopped) can land after a newer holder's write of the same key, for image rows
+// as it was on main. Every such write passes the checks, and what an overlap leaves differs by file:
+//   - a video's or audio's `full`: every write is a byte-identical copy of the original the verifier accepted;
+//   - a video's `small`: two writes may differ, each carrying its own {width, height, blurhash} metadata; the next
+//     rebuild that processes the preview adopts the object stored last and brings the row's metadata into agreement,
+//     or gives the row the poster when that object's size does not fit the row's metadata (media-rebuild-av.ts), and a
+//     row left with the poster is processed again only by `--stills`;
+//   - an image's files: re-encodes through the same checks, but the row's preview dimensions or blurhash can be left
+//     disagreeing with the stored `small`, which a later run skips (pre-existing, #1835).
 // A call that gave up a step keeps the lease until it expires. The bound: per row, at most two R2 reads, six Images
 // calls (an emoji's: the preflight info() and processImage's five; any other row's: processImage's six, its preview's
 // RGBA included) and five Store calls, each given up within the lease, then at most three R2 writes, each awaited.
@@ -62,15 +81,23 @@ import type { StoreStub } from "../platform/store-client";
 // which stays spent). A dry run is a size and signature preflight only: its would-build certifies neither the edges
 // nor the encoded output.
 //
+// A video or audio row (#1828) is rebuilt by mastodon/media-rebuild-av.ts within this call's lease and fences: its
+// `full` copied from the original through the output verifier, a video's `small` adopted or made by the media
+// processor (the StillMaker the app wiring passes, null without the processor) or the row's preview cleared (the
+// fallback, counted as `fallback`). `stills` (`kopje-admin media-rebuild --stills`) also gives a still to video rows
+// that have none.
+//
 // Bounds per call: one listing (at most SCAN_WINDOW rows scanned, REBUILD_PAGE candidates) and at most
-// MAX_BUILDS_PER_CALL re-encoded, one at a time (an original is at most 16 MB), so a call stays within a request's
-// subrequests and memory.
+// MAX_BUILDS_PER_CALL rows built, one at a time (an image original is at most 16 MB), of which at most
+// MAX_AV_BUILDS_PER_CALL are video or audio rows (each streamed, within REBUILD_AV_MS), so a call stays within a
+// request's subrequests and memory.
 
 export const MAX_BUILDS_PER_CALL = 10;
 
 // What a row leaves of its renewed lease unused, against clock differences between the Worker and the Store.
 const LEASE_MARGIN_MS = 60_000;
 const REBUILD_HEARTBEAT_MS = 60_000;
+const REBUILD_HEARTBEAT_STALL_MS = 30_000;
 
 type RebuildOutcome =
   | "built"
@@ -79,6 +106,7 @@ type RebuildOutcome =
   | "original-missing"
   | "type-mismatch"
   | "failed"
+  | "fallback"
   | "gone";
 
 // Rows an operator has to look at: the original is missing, its type does not match the row, or re-encoding failed.
@@ -87,7 +115,7 @@ type RebuildProblem = { id: string; outcome: "original-missing" | "type-mismatch
 export type RebuildStep =
   | {
       ok: true;
-      counts: Record<RebuildOutcome, number>;
+      counts: RebuildCounts;
       problems: RebuildProblem[];
       // True when the call reached the last row; otherwise the next call continues after `next` (null: from the
       // start).
@@ -96,7 +124,9 @@ export type RebuildStep =
       // quota: Images refused (9422); budget: IMAGES_MONTHLY_TRANSFORMS is spent this month; deadline: a step was
       // given up (the lease is kept until it expires); lease-overrun: the lease could not be renewed while a write
       // was pending (it is not released).
-      stopped: "quota" | "budget" | "deadline" | "lease-overrun" | null;
+      // retry: the media processor or Images failed in a way a later call may not (busy, unavailable, a transient
+      // failure); the row it stopped at is the next call's first.
+      stopped: "quota" | "budget" | "retry" | "deadline" | "lease-overrun" | null;
     }
   | {
       ok: false;
@@ -113,9 +143,13 @@ export type RebuildDeps = {
   now: () => number;
   authority: ImportAuthority;
   monthlyTransforms: number;
+  // MEDIA_UPLOAD_MONTHLY_JOBS, and the media processor's stills (null without its binding): video rows' stills.
+  monthlyUploads?: number;
+  stills?: StillMaker | null;
   // The lease holder of this call (a fresh id by default), and the heartbeat while a write is pending.
   holder?: string;
   heartbeatMs?: number;
+  heartbeatStallMs?: number;
 };
 
 // This call no longer holds the lease: it starts no further R2 write.
@@ -130,7 +164,10 @@ class Refused extends Error {
   }
 }
 
-function emptyCounts(): Record<RebuildOutcome, number> {
+// `fallback` is counted only once a video falls back, so an answer with no video or audio row is the image-only one.
+type RebuildCounts = Record<Exclude<RebuildOutcome, "fallback">, number> & { fallback?: number };
+
+function emptyCounts(): RebuildCounts {
   return {
     built: 0,
     "would-build": 0,
@@ -147,16 +184,18 @@ const SIGNATURE_BYTES = 16;
 
 export async function rebuildMedia(
   deps: RebuildDeps,
-  input: { after: string | null; dryRun: boolean },
+  input: { after: string | null; dryRun: boolean; stills?: boolean },
 ): Promise<RebuildStep> {
   const { build, store, now } = deps;
   if (input.dryRun) {
     return pass(deps, input, null);
   }
   const holder = deps.holder ?? crypto.randomUUID();
-  const lease = async (release: boolean): Promise<RebuildLeaseResult> =>
-    await store.mediaRebuildLease(build, { authority: deps.authority, holder, release });
-  const taken = await within(() => lease(false), now() + REBUILD_LEASE_MS - LEASE_MARGIN_MS, now);
+  const taken = await within<RebuildLeaseResult>(
+    async () => await store.mediaRebuildLease(build, { authority: deps.authority, holder }),
+    now() + REBUILD_LEASE_MS - LEASE_MARGIN_MS,
+    now,
+  );
   switch (taken.status) {
     case "denied":
       return { ok: false, code: "wrong-authority", message: taken.reason };
@@ -175,14 +214,20 @@ export async function rebuildMedia(
         readyAt: taken.readyAt,
       };
     case "busy":
+    case "lost":
       return { ok: false, code: "rebuild-busy", message: "another media-rebuild call holds the lease; try again" };
     case "restoring":
       return { ok: false, code: "rebuild-busy", message: "a PITR restore is being scheduled; try again" };
     case "released":
+      return { ok: false, code: "rebuild-busy", message: "the rebuild lease was not taken; try again" };
     case "ok":
       break;
   }
-  const control: Lease = { holder, lease, lost: false };
+  // This take's generation: every later lease call names it.
+  const { generation } = taken;
+  const lease = async (release: boolean): Promise<RebuildLeaseResult> =>
+    await store.mediaRebuildLease(build, { authority: deps.authority, holder, generation, release });
+  const control: Lease = { holder, lease, lost: false, renewals: new Set() };
   let result: RebuildStep | undefined;
   try {
     result = await pass(deps, input, control);
@@ -196,7 +241,14 @@ export async function rebuildMedia(
   }
 }
 
-type Lease = { holder: string; lease: (release: boolean) => Promise<RebuildLeaseResult>; lost: boolean };
+// `renewals`: the heartbeats in flight, each given up after REBUILD_HEARTBEAT_STALL_MS; the next write's confirmation
+// waits for them, so a renewal that fails is seen before any further write starts.
+type Lease = {
+  holder: string;
+  lease: (release: boolean) => Promise<RebuildLeaseResult>;
+  lost: boolean;
+  renewals: Set<Promise<void>>;
+};
 
 // Why an emoji whose two files exist may not stay published, or null: its files' sizes past the emoji limits
 // (emoji-too-large); and, in a real run, its served image as it actually is, read within EMOJI_IMAGE_LIMIT bytes (the
@@ -239,7 +291,7 @@ async function existingEmoji(
 
 async function pass(
   deps: RebuildDeps,
-  input: { after: string | null; dryRun: boolean },
+  input: { after: string | null; dryRun: boolean; stills?: boolean },
   control: Lease | null,
 ): Promise<RebuildStep> {
   const { build, store, bucket, now } = deps;
@@ -261,26 +313,47 @@ async function pass(
     if (control === null) {
       return start();
     }
+    // Heartbeats of an earlier write may still be in flight: their answers count before this write's confirmation.
+    // Each settles by its stall bound.
+    if (control.renewals.size > 0) {
+      await within(() => Promise.all(control.renewals), deadline, now);
+    }
     if (control.lost) {
       throw new Overrun();
     }
+    const asked = now();
     const owned = await within(() => control.lease(false), deadline, now);
-    if (owned.status !== "ok") {
+    // The grant ran from no earlier than `asked`: a reply that arrives with less than LEASE_MARGIN_MS of it left, as
+    // this call's clock reads it after the await, may be of a lease that has ended since, so it starts nothing.
+    if (owned.status !== "ok" || asked + owned.remainingMs - now() < LEASE_MARGIN_MS) {
       control.lost = true;
+    }
+    // Checked again after the confirmation: a renewal that failed meanwhile stops the write too.
+    if (control.lost) {
       throw new Overrun();
     }
     const work = start();
+    const stall = deps.heartbeatStallMs ?? REBUILD_HEARTBEAT_STALL_MS;
+    // A heartbeat on every tick, whatever the ones before it do. One given up (DeadlinePassed) says nothing of the
+    // lease; one the Store refuses, or that fails, marks it lost.
     const timer = setInterval(() => {
-      control.lease(false).then(
-        (renewed) => {
-          if (renewed.status !== "ok") {
-            control.lost = true;
-          }
-        },
-        () => {
-          control.lost = true;
-        },
-      );
+      const renewal: Promise<void> = within(() => control.lease(false), now() + stall, now)
+        .then(
+          (renewed) => {
+            if (renewed.status !== "ok") {
+              control.lost = true;
+            }
+          },
+          (error: unknown) => {
+            if (!(error instanceof DeadlinePassed)) {
+              control.lost = true;
+            }
+          },
+        )
+        .finally(() => {
+          control.renewals.delete(renewal);
+        });
+      control.renewals.add(renewal);
     }, deps.heartbeatMs ?? REBUILD_HEARTBEAT_MS);
     try {
       return await work;
@@ -291,11 +364,15 @@ async function pass(
   const counts = emptyCounts();
   const problems: RebuildProblem[] = [];
   let builds = 0;
+  let avBuilds = 0;
   // Images answered 9422 to a row's RGBA output: the call stops once that row is handled.
   let quota = false;
   // The last row handled; a stop leaves the row it stopped at for the next call.
   let handled = input.after;
-  const step = (stopped: "quota" | "budget" | "deadline" | "lease-overrun" | null, done: boolean): RebuildStep => ({
+  const step = (
+    stopped: "quota" | "budget" | "retry" | "deadline" | "lease-overrun" | null,
+    done: boolean,
+  ): RebuildStep => ({
     ok: true,
     counts,
     problems,
@@ -319,6 +396,72 @@ async function pass(
       const [full, small] = await bounded(() =>
         Promise.all(MEDIA_VARIANTS.map((variant) => bucket.head(fileKey(row.token, variant)))),
       );
+      if (row.av !== null) {
+        const av = row.av;
+        if (avComplete(av, full ?? null, small ?? null, input.stills === true)) {
+          counts["skipped-existing"]++;
+          handled = row.id;
+          continue;
+        }
+        if (control === null) {
+          const original = await bounded(() => bucket.head(originalKey(row.id)));
+          if (original === null) {
+            report({ id: row.id, outcome: "original-missing" });
+          } else {
+            counts["would-build"]++;
+          }
+          handled = row.id;
+          continue;
+        }
+        if (builds >= MAX_BUILDS_PER_CALL || avBuilds >= MAX_AV_BUILDS_PER_CALL) {
+          return step(null, false);
+        }
+        builds++;
+        avBuilds++;
+        const outcome = await rebuildAv(
+          {
+            build,
+            store,
+            bucket,
+            images: deps.images,
+            now,
+            authority: deps.authority,
+            holder: control.holder,
+            monthlyTransforms: deps.monthlyTransforms,
+            monthlyUploads: deps.monthlyUploads ?? 0,
+            stills: deps.stills ?? null,
+            publish: input.stills === true,
+            bounded: (work, end) => within(work, Math.min(end ?? deadline, deadline), now),
+            settled,
+          },
+          row,
+          av,
+          full ?? null,
+          small ?? null,
+        );
+        switch (outcome.kind) {
+          case "refused":
+            throw new Refused(outcome.code, outcome.message);
+          case "budget":
+            return step("budget", false);
+          case "stop":
+            return step(outcome.stopped, false);
+          case "problem":
+            report({
+              id: row.id,
+              outcome: outcome.outcome,
+              ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
+            });
+            break;
+          default:
+            counts[outcome.kind] = (counts[outcome.kind] ?? 0) + 1;
+        }
+        handled = row.id;
+        if (control.lost) {
+          return step("lease-overrun", false);
+        }
+        continue;
+      }
       if (full !== null && full !== undefined && small !== null && small !== undefined) {
         if (row.emoji) {
           const sizes = { full: full.size, small: small.size };

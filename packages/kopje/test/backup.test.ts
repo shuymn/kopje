@@ -10,14 +10,19 @@ import {
   type BackupDeps,
   type BackupFaultPoint,
   type BackupManifest,
+  MAX_MEDIA_BYTES,
   MAX_MEDIA_PER_RUN,
   MIN_PART_BYTES,
   runBackup,
+  MAX_STRAY_ABORTS,
+  MAX_STRAY_PAGES,
   scheduledBackup,
+  STREAM_COPY_BYTES,
   WORK_BYTES,
 } from "../src/jobs/backup";
 import { readBackupConfig } from "../src/platform/backup-config";
 import { readConfig } from "../src/platform/config";
+import { LIST_PAGE_BYTES } from "../src/platform/s3";
 import type { StoreStub } from "../src/platform/store-client";
 import { apiHarness, sql } from "./api-helpers";
 import { harness as appHarness } from "./app-helpers";
@@ -829,6 +834,311 @@ describe("backup deadline", () => {
     expect((await backupState(h.store)).lastFailure?.reason).toBe("s3-upload-part-timeout");
     expect(await frozen(h.store)).toBe(false);
   }, 30_000);
+});
+
+describe("backup of large originals (#1828 P24)", () => {
+  // Bytes that differ along the file, so a part out of place changes the digest.
+  function patterned(size: number): Uint8Array {
+    const out = new Uint8Array(size);
+    for (let i = 0; i < size; i++) {
+      out[i] = (i * 2654435761) >>> 24;
+    }
+    return out;
+  }
+
+  // The media bucket with every original read counted, and the media copies' bytes sent to S3 counted as each request
+  // arrives: the largest difference is what the job held of an original (plaintext read, not yet sent as ciphertext).
+  function witness(h: Harness) {
+    let read = 0;
+    let sent = 0;
+    let held = 0;
+    const counted = {
+      get: async (key: string) => {
+        const object = await env.MEDIA.get(key);
+        if (object === null) {
+          return null;
+        }
+        const body = object.body.pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+              read += chunk.byteLength;
+              controller.enqueue(chunk);
+            },
+          }),
+        );
+        return {
+          size: object.size,
+          body,
+          arrayBuffer: () => new Response(body).arrayBuffer(),
+        };
+      },
+    };
+    h.env = { ...h.env, MEDIA: counted } as unknown as Env;
+    const media = (key: string | null) => key?.startsWith(`${PREFIX}media/`) === true;
+    // The bodies S3 received before the first media request (the dump's), not counted as sent.
+    let baseline: number | null = null;
+    const received = () => h.s3.received.reduce((n, b) => n + b.byteLength, 0);
+    h.s3.before = (op, key) => {
+      if (!media(key)) {
+        return;
+      }
+      baseline ??= received();
+      if (op === "upload-part" || op === "put") {
+        // Sent before this request (its own body is still held); age adds 16 bytes per 64 KiB chunk, so the
+        // ciphertext slightly overcounts the plaintext sent.
+        sent = received() - baseline;
+        held = Math.max(held, read - sent);
+      }
+    };
+    return { held: () => held, read: () => read };
+  }
+
+  it("copies an original of exactly MAX_MEDIA_BYTES by streaming, holding a part's worth of it", async () => {
+    expect(MAX_MEDIA_BYTES).toBe(64 * 1024 * 1024);
+    const h = await harness();
+    const original = patterned(MAX_MEDIA_BYTES);
+    const source = await addMedia(h.store, snowflake(NOW - DAY, 1), original);
+    const seen = witness(h);
+    expect(await h.run()).toBe("done");
+    expect(seen.read()).toBe(MAX_MEDIA_BYTES);
+    // Several parts of a multipart upload, each of the run's part size (MIN_PART_BYTES in this harness).
+    const parts = h.s3.requests.filter((r) => r.op === "upload-part" && r.key?.includes("/media/") === true);
+    expect(parts.length).toBeGreaterThan(MAX_MEDIA_BYTES / MIN_PART_BYTES - 1);
+    // Held: at most one part and a few chunks, against the 64 MiB a whole read would hold.
+    expect(seen.held()).toBeLessThanOrEqual(MIN_PART_BYTES + 1024 * 1024);
+    const { index } = await restore(h);
+    const entry = index.find((e) => e.source === source)!;
+    expect(entry.plaintext).toEqual({ size: MAX_MEDIA_BYTES, sha256: await sha256Hex(original) });
+    expect(h.s3.uploads.size).toBe(0);
+  }, 120_000);
+
+  it("refuses an original one byte past MAX_MEDIA_BYTES before reading it", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), new Uint8Array(MAX_MEDIA_BYTES + 1));
+    const seen = witness(h);
+    expect(await h.run()).toBe("failed");
+    expect((await backupState(h.store)).lastFailure?.reason).toBe("media-too-large");
+    expect(seen.read()).toBe(0);
+  }, 60_000);
+
+  it("copies an original of STREAM_COPY_BYTES whole and one byte more by streaming", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES));
+    await addMedia(h.store, snowflake(NOW - DAY, 2), patterned(STREAM_COPY_BYTES + 1));
+    expect(await h.run()).toBe("done");
+    const media = (op: string) => h.s3.requests.filter((r) => r.op === op && r.key?.includes("/media/") === true);
+    expect(media("put")).toHaveLength(1);
+    expect(media("create-upload")).toHaveLength(1);
+    expect((await restore(h)).index.map((e) => e.plaintext?.size)).toEqual([STREAM_COPY_BYTES, STREAM_COPY_BYTES + 1]);
+  }, 60_000);
+
+  it("aborts the multipart upload of an original whose part fails, and copies it at the next run", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
+    let parts = 0;
+    h.s3.fail = (op, key) =>
+      op === "upload-part" && key?.includes("/media/") === true && ++parts === 2 ? 403 : undefined;
+    expect(await h.run()).toBe("failed");
+    expect(h.s3.count("abort-upload")).toBeGreaterThan(0);
+    expect(h.s3.uploads.size).toBe(0);
+    expect(keysUnder(h, `${PREFIX}media/`)).toEqual([]);
+    h.s3.fail = undefined;
+    h.clock.now += DAY;
+    expect(await h.run()).toBe("done");
+    expect((await restore(h)).index.map((e) => e.state)).toEqual(["copied"]);
+  }, 60_000);
+
+  it("aborts the upload of an original whose stream breaks off, as media-changed", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
+    // The object states one byte more than its body holds.
+    mediaAnswering(h, (object) => ({ size: object.size + 1, body: object.body }));
+    expect(await h.run()).toBe("failed");
+    expect((await backupState(h.store)).lastFailure?.reason).toBe("media-changed");
+    expect(h.s3.uploads.size).toBe(0);
+  }, 60_000);
+
+  // The media bucket answering `key`'s object with `size` and `body` in place of its own.
+  function mediaAnswering(h: Harness, answer: (object: R2ObjectBody) => { size: number; body: ReadableStream }) {
+    h.env = {
+      ...h.env,
+      MEDIA: {
+        get: async (key: string) => {
+          const object = await env.MEDIA.get(key);
+          return object === null ? null : answer(object);
+        },
+      },
+    } as unknown as Env;
+  }
+
+  it("stops reading a body longer than its object's size, as media-changed", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(1));
+    let read = 0;
+    // A body that never ends.
+    mediaAnswering(h, (object) => {
+      void object.body.cancel();
+      return {
+        size: STREAM_COPY_BYTES + 1,
+        body: new ReadableStream<Uint8Array>({
+          pull(controller) {
+            read += 64 * 1024;
+            controller.enqueue(new Uint8Array(64 * 1024));
+          },
+        }),
+      };
+    });
+    expect(await h.run()).toBe("failed");
+    expect((await backupState(h.store)).lastFailure?.reason).toBe("media-changed");
+    expect(read).toBeLessThan(STREAM_COPY_BYTES + 1 + 1024 * 1024);
+    expect(h.s3.uploads.size).toBe(0);
+  }, 60_000);
+
+  it("gives up a read of the original that stalls when the time left runs out, aborting its upload", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(1));
+    let sent = false;
+    // One chunk, then nothing.
+    mediaAnswering(h, (object) => {
+      void object.body.cancel();
+      return {
+        size: STREAM_COPY_BYTES + 1,
+        body: new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (!sent) {
+              sent = true;
+              controller.enqueue(new Uint8Array(1024));
+              return;
+            }
+            return new Promise<void>(() => {});
+          },
+        }),
+      };
+    });
+    // 300 ms of request time beyond the reserve, on a clock that moves: the abort runs in the reserve.
+    const start = Date.now();
+    expect(await h.run({ invocationMs: 60_000 + 300, now: () => NOW + (Date.now() - start) })).toBe("paused");
+    expect(h.s3.count("abort-upload")).toBe(1);
+    expect(h.s3.uploads.size).toBe(0);
+  }, 20_000);
+
+  it("aborts the upload of a streamed original when the byte budget is crossed inside it", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), new Uint8Array(1000));
+    await addMedia(h.store, snowflake(NOW - DAY, 2), patterned(2 * STREAM_COPY_BYTES));
+    // The first invocation pauses after the first original, so the second starts the large one with nothing spent.
+    h.s3.before = (op, key) => {
+      if (op === "put" && key?.includes("/media/") === true) {
+        h.s3.before = undefined;
+        h.clock.now += 13 * MINUTE;
+      }
+    };
+    expect(await h.run()).toBe("paused");
+    h.clock.now += 16 * MINUTE;
+    expect(await h.run({ workBytes: STREAM_COPY_BYTES + 1 })).toBe("paused");
+    // Parts were sent before the budget was crossed.
+    expect(
+      h.s3.requests.filter((r) => r.op === "upload-part" && r.key?.includes("/media/") === true).length,
+    ).toBeGreaterThan(0);
+    expect(h.s3.count("abort-upload")).toBe(1);
+    expect(h.s3.uploads.size).toBe(0);
+    expect((await backupState(h.store)).run).toMatchObject({ stage: "media", copied: 1 });
+    h.clock.now += 16 * MINUTE;
+    expect(await h.run()).toBe("done");
+  }, 60_000);
+
+  it("aborts the upload of a streamed original when the lease is taken inside it", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
+    h.s3.before = async (op, key) => {
+      if (op === "upload-part" && key?.includes("/media/") === true) {
+        h.s3.before = undefined;
+        // Another runner, once this one's lease would have ended.
+        expect((await h.store.backupClaim(BUILD, "other", h.clock.now + 16 * MINUTE, 15 * MINUTE)).ok).toBe(true);
+      }
+    };
+    expect(await h.run()).toBe("busy");
+    expect(h.s3.count("abort-upload")).toBe(1);
+    expect(h.s3.uploads.size).toBe(0);
+  }, 60_000);
+
+  it("aborts the media strays when listing the backups' fails, and at most MAX_STRAY_ABORTS a run", async () => {
+    const strays = (h: Harness, n: number) => {
+      for (let i = 0; i < n; i++) {
+        h.s3.uploads.set(`stray-${String(i).padStart(4, "0")}`, {
+          key: `${PREFIX}media/old/${i}.age`,
+          parts: new Map(),
+        });
+      }
+    };
+    const failing = await harness();
+    strays(failing, 1);
+    let lists = 0;
+    failing.s3.fail = (op) => (op === "list-uploads" && ++lists === 1 ? 403 : undefined);
+    expect(await failing.run()).toBe("done");
+    expect(lists).toBe(2);
+    expect(failing.s3.uploads.size).toBe(0);
+
+    // Pages of 1,000, as S3 lists them: MAX_STRAY_ABORTS from the first page.
+    const many = await harness();
+    (many.s3 as { maxListKeys: number }).maxListKeys = 1000;
+    strays(many, MAX_STRAY_ABORTS + 5);
+    expect(await many.run()).toBe("done");
+    expect(many.s3.count("abort-upload")).toBe(MAX_STRAY_ABORTS);
+    expect(many.s3.uploads.size).toBe(5);
+
+    // Pages of 2: MAX_STRAY_PAGES pages a prefix, whatever is left.
+    const paged = await harness();
+    strays(paged, MAX_STRAY_ABORTS + 5);
+    expect(await paged.run()).toBe("done");
+    expect(paged.s3.count("abort-upload")).toBe(2 * MAX_STRAY_PAGES);
+  }, 60_000);
+
+  it.each([
+    ["empty pages that say more follow", "advancing", 2 * MAX_STRAY_PAGES],
+    ["a marker that does not move", "same", 2 * 2],
+    ["a page past LIST_PAGE_BYTES", "large", 2],
+  ] as const)(
+    "stops listing strays on %s",
+    async (_name, mode, expected) => {
+      const advancing = mode === "advancing";
+      const h = await harness();
+      let lists = 0;
+      let page = 0;
+      const fetch = async (request: Request) => {
+        const url = new URL(request.url);
+        if (request.method === "GET" && url.searchParams.has("uploads")) {
+          lists++;
+          page++;
+          const marker = advancing ? `${PREFIX}x/${String(page).padStart(6, "0")}` : `${PREFIX}x/same`;
+          return new Response(
+            (mode === "large" ? " ".repeat(LIST_PAGE_BYTES) : "") +
+              "<ListMultipartUploadsResult><IsTruncated>true</IsTruncated>" +
+              `<NextKeyMarker>${marker}</NextKeyMarker><NextUploadIdMarker>u</NextUploadIdMarker>` +
+              "</ListMultipartUploadsResult>",
+          );
+        }
+        return h.s3.fetch(request);
+      };
+      expect(await h.run({ fetch })).toBe("done");
+      // backups/ and media/, each at most MAX_STRAY_PAGES pages; two when the second marker does not move, one when
+      // the first page is too large.
+      expect(lists).toBe(expected);
+    },
+    60_000,
+  );
+
+  it("a Worker that dies mid-upload leaves an upload the next run aborts before it copies again", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
+    h.faults.set("media-part", 0);
+    await expect(h.run()).rejects.toThrow("crash at media-part");
+    expect([...h.s3.uploads.values()].map((u) => u.key.includes("/media/"))).toEqual([true]);
+    h.clock.now += 16 * MINUTE;
+    expect(await h.run()).toBe("done");
+    expect(h.s3.uploads.size).toBe(0);
+    expect((await restore(h)).index.map((e) => e.state)).toEqual(["copied"]);
+  }, 60_000);
 });
 
 describe("backup destination and recipients", () => {

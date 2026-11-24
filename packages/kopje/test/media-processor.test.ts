@@ -15,12 +15,14 @@ import {
   ProcessorUnit,
   READY_MS,
   smokeProbe,
+  STILL_CALL_MS,
+  STILL_TEARDOWN_MS,
   type UnitState,
 } from "../src/media-processor";
-import { PROBE_PROFILES, type ProbeProfile, type ProbeReport } from "../src/platform/media-transcoder";
+import { PROBE_PROFILES, type ProbeProfile, type ProbeReport, type StillMaker } from "../src/platform/media-transcoder";
 import { accessToken, adminClaims, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
 import { NOW } from "./app-helpers";
-import { BUILD, migratedStore } from "./helpers";
+import { BUILD, deferred, migratedStore } from "./helpers";
 import { memoryIO } from "./ops-helpers";
 
 type Handler = (request: Request) => Response | Promise<Response>;
@@ -91,6 +93,13 @@ function fakeContainer(
     stop: () => container.stop(),
   };
 }
+
+// The probe route never makes a still.
+const unusedStills: StillMaker = {
+  still: () => Promise.reject(new Error("unused")),
+  probe: () => Promise.reject(new Error("unused")),
+  probeInput: new Uint8Array(),
+};
 
 const MP4 = new Uint8Array(1000).fill(7);
 const PNG = new Uint8Array(300).fill(9);
@@ -379,12 +388,26 @@ describe("smoke probe", () => {
 // alarm is consumed, and stays set only if the handler sets it again.
 function fakeState(
   container: Container | undefined,
-  options: { failAlarmOn?: number[]; failDeleteAlarm?: boolean; sync?: () => Promise<void> } = {},
+  options: {
+    failAlarmOn?: number[];
+    failDeleteAll?: boolean;
+    sync?: () => Promise<void>;
+    deleteAll?: () => Promise<void>;
+    // The removal takes effect at once and answers once this settles (an ordered write whose reply is late).
+    deleteAllAnswers?: () => Promise<void>;
+    // setAlarm never answers while this is true.
+    holdAlarm?: () => boolean;
+  } = {},
 ) {
   let alarm: number | null = null;
   let alarms = 0;
+  // deleteAll() calls: the object's storage removed.
+  let cleared = 0;
   const storage = {
     setAlarm: (at: number) => {
+      if (options.holdAlarm?.() === true) {
+        return new Promise<void>(() => {});
+      }
       alarms++;
       if (options.failAlarmOn?.includes(alarms) === true) {
         return Promise.reject(new Error("storage unavailable"));
@@ -392,15 +415,24 @@ function fakeState(
       alarm = at;
       return Promise.resolve();
     },
-    deleteAlarm: () =>
-      options.failDeleteAlarm === true
-        ? Promise.reject(new Error("storage unavailable"))
-        : Promise.resolve(void (alarm = null)),
+    // Removes the alarm too, in the same step (compatibility date 2026-02-24 and later).
+    deleteAll: async () => {
+      if (options.failDeleteAll === true) {
+        throw new Error("storage unavailable");
+      }
+      await options.deleteAll?.();
+      cleared++;
+      alarm = null;
+      await options.deleteAllAnswers?.();
+    },
+    // Not part of what the unit uses (UnitState): here for a test that would call it.
+    deleteAlarm: () => Promise.resolve(void (alarm = null)),
     sync: () => options.sync?.() ?? Promise.resolve(),
   };
   return {
     ctx: { container, storage } as UnitState,
     alarm: () => alarm,
+    cleared: () => cleared,
     fire: async (object: ProcessorUnit) => {
       alarm = null;
       await object.alarm();
@@ -614,9 +646,12 @@ describe("MediaProcessor", () => {
     expect(fake.container.running).toBe(true);
     expect(state.alarm()).not.toBeNull();
 
+    expect(state.cleared()).toBe(0);
     failing = false;
     await state.fire(object);
     expect(fake.container.running).toBe(false);
+    // The orphan is gone: the object's storage goes with it.
+    expect(state.cleared()).toBe(1);
     expect((await object.probeNow("still@standard-1")).ok).toBe(true);
     expect(fake.starts()).toBe(2);
   });
@@ -695,10 +730,10 @@ describe("MediaProcessor", () => {
     expect(fake.starts()).toBe(1);
   });
 
-  // An alarm left after a confirmed teardown finds nothing to do; the next probe starts at once.
-  it("starts the next probe at once when the alarm cannot be deleted after a teardown", async () => {
+  // An alarm left after a confirmed teardown finds nothing to destroy; the next probe starts at once.
+  it("starts the next probe at once when the storage cannot be removed after a teardown", async () => {
     const fake = flaky(() => false);
-    const state = fakeState(fake.container, { failDeleteAlarm: true });
+    const state = fakeState(fake.container, { failDeleteAll: true });
     const object = unit(state.ctx);
     expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: true, destroyed: true });
     expect(state.alarm()).not.toBeNull();
@@ -729,7 +764,314 @@ describe("MediaProcessor", () => {
   });
 });
 
+describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
+  // The media bucket with its reads counted.
+  function bucket() {
+    const reads: string[] = [];
+    return {
+      reads,
+      get: async (key: string) => {
+        reads.push(key);
+        return env.MEDIA.get(key);
+      },
+    };
+  }
+
+  it("streams its one input key into /still on standard-1 without Internet, and answers the PNG once destroyed", async () => {
+    const input = new Uint8Array(5000).fill(3);
+    await env.MEDIA.put("originals/140000000000000001", input);
+    const fake = counted();
+    const media = bucket();
+    const state = fakeState(fake.container);
+    const object = unit({ ...state.ctx, bucket: media });
+    const outcome = await object.stillNow("originals/140000000000000001", 75_000);
+    expect(outcome).toEqual({ ok: true, png: PNG, image: "registry.cloudflare.com/acct/media@sha256:abc-running" });
+    expect(media.reads).toEqual(["originals/140000000000000001"]);
+    expect(fake.bodies).toEqual([input]);
+    expect(fake.started()).toMatchObject({ instance: "standard-1", enableInternet: false });
+    expect(fake.calls).toEqual(["start", "GET /healthz", "POST /still", "destroy"]);
+    expect(fake.container.running).toBe(false);
+    expect(state.alarm()).toBeNull();
+    // Its storage goes too, so a fresh rb: object leaves nothing billed behind.
+    expect(state.cleared()).toBe(1);
+  });
+
+  it.each([
+    [422, "no_video", "no_video"],
+    [422, "pixels", "pixels"],
+    [422, "no_frame", "no_frame"],
+    [500, "internal", undefined],
+    [413, "too_large", "too_large"],
+    [504, "timeout", undefined],
+    [500, "no_video", undefined],
+    [422, "still_failed", undefined],
+  ] as const)("types a %i %s answer as a refusal of the input only when it is one", async (status, code, refused) => {
+    await env.MEDIA.put("originals/140000000000000031", new Uint8Array([1]));
+    const fake = counted(undefined, {
+      "/still": () => new Response(null, { status, headers: { "kopje-error": code } }),
+    });
+    const object = unit({ ...fakeState(fake.container).ctx, bucket: bucket() });
+    const outcome = await object.stillNow("originals/140000000000000031", 75_000);
+    expect(outcome).toEqual({
+      ok: false,
+      failure: `still:${code}`,
+      image: expect.any(String) as string,
+      ...(refused === undefined ? {} : { input: refused }),
+    });
+  });
+
+  it("is not ok when the PNG arrives past the operation's end, which keeps time for the destroy", async () => {
+    await env.MEDIA.put("originals/140000000000000011", new Uint8Array([1]));
+    const time = frozen(1_000_000);
+    const fake = counted(undefined, {
+      "/still": () => {
+        time.t = 1_000_000 + 60_000 - STILL_TEARDOWN_MS;
+        return ok(PNG, "image/png");
+      },
+    });
+    const outcome = await unit({ ...fakeState(fake.container).ctx, bucket: bucket() }, time.deps).stillNow(
+      "originals/140000000000000011",
+      60_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "operation-deadline" });
+    expect(fake.calls.at(-1)).toBe("destroy");
+  });
+
+  it("reports its teardown pending when the destroy ends past the call's deadline, and its alarm removes the storage", async () => {
+    await env.MEDIA.put("originals/140000000000000012", new Uint8Array([1]));
+    const time = frozen(1_000_000);
+    const fake = counted(() => {
+      time.t = 1_000_000 + 60_000 + 1;
+      return Promise.resolve();
+    });
+    const state = fakeState(fake.container);
+    const object = unit({ ...state.ctx, bucket: bucket() }, time.deps);
+    expect(await object.stillNow("originals/140000000000000012", 60_000)).toMatchObject({
+      ok: false,
+      failure: "destroy",
+      pending: true,
+    });
+    expect(state.alarm()).not.toBeNull();
+    expect(state.cleared()).toBe(0);
+    // The destroy finished after the answer: no container runs when the alarm comes.
+    expect(fake.container.running).toBe(false);
+    await state.fire(object);
+    expect(state.cleared()).toBe(1);
+    expect(state.alarm()).toBeNull();
+  });
+
+  it("is not ok when removing its storage ends past the call's deadline", async () => {
+    await env.MEDIA.put("originals/140000000000000021", new Uint8Array([1]));
+    const time = frozen(1_000_000);
+    const state = fakeState(counted().container, {
+      deleteAll: () => {
+        time.t = 1_000_000 + 60_000 + 1;
+        return Promise.resolve();
+      },
+    });
+    const outcome = await unit({ ...state.ctx, bucket: bucket() }, time.deps).stillNow(
+      "originals/140000000000000021",
+      60_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "late" });
+  });
+
+  it("answers by its deadline when removing its storage stalls, and the alarm removes it later", async () => {
+    await env.MEDIA.put("originals/140000000000000022", new Uint8Array([1]));
+    const time = clock();
+    let stalled = true;
+    const state = fakeState(counted().container, {
+      deleteAll: () => (stalled ? new Promise<void>(() => {}) : Promise.resolve()),
+    });
+    const object = unit({ ...state.ctx, bucket: bucket() }, time);
+    const outcome = await object.stillNow("originals/140000000000000022", 60_000);
+    expect(outcome).toMatchObject({ ok: false, failure: "late" });
+    // The alarm is kept: it is removed only after the storage.
+    expect(state.alarm()).not.toBeNull();
+    stalled = false;
+    await state.fire(object);
+    expect(state.cleared()).toBe(1);
+    expect(state.alarm()).toBeNull();
+  });
+
+  it("answers busy by its deadline when it finds an orphan and setting the alarm does not answer", async () => {
+    const time = clock();
+    const fake = counted();
+    const state = fakeState(fake.container, { holdAlarm: () => true });
+    const object = unit({ ...state.ctx, bucket: bucket() }, time);
+    // A container left running by an earlier instance.
+    fake.container.start({ image: "x", instance: "standard-1", enableInternet: false });
+    expect(await object.stillNow("originals/140000000000000024", 60_000)).toMatchObject({
+      ok: false,
+      failure: "busy",
+    });
+  });
+
+  it("removes the storage and the alarm in one step, so a late reply cannot remove the next call's alarm", async () => {
+    await env.MEDIA.put("originals/140000000000000025", new Uint8Array([1]));
+    let answer = () => {};
+    let late = true;
+    const time = clock();
+    let gate: Promise<void> = Promise.resolve();
+    const fake = counted(undefined, {
+      "/still": async () => {
+        await gate;
+        return ok(PNG, "image/png");
+      },
+    });
+    const state = fakeState(fake.container, {
+      deleteAllAnswers: () =>
+        late
+          ? new Promise<void>((resolve) => {
+              late = false;
+              answer = resolve;
+            })
+          : Promise.resolve(),
+    });
+    const object = unit({ ...state.ctx, bucket: bucket() }, time);
+    // The first still's removal took effect, but its reply comes after the call answered.
+    expect(await object.stillNow("originals/140000000000000025", 60_000)).toMatchObject({ failure: "late" });
+    const next = deferred();
+    gate = next.promise;
+    const second = object.stillNow("originals/140000000000000025", 60_000);
+    await vi.waitFor(() => expect(state.alarm()).not.toBeNull());
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The second call's alarm stands while it runs.
+    expect(state.alarm()).not.toBeNull();
+    next.resolve();
+    await second;
+  });
+
+  it("cancels a read of its input that answers past the operation's end, and gives the container nothing", async () => {
+    await env.MEDIA.put("originals/140000000000000013", new Uint8Array([1, 2, 3]));
+    const time = frozen(1_000_000);
+    let cancelled = false;
+    const late = {
+      get: async () => {
+        await Promise.resolve();
+        time.t = 1_000_000 + 60_000 - STILL_TEARDOWN_MS;
+        const body = new ReadableStream<Uint8Array>({
+          pull: () => {},
+          cancel: () => {
+            cancelled = true;
+          },
+        });
+        return { size: 3, body } as unknown as R2ObjectBody;
+      },
+    };
+    const fake = counted();
+    const outcome = await unit({ ...fakeState(fake.container).ctx, bucket: late }, time.deps).stillNow(
+      "originals/140000000000000013",
+      60_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "operation-deadline" });
+    expect(cancelled).toBe(true);
+    expect(fake.calls).not.toContain("POST /still");
+    expect(fake.calls.at(-1)).toBe("destroy");
+  });
+
+  it("starts nothing when the alarm's commit does not settle within the call's deadline", async () => {
+    const time = clock();
+    const fake = counted();
+    const state = fakeState(fake.container, { sync: () => new Promise<void>(() => {}) });
+    const outcome = await unit({ ...state.ctx, bucket: bucket() }, time).stillNow(
+      "originals/140000000000000014",
+      60_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "storage-late" });
+    expect(fake.starts()).toBe(0);
+  });
+
+  it("answers input-missing for a key the bucket lacks, and destroys the container", async () => {
+    const fake = counted();
+    const object = unit({ ...fakeState(fake.container).ctx, bucket: bucket() });
+    expect(await object.stillNow("originals/140000000000000002", 75_000)).toMatchObject({
+      ok: false,
+      failure: "input-missing",
+    });
+    expect(fake.calls.at(-1)).toBe("destroy");
+    expect(fake.container.running).toBe(false);
+  });
+
+  it("is busy while a probe runs on its object, and the probe is busy while a still runs: one container", async () => {
+    await env.MEDIA.put("incoming/probe-0123456789abcdef0123456789abcdef", new Uint8Array([1, 2, 3]));
+    const held = deferred();
+    const fake = counted(undefined, {
+      "/still": async () => {
+        await held.promise;
+        return ok(PNG, "image/png");
+      },
+    });
+    const object = unit({ ...fakeState(fake.container).ctx, bucket: bucket() });
+    const first = object.stillNow("incoming/probe-0123456789abcdef0123456789abcdef", 60_000);
+    await vi.waitFor(() => expect(fake.starts()).toBe(1));
+    expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: false, failure: "busy" });
+    expect(await object.stillNow("incoming/probe-0123456789abcdef0123456789abcdef", 60_000)).toMatchObject({
+      ok: false,
+      failure: "busy",
+    });
+    held.resolve();
+    expect((await first).ok).toBe(true);
+    expect(fake.starts()).toBe(1);
+  });
+
+  it("is not ok when the destroy fails, and leaves the alarm to clean up", async () => {
+    await env.MEDIA.put("originals/140000000000000003", new Uint8Array([1]));
+    const fake = counted(() => Promise.reject(new Error("destroy failed")));
+    const state = fakeState(fake.container);
+    const outcome = await unit({ ...state.ctx, bucket: bucket() }).stillNow("originals/140000000000000003", 75_000);
+    expect(outcome).toMatchObject({ ok: false, failure: "destroy" });
+    expect(state.alarm()).not.toBeNull();
+  });
+
+  it("is bounded by STILL_CALL_MS whatever the caller asks", async () => {
+    await env.MEDIA.put("originals/140000000000000004", new Uint8Array([1]));
+    const time = frozen(1_000_000);
+    const state = fakeState(counted().container);
+    const alarms: number[] = [];
+    const storage = {
+      ...state.ctx.storage,
+      setAlarm: (at: number) => {
+        alarms.push(at);
+        return state.ctx.storage.setAlarm(at);
+      },
+    };
+    const object = unit({ container: state.ctx.container, storage, bucket: bucket() }, time.deps);
+    await object.stillNow("originals/140000000000000004", 10 * STILL_CALL_MS);
+    // The alarm set before the start is the call's bound and the destroy's.
+    expect(alarms[0]).toBe(1_000_000 + STILL_CALL_MS + DESTROY_MS);
+  });
+});
+
 describe("processorClient", () => {
+  it("makes rebuild stills on fresh objects and the still probe on the profile's object, and a failed RPC is unavailable", async () => {
+    await env.MEDIA.put("originals/140000000000000005", new Uint8Array([1]));
+    const names: string[] = [];
+    const namespace = {
+      getByName(name: string) {
+        names.push(name);
+        if (name.startsWith("rb:") && names.length > 2) {
+          return { stillNow: () => Promise.reject(new Error("object reset")) };
+        }
+        return unit({ ...fakeState(fakeContainer(server()).container).ctx, bucket: env.MEDIA });
+      },
+    };
+    const client = processorClient({ ...env, MEDIA_PROCESSOR: namespace } as never, "v1")!;
+    expect((await client.stills.still("originals/140000000000000005", 75_000)).ok).toBe(true);
+    expect((await client.stills.probe("originals/140000000000000005", 60_000)).ok).toBe(true);
+    expect(await client.stills.still("originals/140000000000000005", 75_000)).toEqual({
+      ok: false,
+      failure: "unavailable",
+      image: null,
+    });
+    expect(names[0]).toMatch(/^rb:[0-9a-f-]{36}$/);
+    expect(names[1]).toBe("p:v1:still@standard-1");
+    expect(names[2]).toMatch(/^rb:/);
+    expect(names[2]).not.toBe(names[0]);
+    expect(client.stills.probeInput).toEqual(fixtureBytes());
+  });
+
   it("is null without the binding", () => {
     expect("MEDIA_PROCESSOR" in env).toBe(false);
     expect(processorClient(env, "build")).toBeNull();
@@ -782,7 +1124,7 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
       now: () => NOW,
       store: () => store,
       fetch: team.fetch,
-      mediaProcessor: () => (probe === null ? null : { probeNow: probe }),
+      mediaProcessor: () => (probe === null ? null : { probeNow: probe, stills: unusedStills }),
     });
     const call = (request: Request) => app.fetch(request, env, createExecutionContext());
     const post = async (profile: unknown) =>

@@ -48,12 +48,19 @@ Commands
   invitation remove <email>     remove an email's invitation; an account already made is not touched. Logged
   maintenance on|off            enter or leave the Store's readonly maintenance
   upgrade retry                 re-run a failed schema upgrade for the current build
-  media-rebuild [--dry-run]     make the served files of local media whose files are missing (a restore, the
-                                cutover's moved images) from their originals in R2, and correct their sizes. Writes only
+  media-rebuild [--dry-run] [--stills]
+                                make the served files of local media whose files are missing (a restore, the
+                                cutover's moved images) from their originals in R2, and correct their sizes; video and
+                                audio files are copied after their check, a video's still is made by the media
+                                processor or its preview cleared. --stills also gives a still to videos that have none
+                                (the processor bound, MEDIA_UPLOAD_MONTHLY_JOBS left). --dry-run checks that a
+                                video or audio row's original exists, not that it plays. Writes only
                                 before publish, or 20 minutes after "maintenance on" (the env MAINTENANCE is not
                                 enough), one call at a time. Prints counts and the rows to look at; exits 3 when an original is
                                 missing, a type does not match, re-encoding failed, the Images quota or monthly budget
-                                stopped it, or the Store is not readonly (run it again later: made files are skipped)
+                                stopped it ("quota-stopped"), the media processor or Images failed for a moment
+                                (stopped "retry", the row kept as it was), or the Store is not readonly (run it again
+                                later: made files are skipped)
   media-processor probe [<profile>...]
                                 start the media processor's container for each profile (default: all of
                                 normalize@standard-4 and still@standard-1), run its operation on
@@ -938,9 +945,10 @@ export async function run({
       }
       case "media-rebuild": {
         if (rest.length > 0) {
-          throw new UsageError("media-rebuild [--dry-run]");
+          throw new UsageError("media-rebuild [--dry-run] [--stills]");
         }
         const dryRun = flags["dry-run"] === true;
+        const stills = flags.stills === true;
         const pause =
           sleep ?? ((/** @type {number} */ ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms)));
         /** @type {Record<string, number>} */
@@ -957,7 +965,7 @@ export async function run({
         for (;;) {
           let step;
           try {
-            step = await client.post("/admin/media/rebuild", { after, dryRun });
+            step = await client.post("/admin/media/rebuild", { after, dryRun, stills });
           } catch (error) {
             if (error instanceof AdminError && error.code === "rebuild-needs-readonly") {
               out.info(
@@ -987,7 +995,7 @@ export async function run({
           }
           problems.push(...step.problems);
           out.progress(`media-rebuild: ${JSON.stringify(counts)}`);
-          if (step.stopped === "quota" || step.stopped === "budget") {
+          if (step.stopped === "quota" || step.stopped === "budget" || step.stopped === "retry") {
             stopped = step.stopped;
             break;
           }
@@ -996,12 +1004,14 @@ export async function run({
           }
           after = step.next;
         }
-        print({ dryRun, ...counts, "quota-stopped": stopped !== null, stopped, problems });
+        print({ dryRun, ...counts, "quota-stopped": stopped === "quota" || stopped === "budget", stopped, problems });
         if (stopped !== null) {
           out.info(
             stopped === "quota"
               ? "stopped: Images refused for quota (9422); run it again once the allowance renews"
-              : "stopped: the monthly transformation budget (IMAGES_MONTHLY_TRANSFORMS) is spent; raise it or wait",
+              : stopped === "retry"
+                ? "stopped: the media processor or Images failed for a moment (busy or unavailable); run it again later"
+                : "stopped: the monthly transformation budget (IMAGES_MONTHLY_TRANSFORMS) is spent; raise it or wait",
           );
         }
         return stopped !== null || problems.length > 0 ? 3 : 0;

@@ -4,6 +4,8 @@
 //   files/<token>/full            the re-encoded image, or the verified video or audio (#1828), that is served
 //   files/<token>/small           the re-encoded preview (an image) that is served
 //   kopje/pitr-restored/<store>   when that Store last scheduled a PITR restore (restoreMarkerKey), never served
+//   incoming/probe-<nonce>        a copy of the media processor's probe clip while a probe reads it (probeInputKey,
+//                                 #1828 design 4.15), never served
 //   remote/<token>/full           a cached remote file, verified, served (domain/remote-media.ts, MEDIA-7)
 //   remote/<token>/still          the still of a cached animated image, served
 //
@@ -24,6 +26,14 @@ export function restoreMarkerKey(storeId: string): string {
 }
 
 export const MEDIA_VARIANTS: readonly MediaVariant[] = ["full", "small"];
+
+// The input of one probe of the media processor, named by a nonce the Worker draws (32 hex digits).
+export function probeInputKey(nonce: string): string {
+  if (!/^[0-9a-f]{32}$/.test(nonce)) {
+    throw new Error("not a probe nonce");
+  }
+  return `incoming/probe-${nonce}`;
+}
 
 // A token the server made (base64url, as security/tokens.ts generates them).
 export const FILE_TOKEN = /^[A-Za-z0-9_-]{32,64}$/;

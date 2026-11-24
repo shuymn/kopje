@@ -11,6 +11,7 @@ import {
   type ObjectDigest,
 } from "../platform/backup-state";
 import { envInMaintenance } from "../platform/config";
+import { DeadlinePassed, within } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { toHex } from "../platform/hex";
 import { consoleSink, type LogSink } from "../platform/log";
@@ -29,7 +30,9 @@ import { StoreUnavailableError, toStoreUnavailable } from "../platform/store-err
 //             also ends on any failure (by opId, even when dumpStart's answer was lost) and by its lease if the Worker
 //             dies. age's stream state cannot be saved, so an interrupted dump is restarted, never continued.
 //   media     each referenced original not yet in this bucket, encrypted on its own; progress is in the Store's
-//             media index (backup_media) and the stage spans invocations.
+//             media index (backup_media) and the stage spans invocations. An original of at most STREAM_COPY_BYTES is
+//             read whole and put; a larger one (a video or audio file, #1828) streams through age into a multipart
+//             upload as the dump does, so what it holds is a part and a few chunks, whatever its size.
 //   index     the complete media index: every original the dump references, with its object and digests, or why it
 //             is missing.
 //   manifest  written last, with the digests of the dump and the index, so its presence marks a complete backup.
@@ -68,8 +71,15 @@ const RESERVE_MS = 60 * 1000;
 export const WORK_BYTES = 512 * MIB;
 const MEDIA_PAGE = 100;
 export const MAX_MEDIA_PER_RUN = 2000;
-// Originals are at most 16 MiB (platform/images.ts); anything far larger is not a Kopje upload.
+// An original is an image of at most 16 MiB (platform/images.ts) or a verified video or audio file of at most
+// AV_OUTPUT_LIMIT (platform/av-bytes.ts, below this); anything larger is not a Kopje upload.
 export const MAX_MEDIA_BYTES = 64 * MIB;
+// Originals larger than this are copied by streaming (copyStreamed) rather than read whole.
+export const STREAM_COPY_BYTES = 16 * MIB;
+// The stray multipart uploads a run lists and aborts (abortStrayUploads), and the listing pages it reads for them per
+// prefix, whatever those pages list; the lifecycle rule bounds what is left.
+export const MAX_STRAY_ABORTS = 100;
+export const MAX_STRAY_PAGES = 4;
 const RETRY_MS = 60 * 60 * 1000;
 // Invocations that may die holding one run before it is recorded as failed.
 const MAX_ATTEMPTS = 3;
@@ -79,6 +89,7 @@ export type BackupFaultPoint =
   | "dump-part"
   | "dump-complete"
   | "media-copied"
+  | "media-part"
   | "index-stage"
   | "manifest-stage"
   | "manifest-written"
@@ -447,20 +458,30 @@ class BackupJob {
     });
   }
 
-  // Multipart uploads under backups/ that no live invocation is writing: this one holds the lease, so any upload
-  // there is from an invocation that died or lost the lease.
+  // Multipart uploads under backups/ and media/ that no live invocation is writing: this one holds the lease, so any
+  // upload there is from an invocation that died or lost the lease. A media copy is recorded only once its upload
+  // completed, so no recorded object is an incomplete upload.
+  // Each prefix is listed on its own, so a listing that fails leaves the other's strays to be aborted; at most
+  // MAX_STRAY_ABORTS are listed and aborted a run, and the rest are left to the next.
   async #abortStrayUploads(): Promise<void> {
-    let uploads: { key: string; uploadId: string }[];
-    try {
-      uploads = await this.#s3.listUploads(backupPrefix(this.#config));
-    } catch (error) {
-      // Not every store or policy lists uploads; the bucket's lifecycle rule then cleans up (docs/backup.md).
-      this.#log({ event: "kopje.backup.list_uploads_failed", reason: failureReason(error) }, "warn");
-      return;
-    }
-    for (const upload of uploads) {
-      await this.#s3.abortMultipart(upload.key, upload.uploadId);
-      this.#log({ event: "kopje.backup.upload_aborted" });
+    let left = MAX_STRAY_ABORTS;
+    for (const prefix of [backupPrefix(this.#config), mediaPrefix(this.#config)]) {
+      if (left === 0) {
+        return;
+      }
+      let uploads: { key: string; uploadId: string }[];
+      try {
+        uploads = await this.#s3.listUploads(prefix, left, MAX_STRAY_PAGES);
+      } catch (error) {
+        // Not every store or policy lists uploads; the bucket's lifecycle rule then cleans up (docs/backup.md).
+        this.#log({ event: "kopje.backup.list_uploads_failed", reason: failureReason(error) }, "warn");
+        continue;
+      }
+      left -= uploads.length;
+      for (const upload of uploads) {
+        await this.#s3.abortMultipart(upload.key, upload.uploadId);
+        this.#log({ event: "kopje.backup.upload_aborted" });
+      }
     }
   }
 
@@ -562,7 +583,8 @@ class BackupJob {
       if (!(error instanceof Crash)) {
         await release().catch(() => {});
         await reader?.cancel().catch(() => {});
-        await this.#s3.abortMultipart(key, uploadId).catch(() => {});
+        // Within the reserve: a failure that is the time running out (a stalled read) still leaves time to abort.
+        await this.#s3.abortMultipart(key, uploadId, () => this.#deadline - this.#deps.now()).catch(() => {});
       }
       throw error;
     }
@@ -708,18 +730,11 @@ class BackupJob {
         await object.body.cancel();
         throw new OutOfTime();
       }
-      const plaintext = new Uint8Array(await object.arrayBuffer());
-      this.#work += plaintext.byteLength;
-      const ciphertext = await encryptBytes(run.recipients, plaintext);
       const key = `${mediaPrefix(this.#config)}${run.id}/${this.#attempt}/${row.source}.age`;
-      await this.#s3.put(key, ciphertext, "application/octet-stream");
-      this.#fault("media-copied");
-      copy = {
-        key,
-        size: ciphertext.byteLength,
-        sha256: await sha256Of(ciphertext),
-        plaintext: { size: plaintext.byteLength, sha256: await sha256Of(plaintext) },
-      };
+      copy =
+        object.size > STREAM_COPY_BYTES
+          ? await this.#copyStreamed(run, key, object)
+          : await this.#copyWhole(run, key, object);
     }
     const recorded = await this.#store.backupRecord(
       this.#build,
@@ -734,6 +749,65 @@ class BackupJob {
     await this.#save((s) => {
       s.run!.copied++;
     });
+  }
+
+  async #copyWhole(run: BackupRun, key: string, object: R2ObjectBody): Promise<ObjectDigest> {
+    const plaintext = new Uint8Array(await object.arrayBuffer());
+    this.#work += plaintext.byteLength;
+    const ciphertext = await encryptBytes(run.recipients, plaintext);
+    await this.#s3.put(key, ciphertext, "application/octet-stream");
+    this.#fault("media-copied");
+    return {
+      key,
+      size: ciphertext.byteLength,
+      sha256: await sha256Of(ciphertext),
+      plaintext: { size: plaintext.byteLength, sha256: await sha256Of(plaintext) },
+    };
+  }
+
+  // The original as it streams from R2, through #upload. A body whose length differs from the size R2 states fails.
+  async #copyStreamed(run: BackupRun, key: string, object: R2ObjectBody): Promise<ObjectDigest> {
+    const reader = (object.body as ReadableStream<Uint8Array>).getReader();
+    let read = 0;
+    const next = async (): Promise<Uint8Array | null> => {
+      // A read is given up with the time left for requests, so the reserve is kept to abort the upload.
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await within(() => reader.read(), this.#deps.now() + this.#budget(), this.#deps.now);
+      } catch (error) {
+        throw error instanceof DeadlinePassed ? new OutOfTime() : error;
+      }
+      const { done, value } = chunk;
+      if (done) {
+        if (read !== object.size) {
+          throw new BackupError("media-changed");
+        }
+        return null;
+      }
+      read += value.byteLength;
+      if (read > object.size) {
+        throw new BackupError("media-changed");
+      }
+      return value;
+    };
+    try {
+      const digest = await this.#upload({
+        key,
+        next,
+        onStart: () => this.#save(() => {}),
+        onPart: async () => {
+          await this.#save(() => {});
+          this.#fault("media-part");
+        },
+        recipients: run.recipients,
+        // copyOriginal admitted the object's size within the budget, and a body past its size is refused above.
+        overBudget: () => new OutOfTime(),
+      });
+      this.#fault("media-copied");
+      return digest;
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
   }
 
   // The complete media index of this run, streamed from backup_media.

@@ -234,7 +234,7 @@ export class S3Mock {
             ([id, u]) => u.key.startsWith(prefix) && (u.key > marker[0] || (u.key === marker[0] && id > marker[1])),
           )
           .toSorted(([a, u], [b, v]) => (u.key < v.key ? -1 : u.key > v.key ? 1 : a < b ? -1 : 1));
-        const page = all.slice(0, this.maxListKeys);
+        const page = all.slice(0, Math.min(this.maxListKeys, Number(q.get("max-uploads") ?? Infinity)));
         const truncated = all.length > page.length;
         const last = page.at(-1);
         return xml(

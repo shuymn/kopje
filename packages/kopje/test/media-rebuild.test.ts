@@ -18,7 +18,7 @@ import { type AccessTeam, adminClaims, adminHarness, adminTeam, serviceClaims, s
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { ANIMATED_WEBP, JPEG_ORIENTATION_6, PNG_PLAIN, WIDE_PNG } from "./fixtures/images";
-import { BUILD, completeSetup, migratedStore, rejectionOf } from "./helpers";
+import { BUILD, completeSetup, deferred, migratedStore, rejectionOf } from "./helpers";
 import { pngOf, pngOfBytes } from "./local-emoji-helpers";
 import { bytes, framesKeepingCodec, recordRgba, TestCodec } from "./media-helpers";
 import {
@@ -438,6 +438,16 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     await addRow(h.store, { original: null });
     const step = await (await h.post(adminClaims(), "/admin/media/rebuild", { dryRun: true })).json<Step>();
     expect(step.counts).toMatchObject({ "would-build": 1, built: 0, "original-missing": 1 });
+    // The image-only answer: no video or audio row, no `fallback`.
+    expect(Object.keys(step.counts).toSorted()).toEqual([
+      "built",
+      "failed",
+      "gone",
+      "original-missing",
+      "skipped-existing",
+      "type-mismatch",
+      "would-build",
+    ]);
     expect(h.codec.calls).toBe(0);
     expect(await transforms(h.store)).toBe(0);
     expect(await files(row)).toEqual([false, false]);
@@ -828,7 +838,9 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
       release: true,
     });
     expect((await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>()).counts.built).toBe(1);
-    expect(await leaseRow(h.store)).toEqual([]);
+    // Released: kept with its generation and an end of 0, so no late renewal of it takes it back.
+    expect(await leaseRow(h.store)).toEqual([expect.objectContaining({ until: 0 })]);
+    expect(await lease(h.store, "next", admin)).toMatchObject({ status: "ok" });
   });
 
   it("keeps the lease until it expires when a step is given up at the deadline", async () => {
@@ -1021,7 +1033,7 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     });
     // A renewal after the takeover is refused, so the call knows it lost the lease before the write settles.
     const taken = answers.length;
-    await vi.waitFor(() => expect(answers.slice(taken)).toContain("busy"));
+    await vi.waitFor(() => expect(answers.slice(taken)).toContain("lost"));
     release();
     const step = await running;
     expect(step).toMatchObject({ ok: true, stopped: "lease-overrun", done: false });
@@ -1029,6 +1041,231 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     expect(await files(row)).toEqual([true, false]);
     // Not released: the other holder keeps it.
     expect((await leaseRow(h.store))[0]?.holder).toBe("other");
+  });
+
+  it("answers a release of an earlier generation as released, and leaves the live one as it is", async () => {
+    const h = await setup();
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const first = await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h" });
+    expect(first).toMatchObject({ status: "ok", generation: 1 });
+    // That lease ends, and the same holder takes the next generation.
+    await runInDurableObject(h.store, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE kopje_state SET value = json_set(value, '$.until', 1) WHERE name = 'media_rebuild_lease'",
+      );
+    });
+    expect(await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h" })).toMatchObject({ generation: 2 });
+    expect(
+      await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h", generation: 1, release: true }),
+    ).toEqual({ status: "released" });
+    expect(await leaseRow(h.store)).toEqual([expect.objectContaining({ holder: "h", generation: 2 })]);
+    expect((await leaseRow(h.store))[0]!.until).toBeGreaterThan(Date.now());
+  });
+
+  // The store, with each lease call after the take held at `hold(n)` (n counts them from 1) before it reaches the Store.
+  function holding(store: StoreStub, hold: (n: number) => Promise<void> | null) {
+    let calls = 0;
+    return new Proxy(store, {
+      get: (target, property, receiver) =>
+        property === "mediaRebuildLease"
+          ? async (...args: Parameters<StoreStub["mediaRebuildLease"]>) => {
+              const n = calls++;
+              const held = n === 0 ? null : hold(n);
+              if (held !== null) {
+                await held;
+              }
+              return target.mediaRebuildLease(...args);
+            }
+          : (Reflect.get(target, property, receiver) as unknown),
+    });
+  }
+
+  it("keeps renewing under an image write while its first heartbeat hangs, so no other call takes the lease", async () => {
+    const h = await setup();
+    const row = await addRow(h.store);
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const gate = deferred();
+    let writing = false;
+    let hung: number | null = null;
+    // The first lease call while the full's put is pending (its first heartbeat) never reaches the Store.
+    const store = holding(h.store, (n) => {
+      if (writing && hung === null) {
+        hung = n;
+        return new Promise<void>(() => {});
+      }
+      return null;
+    });
+    const bucket = {
+      head: (key: string) => env.MEDIA.head(key),
+      get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
+      delete: (keys: string | string[]) => env.MEDIA.delete(keys),
+      put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+        if (key.endsWith("/full")) {
+          writing = true;
+          await gate.promise;
+        }
+        return env.MEDIA.put(key, value, options);
+      },
+    } as unknown as R2Bucket;
+    const running = rebuildMedia(
+      {
+        build: BUILD,
+        store,
+        bucket,
+        images: new TestCodec(),
+        now: () => Date.now(),
+        authority: admin,
+        monthlyTransforms: 100,
+        holder: "writer",
+        heartbeatMs: 10,
+        heartbeatStallMs: 1_000,
+      },
+      { after: null, dryRun: false },
+    );
+    await vi.waitFor(() => expect(hung).not.toBeNull());
+    // The lease nears its end while the first heartbeat hangs: the later ones renew it.
+    await runInDurableObject(h.store, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE kopje_state SET value = json_set(value, '$.until', ?) WHERE name = 'media_rebuild_lease'",
+        Date.now() + 100,
+      );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await lease(h.store, "other", admin)).toMatchObject({ status: "busy" });
+    gate.resolve();
+    expect(await running).toMatchObject({ ok: true, stopped: null, counts: { built: 1 } });
+    expect(await files(row)).toEqual([true, true]);
+  });
+
+  it("starts no write on a confirmation whose reply arrives once the lease may have ended", async () => {
+    const h = await setup();
+    const row = await addRow(h.store);
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const order: string[] = [];
+    const recording = (who: string) =>
+      ({
+        head: (key: string) => env.MEDIA.head(key),
+        get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
+        delete: (keys: string | string[]) => env.MEDIA.delete(keys),
+        put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+          order.push(`${who} ${key.slice(key.lastIndexOf("/") + 1)}`);
+          return env.MEDIA.put(key, value, options);
+        },
+      }) as unknown as R2Bucket;
+    // A's third lease call, the confirmation of its first put (after the take and the row's renewal), is answered by
+    // the Store at once; the reply reaches A only once `deliver` opens.
+    const delivered = deferred();
+    let held = false;
+    let calls = 0;
+    const store = new Proxy(h.store, {
+      get: (target, property, receiver) =>
+        property === "mediaRebuildLease"
+          ? async (...args: Parameters<StoreStub["mediaRebuildLease"]>) => {
+              const answer = await target.mediaRebuildLease(...args);
+              if (++calls === 3) {
+                held = true;
+                await delivered.promise;
+              }
+              return answer;
+            }
+          : (Reflect.get(target, property, receiver) as unknown),
+    });
+    let clock = Date.now();
+    const a = rebuildMedia(
+      {
+        build: BUILD,
+        store,
+        bucket: recording("A"),
+        images: new TestCodec(),
+        now: () => clock,
+        authority: admin,
+        monthlyTransforms: 100,
+        holder: "A",
+      },
+      { after: null, dryRun: false },
+    );
+    await vi.waitFor(() => expect(held).toBe(true));
+    // A's lease ends (its clock and the Store's), and B takes the next generation and rebuilds the row.
+    clock += REBUILD_LEASE_MS + 1;
+    await runInDurableObject(h.store, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE kopje_state SET value = json_set(value, '$.until', 1) WHERE name = 'media_rebuild_lease'",
+      );
+    });
+    await env.MEDIA.delete([`files/${row.token}/full`, `files/${row.token}/small`]);
+    const b = await rebuildMedia(
+      {
+        build: BUILD,
+        store: h.store,
+        bucket: recording("B"),
+        images: new TestCodec(),
+        now: () => Date.now(),
+        authority: admin,
+        monthlyTransforms: 100,
+        holder: "B",
+      },
+      { after: null, dryRun: false },
+    );
+    expect(b).toMatchObject({ ok: true, counts: { built: 1 } });
+    delivered.resolve();
+    expect(await a).toMatchObject({ ok: true, stopped: "lease-overrun" });
+    expect(order).toEqual(["B full", "B small"]);
+  });
+
+  it("a heartbeat that reaches the Store after the call released the lease does not take it back", async () => {
+    const h = await setup();
+    await addRow(h.store);
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const late = deferred();
+    let writing = false;
+    let delayed = false;
+    let arrived = false;
+    // The first heartbeat during the full's put is delayed past the call's end, then sent.
+    const store = holding(h.store, () => {
+      if (writing && !delayed) {
+        delayed = true;
+        return late.promise.then(() => {
+          arrived = true;
+        });
+      }
+      return null;
+    });
+    const bucket = {
+      head: (key: string) => env.MEDIA.head(key),
+      get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
+      delete: (keys: string | string[]) => env.MEDIA.delete(keys),
+      put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+        if (key.endsWith("/full")) {
+          writing = true;
+          await vi.waitFor(() => expect(delayed).toBe(true));
+          writing = false;
+        }
+        return env.MEDIA.put(key, value, options);
+      },
+    } as unknown as R2Bucket;
+    const step = await rebuildMedia(
+      {
+        build: BUILD,
+        store,
+        bucket,
+        images: new TestCodec(),
+        now: () => Date.now(),
+        authority: admin,
+        monthlyTransforms: 100,
+        holder: "writer",
+        heartbeatMs: 5,
+        heartbeatStallMs: 50,
+      },
+      { after: null, dryRun: false },
+    );
+    expect(step).toMatchObject({ ok: true, counts: { built: 1 } });
+    expect(await leaseRow(h.store)).toEqual([expect.objectContaining({ holder: "writer", until: 0 })]);
+    late.resolve();
+    await vi.waitFor(() => expect(arrived).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The late renewal named a released generation: nothing changed, and another call takes the lease.
+    expect(await leaseRow(h.store)).toEqual([expect.objectContaining({ holder: "writer", until: 0 })]);
+    expect(await lease(h.store, "other", admin)).toMatchObject({ status: "ok" });
   });
 });
 
