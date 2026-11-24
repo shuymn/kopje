@@ -76,8 +76,10 @@ export const MAX_MEDIA_PER_RUN = 2000;
 export const MAX_MEDIA_BYTES = 64 * MIB;
 // Originals larger than this are copied by streaming (copyStreamed) rather than read whole.
 export const STREAM_COPY_BYTES = 16 * MIB;
-// The stray multipart uploads a run lists and aborts (abortStrayUploads); the lifecycle rule bounds what is left.
+// The stray multipart uploads a run lists and aborts (abortStrayUploads), and the listing pages it reads for them per
+// prefix, whatever those pages list; the lifecycle rule bounds what is left.
 export const MAX_STRAY_ABORTS = 100;
+export const MAX_STRAY_PAGES = 4;
 const RETRY_MS = 60 * 60 * 1000;
 // Invocations that may die holding one run before it is recorded as failed.
 const MAX_ATTEMPTS = 3;
@@ -469,7 +471,7 @@ class BackupJob {
       }
       let uploads: { key: string; uploadId: string }[];
       try {
-        uploads = await this.#s3.listUploads(prefix, left);
+        uploads = await this.#s3.listUploads(prefix, left, MAX_STRAY_PAGES);
       } catch (error) {
         // Not every store or policy lists uploads; the bucket's lifecycle rule then cleans up (docs/backup.md).
         this.#log({ event: "kopje.backup.list_uploads_failed", reason: failureReason(error) }, "warn");
@@ -581,7 +583,8 @@ class BackupJob {
       if (!(error instanceof Crash)) {
         await release().catch(() => {});
         await reader?.cancel().catch(() => {});
-        await this.#s3.abortMultipart(key, uploadId).catch(() => {});
+        // Within the reserve: a failure that is the time running out (a stalled read) still leaves time to abort.
+        await this.#s3.abortMultipart(key, uploadId, () => this.#deadline - this.#deps.now()).catch(() => {});
       }
       throw error;
     }

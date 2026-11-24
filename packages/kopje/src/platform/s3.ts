@@ -1,5 +1,6 @@
 import { AwsClient } from "aws4fetch";
 
+import { readBodyPrefix } from "./body";
 import { toHex } from "./hex";
 
 // The few S3 calls the scheduled backup makes, path-style (https://endpoint/bucket/key) and signed with SigV4 by
@@ -35,6 +36,8 @@ export type S3Object = { key: string; size: number };
 const TIMEOUT_MS = 120_000;
 // Idempotent requests are retried on 5xx, 429 and network failures; a POST (create, complete) is not.
 const RETRIES = 2;
+// The most read of one ListMultipartUploads page: 1,000 uploads (the most S3 lists a page) of 1,024-byte keys.
+export const LIST_PAGE_BYTES = 2 * 1024 * 1024;
 
 export class S3Client {
   readonly #aws: AwsClient;
@@ -101,9 +104,10 @@ export class S3Client {
     }
   }
 
-  // An upload that is already gone counts as aborted.
-  async abortMultipart(key: string, uploadId: string): Promise<void> {
-    const response = await this.#send("abort-upload", "DELETE", key, { uploadId }, undefined, {}, [404]);
+  // An upload that is already gone counts as aborted. `budget`, when given, is the time this abort may take in place of
+  // the client's: a cleanup after the client's time ran out (jobs/backup.ts).
+  async abortMultipart(key: string, uploadId: string, budget?: () => number): Promise<void> {
+    const response = await this.#send("abort-upload", "DELETE", key, { uploadId }, undefined, {}, [404], budget);
     await response.body?.cancel();
   }
 
@@ -152,18 +156,24 @@ export class S3Client {
     return objects;
   }
 
-  // Multipart uploads in progress under the prefix (ListMultipartUploads), at most `max` of them: pages are read until
-  // that many are listed or none is left.
-  async listUploads(prefix: string, max: number): Promise<{ key: string; uploadId: string }[]> {
+  // Multipart uploads in progress under the prefix (ListMultipartUploads), at most `max` of them, from at most `pages`
+  // pages of at most LIST_PAGE_BYTES each, whatever they list: reading stops at either bound and the rest is left. A
+  // page whose next marker does not move past the last one fails the listing, so a server cannot keep it going.
+  async listUploads(prefix: string, max: number, pages: number): Promise<{ key: string; uploadId: string }[]> {
     const uploads: { key: string; uploadId: string }[] = [];
     let marker: { key: string; uploadId: string } | undefined;
-    do {
+    for (let page = 0; page < pages; page++) {
       const query: Record<string, string> = { uploads: "", prefix, "max-uploads": String(max - uploads.length) };
       if (marker !== undefined) {
         query["key-marker"] = marker.key;
         query["upload-id-marker"] = marker.uploadId;
       }
-      const xml = await body("list-uploads", (await this.#send("list-uploads", "GET", null, query)).text());
+      const response = await this.#send("list-uploads", "GET", null, query);
+      const read = await body("list-uploads", readBodyPrefix(response.body, LIST_PAGE_BYTES));
+      if (read.limitReached) {
+        throw new S3Error("list-uploads", 0);
+      }
+      const xml = new TextDecoder().decode(read.bytes);
       for (const block of elements(xml, "Upload")) {
         const key = elements(block, "Key")[0];
         const uploadId = elements(block, "UploadId")[0];
@@ -174,15 +184,20 @@ export class S3Client {
           return uploads;
         }
       }
-      const truncated = elements(xml, "IsTruncated")[0] === "true";
+      if (elements(xml, "IsTruncated")[0] !== "true") {
+        return uploads;
+      }
       const nextKey = elements(xml, "NextKeyMarker")[0];
       const nextId = elements(xml, "NextUploadIdMarker")[0];
-      marker =
-        truncated && nextKey !== undefined && nextId !== undefined ? { key: nextKey, uploadId: nextId } : undefined;
-      if (truncated && marker === undefined) {
+      if (
+        nextKey === undefined ||
+        nextId === undefined ||
+        (marker !== undefined && (nextKey < marker.key || (nextKey === marker.key && nextId <= marker.uploadId)))
+      ) {
         throw new S3Error("list-uploads", 0);
       }
-    } while (marker !== undefined);
+      marker = { key: nextKey, uploadId: nextId };
+    }
     return uploads;
   }
 
@@ -194,6 +209,7 @@ export class S3Client {
     body?: Uint8Array,
     headers: Record<string, string> = {},
     accept: number[] = [],
+    budget: () => number = this.#budget,
   ): Promise<Response> {
     const url = new URL(
       key === null ? this.#base : `${this.#base}/${key.split("/").map(encodeURIComponent).join("/")}`,
@@ -203,7 +219,7 @@ export class S3Client {
     }
     const payloadHash = toHex(await crypto.subtle.digest("SHA-256", body ?? new Uint8Array(0)));
     for (let attempt = 0; ; attempt++) {
-      const left = this.#budget();
+      const left = budget();
       if (left <= 0) {
         throw new S3Error(op, "timeout");
       }
@@ -233,7 +249,7 @@ export class S3Client {
         }
       }
       const delay = 200 * 4 ** attempt;
-      if (this.#budget() <= delay) {
+      if (budget() <= delay) {
         throw new S3Error(op, "timeout");
       }
       await this.#sleep(delay);

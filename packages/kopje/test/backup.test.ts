@@ -15,12 +15,14 @@ import {
   MIN_PART_BYTES,
   runBackup,
   MAX_STRAY_ABORTS,
+  MAX_STRAY_PAGES,
   scheduledBackup,
   STREAM_COPY_BYTES,
   WORK_BYTES,
 } from "../src/jobs/backup";
 import { readBackupConfig } from "../src/platform/backup-config";
 import { readConfig } from "../src/platform/config";
+import { LIST_PAGE_BYTES } from "../src/platform/s3";
 import type { StoreStub } from "../src/platform/store-client";
 import { apiHarness, sql } from "./api-helpers";
 import { harness as appHarness } from "./app-helpers";
@@ -1022,8 +1024,9 @@ describe("backup of large originals (#1828 P24)", () => {
         }),
       };
     });
-    // 300 ms of request time beyond the reserve.
-    expect(await h.run({ invocationMs: 60_000 + 300 })).toBe("paused");
+    // 300 ms of request time beyond the reserve, on a clock that moves: the abort runs in the reserve.
+    const start = Date.now();
+    expect(await h.run({ invocationMs: 60_000 + 300, now: () => NOW + (Date.now() - start) })).toBe("paused");
     expect(h.s3.count("abort-upload")).toBe(1);
     expect(h.s3.uploads.size).toBe(0);
   }, 20_000);
@@ -1085,12 +1088,54 @@ describe("backup of large originals (#1828 P24)", () => {
     expect(lists).toBe(2);
     expect(failing.s3.uploads.size).toBe(0);
 
+    // Pages of 1,000, as S3 lists them: MAX_STRAY_ABORTS from the first page.
     const many = await harness();
+    (many.s3 as { maxListKeys: number }).maxListKeys = 1000;
     strays(many, MAX_STRAY_ABORTS + 5);
     expect(await many.run()).toBe("done");
     expect(many.s3.count("abort-upload")).toBe(MAX_STRAY_ABORTS);
     expect(many.s3.uploads.size).toBe(5);
+
+    // Pages of 2: MAX_STRAY_PAGES pages a prefix, whatever is left.
+    const paged = await harness();
+    strays(paged, MAX_STRAY_ABORTS + 5);
+    expect(await paged.run()).toBe("done");
+    expect(paged.s3.count("abort-upload")).toBe(2 * MAX_STRAY_PAGES);
   }, 60_000);
+
+  it.each([
+    ["empty pages that say more follow", "advancing", 2 * MAX_STRAY_PAGES],
+    ["a marker that does not move", "same", 2 * 2],
+    ["a page past LIST_PAGE_BYTES", "large", 2],
+  ] as const)(
+    "stops listing strays on %s",
+    async (_name, mode, expected) => {
+      const advancing = mode === "advancing";
+      const h = await harness();
+      let lists = 0;
+      let page = 0;
+      const fetch = async (request: Request) => {
+        const url = new URL(request.url);
+        if (request.method === "GET" && url.searchParams.has("uploads")) {
+          lists++;
+          page++;
+          const marker = advancing ? `${PREFIX}x/${String(page).padStart(6, "0")}` : `${PREFIX}x/same`;
+          return new Response(
+            (mode === "large" ? " ".repeat(LIST_PAGE_BYTES) : "") +
+              "<ListMultipartUploadsResult><IsTruncated>true</IsTruncated>" +
+              `<NextKeyMarker>${marker}</NextKeyMarker><NextUploadIdMarker>u</NextUploadIdMarker>` +
+              "</ListMultipartUploadsResult>",
+          );
+        }
+        return h.s3.fetch(request);
+      };
+      expect(await h.run({ fetch })).toBe("done");
+      // backups/ and media/, each at most MAX_STRAY_PAGES pages; two when the second marker does not move, one when
+      // the first page is too large.
+      expect(lists).toBe(expected);
+    },
+    60_000,
+  );
 
   it("a Worker that dies mid-upload leaves an upload the next run aborts before it copies again", async () => {
     const h = await harness();

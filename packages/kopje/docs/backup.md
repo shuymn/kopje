@@ -97,8 +97,10 @@ request and its retries end in time for a last checkpoint.
 A backup that is interrupted resumes where it stopped. The one exception is an interrupted dump: age's stream state
 cannot be saved, so its upload is aborted and the dump starts again. Each invocation first aborts the multipart uploads
 under `backups/` and `media/` that it can list, since no live invocation is writing them: each prefix is listed on its
-own, and at most 100 uploads are aborted an invocation, the rest by the next. A failure is recorded with a
-reason code and retried after an hour. A run that dies three times in a row is recorded as `interrupted`.
+own, and at most 100 uploads, from at most 4 listing pages a prefix, are aborted an invocation, the rest by the next. An
+upload the invocation itself was writing when its time ran out is aborted within the reserve it keeps for cleanup. A
+failure is recorded with a reason code and retried after an hour. A run that dies three times in a row is recorded as
+`interrupted`.
 
 A run is tied to the bucket settings (endpoint, bucket, region, prefix) and the recipients it started with. If either
 changes, the run is abandoned and a new one starts. A copy of an original made under other settings counts as missing,
