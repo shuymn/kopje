@@ -1,12 +1,12 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "82f135c07c9a7fc10f45a5d51de69f43753d4dbb",
+  "confirmed": "34ff290da670c82b1641e7b02bfd931f885f66a6",
   "files": [
     {
       "path": "src/store.ts",
       "functions": ["Store.receiveActivity"],
       "spec": "CollectionConsent.tla KRecv: one inbound activity, one Store transaction",
-      "blob": "0f656839f46021506b64ae88c45a4f269147a0d9"
+      "blob": "988bf776f3616da6c2209decb4ec634bd3975c17"
     },
     {
       "path": "src/domain/inbox.ts",
