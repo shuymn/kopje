@@ -12,7 +12,9 @@ processor's side, so that it can be checked on an instance before uploads are tu
 
 ## Activation
 
-Uploads of video and audio are active when all three hold, for the Worker version that is deployed:
+Once a release turns uploads on, uploads of video and audio are active when all three hold, for the Worker version
+that is deployed. In this release they make the processor `ready` in health's `mediaProcessor` and nothing more: an
+upload of video or audio still answers 422.
 
 - the `MEDIA_PROCESSOR` binding (the template's block);
 - `MEDIA_UPLOAD_MONTHLY_JOBS` above 0, the container jobs uploads may start in a UTC month;
