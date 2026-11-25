@@ -203,7 +203,7 @@ export async function truncatedStill(): Promise<Uint8Array> {
 }
 
 // The media bucket, logging each multipart upload's creation, completion and abort by its kind ("original", "full").
-export function multipartLog(): { bucket: R2Bucket; log: string[] } {
+export function multipartLog(fault: { failAbort?: boolean } = {}): { bucket: R2Bucket; log: string[] } {
   const log: string[] = [];
   const kind = (key: string) => (key.startsWith("originals/") ? "original" : "full");
   const bucket = new Proxy(env.MEDIA, {
@@ -221,6 +221,9 @@ export function multipartLog(): { bucket: R2Bucket; log: string[] } {
           uploadPart: upload.uploadPart.bind(upload),
           abort: async () => {
             log.push(`abort:${kind(key)}`);
+            if (fault.failAbort === true) {
+              throw new Error("r2 abort failed");
+            }
             await upload.abort();
           },
           complete: async (parts: R2UploadedPart[]) => {

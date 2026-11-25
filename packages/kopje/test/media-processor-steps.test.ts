@@ -8,7 +8,7 @@ import {
   outputCuts,
   V2_PROCESS_MS,
 } from "../src/domain/media-processing";
-import { incomingOrphans } from "../src/jobs/media-jobs";
+import { incomingOrphans, R2_CALL_MS } from "../src/jobs/media-jobs";
 import { incomingKey } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
 import { BUILD } from "./helpers";
@@ -299,5 +299,66 @@ describe("table 1.3 D3: every wait on the container ends at its cut", () => {
     expect(p.writes()).toEqual([]);
     // D4, D8 and D9 in the same invocation: the container stopped, the input deleted, the slot released.
     await cleared(w, p, up.id);
+  });
+});
+
+describe("the stop and the R2 waits around a cut (M2)", () => {
+  async function cutWorld() {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    const row = (await held(w.store, up.id)).row!;
+    const [input] = await sql<{ input_bytes: number }>(
+      w.store,
+      "SELECT input_bytes FROM media_processing WHERE media_id = ?",
+      up.id,
+    );
+    const allocation = allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes);
+    return { w, p, up, cuts: { still: allocation.cuts.still, ...outputCuts(allocation) } };
+  }
+
+  it("a held first abort leaves the second abort and the stop attempted, and the invocation ends within its bounds", async () => {
+    const { w, p, up, cuts } = await cutWorld();
+    p.hangNormalize("body");
+    p.hold("abort:original");
+    p.hold("abort:full");
+    const fired = p.fire();
+    await vi.waitFor(() => expect(p.hung()).toBe(true));
+    p.expire(cuts.transfer);
+    // Both aborts and the destroy start together; none waits on another.
+    await vi.waitFor(() => expect(p.aborts().toSorted()).toEqual(["full", "original"]));
+    await vi.waitFor(() => expect(p.running()).toBe(false));
+    // The aborts are bounded: past R2_CALL_MS the job goes on to S7 and D8/D9 without them.
+    p.expire(Date.now() + R2_CALL_MS);
+    expect(await fired).toBe("returned");
+    // S7 is sent past deadline_at by then: the Store records the deadline (K4).
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "deadline" });
+    await cleared(w, p, up.id);
+  });
+
+  it("a held input get ends at the work deadline, the container stopped", async () => {
+    const { w, p, up, cuts } = await cutWorld();
+    p.hold("get");
+    const fired = p.fire();
+    await vi.waitFor(() => expect(p.held()).toContain("get"));
+    expect(p.lastWait()).toBe(cuts.still);
+    p.expire(cuts.still);
+    expect(await fired).toBe("returned");
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
+    await cleared(w, p, up.id);
+  });
+
+  it("a held multipart creation ends at the transfer's cut, and the upload it makes later is aborted", async () => {
+    const { w, p, up, cuts } = await cutWorld();
+    p.hold("create:full");
+    const fired = p.fire();
+    await vi.waitFor(() => expect(p.held()).toContain("create:full"));
+    p.expire(cuts.transfer);
+    expect(await fired).toBe("returned");
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
+    await cleared(w, p, up.id);
+    expect(p.aborts()).toEqual(["original"]);
+    p.release("create:full");
+    await vi.waitFor(() => expect(p.aborts().toSorted()).toEqual(["full", "original"]));
   });
 });

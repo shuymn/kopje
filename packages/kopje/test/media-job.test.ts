@@ -152,6 +152,25 @@ describe("runUpload (P12)", () => {
     expect(await objects(up.id, up.token)).toMatchObject({ original: false, full: false });
   });
 
+  it("logs a rejected abort with its key and still stops the container and records the cause (M2)", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const logged: { event?: string; key?: string }[] = [];
+    vi.spyOn(console, "warn").mockImplementation((entry: { event?: string; key?: string }) => void logged.push(entry));
+    const { bucket, log } = multipartLog({ failAbort: true });
+    const output = await avFixture("r1-silent.mp4");
+    const fake = fakeControl({ output, durationMs: String(await durationMs("r1-silent.mp4")), truncateAt: 1000 });
+    await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, up));
+    expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
+    expect(logged.filter((entry) => entry.event === "kopje.media.job.abort_failed").map((entry) => entry.key)).toEqual(
+      expect.arrayContaining([fileKey(up.token, "full"), originalKey(up.id)]),
+    );
+    expect(logged.filter((entry) => entry.event === "kopje.media.job.abort_failed")).toHaveLength(2);
+    expect(fake.stops()).toBe(1);
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "verifier" });
+  });
+
   it.each([
     [{ status: 422, code: "envelope" }, "envelope"],
     [{ status: 422, code: "pixels" }, "refused"],

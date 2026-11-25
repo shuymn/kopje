@@ -67,10 +67,19 @@ export type UploadDeps = ContainerControl & {
   wait: (ms: number) => Promise<void>;
 };
 
+// The most one R2 call of the cleanup (a multipart upload's abort) is awaited.
+export const R2_CALL_MS = 30_000;
+
 // A wait on the container that reached its cut.
 class StageCut extends Error {}
 
 const CUT: unique symbol = Symbol("cut");
+
+// Whether `work` settles within `ms` on the processor's clock: its value, or CUT.
+async function settles<T>(deps: Pick<UploadDeps, "wait">, work: Promise<T>, ms: number): Promise<T | typeof CUT> {
+  work.catch(() => {});
+  return Promise.race([work, deps.wait(ms).then((): typeof CUT => CUT)]);
+}
 
 // `work` until `end` on the processor's clock: past it (or when it settles at or after `end`), `cut` is aborted, which
 // ends the container's requests and the bodies they stream, and StageCut is thrown.
@@ -127,15 +136,31 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
       console.warn({ event: "kopje.media.job.fail_failed", ...at(), ...errorFields(error) });
     }
   };
-  const abortUploads = async () => {
-    for (const upload of uploads.splice(0)) {
-      await upload.abort().catch(() => {});
+  // Each multipart upload begun aborted at once, each awaited at most R2_CALL_MS; one that fails or does not answer
+  // is logged with its key, and left to the bucket's lifecycle rule.
+  const abortOne = async (upload: R2MultipartUpload) => {
+    try {
+      if ((await settles(deps, upload.abort(), R2_CALL_MS)) === CUT) {
+        console.warn({ event: "kopje.media.job.abort_failed", ...at(), key: upload.key, reason: "timeout" });
+      }
+    } catch (error) {
+      console.warn({ event: "kopje.media.job.abort_failed", ...at(), key: upload.key, ...errorFields(error) });
     }
   };
-  // D4, then the cause: an unconfirmed stop records `unavailable` whatever the cause was, and ends the invocation.
+  const abortUploads = async () => {
+    await Promise.all(uploads.splice(0).map(abortOne));
+  };
+  // A multipart upload begun within the transfer's cut; one whose creation answers after the cut is aborted then.
+  const begin = async (key: string, options: R2MultipartOptions, cut: AbortController) => {
+    const creating = deps.bucket.createMultipartUpload(key, options);
+    creating.then((upload) => (cut.signal.aborted ? abortOne(upload) : undefined)).catch(() => {});
+    uploads.push(await bounded(deps, creating, output.transfer, cut));
+  };
+  // D4 and the aborts together, neither waiting on the other; then the cause: an unconfirmed stop records
+  // `unavailable` whatever the cause was, and ends the invocation.
   const stopThen = async (cause: ProcessorFailure | null): Promise<UploadEnd> => {
-    await abortUploads();
-    if (!(await deps.stop())) {
+    const [stopped] = await Promise.all([deps.stop(), abortUploads()]);
+    if (!stopped) {
       console.warn({ event: "kopje.media.job.stop_failed", ...at() });
       await fail("unavailable");
       return { stopped: false };
@@ -158,7 +183,11 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     }
     stage.name = "input";
     stage.at = deps.now();
-    const object = await deps.bucket.get(incomingKey(job.id));
+    // Every wait from here while the container runs ends at a cut; past one, `cut` aborts what is still asked of it.
+    const cut = new AbortController();
+    const getting = deps.bucket.get(incomingKey(job.id));
+    getting.then((late) => (cut.signal.aborted ? late?.body.cancel() : undefined)).catch(() => {});
+    const object = await bounded(deps, getting, allocation.cuts.still, cut);
     if (object === null) {
       console.warn({ event: "kopje.media.job.input_missing", ...at() });
       return await stopThen("unavailable");
@@ -168,7 +197,6 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
       await object.body.cancel();
       return await stopThen("timeout");
     }
-    const cut = new AbortController();
     const result = await bounded(
       deps,
       deps.normalize(port, {
@@ -187,8 +215,8 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     stage.name = "output";
     stage.at = deps.now();
     const type = { httpMetadata: { contentType: result.type } };
-    uploads.push(await deps.bucket.createMultipartUpload(originalKey(job.id), type));
-    uploads.push(await deps.bucket.createMultipartUpload(fileKey(job.token, "full"), type));
+    await begin(originalKey(job.id), type, cut);
+    await begin(fileKey(job.token, "full"), type, cut);
     const verified = await bounded(
       deps,
       verifyInto(result, uploads as [R2MultipartUpload, R2MultipartUpload]),

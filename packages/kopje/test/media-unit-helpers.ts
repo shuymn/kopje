@@ -177,6 +177,10 @@ export async function platformFor(w: AvWorld) {
   // The multipart uploads aborted, by kind.
   const aborts: string[] = [];
   let maintenance = false;
+  // Bucket calls held until released ("get" of the input, "create:<kind>", "abort:<kind>"), and those reached.
+  const holds = new Map<string, Promise<void>>();
+  const releases = new Map<string, () => void>();
+  const held: string[] = [];
   // The keys the bucket was asked to delete, and how many of the next deletes fail.
   const deletes: string[] = [];
   let failingDeletes = 0;
@@ -230,6 +234,18 @@ export async function platformFor(w: AvWorld) {
         return value;
       }
       return async (...args: unknown[]) => {
+        const key = String(args[0]);
+        if (method === "get" && key.startsWith("incoming/") && holds.has("get")) {
+          held.push("get");
+          await holds.get("get");
+        }
+        if (method === "createMultipartUpload") {
+          const name = key.startsWith("originals/") ? "original" : "full";
+          if (holds.has(`create:${name}`)) {
+            held.push(`create:${name}`);
+            await holds.get(`create:${name}`);
+          }
+        }
         if (method === "delete") {
           await (kill("delete") ?? Promise.resolve());
           deletes.push(String(args[0]));
@@ -252,6 +268,7 @@ export async function platformFor(w: AvWorld) {
             uploadPart: upload.uploadPart.bind(upload),
             abort: async () => {
               aborts.push(name);
+              await holds.get(`abort:${name}`);
               await upload.abort();
             },
             complete: async (parts: R2UploadedPart[]) => {
@@ -306,6 +323,11 @@ export async function platformFor(w: AvWorld) {
     writes: () => writes,
     aborts: () => aborts,
     deletes: () => deletes,
+    hold(call: "get" | "create:original" | "create:full" | "abort:original" | "abort:full"): void {
+      holds.set(call, new Promise<void>((resolve) => releases.set(call, resolve)));
+    },
+    release: (call: string) => releases.get(call)?.(),
+    held: () => held,
     failDeletes: (count: number) => void (failingDeletes = count),
     envMaintenance: (on: boolean) => void (maintenance = on),
     hangNormalize: (how: "reply" | "body" | "still") => void (hang = how),
