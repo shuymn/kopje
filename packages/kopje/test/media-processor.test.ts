@@ -288,9 +288,8 @@ describe("normalize adapter", () => {
     const thrown = await normalize(fake.container.getTcpPort(8080), job()).catch((error: unknown) => error);
     expect(thrown).toBeInstanceOf(TranscoderUnavailable);
     expect((thrown as TranscoderUnavailable).reason).not.toContain("error");
-    // Busy, a slow input and the server's internal failure are the moment's; every other such reply is outside its
-    // contract (r2 M2).
-    expect((thrown as TranscoderUnavailable).protocol).toBe(![408, 429, 500].includes(status));
+    // Only a missing route is evidence of the build (r4); every other reply may be the moment's or the input's.
+    expect((thrown as TranscoderUnavailable).protocol).toBe(status === 404);
   });
 
   it("logs an unknown Kopje-Error by its status, as R9's container chooses its bytes (r3)", async () => {
@@ -433,6 +432,56 @@ describe("MediaProcessor", () => {
     const state = fakeState(undefined);
     const report = await probe(unit(state.ctx));
     expect(report).toMatchObject({ ok: false, failure: "no-container" });
+  });
+
+  // r4 M3 (Codex's interleaving): probe A, given up at its deadline while its still is held, destroys its container
+  // and answers; probe B starts the next container and waits on its copy; A's still then arrives. A's late work stops
+  // nothing: the stop is the call's, after the work, so B's container runs on and B passes.
+  it("a given-up probe whose still arrives late does not stop the next probe's container", async () => {
+    // Waits fire only when the test expires them: A's deadline once, B's never.
+    let t = 1_000_000;
+    const waits: { ms: number; resolve: () => void }[] = [];
+    const time: ProbeDeps = {
+      now: () => t,
+      wait: (ms) => new Promise<void>((resolve) => void waits.push({ ms, resolve })),
+    };
+    const heldStill = deferred<Response>();
+    let stills = 0;
+    const fake = fakeContainer(
+      server({
+        "/normalize/still": () => (++stills === 1 ? heldStill.promise : ok(GENUINE.still, "image/png")),
+      }),
+    );
+    const heldGet = deferred();
+    let gets = 0;
+    const state = fakeState(fake.container);
+    const bucket = {
+      get: async (key: string) => {
+        if (++gets === 2) {
+          await heldGet.promise;
+        }
+        return env.MEDIA.get(key);
+      },
+    } as unknown as R2Bucket;
+    const object = unit({ ...state.ctx, bucket }, time);
+    const a = probe(object);
+    await vi.waitFor(() => expect(stills).toBe(1));
+    t += PROBE_MS;
+    for (const pending of waits.splice(0)) {
+      pending.resolve();
+    }
+    expect(await a).toMatchObject({ ok: false, failure: "operation-deadline", destroyed: true });
+    const destroys = () => fake.calls.filter((call) => call === "destroy").length;
+    expect(destroys()).toBe(1);
+    const b = probe(object);
+    await vi.waitFor(() => expect(gets).toBe(2));
+    heldStill.resolve(ok(GENUINE.still, "image/png"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(destroys()).toBe(1);
+    expect(fake.container.running).toBe(true);
+    heldGet.resolve();
+    expect(await b).toMatchObject({ ok: true, destroyed: true });
+    expect(destroys()).toBe(2);
   });
 
   it("leaves no alarm after a probe whose container was destroyed", async () => {

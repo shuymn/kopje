@@ -35,13 +35,22 @@ within an hour of the last one for the same version.
 The probe copies the 2-second clip that ships in the package to `incoming/probe-<nonce>` in the media bucket, starts the
 container on standard-4 without Internet access, streams the copy through it, holds the output to Kopje's verifier with
 the duration the container declared, checks the still, stops the container, has Images re-encode the still, and deletes
-the copy. A copy left by a Worker that died is removed by the orphan pass below. Its outcome:
+the copy. A copy left by a Worker that died is removed by the orphan pass below. The container's stop belongs to the
+probe object, after the probe's work settled or was given up, and Images sees the still only once that stop is
+confirmed, so a probe given up at its deadline cannot stop a later probe's container.
 
-| Outcome      | When                                                                                                                                                                                                                                                                                                                                                            | Effect                                                                 |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `pass`       | every check passed and Images re-encoded the still (`imagesVerified: true`), or every earlier check passed and Images answered that the month's allowance is used up (9422; `imagesVerified: false`)                                                                                                                                                            | uploads are admitted; an unverified pass is probed again after an hour |
-| `fail`       | the build answered wrongly in a way it always will: its readiness check answered 404, `/normalize` or `/normalize/still` answered a status outside its contract (a missing route's 404 included) or a reply that broke it, the clip was refused (422), or its output, still or Images' input check refused it                                                   | uploads are refused until a later probe passes                         |
-| `no-verdict` | the container never became ready, the connection failed or a body was cut short, `/normalize` or `/normalize/still` answered busy, 408 `input_timeout`, 400 `truncated` (the input copy cut short), a 500 (`internal`, `no_output`), or a gateway's 502, 503 or 504, too little time was left to send the clip, a stage timed out, or Images failed another way | the last verdict stands; health shows `lastProbe: "unavailable"`       |
+The probe is sent only with enough time for the clip to say something of the build: at least `PROBE_FLOOR_MS` (6,568
+ms) left once the copy is read, twice the sum of the clip's envelope and its way in. The envelope, 2,284 ms, is the
+least encode time the server's plan admits the clip in (`plan.go`: an estimate of 1,598.25 ms for 192x144 H.264 at 15
+fps for 2 s with AAC, within 0.7 of the encode time; `plan_test.go` pins it), and the way in (the body and ffprobe), 1
+s, is a starting value that the den-test runs measure. Its still reserve is half the work deadline, at most 5 s, room
+for contention. Its outcome:
+
+| Outcome      | When                                                                                                                                                                                                                                                                                                                                                                                                           | Effect                                                                 |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `pass`       | every check passed and Images re-encoded the still (`imagesVerified: true`), or every earlier check passed and Images answered that the month's allowance is used up (9422; `imagesVerified: false`)                                                                                                                                                                                                           | uploads are admitted; an unverified pass is probed again after an hour |
+| `fail`       | only on positive evidence that the build is wrong: its readiness check answered 404; `/normalize` or `/normalize/still` answered 404 with the readiness check healthy (a missing route); a 200 broke the reply's contract (its headers, kind or length); the verifier refused the output or found its declared duration wrong; `verifyStill` refused the still; or Images refused that verified still as input | uploads are refused until a later probe passes                         |
+| `no-verdict` | anything else: any code the container answers (`envelope`, `encode_failed`, `internal`, `truncated`, `no_output`, `bad_request`, a refusal of the clip and every other), a video answered without its still, busy, a gateway's reply, a lost connection or a body cut short, less than the clip's floor left to send it, a stage that timed out, or Images failing another way                                 | the last verdict stands; health shows `lastProbe: "unavailable"`       |
 
 An upload whose still Images refuses as input, though the verifier passed it, completes with the default poster and
 records an infrastructure failure, which has the next cron probe again; it revokes nothing. A container answer that is
@@ -50,8 +59,13 @@ a processing outcome of the input (a 500 such as `encode_failed`) is the upload'
 `kopje-admin media-processor probe` runs the same probe on request (`normalize@standard-4`, or every profile by
 default). For `still@standard-1` the command is a check: a still of the packaged clip on standard-1, its PNG through
 Kopje's checks and Images, with the same outcomes, and nothing recorded, because the media rebuild records its own probe
-of that profile under its lease. Both start a container and write a probe copy to the media bucket, so they are refused
-while the instance is in maintenance or its Store is read-only, and the CLI prints that refusal.
+of that profile under its lease, and its `fail` has the same evidence: the `/still` route answered 404, `verifyStill`
+refused the PNG, or Images refused it. Both start a container and write a probe copy to the media bucket, so they are
+refused while the instance is in maintenance or its Store is read-only, and the CLI prints that refusal. The request has
+one deadline, `PROBE_ROUTE_MS` (5 min 20 s), that each step ends by: its body, the Store calls (the check's health, the
+claim, the record) at most 20 s each, the copy's put and delete at most 10 s each (a put that answers late is deleted
+then), and the probe object's call at most 250 s. A claim or record that does not answer in time answers `unconfirmed`:
+a late record still commits under its claim, which stays until its lease ends.
 
 ## Health
 

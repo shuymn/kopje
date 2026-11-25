@@ -6,7 +6,15 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { AnnouncementChanges } from "../domain/announcements";
 import type { LoaderDeps } from "../federation/loader";
 import { uploadEmoji } from "../mastodon/emoji-upload";
-import { activationProbe, stillCheck } from "../mastodon/media-activation";
+import {
+  activationProbe,
+  OVER,
+  PROBE_BODY_MS,
+  PROBE_ROUTE_MS,
+  PROBE_STORE_MS,
+  probeSteps,
+  stillCheck,
+} from "../mastodon/media-activation";
 import { rebuildMedia } from "../mastodon/media-rebuild";
 import { parseScheduledAt } from "../mastodon/statuses";
 import { type AccessSettings, adminRefusal, adminUsable, normalizeTeamDomain } from "../platform/access-settings";
@@ -595,9 +603,17 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
   // activationProbe): one claim shared with the probe round, the packaged clip copied to incoming/probe-<nonce> and run
   // through the container, the verifier and Images, and the verdict recorded for this build. still@standard-1's is a
   // check (stillCheck) that records nothing: the media rebuild records that profile's probe under its own lease. Both
-  // start a container and write R2, so maintenance and a read-only Store refuse them (503) before anything starts.
+  // start a container and write R2, so maintenance and a read-only Store refuse them (503) before anything starts. The
+  // request has one deadline, PROBE_ROUTE_MS from its start, which every step ends by (probeSteps): its body, the still
+  // check's health, and each step of the probe or check; a body or health that does not answer by its step answers 504.
   admin.post("/media-processor/probe", async (c) => {
-    const { profile } = await jsonBody(c);
+    const end = now() + PROBE_ROUTE_MS;
+    const step = probeSteps(end, now);
+    const body = await step(jsonBody(c), PROBE_BODY_MS);
+    if (body === OVER) {
+      return c.json({ error: "the request body did not arrive in time", code: "probe-timeout" }, 504);
+    }
+    const { profile } = body;
     if (!isProbeProfile(profile)) {
       return c.json({ error: `expected {"profile": ${PROBE_PROFILES.map((p) => `"${p}"`).join(" | ")}}` }, 400);
     }
@@ -617,19 +633,22 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
     }
     if (profile === "normalize@standard-4") {
       const probed = await activationProbe(
-        { build: build(c.env), store: stub(c), bucket: c.env.MEDIA, processor: processor.uploads },
+        { build: build(c.env), store: stub(c), bucket: c.env.MEDIA, processor: processor.uploads, now, end },
         false,
       );
       return c.json({ probe: probed });
     }
-    const health = await stub(c).health(build(c.env));
+    const health = await step(stub(c).health(build(c.env)), PROBE_STORE_MS);
+    if (health === OVER) {
+      return c.json({ error: "the Store did not answer in time", code: "probe-timeout" }, 504);
+    }
     if (health.readonly) {
       throw new StoreUnavailableError(readonlyReason(health));
     }
     return c.json({
       probe: {
         status: "checked",
-        verdict: await stillCheck({ bucket: c.env.MEDIA, stills: processor.stills, images: images(c.env), now }),
+        verdict: await stillCheck({ bucket: c.env.MEDIA, stills: processor.stills, images: images(c.env), now, end }),
       },
     });
   });

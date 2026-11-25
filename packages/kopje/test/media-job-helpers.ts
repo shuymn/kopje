@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 
 import type { Endpoint } from "../src/domain/media-processing";
 import type { UploadDeps, UploadJob } from "../src/jobs/media-jobs";
-import { type ContainerControl, probeWork } from "../src/mastodon/media-activation";
+import { type ContainerControl, probeFinish, probeWork } from "../src/mastodon/media-activation";
 import { normalize } from "../src/media-processor";
 import type { ImageCodec } from "../src/platform/images";
 import { incomingKey } from "../src/platform/media-files";
@@ -191,21 +191,18 @@ export async function putInput(id: string, bytes = new Uint8Array(1000).fill(1))
   await env.MEDIA.put(incomingKey(id), bytes);
 }
 
-// The activation probe's processor with the probe object's work (probeWork) run here on `control`'s container,
+// The activation probe's processor with the probe object's work (probeWork, the stop, probeFinish) run here on
+// `control`'s container,
 // the clip copied to the bucket as activationProbe copies it.
 export function probeProcessor(control: ContainerControl, images: ImageCodec, clip: Uint8Array): UploadProcessor {
   return {
     run: () => Promise.reject(new Error("no upload in a probe test")),
     probeInput: clip,
-    probeNormalize: async (key) => ({
-      ...(await probeWork(
-        { ...control, bucket: env.MEDIA, images, now: () => Date.now() },
-        key,
-        Date.now() + 70_000,
-        70_000,
-      )),
-      image: null,
-    }),
+    probeNormalize: async (key) => {
+      const deadline = Date.now() + 70_000;
+      const stage = await probeWork({ ...control, bucket: env.MEDIA, now: () => Date.now() }, key, deadline, 70_000);
+      return { ...(await probeFinish(stage, await control.stop(), images, deadline, () => Date.now())), image: null };
+    },
   };
 }
 

@@ -34,7 +34,7 @@ import { DurableObject } from "cloudflare:workers";
 import type { MonthlyTransforms } from "./domain/media";
 import { HARD_HOLD_MS, V2_PROCESS_MS } from "./domain/media-processing";
 import { R2_CALL_MS, runUpload } from "./jobs/media-jobs";
-import { type ContainerControl, probeWork } from "./mastodon/media-activation";
+import { type ContainerControl, probeFinish, probeWork } from "./mastodon/media-activation";
 import { PROBE_FIXTURE_BASE64 } from "./media-probe-fixture";
 import { AV_OUTPUT_LIMIT, plannedDuration, STILL_OUTPUT_LIMIT } from "./platform/av-bytes";
 import { accountMonthlyTransforms, envInMaintenance, readConfig } from "./platform/config";
@@ -198,13 +198,12 @@ function errorCode(response: Response): string | null {
   return code !== null && /^[a-z_]{1,32}$/.test(code) ? code : null;
 }
 
-// Replies that say nothing of the build, on /normalize and /normalize/still alike: 408 input_timeout (the input
-// arrived too slowly), 429 busy, a 500 (internal: the server could not set up its work, a directory or ffprobe;
-// no_output: its file could not be opened), a gateway's 502, 503 or 504, and 400 truncated (the input copy cut short,
-// or its io.Copy failed). A 500 an upload's input explains (A5) is answered before this, as the input's outcome.
-const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
-function transientReply(status: number, code: string | null): boolean {
-  return TRANSIENT_STATUSES.has(status) || (status === 400 && code === "truncated");
+// The one reply other than a 200 that is evidence of the build, on /normalize and /normalize/still alike: the route
+// answered 404 (not_found, or no code), which a server that serves the route never does. Every other status and code
+// (busy, a slow or short input, the server's own failure, a gateway's reply, a code R9's container chooses) may be the
+// moment's or the input's, and says nothing of the build (TranscoderUnavailable's `protocol` false).
+function routeMissing(status: number, code: string | null): boolean {
+  return status === 404 && (code === null || code === "not_found");
 }
 
 // The Kopje-Error codes the server answers (container/server/main.go, plan.go). Any other value, which R9's container
@@ -262,11 +261,9 @@ export async function normalize(port: Fetcher, job: NormalizeJob): Promise<Norma
     if (response.status === 504 && code === "timeout") {
       return { ok: false, outcome: "timeout", code, stages };
     }
-    // Busy, a slow input, the server's own internal failure and a gateway's reply are the moment's (TRANSIENT_STATUSES);
-    // any other reply here is outside the server's contract, the build's.
     throw new TranscoderUnavailable(
       `normalize:${reasonCode(response.status, code)}`,
-      !transientReply(response.status, code),
+      routeMissing(response.status, code),
     );
   }
   const type = response.headers.get("content-type");
@@ -314,20 +311,17 @@ async function normalizeStill(port: Fetcher, signal: AbortSignal | undefined): P
     await response.body?.cancel();
     return null;
   }
-  if (response.status !== 200 && transientReply(response.status, code)) {
+  if (response.status !== 200) {
     await response.body?.cancel();
-    throw new TranscoderUnavailable(`still:${reasonCode(response.status, code)}`);
+    throw new TranscoderUnavailable(`still:${reasonCode(response.status, code)}`, routeMissing(response.status, code));
   }
   try {
     return await readStill(response);
   } catch (error) {
-    // A status, type or length the server never answers for the still is the build's; a body cut short, or a read
+    // A 200 whose type or length the server never answers for the still is the build's; a body cut short, or a read
     // that fails, may be the connection's.
     const failure = error instanceof ProbeFailure ? error.failure : "still-read";
-    throw new TranscoderUnavailable(
-      failure,
-      failure === "still-status" || failure === "still-length" || failure.startsWith("still:"),
-    );
+    throw new TranscoderUnavailable(failure, failure === "still-status" || failure === "still-length");
   }
 }
 
@@ -521,8 +515,10 @@ export class ProcessorUnit {
 
   // The activation probe of normalize@standard-4 on the copy of the clip at `key` (mastodon/media-activation.ts
   // probeWork), on this object's one container under the single-owner rule (#owned), every stage ending at its one
-  // deadline (PROBE_MS): one that has not answered by then reaches no verdict, its requests aborted. A probe that cannot
-  // run here (busy, no container, storage) reaches no verdict.
+  // deadline (PROBE_MS): one that has not answered by then reaches no verdict, its requests aborted. The container's
+  // stop is this call's alone, after the work settled or was given up, so a late answer of a given-up probe touches no
+  // later probe's container; Images sees the verified still only after the stop is confirmed (probeFinish). A probe
+  // that cannot run here (busy, no container, storage) reaches no verdict.
   async probeNormalize(key: string): Promise<ProbeVerdict & { image: string | null }> {
     const { bucket, images } = this.state;
     const owned = await this.#owned<ProbeVerdict & { image: string | null; destroyed: boolean }>(
@@ -534,14 +530,25 @@ export class ProcessorUnit {
         const control = containerControl(container, this.deps, "normalize", "standard-4");
         const aborted = new AbortController();
         const settled = await before(
-          probeWork({ ...control, bucket, images, now: this.deps.now }, key, deadline, PROBE_WORK_MS, aborted.signal),
+          probeWork(
+            { ready: control.ready, normalize: control.normalize, bucket, now: this.deps.now },
+            key,
+            deadline,
+            PROBE_WORK_MS,
+            aborted.signal,
+          ),
           deadline,
           this.deps,
           aborted,
         );
-        const verdict: ProbeVerdict =
-          settled === TIMED_OUT ? { outcome: "no-verdict", reason: "operation-deadline" } : settled;
         const destroyed = await destroyContainer(container, this.deps);
+        const verdict = await probeFinish(
+          settled === TIMED_OUT ? { outcome: "no-verdict", reason: "operation-deadline" } : settled,
+          destroyed,
+          images,
+          deadline,
+          this.deps.now,
+        );
         return { ...verdict, image: control.image(), destroyed };
       },
       (deadline) => deadline + DESTROY_MS,

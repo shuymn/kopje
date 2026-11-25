@@ -4,7 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { healthReport } from "../src/app/health";
 import { PROBE_RETRY_MS } from "../src/domain/media-probes";
 import { runUpload } from "../src/jobs/media-jobs";
-import { activationProbe, PROBE_CALL_MS, PROBE_COPY_MS, probeWork, stillCheck } from "../src/mastodon/media-activation";
+import {
+  activationProbe,
+  PROBE_CALL_MS,
+  PROBE_COPY_MS,
+  PROBE_FLOOR_MS,
+  PROBE_STORE_MS,
+  probeWork,
+  stillCheck,
+} from "../src/mastodon/media-activation";
 import { readConfig } from "../src/platform/config";
 import { probeInputKey } from "../src/platform/media-files";
 import type { StillOutcome } from "../src/platform/media-transcoder";
@@ -104,16 +112,18 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     expect((await store.avActivation(BUILD, { binding: true, budget: 10, build: BUILD })).active).toBe(false);
   });
 
+  // r4: fail only on positive evidence that the build is wrong, each row of it.
   it.each([
-    ["an output declared 4 s longer than it is", { durationMs: "6000" }, undefined, "output:"],
     ["a readiness answered 404", {}, "wrong" as const, "healthz"],
-    ["a reply that breaks the /normalize contract", { durationMs: null }, undefined, "normalize-contract"],
-    ["a refused clip", { failure: { status: 422, code: "pixels" } }, undefined, "normalize:pixels"],
-    // M10: a healthy /healthz with no /normalize is the build's, deterministically.
+    // M10: a healthy /healthz with no /normalize, or no /normalize/still, is the build's.
     ["a /normalize answered 404", { failure: { status: 404, code: "not_found" } }, undefined, "normalize:not_found"],
-    ["a still with no Content-Length", { stillLength: "none" as const }, undefined, "still-length"],
     ["a still route answered 404", { stillFailure: { status: 404, code: "not_found" } }, undefined, "still:not_found"],
-    ["a planned-output refusal", { failure: { status: 422, code: "truncated" } }, undefined, "normalize:truncated"],
+    ["a 200 without its declared duration", { durationMs: null }, undefined, "normalize-contract"],
+    ["a 200 whose length breaks the contract", { lengthOff: 1 }, undefined, "output:"],
+    ["a still with no Content-Length", { stillLength: "none" as const }, undefined, "still-length"],
+    ["an output the verifier refuses", { output: new Uint8Array(4096).fill(7) }, undefined, "output:"],
+    ["an output declared 4 s longer than it is", { durationMs: "6000" }, undefined, "output:"],
+    ["a still verifyStill refuses", { still: new Uint8Array(10) }, undefined, "still"],
   ])("fails on %s, and health is degraded", async (_name, extra, ready, reason) => {
     const store = await freshStore();
     const { run } = await probeOnce(store, await genuine(extra), { ready });
@@ -122,19 +132,32 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     expect(await health(store)).toMatchObject({ ok: false, state: "degraded" });
   });
 
-  // r2 M2: what a server or the network does for a moment says nothing of the build.
+  // r4: every other answer says nothing of the build: the existing pass is kept.
   it.each([
+    // Codex r4: what Go answers to a work deadline too short for the clip's envelope.
+    ["422 envelope", { failure: { status: 422, code: "envelope" } }],
+    // Gemini r4: an ffmpeg the host killed answers encode_failed.
+    ["500 encode_failed", { failure: { status: 500, code: "encode_failed" } }],
+    // Gemini r4: a still past its reserve under contention answers the video with Kopje-Still: false.
+    ["a video answered without its still", { still: null }],
+    ["422 pixels (a refusal of the packaged clip)", { failure: { status: 422, code: "pixels" } }],
+    ["422 truncated", { failure: { status: 422, code: "truncated" } }],
+    ["400 truncated", { failure: { status: 400, code: "truncated" } }],
+    ["400 bad_request", { failure: { status: 400, code: "bad_request" } }],
+    ["405 method_not_allowed", { failure: { status: 405, code: "method_not_allowed" } }],
     ["408 input_timeout", { failure: { status: 408, code: "input_timeout" } }],
+    ["429 busy", { failure: { status: 429, code: "busy" } }],
     ["500 internal", { failure: { status: 500, code: "internal" } }],
+    ["500 no_output", { failure: { status: 500, code: "no_output" } }],
+    ["500 strip_failed", { failure: { status: 500, code: "strip_failed" } }],
     ["502", { failure: { status: 502 } }],
     ["503", { failure: { status: 503 } }],
+    ["504 timeout", { failure: { status: 504, code: "timeout" } }],
+    ["a code no server answers", { failure: { status: 418, code: "teapot" } }],
     ["a still cut short of its Content-Length", { stillLength: "short" as const }],
-    // r3 M3: the still endpoint as the POST, and Go's own transient failures.
     ["a still answered 502", { stillFailure: { status: 502 } }],
-    ["a still answered 500 no_output", { stillFailure: { status: 500, code: "no_output" } }],
     ["a still answered 500 internal", { stillFailure: { status: 500, code: "internal" } }],
-    ["400 truncated (the input copy cut short)", { failure: { status: 400, code: "truncated" } }],
-    ["500 no_output", { failure: { status: 500, code: "no_output" } }],
+    ["a still answered 405", { stillFailure: { status: 405, code: "method_not_allowed" } }],
   ])("keeps an existing pass on %s: no verdict, health ready", async (_name, extra) => {
     const store = await freshStore();
     expect((await probeOnce(store, await genuine())).run).toMatchObject({ verdict: { outcome: "pass" } });
@@ -146,29 +169,36 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     expect(await health(store)).toMatchObject({ ok: true, state: "ready" });
   });
 
-  it("reaches no verdict, sending nothing, when the time left cannot form a valid work budget", async () => {
+  // r4 (Codex M2): the copy read with less than the clip's floor left (1,500 ms here) sends nothing; with the floor
+  // left the probe is sent, its still reserve half of it, and with the whole budget its reserve is PROBE_STILL_MS.
+  it.each([
+    ["1,500 ms", 1_500, null],
+    ["one millisecond under PROBE_FLOOR_MS", PROBE_FLOOR_MS - 1, null],
+    ["PROBE_FLOOR_MS", PROBE_FLOOR_MS, `work_ms=${PROBE_FLOOR_MS}&still_ms=${Math.floor(PROBE_FLOOR_MS / 2)}`],
+    ["70 s", 70_000, "work_ms=70000&still_ms=5000"],
+  ])("sends a probe whose copy is read with %s left only with the clip's floor", async (_name, left, query) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     clock(T0);
     const fake = fakeControl(await genuine());
     const deadline = Date.now() + 70_000;
     const bucket = {
-      // The copy answers when 500 ms are left: less than T_STILL, so no work_ms above still_ms.
       get: async (key: string) => {
-        clock(deadline - 500);
+        clock(deadline - left);
         return env.MEDIA.get(key);
       },
     };
     const key = probeInputKey("1".repeat(32));
     await env.MEDIA.put(key, await avFixture("r1-av.mp4"));
     try {
-      const verdict = await probeWork(
-        { ...fake.control, bucket, images: new TestCodec(), now: () => Date.now() },
-        key,
-        deadline,
-        70_000,
-      );
-      expect(verdict).toMatchObject({ outcome: "no-verdict" });
-      expect(fake.calls.filter((call) => call.startsWith("POST /normalize"))).toEqual([]);
+      const stage = await probeWork({ ...fake.control, bucket, now: () => Date.now() }, key, deadline, 70_000);
+      const sent = fake.calls.filter((call) => call.startsWith("POST /normalize"));
+      if (query === null) {
+        expect(stage).toEqual({ outcome: "no-verdict", reason: "budget" });
+        expect(sent).toEqual([]);
+      } else {
+        expect(stage).toMatchObject({ outcome: "still" });
+        expect(sent).toEqual([`POST /normalize?${query}`]);
+      }
     } finally {
       await env.MEDIA.delete(key);
     }
@@ -318,9 +348,13 @@ describe("the still check of still@standard-1 (kopje-admin media-processor probe
     });
   });
 
-  it("fails a clip the container refuses as input and a PNG verifyStill refuses; anything else reaches no verdict", async () => {
-    expect(await check({ ok: false, failure: "still:pixels", input: "pixels", image: null })).toMatchObject({
+  it("fails a /still route answered 404 and a PNG verifyStill refuses; anything else, a refusal of the clip among it, reaches no verdict", async () => {
+    expect(await check({ ok: false, failure: "still:not_found", image: null })).toMatchObject({
       outcome: "fail",
+      reason: "still:not_found",
+    });
+    expect(await check({ ok: false, failure: "still:pixels", input: "pixels", image: null })).toMatchObject({
+      outcome: "no-verdict",
     });
     expect(await check({ ok: true, png: new Uint8Array(10), image: null })).toMatchObject({
       outcome: "fail",
@@ -337,7 +371,7 @@ describe("the still check of still@standard-1 (kopje-admin media-processor probe
 // applies: each is bounded, and a copy whose delete never answers is left to the orphan pass.
 describe("the probes' copy I/O, bounded on the request path", () => {
   // A wait the test expires by its length, and the bucket calls it holds.
-  function harness(hold: "put" | "delete" | "none") {
+  function harness(hold: "put" | "late-put" | "delete" | "none") {
     const waits: { ms: number; resolve: () => void }[] = [];
     const wait = (ms: number) => new Promise<void>((resolve) => void waits.push({ ms, resolve }));
     const expire = (ms: number) => {
@@ -345,14 +379,123 @@ describe("the probes' copy I/O, bounded on the request path", () => {
         pending.resolve();
       }
     };
+    // A put held until `release`, which then makes it (the copy landing late).
+    const late: (() => Promise<void>)[] = [];
+    const release = () => Promise.all(late.map((put) => put()));
     const bucket = {
-      put: (key: string, value: Uint8Array) =>
-        hold === "put" ? new Promise<never>(() => {}) : env.MEDIA.put(key, value),
+      put: (key: string, value: Uint8Array) => {
+        if (hold === "put") {
+          return new Promise<never>(() => {});
+        }
+        if (hold === "late-put") {
+          return new Promise((resolve) => late.push(async () => resolve(await env.MEDIA.put(key, value))));
+        }
+        return env.MEDIA.put(key, value);
+      },
       delete: (key: string) => (hold === "delete" ? new Promise<never>(() => {}) : env.MEDIA.delete(key)),
       get: (key: string) => env.MEDIA.get(key),
     } as unknown as R2Bucket;
-    return { waits, wait, expire, bucket };
+    return { waits, wait, expire, bucket, release };
   }
+  const copies = async () => (await env.MEDIA.list({ prefix: "incoming/probe-" })).objects.map((o) => o.key);
+
+  // r4 LOW: a put past its bound that lands after the probe's delete is deleted once it lands, on both profiles.
+  it.each(["normalize", "still"] as const)(
+    "a %s probe's copy put that lands after its bound is deleted then",
+    async (profile) => {
+      const store = await freshStore();
+      const h = harness("late-put");
+      const before = await copies();
+      const processor = probeProcessor(
+        fakeControl(await genuine()).control,
+        new TestCodec(),
+        await avFixture("r1-av.mp4"),
+      );
+      const running =
+        profile === "normalize"
+          ? activationProbe({ build: BUILD, store, bucket: h.bucket, processor, wait: h.wait }, false)
+          : stillCheck({
+              bucket: h.bucket,
+              stills: {
+                still: () => Promise.reject(new Error("unused")),
+                probe: () => Promise.reject(new Error("unused")),
+                probeInput: new Uint8Array([1, 2, 3]),
+              },
+              images: new TestCodec(),
+              now: () => Date.now(),
+              wait: h.wait,
+            });
+      // The put's bound, then the delete's (of a key not yet there).
+      await vi.waitFor(() => expect(h.waits.filter((entry) => entry.ms === PROBE_COPY_MS)).toHaveLength(1));
+      h.expire(PROBE_COPY_MS);
+      await vi.waitFor(() => expect(h.waits.filter((entry) => entry.ms === PROBE_COPY_MS)).toHaveLength(2));
+      h.expire(PROBE_COPY_MS);
+      expect(await running).toMatchObject(
+        profile === "normalize" ? { verdict: { outcome: "no-verdict", reason: "copy" } } : { reason: "copy" },
+      );
+      await h.release();
+      await vi.waitFor(async () => expect(await copies()).toEqual(before));
+    },
+  );
+
+  // r4 M1: the request's Store calls end by their bound: a claim not answered runs nothing, a record not answered
+  // leaves the claim's fence, under which a late record still commits.
+  it("a claim that never answers ends at PROBE_STORE_MS, unconfirmed, nothing copied or probed", async () => {
+    const store = await freshStore();
+    const h = harness("none");
+    const before = await copies();
+    const fake = fakeControl(await genuine());
+    const processor = probeProcessor(fake.control, new TestCodec(), await avFixture("r1-av.mp4"));
+    const held = {
+      claimMediaProbe: () => new Promise<never>(() => {}),
+      recordMediaProbeResult: store.recordMediaProbeResult.bind(store),
+    } as unknown as StoreStub;
+    const running = activationProbe({ build: BUILD, store: held, bucket: h.bucket, processor, wait: h.wait }, false);
+    await vi.waitFor(() => expect(h.waits.map((entry) => entry.ms)).toContain(PROBE_STORE_MS));
+    h.expire(PROBE_STORE_MS);
+    expect(await running).toEqual({ status: "unconfirmed", verdict: null });
+    expect(fake.calls).toEqual([]);
+    expect(await copies()).toEqual(before);
+  });
+
+  it("a record that never answers ends at PROBE_STORE_MS, unconfirmed with its verdict, and the claim's fence stays for a late record", async () => {
+    const store = await freshStore();
+    const h = harness("none");
+    const processor = probeProcessor(
+      fakeControl(await genuine()).control,
+      new TestCodec(),
+      await avFixture("r1-av.mp4"),
+    );
+    let claimed: string | null = null;
+    const held = {
+      claimMediaProbe: async (build: string, input: Parameters<StoreStub["claimMediaProbe"]>[1]) => {
+        const claim = await store.claimMediaProbe(build, input);
+        claimed = claim.status === "claimed" ? claim.claim : null;
+        return claim;
+      },
+      recordMediaProbeResult: () => new Promise<never>(() => {}),
+    } as unknown as StoreStub;
+    const running = activationProbe({ build: BUILD, store: held, bucket: h.bucket, processor, wait: h.wait }, false);
+    await vi.waitFor(() => expect(h.waits.filter((entry) => entry.ms === PROBE_STORE_MS)).toHaveLength(2), {
+      timeout: 5000,
+    });
+    h.expire(PROBE_STORE_MS);
+    expect(await running).toEqual({ status: "unconfirmed", verdict: { outcome: "pass", imagesVerified: true } });
+    // The claim is not released: another probe is not claimed meanwhile, and the late record commits under it.
+    expect(
+      (await store.claimMediaProbe(BUILD, { profile: "normalize@standard-4", build: BUILD, due: false })).status,
+    ).not.toBe("claimed");
+    expect(
+      await store.recordMediaProbeResult(BUILD, {
+        profile: "normalize@standard-4",
+        claim: claimed!,
+        outcome: "pass",
+        imagesVerified: true,
+        imageTag: null,
+      }),
+    ).toEqual({ status: "recorded" });
+    expect(await health(store)).toMatchObject({ state: "ready" });
+  });
 
   it("a normalize probe whose copy put never answers reaches no verdict at PROBE_COPY_MS, the object never called", async () => {
     const store = await freshStore();
