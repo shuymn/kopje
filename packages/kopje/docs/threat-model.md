@@ -3336,11 +3336,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   answering after the staging deadline is aborted there when it answers within `R2_CALL_MS`; one answering later, or
   never reaching a live Worker, is left to R2's lifecycle rule for incomplete multipart uploads (W8). A staging the
   route ends itself (a refused part, a byte past the cap, the deadline) aborts the R2 multipart upload and, in order,
-  asks S2 (`releaseStaging`), deletes the input only when S2 answers `released` within its wait, read against its
-  deadline on the route's clock whichever of the reply and the timer settles first, then abandons the reservation (code
-  review r3 M3); a `released` arriving after S2's wait deletes nothing and the reclamation below takes the input:
-  otherwise the reservation is no longer the route's, and the sweep, reconciliation or the orphan pass owns its keys. S3
-  (`queueNormalize`) answering `refused_cleanup_yours` hands the input back, which the cleanup deletes before abandoning
+  asks S2 (`releaseStaging`), deletes the input only when S2 answers `released` within its wait (its deadline read on
+  the route's clock, whichever of the reply and the timer settles first), then abandons the reservation; a later
+  `released` deletes nothing: otherwise the reservation is no longer the route's, and the sweep, reconciliation or the
+  orphan pass owns its keys. S3 (`queueNormalize`) answering `refused_cleanup_yours` hands the input back, which the
+  cleanup deletes before abandoning
   the reservation; once queued the input is the processor's. A completion that lands after the route's delete (an abort
   not yet in effect) goes with the doomed row's keys in the sweep (`sweptKeys` names `incoming/<id>`), or in the
   `incoming/` orphan pass once the row is gone; a cleanup step left unanswered falls to the same passes or R2's
