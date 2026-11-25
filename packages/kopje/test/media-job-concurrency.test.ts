@@ -2,9 +2,11 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AV_WRITE_WINDOW_MS, ORPHAN_GRACE_MS } from "../src/domain/media";
-import { AV_GRANT_MS } from "../src/domain/media-processing";
+import { AV_GRANT_MS, DISPATCH_MS } from "../src/domain/media-processing";
+import { mediaDispatchRound } from "../src/jobs/media-jobs";
 import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
 import { fileKey, originalKey } from "../src/platform/media-files";
+import type { UploadProcessor } from "../src/platform/media-transcoder";
 import { BUILD } from "./helpers";
 import {
   ACTIVE,
@@ -178,11 +180,31 @@ describe("the start rule", () => {
     const w = await avWorld();
     const p = await platformFor(w);
     const up = await upload(w, p);
-    clock(p.storage.alarm ?? Date.now());
-    // The platform runs one alarm at a time: the second delivery runs once the first returns; run overlaps the first.
+    // The dispatch round hands the pending upload back once its dispatch is DISPATCH_MS old; its run reaches the object
+    // only once the first alarm has reached S4.
+    clock(Date.now() + DISPATCH_MS + SECOND);
+    const s4 = Promise.withResolvers<void>();
+    const handed = Promise.withResolvers<void>();
+    p.beforeCall("startNormalize", () => {
+      s4.resolve();
+      return Promise.resolve();
+    });
+    const runs: string[] = [];
+    const processor = {
+      run: async (id: string, token: string, teardownId: string) => {
+        runs.push(id);
+        handed.resolve();
+        await s4.promise;
+        await p.unit().run(id, token, teardownId);
+      },
+    } as unknown as UploadProcessor;
+    const round = mediaDispatchRound({ build: BUILD, store: w.store, bucket: env.MEDIA, processor, budget: 10 });
+    await handed.promise;
+    // The platform runs one alarm at a time: the second delivery runs once the first returns.
     const first = p.unit().alarm();
-    await Promise.all([first, p.unit().run(up.id, up.token, up.teardownId), first.then(() => p.unit().alarm())]);
+    await Promise.all([round, first, first.then(() => p.unit().alarm())]);
     await p.settle();
+    expect(runs).toEqual([up.id]);
     expect(p.starts()).toBe(1);
     expect(p.writes().filter((name) => name === "full")).toHaveLength(1);
     expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1 });
