@@ -31,7 +31,6 @@ import {
   discard,
   EXPIRED_MESSAGE,
   FILE_BLANK,
-  type FormCheck,
   INVALID_TYPE,
   MEDIA_BODY_LIMIT,
   mediaProblem,
@@ -89,11 +88,6 @@ export function avUploadActivation(
   return { binding: true, budget, build: deps.build(env) };
 }
 
-const CHECK: FormCheck = (params) => {
-  const problem = mediaProblem(params, params.get("description"));
-  return problem === undefined ? null : { status: 422, error: problem };
-};
-
 function answerOf(c: ApiContext, outcome: UploadOutcome): Response {
   return outcome.ok ? c.json(outcome.media) : mastodonError(outcome.status, outcome.error);
 }
@@ -106,7 +100,7 @@ export const uploadMedia: ApiHandler = async (c, deps) => {
     return receiveInactive(c, deps);
   }
   const endpoint: Endpoint = new URL(c.req.url).pathname.startsWith("/api/v1/") ? "v1" : "v2";
-  // The request's cleanup, registered before the reservation is asked for (code review r2).
+  // The request's cleanup, registered before the reservation is asked for.
   const cleanup = new Cleanup(c, deps);
   try {
     return await receiveCandidate(c, deps, { activation, endpoint, arrival, cleanup });
@@ -122,11 +116,11 @@ async function receiveInactive(c: ApiContext, deps: ApiDeps): Promise<Response> 
     cancelBody(c.req.raw);
     return mastodonError(reserved.status, reserved.error);
   }
-  return answerOf(c, await receiveImageUpload(c, deps, reserved.upload, CHECK, c.req.raw));
+  return answerOf(c, await receiveImageUpload(c, deps, reserved.upload, c.req.raw));
 }
 
 // With the binding and a budget: the reservation as an AV candidate. On v1 it is cut at the route's cut, as every
-// wait before S10 is (one clock per request, code review r2); a reservation answering later is abandoned when it does.
+// wait before S10 is (one clock per request); a reservation answering later is abandoned when it does.
 // On v2 it waits as the image path's does: a v2 image's answer does not depend on the probe.
 async function receiveCandidate(
   c: ApiContext,
@@ -152,7 +146,7 @@ async function receiveCandidate(
   }
   const { upload } = reserved;
   if (upload.imagesRefusal === undefined) {
-    return answerOf(c, await receiveImageUpload(c, deps, upload, CHECK, c.req.raw));
+    return answerOf(c, await receiveImageUpload(c, deps, upload, c.req.raw));
   }
   return receiveActive(c, deps, { ...r, upload, cut, giveUp });
 }
@@ -203,8 +197,8 @@ function timer(deps: ApiDeps, ms: number, signal: AbortSignal): Promise<void> {
 }
 
 // `start` raced against `end` on the route's clock: its value, or CUT when the cut comes first. Nothing is started at
-// or past `end` (the spec's RouteWrite: no write after its cut, code review r1 M3); the timer is cleared once the
-// race settles. A value received before the cut's timer fires is the answer, whatever the clock reads by then (D45).
+// or past `end` (the spec's RouteWrite: no write after its cut); the timer is cleared once the race settles. A value
+// received before the cut's timer fires is the answer, whatever the clock reads by then (D45).
 async function by<T>(deps: ApiDeps, start: () => Promise<T>, end: number): Promise<T | typeof CUT> {
   if (end !== Infinity && end - deps.now() <= 0) {
     return CUT;
@@ -222,37 +216,41 @@ async function by<T>(deps: ApiDeps, start: () => Promise<T>, end: number): Promi
   }
 }
 
-// A cleanup call awaited at most `ms` from now (R2_CALL_MS, STORE_CALL_MS): one that fails or does not answer by
-// then is logged and left to the bounds that reclaim it (the sweep, the orphan pass, R2's lifecycle rule).
-async function bounded(
+type Failed = (fields: Record<string, unknown>) => void;
+
+// A cleanup call awaited at most `ms` from now (R2_CALL_MS, STORE_CALL_MS): its value, or CUT when it fails or does
+// not answer by then, logged by `failed` and left to the bounds that reclaim it (the sweep, the orphan pass, R2's
+// lifecycle rule). With `strict`, a value received past the deadline before its timer fired is CUT too: the deadline is
+// the route's clock, whichever settles first, for a reply whose value the cleanup acts on (S2's `released`).
+async function bounded<T>(
   deps: ApiDeps,
-  call: () => Promise<unknown>,
+  call: () => Promise<T>,
   ms: number,
-  failed: (fields: Record<string, unknown>) => void,
-): Promise<void> {
+  failed: Failed,
+  strict = false,
+): Promise<T | typeof CUT> {
+  const end = deps.now() + ms;
   try {
-    if ((await by(deps, call, deps.now() + ms)) === CUT) {
+    const value = await by(deps, call, end);
+    if (value === CUT || (strict && deps.now() > end)) {
       failed({ timedOut: true });
+      return CUT;
     }
+    return value;
   } catch (error) {
     failed(errorFields(error));
+    return CUT;
   }
 }
 
-// The request's cleanup (code review r2): one background task, registered with waitUntil before the reservation is
-// asked for, so it runs while the invocation lives whatever the client does, and the answer never waits for it. Its
-// steps run in turn, each awaited at most its bound (R2_CALL_MS for R2, STORE_CALL_MS for the Store); it ends once the
-// route is done (`close`), every step has run and every value it waits for has arrived or passed its bound.
-type Within = <T>(
-  ms: number,
-  call: () => Promise<T>,
-  failed: (fields: Record<string, unknown>) => void,
-) => Promise<T | typeof CUT>;
-
+// The request's cleanup: one background task, registered with waitUntil before the reservation is asked for, so it
+// runs while the invocation lives whatever the client does, and the answer never waits for it. Its units run in turn,
+// each call awaited at most its bound (R2_CALL_MS for R2, STORE_CALL_MS for the Store); it ends once the route is done
+// (`close`), every unit has run and every value it waits for has arrived or passed its bound.
 class Cleanup {
   readonly #c: ApiContext;
   readonly #deps: ApiDeps;
-  #chain: Promise<void> = Promise.resolve();
+  #chain: Promise<unknown> = Promise.resolve();
   readonly #holds = new Set<Promise<unknown>>();
   readonly #closed = Promise.withResolvers<void>();
 
@@ -262,30 +260,14 @@ class Cleanup {
     afterResponse(c, this.#drain());
   }
 
-  // `step` after the steps before it, awaited at most `ms` from its start.
-  step(ms: number, step: () => Promise<unknown>, failed: (fields: Record<string, unknown>) => void): void {
-    this.#chain = this.#chain.then(() => bounded(this.#deps, step, ms, failed));
+  // `unit` after the units before it; its calls go through `bounded`, so it ends within their bounds.
+  add(unit: () => Promise<unknown>): void {
+    this.#chain = this.#chain.then(unit);
   }
 
-  // `run` after the steps before it, as one step whose calls each `within` awaits at most its bound: a value that
-  // answers later is not used (code review r3 M3), what it would have authorized left to the bounds that reclaim it.
-  sequence(run: (within: Within) => Promise<void>): void {
-    const within: Within = async (ms, call, failed) => {
-      try {
-        const end = this.#deps.now() + ms;
-        const value = await by(this.#deps, call, end);
-        // The deadline is the route's clock, whichever of the reply and the timer settles first (code review r4 M3).
-        if (value === CUT || this.#deps.now() > end) {
-          failed({ timedOut: true });
-          return CUT;
-        }
-        return value;
-      } catch (error) {
-        failed(errorFields(error));
-        return CUT;
-      }
-    };
-    this.#chain = this.#chain.then(() => run(within));
+  // One call as a unit, awaited at most `ms`.
+  step(ms: number, call: () => Promise<unknown>, failed: Failed): void {
+    this.add(() => bounded(this.#deps, call, ms, failed));
   }
 
   // Work left running past the answer (v1's flow after its give-up): the task ends once it settles.
@@ -307,7 +289,7 @@ class Cleanup {
   }
 
   // A reservation the route releases before staging anything: abandoned (domain/media.ts abandonMedia, then its
-  // keys' delete, media.ts discard), awaited at most STORE_CALL_MS + R2_CALL_MS.
+  // keys' delete, media.ts discard), awaited at most STORE_CALL_MS + R2_CALL_MS in all.
   discard(upload: Upload): void {
     this.step(
       STORE_CALL_MS + R2_CALL_MS,
@@ -347,39 +329,34 @@ async function reply<T>(call: () => Promise<T>): Promise<T | typeof UNKNOWN> {
 }
 
 // A call repeated once when its reply is not received (S1, S3: each idempotent for the reservation, 1.4), each
-// attempt cut at v1's cut, or on v2 at STORE_CALL_MS from the attempt (code review r1 M2), where a cut is a reply not
-// received and not repeated.
+// attempt cut at v1's cut, or on v2 at STORE_CALL_MS from the attempt, where a cut is a reply not received and not
+// repeated (UNKNOWN on v2, CUT on v1, which then asks S10).
 async function repeatedOnce<T>(
   deps: ApiDeps,
   call: () => Promise<T>,
   endpoint: Endpoint,
   cut: number,
 ): Promise<T | typeof UNKNOWN | typeof CUT> {
-  const attempt = async () => {
-    const answer = await by(deps, () => reply(call), endpoint === "v1" ? cut : deps.now() + STORE_CALL_MS);
-    return answer === CUT && endpoint === "v2" ? null : answer;
-  };
+  const attempt = () => by(deps, () => reply(call), endpoint === "v1" ? cut : deps.now() + STORE_CALL_MS);
   const first = await attempt();
-  if (first === null) {
-    return UNKNOWN;
-  }
-  if (first !== UNKNOWN) {
-    return first;
-  }
-  return (await attempt()) ?? UNKNOWN;
+  const answer = first === UNKNOWN ? await attempt() : first;
+  return answer === CUT && endpoint === "v2" ? UNKNOWN : answer;
 }
 
 class Cut extends Error {}
 
+// `start` raced against `end` (by), a cut thrown as Cut.
+async function before<T>(deps: ApiDeps, start: () => Promise<T>, end: number): Promise<T> {
+  const settled = await by(deps, start, end);
+  if (settled === CUT) {
+    throw new Cut();
+  }
+  return settled;
+}
+
 // A reader guard that rejects each pull still waiting at `end` (Cut).
 function cutGuard(deps: ApiDeps, end: number) {
-  return async <T>(read: Promise<T>): Promise<T> => {
-    const settled = await by(deps, () => read, end);
-    if (settled === CUT) {
-      throw new Cut();
-    }
-    return settled;
-  };
+  return <T>(read: Promise<T>): Promise<T> => before(deps, () => read, end);
 }
 
 // ---- The sniff
@@ -400,12 +377,13 @@ async function firstFile(
     if (head.name === "file" && head.file) {
       return { prefix: await reader.peek(SNIFF_BYTES), texts, file: head };
     }
-    texts.push({ head, body: await collected(reader, MEDIA_BODY_LIMIT) });
+    // The reader's ceiling (MEDIA_BODY_LIMIT) bounds these parts.
+    texts.push({ head, body: await collected(reader) });
   }
 }
 
-// The current part's body, within `limit` bytes (StagingRefusal 413 past it).
-async function collected(reader: MultipartStream, limit: number): Promise<Uint8Array> {
+// The current part's body, within `limit` bytes when given (StagingRefusal 413 past it).
+async function collected(reader: MultipartStream, limit = Infinity): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let size = 0;
   await reader.body((chunk) => {
@@ -437,13 +415,13 @@ function replayed(request: Request, reader: MultipartStream): Request {
 
 async function receiveActive(c: ApiContext, deps: ApiDeps, a: Active): Promise<Response> {
   const request = c.req.raw;
-  const today = async (from: Request) => answerOf(c, await receiveImageUpload(c, deps, a.upload, CHECK, from));
+  const today = async (from: Request) => answerOf(c, await receiveImageUpload(c, deps, a.upload, from));
   const boundary = multipartBoundary(request.headers.get("content-type") ?? "");
   if (boundary === null || request.body === null) {
     return today(request);
   }
   // The prefix: bounded by MEDIA_BODY_LIMIT and the reservation's deadline, as the image pipeline's whole body is, and
-  // on v1 by the route's cut (code review r2 H1), which answers as a held staging does.
+  // on v1 by the route's cut, which answers as a held staging does.
   const end = Math.min(a.upload.deadline, a.cut);
   const reader = new MultipartStream(
     request.body as ReadableStream<Uint8Array>,
@@ -463,7 +441,7 @@ async function receiveActive(c: ApiContext, deps: ApiDeps, a: Active): Promise<R
       }
       return mastodonError(422, error instanceof Cut ? EXPIRED_MESSAGE : TOO_LARGE);
     }
-    if (error instanceof MultipartRefused || error instanceof StagingRefusal) {
+    if (error instanceof MultipartRefused) {
       return today(replayed(request, reader));
     }
     await reader.cancel();
@@ -487,7 +465,7 @@ async function receiveActive(c: ApiContext, deps: ApiDeps, a: Active): Promise<R
   if (kind === null) {
     return today(replayed(request, reader));
   }
-  const av = new AvUpload(c, deps, a, reader, kind, found);
+  const av = new AvUpload(c, deps, a, reader, kind, { ...found, boundary });
   if (a.endpoint === "v2") {
     return av.run(today);
   }
@@ -531,8 +509,10 @@ class AvUpload {
   // The parts other than the streamed file, in order: the texts before it, then the parts after it (a thumbnail file
   // with its body dropped once weighed).
   readonly #texts: Text[];
-  // The streamed file's head and its place among #texts, for #params' zero-byte placeholder (code review r2 M6).
+  // The streamed file's head and its place among #texts, for #params' zero-byte placeholder.
   readonly #file: { head: PartHead; at: number };
+  // The body's multipart boundary, as the reader read it.
+  readonly #boundary: string;
   // The route's cut (v1: arrival + V1_TIME_MS - T_REPLY; v2: none) and its give-up (v1: arrival + V1_TIME_MS).
   readonly #cut: number;
   readonly #giveUp: number;
@@ -544,7 +524,7 @@ class AvUpload {
     a: Active,
     reader: MultipartStream,
     kind: AvKind,
-    found: { texts: Text[]; file: PartHead },
+    found: { texts: Text[]; file: PartHead; boundary: string },
   ) {
     this.#c = c;
     this.#deps = deps;
@@ -553,6 +533,7 @@ class AvUpload {
     this.#kind = kind;
     this.#texts = found.texts;
     this.#file = { head: found.file, at: found.texts.length };
+    this.#boundary = found.boundary;
     this.#cut = a.cut;
     this.#giveUp = a.giveUp;
   }
@@ -586,14 +567,14 @@ class AvUpload {
   }
 
   async run(today: (from: Request) => Promise<Response>): Promise<Response> {
-    // The query first, as Rack reads it before the body and the image path refuses it before the file (code review r1
-    // M7).
+    // The query first, as Rack reads it before the body and the image path refuses it before the file.
     const query = readQuery(this.#c.req.raw);
-    const refused = query.ok ? this.#beforeSlot() : new StagingRefusal(query.status, refusedForm(query.status).error);
+    if (!query.ok) {
+      return this.#refuseBeforeSlot(new StagingRefusal(query.status, refusedForm(query.status).error));
+    }
+    const refused = this.#beforeSlot();
     if (refused !== null) {
-      await this.#reader.cancel();
-      this.#abandon();
-      return mastodonError(refused.status, refused.answer);
+      return this.#refuseBeforeSlot(refused);
     }
     const readBefore = this.#deps.now();
     const v1Left = this.#a.endpoint === "v1" ? V1_TIME_MS - (readBefore - this.#a.arrival) : null;
@@ -630,11 +611,18 @@ class AvUpload {
       return this.#slotRefusal(taken === UNKNOWN ? "unknown" : taken.status);
     }
     this.#reader.forget();
-    const staged = await this.#stage(Math.min(readBefore + taken.stagingMs, this.#cut));
+    const staged = await this.#stage(Math.min(readBefore + taken.stagingMs, this.#cut), query.params);
     if ("refusal" in staged) {
       return this.#exit(taken.stagedAt, staged.refusal);
     }
     return this.#queue(taken.stagedAt, staged);
+  }
+
+  // A refusal before any slot is taken: the body cancelled and the reservation abandoned.
+  async #refuseBeforeSlot(refused: StagingRefusal): Promise<Response> {
+    await this.#reader.cancel();
+    this.#abandon();
+    return mastodonError(refused.status, refused.answer);
   }
 
   // The refusals the parts before the file part decide, before any slot is taken (P7).
@@ -668,26 +656,19 @@ class AvUpload {
 
   // The file part into incoming/<id>, then the parts after it, all before `end` on the route's clock (the staging
   // time S1 answered, and v1's cut): the input's size and the validated text, or the refusal that ends the staging.
-  async #stage(end: number): Promise<{ bytes: number; params: Params } | { refusal: StagingRefusal }> {
+  async #stage(end: number, query: Params): Promise<{ bytes: number; params: Params } | { refusal: StagingRefusal }> {
     const deps = this.#deps;
-    const guard = cutGuard(deps, end);
     this.#reader.limit = Number.MAX_SAFE_INTEGER;
-    this.#reader.guard = guard;
-    // Each R2 call is started only before `end` (code review r1 M3).
-    const write = async <T>(call: () => Promise<T>): Promise<T> => {
-      const settled = await by(deps, call, end);
-      if (settled === CUT) {
-        throw new Cut();
-      }
-      return settled;
-    };
+    this.#reader.guard = cutGuard(deps, end);
+    // Each R2 call is started only before `end`.
+    const write = <T>(call: () => Promise<T>): Promise<T> => before(deps, call, end);
     let upload: R2MultipartUpload | null = null;
     try {
       if (deps.now() >= end) {
         throw new Cut();
       }
-      // A create answering after the cut is aborted when it answers, by the request's cleanup (code review r1 M1, r2
-      // M3); one that never reaches a live Worker is left to R2's lifecycle rule (W8).
+      // A create answering after the cut is aborted when it answers, by the request's cleanup; one that never reaches a
+      // live Worker is left to R2's lifecycle rule (W8).
       const creating = this.#c.env.MEDIA.createMultipartUpload(incomingKey(this.#id));
       const created = await by(deps, () => creating, end);
       if (created === CUT) {
@@ -739,7 +720,7 @@ class AvUpload {
         this.#texts.push(head.file ? { head, body: new Uint8Array() } : text);
       }
       await this.#reader.cancel();
-      const params = await this.#params();
+      const params = await this.#params(query);
       if ("error" in params) {
         throw new StagingRefusal(params.status ?? 422, params.error);
       }
@@ -771,9 +752,9 @@ class AvUpload {
   // The parts as the image pipeline reads a form (its parser, the query merged and the form's bounds): the parts in the
   // order sent, each file part (the streamed file included) as a zero-byte file under its own head, parsed again by the
   // runtime's form parser, so the names' shapes (`file` then `file[]`: 400) and the description and thumbnail rules
-  // (mediaProblem) are judged as on the image path (code review r2 M6).
-  async #params(): Promise<Params | { error: string; status?: 400 | 413 }> {
-    const boundary = multipartBoundary(this.#c.req.raw.headers.get("content-type") ?? "") ?? "";
+  // (mediaProblem) are judged as on the image path.
+  async #params(query: Params): Promise<Params | { error: string; status?: 400 | 413 }> {
+    const boundary = this.#boundary;
     const encoder = new TextEncoder();
     const chunks: Uint8Array[] = [];
     const empty = new Uint8Array();
@@ -799,7 +780,7 @@ class AvUpload {
       const status = refusedStatus(error);
       return status === undefined ? { error: FILE_BLANK } : { error: "Malformed request body", status };
     }
-    const params = uploadParams(this.#c.req.raw, form, null);
+    const params = uploadParams(query, form);
     if ("error" in params) {
       return params;
     }
@@ -808,22 +789,20 @@ class AvUpload {
   }
 
   // A staging exit (P7, the staging time): the refusal's answer at once; after it, in the request's cleanup and in this
-  // order (code review r3 M3), S2 awaited at most STORE_CALL_MS, the input deleted only on the `released` received
-  // within it, and the reservation abandoned.
+  // order, S2 awaited at most STORE_CALL_MS, the input deleted only on a `released` received within it (an authorized
+  // delete before the abandonment, so a held abandonment cannot hold it up), and the reservation abandoned.
   #exit(stagedAt: number, refusal: StagingRefusal): Response {
-    this.#a.cleanup.sequence(async (within) => {
-      const released = await within(
-        STORE_CALL_MS,
+    this.#a.cleanup.add(async () => {
+      const released = await bounded(
+        this.#deps,
         () =>
           storeCall(this.#c, this.#deps, (s, b) => s.releaseStaging(b, { id: this.#id, token: this.#token, stagedAt })),
+        STORE_CALL_MS,
         (fields) => console.warn({ event: "kopje.media.upload.release_failed", ...fields }),
+        true,
       );
       if (released !== CUT && released.status === "released") {
-        await within(
-          R2_CALL_MS,
-          () => this.#c.env.MEDIA.delete(incomingKey(this.#id)),
-          (fields) => console.warn({ event: "kopje.media.upload.input_delete_failed", ...fields }),
-        );
+        await this.#inputDelete(true);
       }
     });
     this.#abandon();
@@ -892,7 +871,7 @@ class AvUpload {
   }
 
   // v2's 202 for a repeat S3 found already queued (the spec's RouteReact: 202 as for `queued`), with the upload as its
-  // owner's GET shows it now: masked while it processes, completed once it is (code review r1 M5); a failure, or a read
+  // owner's GET shows it now: masked while it processes, completed once it is; a failure, or a read
   // not received, the masked entity, the owner's next GET showing the failure.
   async #settled(text: UploadText): Promise<Response> {
     const shown = await by(
@@ -941,7 +920,7 @@ class AvUpload {
   async #wait(): Promise<Response> {
     const deps = this.#deps;
     while (!this.#answered && deps.now() < this.#cut) {
-      // Each read V1_POLL_MS after the start of the one before, its reply's time included (code review r1 LOW).
+      // Each read V1_POLL_MS after the start of the one before, its reply's time included.
       const started = deps.now();
       const read = await by(
         deps,
@@ -964,7 +943,7 @@ class AvUpload {
     if (this.#answered) {
       return mastodonError(503, PROCESS_TOO_LONG);
     }
-    // Awaited until the give-up, and no shorter (one clock per request, code review r2 M1): no reply by then is W5's.
+    // Awaited until the give-up, and no shorter (one clock per request): no reply by then is W5's.
     const final = await by(
       this.#deps,
       () => reply(() => storeCall(this.#c, this.#deps, (s, b) => s.v1Final(b, { id: this.#id, token: this.#token }))),
@@ -987,12 +966,20 @@ class AvUpload {
     }
   }
 
-  // The request's cleanup steps (code review r2): each awaited at most its bound, none awaited by the answer.
+  // The request's cleanup steps: each awaited at most its bound, none awaited by the answer.
   #deleteInput(): void {
-    this.#a.cleanup.step(
-      R2_CALL_MS,
+    this.#a.cleanup.add(() => this.#inputDelete());
+  }
+
+  // incoming/<id> deleted, awaited at most R2_CALL_MS; only under the authority S2's `released` or S3's
+  // `refused_cleanup_yours` gave.
+  #inputDelete(strict = false): Promise<unknown> {
+    return bounded(
+      this.#deps,
       () => this.#c.env.MEDIA.delete(incomingKey(this.#id)),
+      R2_CALL_MS,
       (fields) => console.warn({ event: "kopje.media.upload.input_delete_failed", ...fields }),
+      strict,
     );
   }
 

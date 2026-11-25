@@ -52,7 +52,7 @@ export const MEDIA_BODY_LIMIT = IMAGE_SIZE_LIMIT + 64 * 1024;
 export const THUMBNAIL_MUST_BE_BLANK = "Validation failed: Thumbnail must be blank";
 
 // MediaAttachment validates `thumbnail, absence: true` unless the media is audio or video (Mastodon v4.5.11
-// app/models/media_attachment.rb:207); every local upload Kopje accepts is an image, so any thumbnail is refused.
+// app/models/media_attachment.rb:207); Kopje makes every preview itself, so a thumbnail is refused for any upload.
 // Sent: any file part, or non-empty text (a data URI is assigned through Paperclip's DataUriAdapter; other text has
 // no handler and answers 500 there, 422 here). Empty text or JSON null is absent. Only presence is read.
 export function thumbnailSent(value: string | File | undefined): boolean {
@@ -152,34 +152,26 @@ async function readMediaForm(request: Request, ms: number): Promise<MediaForm> {
     const status = refusedStatus(error);
     return status === undefined ? { error: FILE_BLANK } : refusedForm(status);
   }
-  const file = form.file("file");
-  const params = uploadParams(
-    request,
-    form,
-    file === undefined ? FILE_BLANK : file.size > IMAGE_SIZE_LIMIT ? TOO_LARGE : null,
-  );
-  return "error" in params ? params : { file: new Uint8Array(await (file as File).arrayBuffer()), params };
-}
-
-// The upload form's parameters, the query merged, and the form's bounds checked: `form` holds the body's parts (the
-// video or audio path's text parts alone, its file streamed apart, mastodon/media-av.ts), `fileProblem` what the file
-// part answers (absent or too large), judged after the query. The bounds hold for what is sent: body fields and query parameters together, each text pair as sent
-// (Params#sent: also one a later pair or the query replaced, whatever it nested under). A thumbnail is only checked for
-// presence and refused, and a description is judged by its own rule, so neither length is bounded here (the body's
-// is).
-export function uploadParams(
-  request: Request,
-  form: Params,
-  fileProblem: string | null,
-): Params | { error: string; status?: 400 | 413 } {
+  // The query is refused before the file part, as Rack reads it first.
   const query = readQuery(request);
   if (!query.ok) {
     return refusedForm(query.status);
   }
-  if (fileProblem !== null) {
-    return { error: fileProblem };
+  const file = form.file("file");
+  if (file === undefined || file.size > IMAGE_SIZE_LIMIT) {
+    return { error: file === undefined ? FILE_BLANK : TOO_LARGE };
   }
-  const params = form.withQuery(query.params, UPLOAD_FILES);
+  const params = uploadParams(query.params, form);
+  return "error" in params ? params : { file: new Uint8Array(await file.arrayBuffer()), params };
+}
+
+// The upload form's parameters: `form` (the body's parts; on the video or audio path its text parts and a zero-byte
+// stand-in for each file, mastodon/media-av.ts) with the parsed `query` merged, and the form's bounds checked. The
+// bounds hold for what is sent: body fields and query parameters together, each text pair as sent (Params#sent: also
+// one a later pair or the query replaced, whatever it nested under). A thumbnail is only checked for presence and
+// refused, and a description is judged by its own rule, so neither length is bounded here (the body's is).
+export function uploadParams(query: Params, form: Params): Params | { error: string } {
+  const params = form.withQuery(query, UPLOAD_FILES);
   const long = ([key, value]: ParamEntry) =>
     key !== "thumbnail" && key !== "description" && value.length > MAX_FIELD_LENGTH;
   if (params.sent.length > MAX_FIELDS || params.sent.some(long)) {
@@ -192,8 +184,8 @@ export function uploadParams(
 // mastodon/accounts.ts storeProfileImages).
 export type Failure = { status: number; error: string; problem?: "content_type" | "pixels" | "expired" };
 
-// What the pipeline reads of the request context: the bindings and the raw request (its body is the form).
-export type UploadContext = { env: Env; req: { raw: Request } };
+// What the pipeline reads of the request context: the bindings (the form is read from the request passed apart).
+export type UploadContext = { env: Env };
 
 const PROCESSING_FAILURES: Record<"unsupported" | "too_large" | "quota" | "failed", Failure> = {
   unsupported: { status: 422, error: INVALID_TYPE, problem: "content_type" },
@@ -209,10 +201,6 @@ export function budgetRefusal(scope: "account" | "instance"): Failure {
 }
 
 export type UploadOutcome = { ok: true; media: MediaAttachment } | ({ ok: false } & Failure);
-
-// What the caller checks in the form once it is read, before any transformation is spent: a failure refuses the
-// upload (the API checks the description).
-export type FormCheck = (params: Params) => Failure | null | Promise<Failure | null>;
 
 // A reservation (domain/media.ts reserveMedia): the row's id and file token, the writer deadline, and the budgets and
 // credential every later Store call of the upload takes. `imagesRefusal`: on the active path (reserved with
@@ -271,18 +259,17 @@ export async function reserve(
 }
 
 // The image pipeline of POST /api/v{1,2}/media for a reserved upload: read the form of `request` (the request itself,
-// or the same body replayed, mastodon/media-av.ts), check it, transform, write, complete; a failure abandons the
-// reservation.
+// or the same body replayed, mastodon/media-av.ts), check its description and thumbnail, transform, write, complete; a
+// failure abandons the reservation.
 export async function receiveImageUpload(
   c: UploadContext,
   deps: ApiDeps,
   upload: Upload,
-  check: FormCheck,
   request: Request,
 ): Promise<UploadOutcome> {
   let outcome: Failure | MediaAttachment;
   try {
-    outcome = await processUpload(c, deps, upload, check, request);
+    outcome = await processUpload(c, deps, upload, request);
   } catch (error) {
     await discard(c, deps, upload, "keep");
     throw error;
@@ -306,16 +293,16 @@ async function processUpload(
   c: UploadContext,
   deps: ApiDeps,
   upload: Upload,
-  check: FormCheck,
   request: Request,
 ): Promise<Failure | MediaAttachment> {
   const form = await readMediaForm(request, upload.deadline - deps.now());
   if ("error" in form) {
     return { status: form.status ?? 422, error: form.error };
   }
-  const refused = await check(form.params);
-  if (refused !== null) {
-    return refused;
+  // Checked once the form is read and before any transformation is spent.
+  const problem = mediaProblem(form.params, form.params.get("description"));
+  if (problem !== undefined) {
+    return { status: 422, error: problem };
   }
   return transformReserved(c, deps, upload, form.file, {
     description: form.params.get("description") ?? "",

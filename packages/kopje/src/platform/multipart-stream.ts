@@ -33,28 +33,24 @@ const HTTP_WHITESPACE = /^[\t\n\r ]+|[\t\n\r ]+$/g;
 const TRAILING_WHITESPACE = /[\t\n\r ]+$/;
 const QUOTED_VALUE = /^[\t -~\u0080-ÿ]*$/;
 
-// The boundary of a multipart/form-data Content-Type, or null for any other type. Read as workerd's MIME parser reads
-// it (code review r2-r4 M4): a quoted value's `;` and `=` are its own, a name that is not a token is skipped to the
-// next `;` before its value is read, and of a repeated parameter the first counts; a header that does not parse that
-// way is null, and the whole-body path reads it. platform/media-type.ts's parse refuses a repeated parameter, which
-// this one must not.
+// The boundary of a multipart/form-data Content-Type, or null for any other type, read as workerd's MIME parser
+// (MimeType::parse) reads it: a quoted value's `;` and `=` are its own, a name that is not a token is skipped to the
+// next `;` before its value is read, only trailing whitespace is trimmed from an unquoted value, and of a repeated
+// parameter the first counts. A header without one is null, and the whole-body path reads it.
+// platform/media-type.ts's parse refuses a repeated parameter, which this one must not.
 export function multipartBoundary(contentType: string): string | null {
   const input = contentType.replace(HTTP_WHITESPACE, "");
-  const slash = input.indexOf("/");
   const semicolon = input.indexOf(";");
   const end = semicolon === -1 ? input.length : semicolon;
-  if (slash === -1 || slash > end) {
+  const slash = input.indexOf("/");
+  if (
+    slash === -1 ||
+    slash > end ||
+    `${input.slice(0, slash)}/${input.slice(slash + 1, end).replace(HTTP_WHITESPACE, "")}`.toLowerCase() !==
+      "multipart/form-data"
+  ) {
     return null;
   }
-  const type = input.slice(0, slash);
-  const subtype = input.slice(slash + 1, end).replace(HTTP_WHITESPACE, "");
-  if (!HTTP_TOKEN.test(type) || !HTTP_TOKEN.test(subtype)) {
-    return null;
-  }
-  if (`${type}/${subtype}`.toLowerCase() !== "multipart/form-data") {
-    return null;
-  }
-  const parameters = new Map<string, string>();
   let at = end;
   while (at < input.length) {
     at++; // the `;`
@@ -67,8 +63,6 @@ export function multipartBoundary(contentType: string): string | null {
     }
     const name = input.slice(at, nameEnd).toLowerCase();
     at = nameEnd;
-    // A name that is not a token is refused before its value is read, the rest skipped to the next `;`, quotes and all
-    // (workerd's MimeType::parse; code review r4 M4).
     if (!HTTP_TOKEN.test(name)) {
       const next = input.indexOf(";", at);
       at = next === -1 ? input.length : next;
@@ -94,20 +88,18 @@ export function multipartBoundary(contentType: string): string | null {
       }
     } else {
       const valueEnd = input.indexOf(";", at);
-      // Only trailing whitespace is trimmed from an unquoted value, as workerd does (code review r5 M4).
       value = input.slice(at, valueEnd === -1 ? input.length : valueEnd).replace(TRAILING_WHITESPACE, "");
       at = valueEnd === -1 ? input.length : valueEnd;
       if (value === "") {
         continue;
       }
     }
-    if (QUOTED_VALUE.test(value) && !parameters.has(name)) {
-      parameters.set(name, value);
+    if (name === "boundary" && QUOTED_VALUE.test(value)) {
+      // RFC 2046: 1 to 70 characters.
+      return value.length >= 1 && value.length <= 70 ? value : null;
     }
   }
-  const boundary = parameters.get("boundary");
-  // RFC 2046: 1 to 70 characters.
-  return boundary !== undefined && boundary.length >= 1 && boundary.length <= 70 ? boundary : null;
+  return null;
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
@@ -241,7 +233,7 @@ export class MultipartStream {
       await this.body(() => {});
     } else if (this.#at === "start") {
       // The first delimiter: the first `--` and the boundary anywhere, mid-line included, as workerd's form parser
-      // takes it (code review r2 M4).
+      // takes it.
       const first = this.#delimiter.subarray(1);
       for (;;) {
         const at = indexOf(this.#buf, first);
@@ -260,7 +252,7 @@ export class MultipartStream {
     const first = await this.#byteAt(0);
     if (first === DASH && (await this.#byteAt(1)) === DASH) {
       // The padding buffered is dropped in one pass, then the next chunk read, so padding of any length holds no
-      // memory and costs one scan (code review r2 LOW).
+      // memory and costs one scan.
       this.#buf = this.#buf.subarray(2);
       let end = await this.#byteAt(0);
       while (end === 0x20 || end === 0x09) {
@@ -413,7 +405,7 @@ export class MultipartStream {
     this.#kept = null;
   }
 
-  // Cancels the body, not awaiting the stream's cancel: one that never settles holds nothing up (code review r1 M2).
+  // Cancels the body, not awaiting the stream's cancel: one that never settles holds nothing up.
   cancel(): Promise<void> {
     this.#done = true;
     this.#kept = null;
