@@ -1500,6 +1500,9 @@ Request parameters:
   for any entry with an `id` (Mastodon reads only entries for the post's media).
   Mastodon may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger
   than 1 MiB plus 16 KiB answers 413.
+- `PUT /api/v1/media/:id` judges its form (the description's length, the thumbnail) before the upload's processing
+  state, so a form it refuses answers that 422 for a failed video or audio upload too, where Mastodon's
+  `check_processing` answers 422 `Error processing thumbnail for uploaded media` first. Either way nothing is written.
 - An upload (`/api/v{1,2}/media`, `/api/v1/media/:id`) with more than 16 text pairs as sent (the query's
   included), or with a text value other than `description` and `thumbnail` longer than 20,000 UTF-16 code units, answers
   422 `Validation failed: A form field is too long`, so a small image cannot carry megabytes of text (RES-1); Mastodon
@@ -1758,8 +1761,12 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   JSON cannot read (a NUL in them, or bytes stored as a BLOB), which only a restore made before imports refused them
   holds, is left out of the list, not found when shown or updated, deleted as any other, and dropped when due with no
   failure recorded. Mastodon cannot store such rows.
-- An upload is processed before its answer, so no media id is ever still processing: an unfinished upload reads as
-  not found (no `not_ready`).
+- A post, an edit or a scheduled post whose media are a new set answers Mastodon's `not_ready` for a video or audio
+  upload still processing or failed, and refuses a video or audio file beside other media, as Mastodon does. An edit
+  that keeps the set its status shows (in any order), and the publication of a scheduled status already held, keep
+  the outcome they had before these rules: a status the cutover converted with a video among images is edited and
+  published as before, where Mastodon refuses the edit. An image reservation that never completed, and a video or
+  audio upload whose request is still sending it, are not found (Mastodon's processing has no such state).
 - A `scheduled_at` of white space alone (a space, U+0085, U+FEFF) answers 422 `Record invalid`, an empty one reads
   as absent. Mastodon's `String#to_datetime` (`PostStatusService`) reads a value blank to Rails (a space, U+0085) as
   absent, so the status is posted at once, and refuses U+FEFF. Accepted, 2026-11-18.

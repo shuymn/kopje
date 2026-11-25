@@ -50,6 +50,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - An owned upload marked processed but without a URL, a shape migration 0048 could leave, is no longer shown, edited
   or attached: `GET`, `PUT` and `DELETE /api/v1/media/:id` answer 404 for it, and a post that attaches it is refused
   with 422.
+- A video or audio attachment's `meta.original` shows its frame rate (Mastodon's string, such as `"30/1"`), duration
+  and bitrate where they are stored, as Mastodon's does, and a local video or audio `Document` that other servers
+  receive carries its width, height and ISO 8601 duration. Images show and federate as before.
+- A post, an edit or a scheduled post whose media are a new set refuses a video or audio file beside other media, and
+  a video or audio upload still processing or failed with `not_ready`, as Mastodon does. An edit that keeps its
+  status's media, and a scheduled status already held, are published as before, so a status the cutover converted
+  with a video among images stays editable ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)).
+- `GET`, `PUT` and `DELETE /api/v1/media/:id` answer a video or audio upload in each processing state as Mastodon
+  does: 206 with its URLs and `meta` null while it is processing, 422 `Error processing thumbnail for uploaded media`
+  once it failed, and DELETE dooms it in either. An upload's own answers and a scheduled status show a video without a
+  still with `/assets/video-poster.png`, as statuses do. Nothing makes such uploads yet.
 
 ### Fixed
 
