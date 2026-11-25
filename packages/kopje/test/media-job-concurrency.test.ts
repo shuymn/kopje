@@ -179,7 +179,9 @@ describe("the start rule", () => {
     const p = await platformFor(w);
     const up = await upload(w, p);
     clock(p.storage.alarm ?? Date.now());
-    await Promise.all([p.unit().alarm(), p.unit().alarm(), p.unit().run(up.id, up.token, up.teardownId)]);
+    // The platform runs one alarm at a time: the second delivery runs once the first returns; run overlaps the first.
+    const first = p.unit().alarm();
+    await Promise.all([first, p.unit().run(up.id, up.token, up.teardownId), first.then(() => p.unit().alarm())]);
     await p.settle();
     expect(p.starts()).toBe(1);
     expect(p.writes().filter((name) => name === "full")).toHaveLength(1);

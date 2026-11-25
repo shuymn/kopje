@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect } from "vitest";
 
-import { UploadUnit, type UploadState } from "../src/media-processor";
+import { NORMALIZE_PROTOCOL, UploadUnit, type UploadState } from "../src/media-processor";
 import { incomingKey } from "../src/platform/media-files";
 import { avFixture, verifyBytes } from "./av-helpers";
 import { BUILD } from "./helpers";
@@ -90,7 +90,7 @@ function container(
       const request = new Request(input, init);
       const path = new URL(request.url).pathname;
       if (path === "/healthz") {
-        return Response.json({ ok: true });
+        return Response.json({ ok: true, protocol: NORMALIZE_PROTOCOL });
       }
       if (path === "/normalize/still") {
         if (platform.hang() === "still") {
