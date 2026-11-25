@@ -75,6 +75,7 @@ const GATED = new Set([
   "v1Final",
   "abandonMedia",
   "startTransforms",
+  "getMedia",
 ]);
 
 // A Store whose calls by name can be held (each call awaits the test's release, before or after the Store answers) or
@@ -402,4 +403,19 @@ export function hookedBucket(hooks: BucketHooks): {
     },
   });
   return { bucket, counts, partReached: partReached.promise };
+}
+
+// POST like postMedia, also giving the response as it is sent (before the background work it leaves settles) and the
+// number of waitUntil registrations made so far (code review r2).
+export function postWatched(
+  w: RouteWorld,
+  body: { body: Uint8Array | ReadableStream<Uint8Array>; contentType: string },
+  version: "v1" | "v2" = "v2",
+): { answered: Promise<Response>; done: Promise<Response>; registered: () => number } {
+  const answered = deferred<Response>();
+  let registered = 0;
+  const stop = w.h.watch({ registered: () => registered++, answered: (response) => answered.resolve(response) });
+  const done = postMedia(w, body, version).finally(stop);
+  done.catch(() => {});
+  return { answered: answered.promise, done, registered: () => registered };
 }

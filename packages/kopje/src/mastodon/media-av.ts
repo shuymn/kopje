@@ -102,24 +102,47 @@ export const uploadMedia: ApiHandler = async (c, deps) => {
   // The request clock's origin, the v1 wait's arrival.
   const arrival = deps.now();
   const activation = avUploadActivation(c.env, deps);
+  if (activation === undefined) {
+    return receiveInactive(c, deps);
+  }
   const endpoint: Endpoint = new URL(c.req.url).pathname.startsWith("/api/v1/") ? "v1" : "v2";
-  // v1 with video and audio possible: the answer starts by arrival + V1_TIME_MS from the request's start, its
-  // reservation and the read before the sniff included (code review r1 H1); a reservation answering later is
-  // abandoned when it does.
-  const giveUp = activation !== undefined && endpoint === "v1" ? arrival + V1_TIME_MS : Infinity;
-  const reserved = await by(
-    deps,
-    () =>
-      reserve(
-        c,
-        deps,
-        () => userCredential(c, deps),
-        activation === undefined ? undefined : { build: activation.build },
-      ),
-    giveUp,
-    { c, release: (late) => (late.ok ? discard(c, deps, late.upload, "keep") : undefined) },
-  );
+  // The request's cleanup, registered before the reservation is asked for (code review r2).
+  const cleanup = new Cleanup(c, deps);
+  try {
+    return await receiveCandidate(c, deps, { activation, endpoint, arrival, cleanup });
+  } finally {
+    cleanup.close();
+  }
+};
+
+// Without the processor's binding or with MEDIA_UPLOAD_MONTHLY_JOBS 0: the upload route as before #1828.
+async function receiveInactive(c: ApiContext, deps: ApiDeps): Promise<Response> {
+  const reserved = await reserve(c, deps, () => userCredential(c, deps));
+  if (!reserved.ok) {
+    cancelBody(c.req.raw);
+    return mastodonError(reserved.status, reserved.error);
+  }
+  return answerOf(c, await receiveImageUpload(c, deps, reserved.upload, CHECK, c.req.raw));
+}
+
+// With the binding and a budget: the reservation as an AV candidate. On v1 it is cut at the route's cut, as every
+// wait before S10 is (one clock per request, code review r2); a reservation answering later is abandoned when it does.
+// On v2 it waits as the image path's does: a v2 image's answer does not depend on the probe.
+async function receiveCandidate(
+  c: ApiContext,
+  deps: ApiDeps,
+  r: { activation: ActivationInput; endpoint: Endpoint; arrival: number; cleanup: Cleanup },
+): Promise<Response> {
+  const cut = r.endpoint === "v1" ? r.arrival + V1_TIME_MS - T_REPLY : Infinity;
+  const giveUp = r.endpoint === "v1" ? r.arrival + V1_TIME_MS : Infinity;
+  const reserving = reserve(c, deps, () => userCredential(c, deps), { build: r.activation.build });
+  const reserved = await by(deps, () => reserving, cut);
   if (reserved === CUT) {
+    r.cleanup.late(reserving, STORE_CALL_MS, (late) => {
+      if (late.ok) {
+        r.cleanup.discard(late.upload);
+      }
+    });
     cancelBody(c.req.raw);
     return mastodonError(503, RECEIVE_TOO_LONG);
   }
@@ -128,11 +151,11 @@ export const uploadMedia: ApiHandler = async (c, deps) => {
     return mastodonError(reserved.status, reserved.error);
   }
   const { upload } = reserved;
-  if (activation === undefined || upload.imagesRefusal === undefined) {
+  if (upload.imagesRefusal === undefined) {
     return answerOf(c, await receiveImageUpload(c, deps, upload, CHECK, c.req.raw));
   }
-  return receiveActive(c, deps, { upload, activation, endpoint, arrival, giveUp });
-};
+  return receiveActive(c, deps, { ...r, upload, cut, giveUp });
+}
 
 // A body no longer read: cancelled, not awaited (a cancel that never settles holds nothing up).
 function cancelBody(request: Request): void {
@@ -153,8 +176,17 @@ const REPEATED_FILE = "Validation failed: File was sent more than once";
 
 // ---- Timing
 
-// `giveUp`: v1's arrival + V1_TIME_MS (Infinity on v2).
-type Active = { upload: Upload; activation: ActivationInput; endpoint: Endpoint; arrival: number; giveUp: number };
+// The request on the active path: v1's route cut (arrival + V1_TIME_MS - T_REPLY), which cuts every wait before
+// S10, and its give-up (arrival + V1_TIME_MS), which cuts S10 and the answer; both Infinity on v2.
+type Active = {
+  upload: Upload;
+  activation: ActivationInput;
+  endpoint: Endpoint;
+  arrival: number;
+  cut: number;
+  giveUp: number;
+  cleanup: Cleanup;
+};
 
 const CUT: unique symbol = Symbol("cut");
 const UNKNOWN: unique symbol = Symbol("unknown");
@@ -170,14 +202,10 @@ function timer(deps: ApiDeps, ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-// What becomes of a value that arrives after its cut (a reservation, a multipart upload's handle): released, kept
-// alive with the request (code review r1 M1).
-type Late<T> = { c: ApiContext; release: (value: T) => unknown };
-
 // `start` raced against `end` on the route's clock: its value, or CUT when the cut comes first. Nothing is started at
 // or past `end` (the spec's RouteWrite: no write after its cut, code review r1 M3); the timer is cleared once the
 // race settles. A value received before the cut's timer fires is the answer, whatever the clock reads by then (D45).
-async function by<T>(deps: ApiDeps, start: () => Promise<T>, end: number, late?: Late<T>): Promise<T | typeof CUT> {
+async function by<T>(deps: ApiDeps, start: () => Promise<T>, end: number): Promise<T | typeof CUT> {
   if (end !== Infinity && end - deps.now() <= 0) {
     return CUT;
   }
@@ -188,14 +216,7 @@ async function by<T>(deps: ApiDeps, start: () => Promise<T>, end: number, late?:
   }
   const stop = new AbortController();
   try {
-    const settled = await Promise.race([work, timer(deps, end - deps.now(), stop.signal).then((): typeof CUT => CUT)]);
-    if (settled === CUT && late !== undefined) {
-      afterResponse(
-        late.c,
-        work.then(late.release).catch(() => {}),
-      );
-    }
-    return settled;
+    return await Promise.race([work, timer(deps, end - deps.now(), stop.signal).then((): typeof CUT => CUT)]);
   } finally {
     stop.abort();
   }
@@ -215,6 +236,72 @@ async function bounded(
     }
   } catch (error) {
     failed(errorFields(error));
+  }
+}
+
+// The request's cleanup (code review r2): one background task, registered with waitUntil before the reservation is
+// asked for, so it runs while the invocation lives whatever the client does, and the answer never waits for it. Its
+// steps run in turn, each awaited at most its bound (R2_CALL_MS for R2, STORE_CALL_MS for the Store); it ends once the
+// route is done (`close`), every step has run and every value it waits for has arrived or passed its bound.
+class Cleanup {
+  readonly #c: ApiContext;
+  readonly #deps: ApiDeps;
+  #chain: Promise<void> = Promise.resolve();
+  readonly #holds = new Set<Promise<unknown>>();
+  readonly #closed = Promise.withResolvers<void>();
+
+  constructor(c: ApiContext, deps: ApiDeps) {
+    this.#c = c;
+    this.#deps = deps;
+    afterResponse(c, this.#drain());
+  }
+
+  // `step` after the steps before it, awaited at most `ms` from its start.
+  step(ms: number, step: () => Promise<unknown>, failed: (fields: Record<string, unknown>) => void): void {
+    this.#chain = this.#chain.then(() => bounded(this.#deps, step, ms, failed));
+  }
+
+  // Work left running past the answer (v1's flow after its give-up): the task ends once it settles.
+  hold(work: Promise<unknown>): void {
+    const held: Promise<unknown> = work.catch(() => {}).finally(() => this.#holds.delete(held));
+    this.#holds.add(held);
+  }
+
+  // A value that arrives after its cut (a reservation, a multipart upload's handle), released when it arrives within
+  // `ms`; past that it is left to the bounds that reclaim it.
+  late<T>(work: Promise<T>, ms: number, release: (value: T) => void): void {
+    this.hold(
+      by(this.#deps, () => work, this.#deps.now() + ms).then((value) => {
+        if (value !== CUT) {
+          release(value);
+        }
+      }),
+    );
+  }
+
+  // A reservation the route releases before staging anything: abandoned (domain/media.ts abandonMedia, then its
+  // keys' delete, media.ts discard), awaited at most STORE_CALL_MS + R2_CALL_MS.
+  discard(upload: Upload): void {
+    this.step(
+      STORE_CALL_MS + R2_CALL_MS,
+      () => discard(this.#c, this.#deps, upload, "keep"),
+      (fields) => console.warn({ event: "kopje.media.upload.abandon_failed", ...fields }),
+    );
+  }
+
+  close(): void {
+    this.#closed.resolve();
+  }
+
+  async #drain(): Promise<void> {
+    await this.#closed.promise;
+    for (;;) {
+      const chain = this.#chain;
+      await Promise.all([chain, ...this.#holds]);
+      if (chain === this.#chain && this.#holds.size === 0) {
+        return;
+      }
+    }
   }
 }
 
@@ -274,7 +361,9 @@ type Text = { head: PartHead; body: Uint8Array };
 
 // The first `file` part's head and first SNIFF_BYTES, after the parts before it (kept, as text); null when the body has
 // no such part (or more parts than Rack takes), and the image pipeline answers it.
-async function firstFile(reader: MultipartStream): Promise<{ prefix: Uint8Array; texts: Text[] } | null> {
+async function firstFile(
+  reader: MultipartStream,
+): Promise<{ prefix: Uint8Array; texts: Text[]; file: PartHead } | null> {
   const texts: Text[] = [];
   for (;;) {
     const head = await reader.next();
@@ -282,7 +371,7 @@ async function firstFile(reader: MultipartStream): Promise<{ prefix: Uint8Array;
       return null;
     }
     if (head.name === "file" && head.file) {
-      return { prefix: await reader.peek(SNIFF_BYTES), texts };
+      return { prefix: await reader.peek(SNIFF_BYTES), texts, file: head };
     }
     texts.push({ head, body: await collected(reader, MEDIA_BODY_LIMIT) });
   }
@@ -327,8 +416,8 @@ async function receiveActive(c: ApiContext, deps: ApiDeps, a: Active): Promise<R
     return today(request);
   }
   // The prefix: bounded by MEDIA_BODY_LIMIT and the reservation's deadline, as the image pipeline's whole body is, and
-  // on v1 by its give-up (code review r1 H1), which answers as a held staging does.
-  const end = Math.min(a.upload.deadline, a.giveUp);
+  // on v1 by the route's cut (code review r2 H1), which answers as a held staging does.
+  const end = Math.min(a.upload.deadline, a.cut);
   const reader = new MultipartStream(
     request.body as ReadableStream<Uint8Array>,
     boundary,
@@ -341,8 +430,8 @@ async function receiveActive(c: ApiContext, deps: ApiDeps, a: Active): Promise<R
   } catch (error) {
     if (error instanceof Cut || (error instanceof MultipartRefused && error.reason === "limit")) {
       await reader.cancel();
-      await discard(c, deps, a.upload, "keep");
-      if (error instanceof Cut && end === a.giveUp) {
+      a.cleanup.discard(a.upload);
+      if (error instanceof Cut && end === a.cut) {
         return mastodonError(503, RECEIVE_TOO_LONG);
       }
       return mastodonError(422, error instanceof Cut ? EXPIRED_MESSAGE : TOO_LARGE);
@@ -351,7 +440,7 @@ async function receiveActive(c: ApiContext, deps: ApiDeps, a: Active): Promise<R
       return today(replayed(request, reader));
     }
     await reader.cancel();
-    await discard(c, deps, a.upload, "keep");
+    a.cleanup.discard(a.upload);
     throw error;
   }
   if (found === null) {
@@ -363,7 +452,7 @@ async function receiveActive(c: ApiContext, deps: ApiDeps, a: Active): Promise<R
     }
     // Q1: the attempt was counted; the image is refused before Images is asked, its reservation abandoned.
     await reader.cancel();
-    await discard(c, deps, a.upload, "keep");
+    a.cleanup.discard(a.upload);
     const refused = budgetRefusal(a.upload.imagesRefusal);
     return mastodonError(refused.status, refused.error);
   }
@@ -371,7 +460,7 @@ async function receiveActive(c: ApiContext, deps: ApiDeps, a: Active): Promise<R
   if (kind === null) {
     return today(replayed(request, reader));
   }
-  const av = new AvUpload(c, deps, a, reader, kind, found.texts);
+  const av = new AvUpload(c, deps, a, reader, kind, found);
   if (a.endpoint === "v2") {
     return av.run(today);
   }
@@ -412,24 +501,33 @@ class AvUpload {
   readonly #a: Active;
   readonly #reader: MultipartStream;
   readonly #kind: AvKind;
+  // The parts other than the streamed file, in order: the texts before it, then the parts after it (a thumbnail file
+  // with its body dropped once weighed).
   readonly #texts: Text[];
+  // The streamed file's head and its place among #texts, for #params' zero-byte placeholder (code review r2 M6).
+  readonly #file: { head: PartHead; at: number };
   // The route's cut (v1: arrival + V1_TIME_MS - T_REPLY; v2: none) and its give-up (v1: arrival + V1_TIME_MS).
   readonly #cut: number;
   readonly #giveUp: number;
   // Set once the v1 route answered at its give-up: no Store call is started after it but the staging's cleanup.
   #answered = false;
-  // A thumbnail file part after the file: refused after the description is judged.
-  #thumbnailFile = false;
-
-  constructor(c: ApiContext, deps: ApiDeps, a: Active, reader: MultipartStream, kind: AvKind, texts: Text[]) {
+  constructor(
+    c: ApiContext,
+    deps: ApiDeps,
+    a: Active,
+    reader: MultipartStream,
+    kind: AvKind,
+    found: { texts: Text[]; file: PartHead },
+  ) {
     this.#c = c;
     this.#deps = deps;
     this.#a = a;
     this.#reader = reader;
     this.#kind = kind;
-    this.#texts = texts;
-    this.#cut = a.endpoint === "v1" ? a.arrival + V1_TIME_MS - T_REPLY : Infinity;
-    this.#giveUp = a.endpoint === "v1" ? a.arrival + V1_TIME_MS : Infinity;
+    this.#texts = found.texts;
+    this.#file = { head: found.file, at: found.texts.length };
+    this.#cut = a.cut;
+    this.#giveUp = a.giveUp;
   }
 
   get #id(): string {
@@ -452,8 +550,7 @@ class AvUpload {
       return first;
     }
     this.#answered = true;
-    afterResponse(
-      this.#c,
+    this.#a.cleanup.hold(
       flow.catch((error: unknown) => {
         console.error({ event: "kopje.media.upload.failed", ...errorFields(error) });
       }),
@@ -468,7 +565,7 @@ class AvUpload {
     const refused = query.ok ? this.#beforeSlot() : new StagingRefusal(query.status, refusedForm(query.status).error);
     if (refused !== null) {
       await this.#reader.cancel();
-      await this.#abandon();
+      this.#abandon();
       return mastodonError(refused.status, refused.answer);
     }
     const readBefore = this.#deps.now();
@@ -502,7 +599,7 @@ class AvUpload {
       if (taken !== UNKNOWN && taken.status === "maintenance") {
         return maintenanceError();
       }
-      await this.#abandon();
+      this.#abandon();
       return this.#slotRefusal(taken === UNKNOWN ? "unknown" : taken.status);
     }
     this.#reader.forget();
@@ -549,10 +646,9 @@ class AvUpload {
     const guard = cutGuard(deps, end);
     this.#reader.limit = Number.MAX_SAFE_INTEGER;
     this.#reader.guard = guard;
-    // Each R2 call is started only before `end` (code review r1 M3); a create answering after it is aborted when it
-    // does (M1).
-    const write = async <T>(call: () => Promise<T>, late?: Late<T>): Promise<T> => {
-      const settled = await by(deps, call, end, late);
+    // Each R2 call is started only before `end` (code review r1 M3).
+    const write = async <T>(call: () => Promise<T>): Promise<T> => {
+      const settled = await by(deps, call, end);
       if (settled === CUT) {
         throw new Cut();
       }
@@ -560,10 +656,18 @@ class AvUpload {
     };
     let upload: R2MultipartUpload | null = null;
     try {
-      upload = await write(() => this.#c.env.MEDIA.createMultipartUpload(incomingKey(this.#id)), {
-        c: this.#c,
-        release: (late) => this.#abortUpload(late),
-      });
+      if (deps.now() >= end) {
+        throw new Cut();
+      }
+      // A create answering after the cut is aborted when it answers, by the request's cleanup (code review r1 M1, r2
+      // M3); one that never reaches a live Worker is left to R2's lifecycle rule (W8).
+      const creating = this.#c.env.MEDIA.createMultipartUpload(incomingKey(this.#id));
+      const created = await by(deps, () => creating, end);
+      if (created === CUT) {
+        this.#a.cleanup.late(creating, R2_CALL_MS, (late) => this.#abortUpload(late));
+        throw new Cut();
+      }
+      upload = created;
       const multipart = upload;
       const parts: R2UploadedPart[] = [];
       let buffer = new Uint8Array(PART_BYTES);
@@ -604,12 +708,8 @@ class AvUpload {
         if (weighed > API_BODY_LIMIT || this.#texts.length >= MULTIPART_PARTS) {
           throw new StagingRefusal(413, "Request body is too large");
         }
-        if (head.name === "thumbnail" && head.file) {
-          // Judged after the description, as the image path orders them (mediaProblem): kept as a mark only.
-          this.#thumbnailFile = true;
-          continue;
-        }
-        this.#texts.push(text);
+        // A file part's bytes, past the weight's bound (RES-1), are not kept: #params reads it as a zero-byte file.
+        this.#texts.push(head.file ? { head, body: new Uint8Array() } : text);
       }
       await this.#reader.cancel();
       const params = await this.#params();
@@ -625,7 +725,7 @@ class AvUpload {
     } catch (error) {
       await this.#reader.cancel();
       if (upload !== null) {
-        await this.#abortUpload(upload);
+        this.#abortUpload(upload);
       }
       if (error instanceof StagingRefusal) {
         return { refusal: error };
@@ -641,14 +741,17 @@ class AvUpload {
     }
   }
 
-  // The text parts as the image pipeline reads a form (its parser, the query merged and the form's bounds): the parts
-  // as sent, the file part left out, parsed again by the runtime's form parser, and the description and thumbnail
-  // rules (mediaProblem).
+  // The parts as the image pipeline reads a form (its parser, the query merged and the form's bounds): the parts in the
+  // order sent, each file part (the streamed file included) as a zero-byte file under its own head, parsed again by the
+  // runtime's form parser, so the names' shapes (`file` then `file[]`: 400) and the description and thumbnail rules
+  // (mediaProblem) are judged as on the image path (code review r2 M6).
   async #params(): Promise<Params | { error: string; status?: 400 | 413 }> {
     const boundary = multipartBoundary(this.#c.req.raw.headers.get("content-type") ?? "") ?? "";
     const encoder = new TextEncoder();
     const chunks: Uint8Array[] = [];
-    for (const text of this.#texts) {
+    const empty = new Uint8Array();
+    const parts = this.#texts.toSpliced(this.#file.at, 0, { head: this.#file.head, body: empty });
+    for (const text of parts) {
       chunks.push(encoder.encode(`--${boundary}\r\n`), text.head.bytes, encoder.encode("\r\n\r\n"), text.body);
       chunks.push(encoder.encode("\r\n"));
     }
@@ -673,28 +776,26 @@ class AvUpload {
     if ("error" in params) {
       return params;
     }
-    const problem =
-      mediaProblem(params, params.get("description")) ?? (this.#thumbnailFile ? THUMBNAIL_MUST_BE_BLANK : undefined);
+    const problem = mediaProblem(params, params.get("description"));
     return problem === undefined ? params : { error: problem };
   }
 
-  // A staging exit (P7, the staging time): S2, and the input deleted only on its `released`; the reservation
-  // abandoned; the refusal's answer.
-  async #exit(stagedAt: number, refusal: StagingRefusal): Promise<Response> {
-    // Not cut by the route's cut: v1's give-up answers in its place (v1), and the release goes on after it, awaited
-    // at most STORE_CALL_MS (code review r1 M2); no answer by then is a reply not received.
-    const released = await by(
-      this.#deps,
-      () =>
-        reply(() =>
+  // A staging exit (P7, the staging time): the refusal's answer at once; after it, in the request's cleanup, S2, the
+  // input deleted only on its `released`, and the reservation abandoned.
+  #exit(stagedAt: number, refusal: StagingRefusal): Response {
+    this.#a.cleanup.step(
+      STORE_CALL_MS,
+      async () => {
+        const released = await reply(() =>
           storeCall(this.#c, this.#deps, (s, b) => s.releaseStaging(b, { id: this.#id, token: this.#token, stagedAt })),
-        ),
-      this.#deps.now() + STORE_CALL_MS,
+        );
+        if (released !== UNKNOWN && released.status === "released") {
+          this.#deleteInput();
+        }
+      },
+      (fields) => console.warn({ event: "kopje.media.upload.release_failed", ...fields }),
     );
-    if (released !== CUT && released !== UNKNOWN && released.status === "released") {
-      await this.#deleteInput();
-    }
-    await this.#abandon();
+    this.#abandon();
     return mastodonError(refusal.status, refusal.answer);
   }
 
@@ -735,8 +836,8 @@ class AvUpload {
       case "settled":
         return this.#a.endpoint === "v2" ? this.#settled(text) : this.#wait();
       case "refused_cleanup_yours":
-        await this.#deleteInput();
-        await this.#abandon();
+        this.#deleteInput();
+        this.#abandon();
         return queueRefusal(queued.reason);
       case "maintenance":
         return maintenanceError();
@@ -832,11 +933,11 @@ class AvUpload {
     if (this.#answered) {
       return mastodonError(503, PROCESS_TOO_LONG);
     }
-    // Awaited at most STORE_CALL_MS: the give-up answers the request meanwhile, and no answer by then is W5's.
+    // Awaited until the give-up, and no shorter (one clock per request, code review r2 M1): no reply by then is W5's.
     const final = await by(
       this.#deps,
       () => reply(() => storeCall(this.#c, this.#deps, (s, b) => s.v1Final(b, { id: this.#id, token: this.#token }))),
-      this.#deps.now() + STORE_CALL_MS,
+      this.#giveUp,
     );
     if (final === CUT || final === UNKNOWN) {
       return mastodonError(503, PROCESS_TOO_LONG);
@@ -855,35 +956,32 @@ class AvUpload {
     }
   }
 
-  // Each cleanup awaited at most its bound (code review r1 M2): R2_CALL_MS for R2, STORE_CALL_MS for the Store.
-  async #deleteInput(): Promise<void> {
-    await bounded(
-      this.#deps,
-      () => this.#c.env.MEDIA.delete(incomingKey(this.#id)),
+  // The request's cleanup steps (code review r2): each awaited at most its bound, none awaited by the answer.
+  #deleteInput(): void {
+    this.#a.cleanup.step(
       R2_CALL_MS,
+      () => this.#c.env.MEDIA.delete(incomingKey(this.#id)),
       (fields) => console.warn({ event: "kopje.media.upload.input_delete_failed", ...fields }),
     );
   }
 
-  async #abortUpload(upload: R2MultipartUpload): Promise<void> {
-    await bounded(
-      this.#deps,
-      () => upload.abort(),
+  #abortUpload(upload: R2MultipartUpload): void {
+    this.#a.cleanup.step(
       R2_CALL_MS,
+      () => upload.abort(),
       (fields) => console.warn({ event: "kopje.media.upload.abort_failed", ...fields }),
     );
   }
 
   // The reservation, released from this request: doomed unless the processor holds it (domain/media.ts abandonMedia).
   // Nothing of mediaKeys was written by the route, so nothing of it is deleted here.
-  async #abandon(): Promise<void> {
-    await bounded(
-      this.#deps,
+  #abandon(): void {
+    this.#a.cleanup.step(
+      STORE_CALL_MS,
       () =>
         storeCall(this.#c, this.#deps, (s, b) =>
           s.abandonMedia(b, { credential: this.#a.upload.credential(), id: this.#id }),
         ),
-      STORE_CALL_MS,
       (fields) => console.warn({ event: "kopje.media.upload.abandon_failed", ...fields }),
     );
   }

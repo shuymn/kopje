@@ -18,9 +18,10 @@ import {
   V1_TIME_MS,
   V2_PROCESS_MS,
 } from "../src/domain/media-processing";
-import { MEDIA_BODY_LIMIT } from "../src/mastodon/media";
+import { incomingOrphans } from "../src/jobs/media-jobs";
+import { MEDIA_BODY_LIMIT, sweepMedia } from "../src/mastodon/media";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
-import { fileKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
+import { fileKey, incomingKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
 import { readRestore } from "../src/platform/restore-marker";
 import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
@@ -63,6 +64,7 @@ import {
   mp4,
   multipartBody,
   postMedia,
+  postWatched,
   type RouteWorld,
   routeWorld,
   SlowBody,
@@ -1949,6 +1951,21 @@ describe("the v1 wait (P8, H1, C2-M3, r4 H1, M5, W5)", () => {
     });
   });
 
+  // One clock (code review r2 M1): S10 is waited for until the give-up, no inner bound shortening it.
+  it("S10 started early and answered between STORE_CALL_MS and the give-up answers 200", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await completeJob(w, v.id, await startJob(w, v.id));
+    const s10 = w.gate.hold("v1Final", "after");
+    const reached = w.gate.reached("v1Final");
+    await routeAt(w, v.arrival + 2 * SECOND);
+    await reached;
+    await routeAt(w, v.arrival + 2 * SECOND + STORE_CALL_MS);
+    clock(v.arrival + 3 * SECOND + STORE_CALL_MS);
+    s10.resolve();
+    expect((await v.response).status).toBe(200);
+  });
+
   it("D45: S10's 200 received before the give-up fires is the answer, though the clock is past V1_TIME_MS", async () => {
     const w = await routeWorld();
     const v = await waiting(w);
@@ -2151,5 +2168,150 @@ describe("the route's bounded waits (code review r1)", () => {
     const stream = new SlowBody(body, { chunk: 1024 });
     expect((await postMedia(w, { body: stream.stream(), contentType })).status).toBe(202);
     expect(w.timers.pending).toEqual([]);
+  });
+});
+
+// The answer never awaits cleanup, and one clock per request (code review r2).
+describe("the route's answers and its cleanup (code review r2)", () => {
+  const RECEIVE = { error: "Media processing took too long to receive. Try again." };
+
+  it("H1: a pre-sniff timeout answers 503 at the route's cut while abandonMedia is held", async () => {
+    const w = await routeWorld();
+    const arrival = Date.now();
+    const abandon = w.gate.hold("abandonMedia");
+    const { body, contentType } = multipartBody([videoPart(mp4(200_000))]);
+    const stream = new SlowBody(body, { chunk: 512, holdAt: 1024 });
+    const post = postWatched(w, { body: stream.stream(), contentType }, "v1");
+    await stream.reachedHold.promise;
+    await w.advance(arrival + V1_TIME_MS - T_REPLY);
+    expect(await answerOf(await post.answered)).toEqual({ status: 503, body: RECEIVE });
+    abandon.resolve();
+    await post.done;
+    expect((await held(w.store, await lastUpload(w))).att?.gc_at).toBe(DOOMED_AT);
+  });
+
+  it("H1: a pre-sniff timeout answers 503 at the route's cut while the reservation's R2 delete never answers", async () => {
+    const { bucket } = hookedBucket({ stallDelete: true });
+    const w = await routeWorld({ bucket });
+    const arrival = Date.now();
+    const { body, contentType } = multipartBody([videoPart(mp4(200_000))]);
+    const stream = new SlowBody(body, { chunk: 512, holdAt: 1024 });
+    const post = postWatched(w, { body: stream.stream(), contentType }, "v1");
+    await stream.reachedHold.promise;
+    await w.advance(arrival + V1_TIME_MS - T_REPLY);
+    expect(await answerOf(await post.answered)).toEqual({ status: 503, body: RECEIVE });
+    await w.advance(Date.now() + STORE_CALL_MS + R2_CALL_MS);
+    await post.done;
+  });
+
+  it("M2: a refusal before the slot answers while abandonMedia is held", async () => {
+    const w = await routeWorld();
+    const abandon = w.gate.hold("abandonMedia");
+    const post = postWatched(w, multipartBody([{ name: "file", data: "text" }, videoPart()]));
+    expect((await post.answered).status).toBe(422);
+    abandon.resolve();
+    await post.done;
+  });
+
+  it("M2: the Images refusal of an image answers 429 while abandonMedia is held", async () => {
+    const w = await routeWorld();
+    const month = new Date(Date.now()).toISOString().slice(0, 7);
+    await sql(w.store, "INSERT INTO kopje_state (name, value) VALUES (?, '4000')", `images_transforms:${month}`);
+    const abandon = w.gate.hold("abandonMedia");
+    const post = postWatched(w, multipartBody([PNG_PART]));
+    expect((await post.answered).status).toBe(429);
+    abandon.resolve();
+    await post.done;
+  });
+
+  it("M2: a staging refusal answers while its abort, S2 and abandonment are held", async () => {
+    const { bucket } = hookedBucket({ stallAbort: true });
+    const w = await routeWorld({ bucket });
+    const s2 = w.gate.hold("releaseStaging");
+    const post = postWatched(w, multipartBody([videoPart(), PNG_PART]));
+    expect(await answerOf(await post.answered)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: File was sent more than once" },
+    });
+    s2.resolve();
+    await w.advance(Date.now() + R2_CALL_MS);
+    await post.done;
+    expect(w.gate.calls).toContain("abandonMedia");
+  });
+
+  it("M3: the cleanup is registered with waitUntil when staging starts, before any cut", async () => {
+    const hold = deferred();
+    const { bucket, counts } = hookedBucket({ holdCreate: hold.promise });
+    const w = await routeWorld({ bucket });
+    const post = postWatched(w, multipartBody([videoPart()]));
+    await vi.waitFor(() => expect(counts.creates).toBe(1));
+    expect(post.registered()).toBeGreaterThanOrEqual(1);
+    hold.resolve();
+    expect((await post.done).status).toBe(202);
+  });
+
+  // A completion that lands after the route's delete (its abort not yet effective, code review r2 M3) is the
+  // sweep's while the doomed row stands (sweptKeys holds incoming/<id>), and the incoming/ orphan pass's after it.
+  it("M3: an input completed after the route's delete goes with the doomed row's sweep, or the orphan pass after it", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(
+      w,
+      multipartBody([videoPart(), { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) }]),
+    );
+    expect(response.status).toBe(422);
+    const id = await lastUpload(w);
+    await env.MEDIA.put(incomingKey(id), "late");
+    expect(await sweepMedia(env, { build: () => BUILD, store: () => w.store })).toBe(1);
+    expect(await input(id)).toBeNull();
+    // Landing after the row is gone: no row holds it, and the orphan pass takes it once a day old.
+    await env.MEDIA.put(incomingKey(id), "later");
+    vi.useRealTimers();
+    const real = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock(real + 25 * 60 * 60 * 1000);
+    await incomingOrphans({ build: BUILD, store: w.store, bucket: env.MEDIA });
+    expect(await input(id)).toBeNull();
+  });
+
+  it("M5: a settled repeat whose lookup passes STORE_CALL_MS answers 202 masked; GET then the completion", async () => {
+    const w = await routeWorld();
+    w.gate.drops.set("queueNormalize", 1);
+    const repeat = w.gate.hold("queueNormalize", "before", 1);
+    const reached = w.gate.reached("queueNormalize");
+    const post = postWatched(w, multipartBody([videoPart()]));
+    await reached;
+    const id = await lastUpload(w);
+    await completeJob(w, id, await startJob(w, id));
+    const lookup = w.gate.hold("getMedia");
+    const looked = w.gate.reached("getMedia");
+    repeat.resolve();
+    await looked;
+    await w.advance(Date.now() + STORE_CALL_MS);
+    expect(await answerOf(await post.answered)).toMatchObject({ status: 202, body: { id, url: null, meta: null } });
+    lookup.resolve();
+    await post.done;
+    expect((await w.h.request(`/api/v1/media/${id}`, bearer(w.h.users.alice.token))).status).toBe(200);
+  });
+
+  it("M6: `file[]` after the streamed file answers 400, as the image path's form parser does", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody([videoPart(), { name: "file[]", data: "x" }]));
+    expect(await answerOf(response)).toEqual({ status: 400, body: { error: "Malformed request body" } });
+    await leftNothing(w);
+  });
+
+  // RES-1's text bound comes first: a thumbnail past API_BODY_LIMIT answers 413 before the description is judged
+  // (docs/mastodon-deviations.md).
+  it("M6: a thumbnail past API_BODY_LIMIT answers 413 before an invalid description", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(
+      w,
+      multipartBody([
+        videoPart(),
+        { name: "thumbnail", data: new Uint8Array(1024 * 1024 + 1), filename: "t.png", type: "image/png" },
+        { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) },
+      ]),
+    );
+    expect(await answerOf(response)).toEqual({ status: 413, body: { error: "Request body is too large" } });
   });
 });
