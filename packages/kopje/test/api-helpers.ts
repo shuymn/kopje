@@ -237,7 +237,9 @@ export type ApiHarness = Awaited<ReturnType<typeof apiHarness>>;
 // deps replaces the image codec, or wraps the Store stub the app calls (tests still reach the real Store as `store`).
 export async function apiHarness(
   overrides: Record<string, unknown> = {},
-  deps: Pick<AppDeps, "images" | "federation"> & { wrapStore?: ((store: StoreStub) => StoreStub) | undefined } = {},
+  deps: Pick<AppDeps, "images" | "federation" | "mediaProcessor" | "wait"> & {
+    wrapStore?: ((store: StoreStub) => StoreStub) | undefined;
+  } = {},
 ) {
   const { wrapStore, ...seams } = deps;
   const store = await migratedStore();

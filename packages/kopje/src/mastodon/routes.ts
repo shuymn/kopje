@@ -26,6 +26,7 @@ import * as instance from "./instance";
 import * as lists from "./lists";
 import * as markers from "./markers";
 import * as media from "./media";
+import * as mediaAv from "./media-av";
 import * as notificationGroups from "./notification-groups";
 import * as notificationRequests from "./notification-requests";
 import * as notifications from "./notifications";
@@ -481,8 +482,8 @@ export const ROUTES: readonly Route[] = [
   patch("/api/v1/scheduled_statuses/:id", { scope: "write:statuses" }, scheduled.update),
   del("/api/v1/scheduled_statuses/:id", { scope: "write:statuses" }, scheduled.destroy),
 
-  post("/api/v1/media", { scope: "write:media" }, media.uploadMedia),
-  post("/api/v2/media", { scope: "write:media" }, media.uploadMedia),
+  post("/api/v1/media", { scope: "write:media" }, mediaAv.uploadMedia),
+  post("/api/v2/media", { scope: "write:media" }, mediaAv.uploadMedia),
   get("/api/v1/media/:id", { scope: "write:media" }, media.getMedia),
   put("/api/v1/media/:id", { scope: "write:media" }, media.updateMedia),
   patch("/api/v1/media/:id", { scope: "write:media" }, media.updateMedia),

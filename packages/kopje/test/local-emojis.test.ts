@@ -22,6 +22,7 @@ import { AVIF, GIF, JPEG_WITH_GPS, PNG_PLAIN, WEBP_PLAIN } from "./fixtures/imag
 import { BUILD, migratedStore, rejectionOf } from "./helpers";
 import { addEmoji, added, base64, emojiStore, pngOf, pngOfBytes } from "./local-emoji-helpers";
 import { atStoreTime, bytes, r2Keys, TestCodec } from "./media-helpers";
+import { passProbe } from "./media-processing-helpers";
 import { ACCESS, copyConfig, dumpViaRpc, importViaRpc, memoryIO } from "./ops-helpers";
 
 // Local custom emoji (migration 0055_local_custom_emojis, domain/local-emojis.ts, mastodon/emoji-upload.ts): the
@@ -831,5 +832,19 @@ describe("emoji abandon under the rebuild lease", () => {
     }
     expect(await r2Keys(`files/${token}/`)).toEqual([]);
     expect(await r2Keys(`originals/${row!.id}`)).toEqual([]);
+  });
+});
+
+// P17 (MEDIA-5): with video and audio uploads active, an emoji stays image-only: a video is refused before anything is
+// reserved, as before.
+describe("an emoji while video and audio uploads are active", () => {
+  it("refuses a video as an invalid image, reserving nothing", async () => {
+    const { store } = await emojiStore();
+    await passProbe(store);
+    const video = new Uint8Array(4096).fill(7);
+    video.set([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0]);
+    expect(await addEmoji(store, "clip", { image: video })).toMatchObject({ ok: false, code: "invalid-image" });
+    expect(await sql(store, "SELECT id FROM media_attachments")).toEqual([]);
+    expect(await sql(store, "SELECT media_id FROM media_processing")).toEqual([]);
   });
 });

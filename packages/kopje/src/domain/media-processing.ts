@@ -106,7 +106,18 @@ export const T_MIN_ENCODE = 5 * SECOND;
 // W1's bound: a grant covers starting one write.
 export const AV_GRANT_MS = 2 * SECOND;
 export const V2_PROCESS_MS = 8 * MINUTE;
-const AV_UPLOAD_LIMIT = 94_371_840;
+// How long a v1 upload's request may hold its answer, from its arrival on the route's clock: the decision is S10's at
+// the route's cut, V1_TIME_MS less T_REPLY, and the answer starts by V1_TIME_MS. A provisional value, design 4.7's
+// floor: the plan's Q2 sets it from the den-test measurement of Elk's wait (the shortest browser's, less 10 %, at
+// most V2_PROCESS_MS), so every bound derived from it moves with it.
+export const V1_TIME_MS = 90 * SECOND;
+// How often the v1 route reads its upload's outcome (S9) while it waits.
+export const V1_POLL_MS = 2 * SECOND;
+// The largest video or audio file an upload takes (advertised as video_size_limit), the bytes of the `file` part's
+// start that choose its path, and the part size of its R2 multipart staging into incoming/<id> (design 4.11, 4.7).
+export const AV_UPLOAD_LIMIT = 94_371_840;
+export const SNIFF_BYTES = 64 * 1024;
+export const PART_BYTES = 8 * 1024 * 1024;
 export const STAGING_MS = 10 * MINUTE;
 export const DISPATCH_MS = 2 * MINUTE;
 export const MAX_AV_INFLIGHT = 2;
@@ -420,8 +431,9 @@ function normalizedState(record: UploadRecord, now: number, restoredAt: Marker):
 export type ActivationInput = { binding: boolean; budget: number; build: string };
 
 // Uploads are active with the binding, a positive budget and a passed probe of NORMALIZE_PROFILE for the build. A
-// spent positive budget is still active (it answers `spent`).
-function isActive(db: Db, activation: ActivationInput, now: number): boolean {
+// spent positive budget is still active (it answers `spent`). Read by S1, S3, avActivation and the instance endpoints
+// (domain/instance.ts), each in its own transaction.
+export function isActive(db: Db, activation: ActivationInput, now: number): boolean {
   return (
     activation.binding &&
     Number.isSafeInteger(activation.budget) &&
