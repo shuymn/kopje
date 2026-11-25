@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { expiredMedia, purgeMedia } from "../src/domain/media";
+import { PROBE_CLAIM_MS } from "../src/domain/media-probes";
 import { sweptKeys } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
 import { BUILD } from "./helpers";
@@ -403,7 +404,7 @@ const REPLAYS: Replay[] = [
   ],
   [
     "claimProbe / recordProbeResult",
-    "claim: refused under PROBE_RETRY_MS; result: recorded, the same",
+    "claim: refused under PROBE_CLAIM_MS, and under PROBE_RETRY_MS once it has a result; result: recorded, the same",
     async (w) => {
       clock(at(5));
       const claim = () =>
@@ -412,7 +413,7 @@ const REPLAYS: Replay[] = [
       if (first.status !== "claimed") {
         throw new Error("not claimed");
       }
-      expect(await claim()).toEqual({ status: "cooldown", retryAt: at(5) + HOUR });
+      expect(await claim()).toEqual({ status: "cooldown", retryAt: at(5) + PROBE_CLAIM_MS });
       const record = () =>
         w.store.recordMediaProbeResult(BUILD, {
           profile: "normalize@standard-4",
@@ -422,6 +423,7 @@ const REPLAYS: Replay[] = [
           imageTag: null,
         });
       expect(await record()).toEqual({ status: "recorded" });
+      expect(await claim()).toEqual({ status: "cooldown", retryAt: at(5) + HOUR });
       const [stored] = await sql<{ value: string }>(
         w.store,
         "SELECT value FROM kopje_state WHERE name = 'media_probe:normalize@standard-4'",

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProbeOutcome, ProbeProfile } from "../src/domain/media-probes";
-import { probeName } from "../src/domain/media-probes";
+import { PROBE_CLAIM_MS, probeName } from "../src/domain/media-probes";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
 import { avFixture } from "./av-helpers";
@@ -128,13 +128,35 @@ describe("admission per profile and build", () => {
 });
 
 describe("one claim", () => {
+  // A claim's result, no-verdict, recorded under it.
+  const settle = async (store: StoreStub, claimed: Awaited<ReturnType<typeof claim>>) => {
+    if (claimed.status !== "claimed") {
+      throw new Error(claimed.status);
+    }
+    await store.recordMediaProbeResult(BUILD, {
+      profile: NORMALIZE,
+      claim: claimed.claim,
+      outcome: "no-verdict",
+      imagesVerified: false,
+      imageTag: null,
+    });
+  };
+
   it("is shared by the CLI and the round: the second within PROBE_RETRY_MS is refused, unless the build changed", async () => {
     const w = await avWorld();
     clock(T0 + HOUR);
     const cli = await claim(w.store, NORMALIZE, BUILD, false);
     expect(cli).toMatchObject({ status: "claimed" });
+    // r7: a claim with no result holds the profile for PROBE_CLAIM_MS; once it records one, for PROBE_RETRY_MS.
+    expect(await claim(w.store, NORMALIZE, BUILD, false)).toEqual({
+      status: "cooldown",
+      retryAt: T0 + HOUR + PROBE_CLAIM_MS,
+    });
+    await settle(w.store, cli);
     expect(await claim(w.store, NORMALIZE, BUILD, false)).toEqual({ status: "cooldown", retryAt: T0 + 2 * HOUR });
-    expect(await claim(w.store, NORMALIZE, "build-2", false)).toMatchObject({ status: "claimed" });
+    const other = await claim(w.store, NORMALIZE, "build-2", false);
+    expect(other).toMatchObject({ status: "claimed" });
+    await settle(w.store, other);
     clock(T0 + 2 * HOUR - 1);
     expect(await claim(w.store, NORMALIZE, "build-2", false)).toMatchObject({ status: "cooldown" });
     expect(await claim(w.store, NORMALIZE, BUILD, false)).toMatchObject({ status: "claimed" });

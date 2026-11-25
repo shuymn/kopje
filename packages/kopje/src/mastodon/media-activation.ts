@@ -227,17 +227,18 @@ type ProbeStore = Pick<StoreStub, "claimMediaProbe" | "recordMediaProbeResult">;
 // The probes run on an HTTP request (the CLI's) as well as in the cron, where no alarm or cron limit bounds them, so
 // the request has one deadline, PROBE_ROUTE_MS from its arrival (app/admin.ts, before the credential is checked), and
 // each of its steps ends at the earlier of that deadline and its own bound (probeSteps): reading the request body at
-// most PROBE_BODY_MS, a Store call (the still check's health, the claim, the record) at most PROBE_STORE_MS, the clip's
+// most PROBE_BODY_MS, a Store call (the credential check, the still check's health, the claim, the record) at most
+// PROBE_STORE_MS, the still check's Images at most what is left of STILL_CHECK_MS, the clip's
 // copy put or delete in R2 at most PROBE_COPY_MS (a copy whose delete never answers is the orphan pass's; one whose put
 // answers late is deleted then), and the call to the probe object at most its own deadline and destroy
 // (media-processor.ts PROBE_MS, 210 s, and DESTROY_MS, 30 s) plus 5 s for its way there and back, PROBE_CALL_MS. The
-// bounds add up to the deadline, 280 s: 20 s under the 300 s the CLI's fetch (Node's Undici, headersTimeout) waits for
+// bounds add up to the deadline, 290 s: 10 s under the 300 s the CLI's fetch (Node's Undici, headersTimeout) waits for
 // the response's headers.
 export const PROBE_COPY_MS = 5_000;
 export const PROBE_CALL_MS = 245_000;
 export const PROBE_STORE_MS = 10_000;
 export const PROBE_BODY_MS = 5_000;
-export const PROBE_ROUTE_MS = PROBE_BODY_MS + 2 * PROBE_STORE_MS + 2 * PROBE_COPY_MS + PROBE_CALL_MS;
+export const PROBE_ROUTE_MS = PROBE_BODY_MS + 3 * PROBE_STORE_MS + 2 * PROBE_COPY_MS + PROBE_CALL_MS;
 // The still check's call: STILL_CHECK_MS, which includes the object's destroy, plus its way there and back.
 const STILL_CHECK_CALL_MS = 85_000;
 
@@ -245,10 +246,11 @@ type Wait = (ms: number) => Promise<void>;
 const timerWait: Wait = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 export const OVER: unique symbol = Symbol("over");
 
-// The steps of one probe request, each started by `start` only before `end` and ending at the earlier of `end` and its
-// own bound `ms`: its value, or OVER when that passes first or it settles at or past `end` (so a late answer starts no
-// later step; a rejection passes on). `cleanup` starts even past `end` (the copy's delete, which may still settle, is
-// handed to `retain`); `keep` uses an answer settling past `end` (the record, issued before it under its claim's fence).
+// The steps of one probe request, each started by `start` only before `end` and ending at its cut, the earlier of `end`
+// and its start plus its own bound `ms`: its value, or OVER when the cut passes first or it settles at or past the cut
+// (an answer just past it, before the timer fires, too: so a late answer starts no later step; a rejection passes on).
+// `cleanup` starts even past `end` (the copy's delete, which may still settle, is handed to `retain`); `keep` uses an
+// answer settling past the cut (the record, issued before it under its claim's fence).
 export function probeSteps(
   end: number,
   now: () => number,
@@ -268,11 +270,9 @@ export function probeSteps(
     if (options.cleanup === true) {
       retain(running);
     }
-    const settled = await Promise.race([
-      running,
-      wait(Math.max(0, Math.min(ms, end - now()))).then((): typeof OVER => OVER),
-    ]);
-    return settled !== OVER && options.keep !== true && options.cleanup !== true && now() >= end ? OVER : settled;
+    const cut = Math.min(end, now() + ms);
+    const settled = await Promise.race([running, wait(Math.max(0, cut - now())).then((): typeof OVER => OVER)]);
+    return settled !== OVER && options.keep !== true && options.cleanup !== true && now() >= cut ? OVER : settled;
   };
 }
 type Step = ReturnType<typeof probeSteps>;
@@ -354,21 +354,24 @@ export async function activationProbe(
     return claim;
   }
   const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
-  let verdict: ProbeVerdict & { image?: string | null };
-  try {
-    if (!(await putCopy(step, deps.bucket, key, deps.processor.probeInput, retain))) {
-      verdict = { outcome: "no-verdict", reason: "copy" };
-    } else {
+  // The probe and the copy's delete after it, kept alive by `retain` too: a client that goes before the teardown
+  // leaves the delete running (within waitUntil's grace).
+  const probed = (async (): Promise<ProbeVerdict & { image?: string | null }> => {
+    try {
+      if (!(await putCopy(step, deps.bucket, key, deps.processor.probeInput, retain))) {
+        return { outcome: "no-verdict", reason: "copy" };
+      }
       const answered = await step(() => deps.processor.probeNormalize(key), PROBE_CALL_MS);
-      verdict = answered === OVER ? { outcome: "no-verdict", reason: "timeout" } : answered;
+      return answered === OVER ? { outcome: "no-verdict", reason: "timeout" } : answered;
+    } catch (error) {
+      console.warn({ event: "kopje.media.probe.failed", ...errorFields(error) });
+      return { outcome: "no-verdict", reason: "unavailable" };
+    } finally {
+      await dropCopy(step, deps.bucket, key);
     }
-  } catch (error) {
-    console.warn({ event: "kopje.media.probe.failed", ...errorFields(error) });
-    verdict = { outcome: "no-verdict", reason: "unavailable" };
-  } finally {
-    await dropCopy(step, deps.bucket, key);
-  }
-  const { image = null, ...result } = verdict;
+  })();
+  retain(probed);
+  const { image = null, ...result } = await probed;
   if (result.outcome !== "pass") {
     console.warn({ event: "kopje.media.probe.verdict", outcome: result.outcome, reason: result.reason });
   }
@@ -419,6 +422,19 @@ export async function stillCheck(deps: {
   const step = probeSteps(deps.end ?? deps.now() + PROBE_ROUTE_MS, deps.now, deps.wait, retain);
   const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
   const deadline = deps.now() + STILL_CHECK_MS;
+  // The check and the copy's delete after it, kept alive by `retain` too (as activationProbe's).
+  const checked = stillCheckWork(deps, step, retain, key, deadline);
+  retain(checked);
+  return checked;
+}
+
+async function stillCheckWork(
+  deps: Parameters<typeof stillCheck>[0],
+  step: Step,
+  retain: (work: Promise<unknown>) => void,
+  key: string,
+  deadline: number,
+): Promise<ProbeVerdict & { image: string | null }> {
   try {
     if (!(await putCopy(step, deps.bucket, key, deps.stills.probeInput, retain))) {
       return { outcome: "no-verdict", reason: "copy", image: null };
@@ -434,7 +450,14 @@ export async function stillCheck(deps: {
       return { outcome: "fail", reason: "still", image: out.image };
     }
     const png = out.png;
-    const encoded = await stillEncodes(deps.images, png, pngSize(png), (work) => within(work, deadline, deps.now));
+    // Images is a step of the request: past its cut (the request's deadline, or the check's), no verdict.
+    const encoded = await step(
+      () => stillEncodes(deps.images, png, pngSize(png), (work) => within(work, deadline, deps.now)),
+      Math.max(0, deadline - deps.now()),
+    );
+    if (encoded === OVER) {
+      return { outcome: "no-verdict", reason: "timeout", image: out.image };
+    }
     return { ...imagesVerdict(encoded), image: out.image };
   } catch (error) {
     if (error instanceof DeadlinePassed) {

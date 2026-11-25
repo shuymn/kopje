@@ -64,17 +64,27 @@ image that does not speak the protocol (a 404 or 405), `verifyStill` refusing th
 The still takes a `/healthz` without the version as ready, since `/still` is unchanged since the image before it: a
 Worker that activates before its image keeps the media rebuild's still. Both start a container and write a probe copy to
 the media bucket, so they are refused while the instance is in maintenance or its Store is read-only, and the CLI prints
-that refusal. The request has one deadline, `PROBE_ROUTE_MS` (280 s, 20 s under the 300 s the CLI's fetch waits for the
-response's headers), from its arrival, before its credential is checked. Each step ends by it and by its own bound: the
-body 5 s, the Store calls (the check's health, the claim, the record) 10 s each, the copy's put and delete 5 s each, and
-the probe object's call 245 s. A step is not started past the deadline, and an answer that settles past it starts no
-later step. A claim or record that does not answer in time answers `unconfirmed`: a late record still commits under its
-claim, which stays until its lease ends. The copy's delete is attempted whatever the time, and a put that answers late
-is deleted then, kept alive past the response. The request itself lasts no longer than its client: a Worker request ends
-when its client disconnects, at the latest at the CLI's 300 s, and only the cleanup and the fenced record kept alive
-with `waitUntil` go on. The probe object's container ends by its own bound whatever the client does: `PROBE_MS` +
-`DESTROY_MS` (210 + 30 s) from its start for normalize (`STILL_CHECK_MS`, 75 s, for the still check, its teardown
-included), and its alarm repeats a destroy that has not finished.
+that refusal.
+
+The request has one deadline, `PROBE_ROUTE_MS` (290 s, 10 s under the 300 s the CLI's fetch waits for the response's
+headers), from its arrival, before its credential is checked. Each step ends at its cut, the earlier of that deadline
+and its own bound: the credential check (`adminGate` and the Access token) 10 s, the body 5 s, the Store calls (the
+check's health, the claim, the record) 10 s each, the copy's put and delete 5 s each, the probe object's call 245 s, and
+the still check's Images what is left of its 75 s. A step is not started past the deadline, and an answer at or past its
+cut, even one before its timer fires, starts no later step. A credential check, body or health past its cut answers 504;
+a claim or record past its cut answers `unconfirmed`. A claim that records no result (its reply lost, or its request cut
+before its probe or its record) holds the profile for `PROBE_CLAIM_MS` (5 min, longer than any request), not the hour
+(`PROBE_RETRY_MS`) a recorded result holds it. A pass whose claim is older than an infrastructure failure recorded
+for its build records nothing (`stale`): the failure is the newer evidence. A record already sent may still commit in
+the Store after its reply is lost, under its claim's fence; that is the Store finishing a write it received, not work
+the Worker keeps.
+
+What the Worker keeps past the response is explicit: the probe's work with the copy's delete after it, and a late put's
+delete, are handed to `waitUntil`, which outlives a client that disconnects by at most its grace (30 s); a copy left
+after that is the orphan pass's. The probe object's container does not depend on the request: its stop is attempted by
+its own deadline, `PROBE_MS` + `DESTROY_MS` (210 + 30 s) from its start for normalize and `STILL_CHECK_MS` (75 s, its
+teardown included) for the still check, and a destroy that has not answered by then is retried by the object's alarm,
+armed before the start for no later than that deadline, every `CLEANUP_RETRY_MS` until the container is gone.
 
 ## Health
 

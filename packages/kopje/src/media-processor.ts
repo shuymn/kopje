@@ -73,13 +73,13 @@ const HEALTHZ_BODY_LIMIT = 1024;
 // that does not speak the protocol), `protocol` (for normalize, a complete reply naming another version or none), or
 // null (not yet: any other status, a lost connection, a body whose read failed), which is polled again. The still's
 // /still contract predates the version, so for it any 200 is ready: a Worker that activates before its image keeps its
-// still rebuild.
+// still rebuild. The status decides before the body is read: cancelling a body the connection broke is best effort.
 async function healthAnswer(
   response: Response,
   operation: "normalize" | "still",
 ): Promise<"ready" | "route" | "method" | "protocol" | null> {
   if (response.status !== 200 || operation === "still") {
-    await response.body?.cancel();
+    response.body?.cancel().catch(() => {});
     return response.status === 200
       ? "ready"
       : response.status === 404
@@ -526,6 +526,7 @@ export type UnitState = {
 // What MediaProcessor does, over the parts of its state it uses.
 export class ProcessorUnit {
   // The deadline of the probe call in flight in this instance, or null. Set at the call's entry, before any await.
+  // While a call is in flight, its fallback alarm's time: an alarm that comes sooner sets itself for then.
   #inFlight: number | null = null;
   // The alarm is destroying an orphan: a probe call answers busy meanwhile (the container may stop before the
   // destroy's reply).
@@ -557,6 +558,8 @@ export class ProcessorUnit {
       // A still whose cleanup ran past the call's deadline is not used: the caller has given up on it.
       (outcome) =>
         outcome.ok ? { ok: false, failure: "late", image: outcome.image, destroyed: outcome.destroyed } : outcome,
+      // The still's stop is attempted by its deadline (runStill), so its fallback alarm is that deadline.
+      (deadline) => deadline,
     );
     if ("refused" in owned) {
       return { ok: false, failure: owned.refused, image: null };
@@ -605,6 +608,7 @@ export class ProcessorUnit {
       },
       (deadline) => deadline + DESTROY_MS,
       (verdict) => verdict,
+      (deadline) => deadline + DESTROY_MS,
     );
     if ("refused" in owned) {
       return { outcome: "no-verdict", reason: owned.refused, image: null };
@@ -623,6 +627,9 @@ export class ProcessorUnit {
     run: (deadline: number, container: Container) => Promise<R>,
     replyBy: (deadline: number) => number,
     late: (report: R) => R,
+    // The alarm armed before the start, for a call whose invocation ends before its own stop: no later than the bound
+    // the call states for its stop's attempt.
+    fallback: (deadline: number) => number,
   ): Promise<R | { refused: string; destroyed: boolean }> {
     const container = this.state.container;
     if (container === undefined) {
@@ -638,12 +645,12 @@ export class ProcessorUnit {
       return { refused: "busy", destroyed: false };
     }
     // No await since the checks above: two calls cannot both pass.
-    this.#inFlight = deadline;
+    this.#inFlight = fallback(deadline);
     try {
       // The alarm's write and its commit are awaited within the call's deadline too.
       const stored = await before(
         (async () => {
-          await this.state.storage.setAlarm(deadline + DESTROY_MS);
+          await this.state.storage.setAlarm(fallback(deadline));
           await this.state.storage.sync();
           return true;
         })().catch((error: unknown) => {
@@ -693,7 +700,7 @@ export class ProcessorUnit {
   // storage is removed. A removal that fails sets the alarm again.
   async alarm(): Promise<void> {
     if (this.#inFlight !== null) {
-      await this.state.storage.setAlarm(Math.max(this.#inFlight + DESTROY_MS, this.deps.now() + 1_000));
+      await this.state.storage.setAlarm(Math.max(this.#inFlight, this.deps.now() + 1_000));
       return;
     }
     const container = this.state.container;

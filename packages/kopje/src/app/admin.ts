@@ -245,8 +245,8 @@ function adminAllowed(identity: AccessIdentity, access: AccessSettings): string 
 
 export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, images, mediaProcessor }: AdminDeps) {
   const admin = new Hono<AdminEnv>();
-  // A probe request's one deadline starts on its arrival, before its credential is checked (adminGate), so it bounds
-  // the whole request (mastodon/media-activation.ts PROBE_ROUTE_MS).
+  // A probe request's one deadline starts on its arrival, before its credential is checked (adminGate and the Access
+  // token, a step of it below), so it bounds the whole request (mastodon/media-activation.ts PROBE_ROUTE_MS).
   admin.use(
     "/media-processor/probe",
     createMiddleware<AdminEnv>(async (c, next) => {
@@ -299,15 +299,29 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
         c.set("auth", { kind: "import-token" });
         return next();
       }
-      const { access } = await stub(c).adminGate(build(c.env));
-      if (access.teamDomain === null || access.adminAud === null) {
+      const check = async () => {
+        const { access } = await stub(c).adminGate(build(c.env));
+        if (access.teamDomain === null || access.adminAud === null) {
+          return { access, verified: null };
+        }
+        const verified = await verifyAccessClaims(
+          assertion,
+          { teamDomain: access.teamDomain, aud: access.adminAud },
+          { fetch, now },
+        );
+        return { access, verified };
+      };
+      // On a probe request the check is a step of its one deadline (the middleware above): it ends by it and by
+      // PROBE_STORE_MS.
+      const probeEnd = c.get("probeEnd") as number | undefined;
+      const checked = probeEnd === undefined ? await check() : await probeSteps(probeEnd, now)(check, PROBE_STORE_MS);
+      if (checked === OVER) {
+        return c.json({ error: "the credential check did not answer in time", code: "probe-timeout" }, 504);
+      }
+      const { access, verified } = checked;
+      if (verified === null || access.teamDomain === null || access.adminAud === null) {
         return c.json({ error: "Access is not configured for /admin" }, 401);
       }
-      const verified = await verifyAccessClaims(
-        assertion,
-        { teamDomain: access.teamDomain, aud: access.adminAud },
-        { fetch, now },
-      );
       if (!verified.ok) {
         return c.json({ error: `invalid Access token (${verified.reason})` }, 401);
       }
@@ -614,8 +628,10 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
   // check (stillCheck) that records nothing: the media rebuild records that profile's probe under its own lease. Both
   // start a container and write R2, so maintenance and a read-only Store refuse them (503) before anything starts. The
   // request has one deadline, PROBE_ROUTE_MS from its arrival (the middleware above), which every step ends by
-  // (probeSteps): its body, the still check's health, and each step of the probe or check; a body or health that does
-  // not answer by its step answers 504. Work it does not wait for (a late copy's delete) is kept alive by waitUntil.
+  // (probeSteps): its credential check, its body, the still check's health, and each step of the probe or check, Images
+  // included; a credential check, body or health that does not answer by its step answers 504. Work it does not wait
+  // for (a late copy's delete, and the probe's work with its copy's delete once the copy is put) is kept alive by
+  // waitUntil.
   admin.post("/media-processor/probe", async (c) => {
     const end = c.get("probeEnd");
     const retain = (work: Promise<unknown>) => c.executionCtx.waitUntil(work.catch(() => {}));

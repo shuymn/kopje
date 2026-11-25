@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { healthReport } from "../src/app/health";
-import { PROBE_RETRY_MS } from "../src/domain/media-probes";
+import { PROBE_CLAIM_MS, PROBE_RETRY_MS } from "../src/domain/media-probes";
 import { runUpload } from "../src/jobs/media-jobs";
 import {
   activationProbe,
@@ -16,7 +16,7 @@ import {
 } from "../src/mastodon/media-activation";
 import { readConfig } from "../src/platform/config";
 import { probeInputKey } from "../src/platform/media-files";
-import type { StillOutcome } from "../src/platform/media-transcoder";
+import type { StillOutcome, UploadProcessor } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
 import { avFixture, verifyBytes } from "./av-helpers";
 import { BUILD } from "./helpers";
@@ -497,7 +497,8 @@ describe("the probes' copy I/O, bounded on the request path", () => {
     const claimed = Promise.withResolvers<Awaited<ReturnType<StoreStub["claimMediaProbe"]>>>();
     const late = {
       claimMediaProbe: () => claimed.promise,
-      recordMediaProbeResult: store.recordMediaProbeResult.bind(store),
+      recordMediaProbeResult: (...args: Parameters<StoreStub["recordMediaProbeResult"]>) =>
+        store.recordMediaProbeResult(...args),
     } as unknown as StoreStub;
     let t = Date.now();
     const running = activationProbe(
@@ -515,7 +516,9 @@ describe("the probes' copy I/O, bounded on the request path", () => {
   // r5: the request answers within the CLI's response-header timeout (Node's Undici: headersTimeout 300 s), with room
   // for the request's way there and back.
   it("bounds the probe request below the CLI's 300 s header timeout", () => {
-    expect(PROBE_ROUTE_MS).toBeLessThanOrEqual(300_000 - 20_000);
+    expect(PROBE_ROUTE_MS).toBeLessThanOrEqual(300_000 - 10_000);
+    // A claim with no result holds the profile past any request's end.
+    expect(PROBE_ROUTE_MS).toBeLessThan(PROBE_CLAIM_MS);
   });
 
   // r5 LOW: a delete the request does not wait for (a put that lands late) is handed to `retain` (waitUntil), so it
@@ -539,8 +542,8 @@ describe("the probes' copy I/O, bounded on the request path", () => {
     await vi.waitFor(() => expect(h.waits.filter((entry) => entry.ms === PROBE_COPY_MS)).toHaveLength(2));
     h.expire(PROBE_COPY_MS);
     await running;
-    // The copy's delete, and the delete once the late put lands.
-    expect(retained).toHaveLength(2);
+    // The probe's work (r7), the copy's delete, and the delete once the late put lands.
+    expect(retained).toHaveLength(3);
     await h.release();
     await Promise.all(retained);
     expect(await copies()).toEqual(before);
@@ -554,7 +557,8 @@ describe("the probes' copy I/O, bounded on the request path", () => {
     const processor = probeProcessor(fake.control, new TestCodec(), await avFixture("r1-av.mp4"));
     const held = {
       claimMediaProbe: () => new Promise<never>(() => {}),
-      recordMediaProbeResult: store.recordMediaProbeResult.bind(store),
+      recordMediaProbeResult: (...args: Parameters<StoreStub["recordMediaProbeResult"]>) =>
+        store.recordMediaProbeResult(...args),
     } as unknown as StoreStub;
     const running = activationProbe({ build: BUILD, store: held, bucket: h.bucket, processor, wait: h.wait }, false);
     await vi.waitFor(() => expect(h.waits.map((entry) => entry.ms)).toContain(PROBE_STORE_MS));
@@ -674,5 +678,173 @@ describe("the probes' copy I/O, bounded on the request path", () => {
     expect(await checking).toMatchObject({ outcome: "pass" });
     const copies = (await env.MEDIA.list({ prefix: "incoming/probe-" })).objects;
     await env.MEDIA.delete(copies.map((object) => object.key));
+  });
+
+  // r7 LOW: once the copy is put, the probe's work and the copy's delete after it are handed to `retain` (waitUntil),
+  // so a client that disconnects before the teardown does not leave the copy for the orphan pass.
+  it.each(["normalize", "still"] as const)(
+    "hands the %s probe's work, its copy's delete with it, to retain once the copy is put",
+    async (profile) => {
+      const store = await freshStore();
+      const h = harness("none");
+      const before = await copies();
+      const retained: Promise<unknown>[] = [];
+      const retain = (work: Promise<unknown>) => void retained.push(work);
+      const answered = Promise.withResolvers<unknown>();
+      const input = new Uint8Array([1, 2, 3]);
+      if (profile === "normalize") {
+        const processor = { probeInput: input, probeNormalize: () => answered.promise } as unknown as UploadProcessor;
+        void activationProbe({ build: BUILD, store, bucket: h.bucket, processor, wait: h.wait, retain }, false);
+      } else {
+        void stillCheck({
+          bucket: h.bucket,
+          stills: {
+            still: () => Promise.reject(new Error("unused")),
+            probe: () => answered.promise,
+            probeInput: input,
+          },
+          images: new TestCodec(),
+          now: () => Date.now(),
+          wait: h.wait,
+          retain,
+        } as unknown as Parameters<typeof stillCheck>[0]);
+      }
+      await vi.waitFor(async () => expect(await copies()).toHaveLength(before.length + 1));
+      expect(retained.length).toBeGreaterThan(0);
+      // The request is gone; the object answers later, and what was retained deletes the copy.
+      answered.resolve(
+        profile === "normalize"
+          ? { outcome: "no-verdict", reason: "unavailable", image: null }
+          : { ok: false, failure: "ready", image: null },
+      );
+      await Promise.all(retained);
+      expect(await copies()).toEqual(before);
+    },
+  );
+
+  // r7 M1 (Codex r6): a claim answering just past its own step's bound, well inside the request's deadline and before
+  // the step's timer fires, starts nothing: each step is checked at settlement against the earlier of the two.
+  it("a claim answering past its step's bound, before its timer, starts nothing, unconfirmed", async () => {
+    const store = await freshStore();
+    const h = harness("none");
+    const before = await copies();
+    const fake = fakeControl(await genuine());
+    const processor = probeProcessor(fake.control, new TestCodec(), await avFixture("r1-av.mp4"));
+    const claimed = Promise.withResolvers<Awaited<ReturnType<StoreStub["claimMediaProbe"]>>>();
+    const late = {
+      claimMediaProbe: () => claimed.promise,
+      recordMediaProbeResult: (...args: Parameters<StoreStub["recordMediaProbeResult"]>) =>
+        store.recordMediaProbeResult(...args),
+    } as unknown as StoreStub;
+    let t = Date.now();
+    const running = activationProbe(
+      { build: BUILD, store: late, bucket: h.bucket, processor, wait: h.wait, now: () => t, end: t + PROBE_ROUTE_MS },
+      false,
+    );
+    await vi.waitFor(() => expect(h.waits.map((entry) => entry.ms)).toContain(PROBE_STORE_MS));
+    t += PROBE_STORE_MS + 1;
+    claimed.resolve(await store.claimMediaProbe(BUILD, { profile: "normalize@standard-4", build: BUILD, due: false }));
+    expect(await running).toEqual({ status: "unconfirmed", verdict: null });
+    expect(fake.calls).toEqual([]);
+    expect(await copies()).toEqual(before);
+  });
+
+  // r7 M1 (Codex r6): a still answered 1 ms before the request's deadline whose Images work answers 10 s after it
+  // reaches no verdict: Images is a step of the request too.
+  it("a still check whose Images answers past the request's deadline reaches no verdict", async () => {
+    await freshStore();
+    const h = harness("none");
+    let t = Date.now();
+    // The check started late in its request: the request ends before the check's own deadline.
+    const end = t + 30 * SECOND;
+    const codec = new TestCodec();
+    const slow = new Proxy(codec, {
+      get(target, name, receiver) {
+        const value: unknown = Reflect.get(target, name, receiver);
+        return typeof value === "function"
+          ? (...args: unknown[]) => {
+              t = end + 10 * SECOND;
+              return (value as (...a: unknown[]) => unknown).apply(target, args);
+            }
+          : value;
+      },
+    });
+    const png = await stillPng();
+    const verdict = await stillCheck({
+      bucket: h.bucket,
+      stills: {
+        still: () => Promise.reject(new Error("unused")),
+        probe: () => {
+          t = end - 1;
+          return Promise.resolve({ ok: true as const, png, image: null });
+        },
+        probeInput: new Uint8Array([1, 2, 3]),
+      },
+      images: slow,
+      now: () => t,
+      wait: h.wait,
+      end,
+    });
+    expect(verdict).toMatchObject({ outcome: "no-verdict" });
+    const left = (await env.MEDIA.list({ prefix: "incoming/probe-" })).objects;
+    await env.MEDIA.delete(left.map((object) => object.key));
+  });
+
+  // r7 M1: a claim the Store committed whose reply is lost starts no probe, and holds the profile only for
+  // PROBE_CLAIM_MS (a claim that recorded no result), not the hour a recorded result holds it.
+  it("a lost claim reply holds the profile for PROBE_CLAIM_MS, not PROBE_RETRY_MS", async () => {
+    const store = await freshStore();
+    const h = harness("none");
+    const fake = fakeControl(await genuine());
+    const processor = probeProcessor(fake.control, new TestCodec(), await avFixture("r1-av.mp4"));
+    const lost = {
+      claimMediaProbe: async (...args: Parameters<StoreStub["claimMediaProbe"]>) => {
+        await store.claimMediaProbe(...args);
+        return new Promise<never>(() => {});
+      },
+      recordMediaProbeResult: (...args: Parameters<StoreStub["recordMediaProbeResult"]>) =>
+        store.recordMediaProbeResult(...args),
+    } as unknown as StoreStub;
+    const running = activationProbe({ build: BUILD, store: lost, bucket: h.bucket, processor, wait: h.wait }, false);
+    await vi.waitFor(() => expect(h.waits.map((entry) => entry.ms)).toContain(PROBE_STORE_MS));
+    h.expire(PROBE_STORE_MS);
+    expect(await running).toEqual({ status: "unconfirmed", verdict: null });
+    expect(fake.calls).toEqual([]);
+    const claim = () => store.claimMediaProbe(BUILD, { profile: "normalize@standard-4", build: BUILD, due: false });
+    expect(await claim()).toMatchObject({ status: "cooldown" });
+    clock(T0 + PROBE_CLAIM_MS + SECOND);
+    expect(await claim()).toMatchObject({ status: "claimed" });
+  });
+});
+
+// r7 M3: the claim orders probes against each other; an infrastructure failure recorded for the build after a probe's
+// claim is newer evidence than that probe's pass, which does not erase it.
+describe("a late pass and a newer infrastructure failure (r7 M3)", () => {
+  it("answers stale for a pass whose claim predates a failure for its build, and keeps the failure", async () => {
+    const store = await freshStore();
+    const profile = "normalize@standard-4" as const;
+    const claimed = await store.claimMediaProbe(BUILD, { profile, build: BUILD, due: false });
+    if (claimed.status !== "claimed") {
+      throw new Error("not claimed");
+    }
+    clock(T0 + SECOND);
+    await store.recordMediaInfrastructureFailure(BUILD, { profile, build: BUILD });
+    clock(T0 + 2 * SECOND);
+    const recorded = await store.recordMediaProbeResult(BUILD, {
+      profile,
+      claim: claimed.claim,
+      outcome: "pass",
+      imagesVerified: true,
+      imageTag: null,
+    });
+    expect(recorded).toEqual({ status: "stale" });
+    const records = await store.mediaProbeRecords(BUILD, { profile });
+    expect(records.failure).toMatchObject({ version: BUILD, at: T0 + SECOND });
+    expect(records.record).toBeNull();
+    // The failure keeps the profile due once the claim's short hold is over.
+    clock(T0 + PROBE_CLAIM_MS + SECOND);
+    expect(await store.claimMediaProbe(BUILD, { profile, build: BUILD, due: true })).toMatchObject({
+      status: "claimed",
+    });
   });
 });

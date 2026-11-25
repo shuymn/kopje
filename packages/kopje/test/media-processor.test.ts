@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { run } from "../cli/lib/main.js";
 import { createApp } from "../src/app/app";
 import { probeName } from "../src/domain/media-probes";
+import { PROBE_STORE_MS } from "../src/mastodon/media-activation";
 import { PROBE_FIXTURE_BASE64 } from "../src/media-probe-fixture";
 import {
   AV_OUTPUT_LIMIT,
@@ -476,6 +477,22 @@ describe("MediaProcessor", () => {
   // r6: a 405 on /healthz is an image that does not speak the protocol, as on the operation routes.
   it("fails the probe of an image answering /healthz 405, sending it nothing", async () => {
     const fake = fakeContainer(server({ "/healthz": () => new Response(null, { status: 405 }) }));
+    expect(await probe(unit(fakeState(fake.container).ctx))).toMatchObject({ ok: false, failure: "healthz" });
+    expect(fake.calls.filter((call) => call.startsWith("POST"))).toEqual([]);
+  });
+
+  // r7 M4: the status is the evidence; a body the connection already broke changes nothing.
+  it("fails the probe of an image answering /healthz 405 with a body that errors, sending it nothing", async () => {
+    const errored = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.error(new Error("connection reset"));
+          },
+        }),
+        { status: 405 },
+      );
+    const fake = fakeContainer(server({ "/healthz": errored }));
     expect(await probe(unit(fakeState(fake.container).ctx))).toMatchObject({ ok: false, failure: "healthz" });
     expect(fake.calls.filter((call) => call.startsWith("POST"))).toEqual([]);
   });
@@ -954,6 +971,44 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     expect(fake.calls.at(-1)).toBe("destroy");
   });
 
+  // r7 M2: as the probe's, the still's work does not depend on its caller: a still whose caller is gone (its promise
+  // dropped) still stops its container by its deadline on the object's clock.
+  it("stops its container by its deadline with no caller waiting", async () => {
+    await env.MEDIA.put("originals/140000000000000032", new Uint8Array([1]));
+    const time = clock();
+    let started = false;
+    const fake = fakeContainer(server({ "/still": () => new Promise<Response>(() => {}) }), {
+      onStart: () => (started = true),
+    });
+    const begun = time.now();
+    void unit({ ...fakeState(fake.container).ctx, bucket: bucket() }, time).stillNow(
+      "originals/140000000000000032",
+      STILL_CALL_MS,
+    );
+    await vi.waitFor(() => expect(started).toBe(true));
+    await vi.waitFor(() => expect(fake.container.running).toBe(false), { timeout: 10_000 });
+    expect(time.now() - begun).toBeLessThanOrEqual(STILL_CALL_MS);
+  });
+
+  // r7 M2: the deadline bounds the stop's attempt, not its success: a destroy that never answers leaves the call's
+  // answer at its deadline with the container running, and the alarm destroys it once it can.
+  it("answers by its deadline when its destroy never answers, and the alarm stops the container later", async () => {
+    await env.MEDIA.put("originals/140000000000000033", new Uint8Array([1]));
+    let stalled = true;
+    const time = clock();
+    const fake = counted(() => (stalled ? new Promise<void>(() => {}) : Promise.resolve()));
+    const state = fakeState(fake.container);
+    const object = unit({ ...state.ctx, bucket: bucket() }, time);
+    const begun = time.now();
+    expect(await object.stillNow("originals/140000000000000033", STILL_CALL_MS)).toMatchObject({ ok: false });
+    expect(time.now() - begun).toBeLessThanOrEqual(STILL_CALL_MS);
+    expect(fake.container.running).toBe(true);
+    expect(state.alarm()).not.toBeNull();
+    stalled = false;
+    await state.fire(object);
+    expect(fake.container.running).toBe(false);
+  });
+
   it("reports its teardown pending when the destroy ends past the call's deadline, and its alarm removes the storage", async () => {
     await env.MEDIA.put("originals/140000000000000012", new Uint8Array([1]));
     const time = frozen(1_000_000);
@@ -1156,8 +1211,8 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     };
     const object = unit({ container: state.ctx.container, storage, bucket: bucket() }, time.deps);
     await object.stillNow("originals/140000000000000004", 10 * STILL_CALL_MS);
-    // The alarm set before the start is the call's bound and the destroy's.
-    expect(alarms[0]).toBe(1_000_000 + STILL_CALL_MS + DESTROY_MS);
+    // The alarm set before the start is the call's bound, by which its stop is attempted (r7 M2: not past it).
+    expect(alarms[0]).toBe(1_000_000 + STILL_CALL_MS);
   });
 });
 
@@ -1305,6 +1360,53 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     expect(run.out).toContain('"status": "stale"');
     expect(run.out).toContain('"outcome": "pass"');
     expect(run.code).toBe(1);
+  });
+
+  // r7 M1 (Codex r6): the request's deadline starts before its credential is checked, and that check is a step of it:
+  // a Store that never answers adminGate ends the request at the step's bound, with nothing probed.
+  it("answers 504 when the credential check does not answer by its step's bound", async () => {
+    const team = await adminTeam();
+    const store = await migratedStore();
+    await setTeamAccess(store, team);
+    const held = new Proxy(store, {
+      get(target, name, receiver) {
+        if (name === "adminGate") {
+          return () => new Promise<never>(() => {});
+        }
+        const value: unknown = Reflect.get(target, name, receiver);
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const probed = vi.fn(() => Promise.resolve({ outcome: "pass" as const, imagesVerified: true, image: null }));
+    const app = createApp({
+      build: () => BUILD,
+      now: () => NOW,
+      store: () => held,
+      fetch: team.fetch,
+      images: () => new TestCodec(),
+      mediaProcessor: () => ({ stills: unusedStills, uploads: { ...unusedUploads, probeNormalize: probed } }),
+    });
+    const request = new Request("https://admin.kopje.test/admin/media-processor/probe", {
+      method: "POST",
+      body: JSON.stringify({ profile: "normalize@standard-4" }),
+      headers: { "cf-access-jwt-assertion": await accessToken(team, adminClaims()) },
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    let answer: Promise<Response>;
+    try {
+      answer = Promise.resolve(app.fetch(request, env, createExecutionContext()));
+      await vi.advanceTimersByTimeAsync(PROBE_STORE_MS);
+    } finally {
+      vi.useRealTimers();
+    }
+    const settled = await Promise.race([
+      answer,
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 500)),
+    ]);
+    expect(settled).not.toBe("pending");
+    expect((settled as Response).status).toBe(504);
+    expect(await (settled as Response).json()).toMatchObject({ code: "probe-timeout" });
+    expect(probed).not.toHaveBeenCalled();
   });
 
   it("refuses an unknown profile, and answers 409 without the binding", async () => {
