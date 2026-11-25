@@ -3328,26 +3328,34 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   envelope's edges) are pending. The route writes `incoming/<id>` only for its own reservation, only after S1
   (`takeAvSlot`) took that reservation's slot, and starts each R2 write (the multipart create, each part, the
   completion) only before the staging deadline it was given (on v1 the route's cut, when earlier); it writes no other
-  key. Its cleanup is one background task per request, registered with `waitUntil` before the reservation is asked
-  for, so it runs while the invocation lives and the answer never waits for it; each step is awaited at most
-  `R2_CALL_MS` (an abort, a delete) or `STORE_CALL_MS` (S2, the abandonment). A multipart create answering after the
-  staging deadline is aborted there when it answers within `R2_CALL_MS`; one answering later, or never reaching a live
-  Worker, is left to R2's lifecycle rule for incomplete multipart uploads (W8). A staging the route ends itself (a
-  refused part, a byte past the cap, the deadline) aborts the R2 multipart upload and asks S2 (`releaseStaging`), and
-  deletes the input only when S2 answers `released`: otherwise the reservation is no longer the route's, and the sweep,
-  reconciliation or the orphan pass owns its keys. S3 (`queueNormalize`) answering `refused_cleanup_yours` hands the
-  input back, which the cleanup deletes before abandoning the reservation; once queued the input is the processor's.
-  A completion that lands after the route's delete (an abort not yet in effect) goes with the doomed row's keys in the
-  sweep (`sweptKeys` names `incoming/<id>`), or in the `incoming/` orphan pass once the row is gone; a cleanup step left
-  unanswered falls to the same passes or R2's lifecycle rule. An S1 or S3 call that fails (thrown, or its reply lost
-  in the RPC) is asked once more (each answers the same to a repeat, table 1.4); one whose reply has not arrived by its
-  bound (v2: `STORE_CALL_MS`; v1: the route's cut) is not asked again. A second failure, such a late reply, or on v1 an
-  S10 reply not received by the give-up answers 503 and deletes nothing, leaving the dispatch round, the sweep or the
-  processor to finish or remove it. The file part ends where the image path's parser ends it (an LF or CRLF before the
-  delimiter), so no delimiter is staged.
+  key. Its cleanup is one background task per request, registered with `waitUntil` before the reservation is asked for,
+  so the answer never waits for it; it runs while the invocation lives, which after the response is at most 30 s
+  (`waitUntil`'s limit), shared by every step. Each step is awaited at most `R2_CALL_MS` (an abort, a delete) or
+  `STORE_CALL_MS` (S2, the abandonment), and a release before staging (`discard`: the abandonment, then its keys'
+  delete) at most both, 60 s in all; what is left when the invocation ends falls to the passes below. A multipart create
+  answering after the staging deadline is aborted there when it answers within `R2_CALL_MS`; one answering later, or
+  never reaching a live Worker, is left to R2's lifecycle rule for incomplete multipart uploads (W8). A staging the
+  route ends itself (a refused part, a byte past the cap, the deadline) aborts the R2 multipart upload and, in order,
+  asks S2 (`releaseStaging`), deletes the input only when S2 answers `released` within its wait, then abandons the
+  reservation (code review r3 M3); a `released` arriving after S2's wait deletes nothing and the reclamation below takes
+  the input: otherwise the reservation is no longer the route's, and the sweep, reconciliation or the orphan pass owns
+  its keys. S3 (`queueNormalize`) answering `refused_cleanup_yours` hands the input back, which the cleanup deletes
+  before abandoning the reservation; once queued the input is the processor's. A completion that lands after the route's
+  delete (an abort not yet in effect) goes with the doomed row's keys in the sweep (`sweptKeys` names `incoming/<id>`),
+  or in the `incoming/` orphan pass once the row is gone; a cleanup step left unanswered falls to the same passes or
+  R2's lifecycle rule. A documented limit: a client that disconnects does not start the staging's cleanup before its
+  deadline, since the Worker has no incoming `Request.signal` at the deployed compatibility date
+  (`enable_request_signal` not set); an open multipart upload then falls to R2's lifecycle rule (W8), and the slot stops
+  counting at its `held_until` (the staging's deadline, at most `STAGING_MS`, 10 minutes). An S1 or S3 call that fails
+  (thrown, or its reply lost in the RPC) is asked once more (each answers the same to a repeat, table 1.4); one whose
+  reply has not arrived by its bound (v2: `STORE_CALL_MS`; v1: the route's cut) is not asked again. A second failure,
+  such a late reply, or on v1 an S10 reply not received by the give-up answers 503 and deletes nothing, leaving the
+  dispatch round, the sweep or the processor to finish or remove it. The file part ends where the image path's parser
+  ends it (an LF or CRLF before the delimiter), so no delimiter is staged.
   `test/media-av-upload.test.ts` ("the route's rows of 1.1 and 1.4", "the parts of a video or audio upload (P7, C2-M6)",
   "the staging of a video or audio upload (P6)", "the v1 wait (P8, H1, C2-M3, r4 H1, M5, W5)", "the route's bounded
-  waits (code review r1)", "the route's answers and its cleanup (code review r2)"), `test/multipart-stream.test.ts`.
+  waits (code review r1)", "the route's answers and its cleanup (code review r2)", "M3: a staging refusal's
+  authorized delete starts while abandonMedia is held"), `test/multipart-stream.test.ts`.
   A custom emoji upload (`kopje-admin emoji add`, `src/mastodon/emoji-upload.ts`) builds its keys as every upload's,
   from a reservation the Store records before any write (`reserveEmoji` in `src/domain/local-emojis.ts`); completion
   and promotion are one transaction (`completeEmoji`: the row is kept, gc_at NULL, with its emoji row), and a failure
@@ -3753,22 +3761,28 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/media-processing-ownership.test.ts` ("table 1.1, the Store's side").
   _Enforced (main)_ for the video and audio upload route (`src/mastodon/media-av.ts`), for the cases its route tests
   cover; the staging gates of #1828 PR4-4 are pending. Reading: the token is authorized and the reservation made before
-  any body byte is read; the bytes read before the type is known stop within one chunk of `MEDIA_BODY_LIMIT`, at the
-  reservation's deadline, and on v1 at the route's cut (arrival + `V1_TIME_MS` − `T_REPLY`); a request handed back to
-  the image path is read there as before; a video or audio file is streamed into R2 in parts of `PART_BYTES` (8 MiB),
-  the route holding at most one part and one read, and refused at `AV_UPLOAD_LIMIT` (90 MiB) + 1 bytes; the parts after
-  it stay within `API_BODY_LIMIT`, a thumbnail file's bytes counted (its 413 comes before the description is judged); a
-  part head within 16 KiB (`PART_HEAD_LIMIT` in `src/platform/multipart-stream.ts`), and the closing line's padding is
-  dropped as it is read, one scan per chunk. Staging writes start only before `STAGING_MS` from the staging's start and,
-  on v1, before the route's cut; a staging past `MAX_AV_INFLIGHT` answers 503 before its file is staged. The response
-  is due on v1 by the give-up (arrival + `V1_TIME_MS`): every wait before S10 is cut at the route's cut, and S10 is
-  waited for until the give-up; on v2 the reservation waits as the image path's does, and S1, S3 and the settled
-  lookup are each awaited at most `STORE_CALL_MS`. Cleanup may finish after the response, in the request's background
-  task, each step within `R2_CALL_MS` or `STORE_CALL_MS`.
+  any body byte is read; the bytes read before the type is known stop within two chunks of `MEDIA_BODY_LIMIT`, the
+  stream's read-ahead included, at the reservation's deadline, and on v1 at the route's cut (arrival + `V1_TIME_MS` −
+  `T_REPLY`); a request handed back to the image path, by the sniff or by S1 answering `inactive` (the probe failed
+  after the reservation), is read there as before, with the image path's waits; a video or audio file is streamed into
+  R2 in parts of `PART_BYTES` (8 MiB), the route holding at most one part and one read, and refused at `AV_UPLOAD_LIMIT`
+  (90 MiB) + 1 bytes; the parts after it stay within `API_BODY_LIMIT`, a thumbnail file's bytes counted (its 413 comes
+  before the description is judged); a part head within 16 KiB (`PART_HEAD_LIMIT` in
+  `src/platform/multipart-stream.ts`), and the closing line's padding is dropped as it is read, one scan per chunk.
+  Staging writes start only before `STAGING_MS` from the staging's start and, on v1, before the route's cut; a staging
+  past `MAX_AV_INFLIGHT` answers 503 before its file is staged. The response is due on v1 by the give-up (arrival +
+  `V1_TIME_MS`): every wait before S10 is cut at the route's cut, and S10 is waited for until the give-up; after S1's
+  `inactive` the image path's run is not cut there, so a 503 at the give-up may be followed by that image completing,
+  unattached and swept after its grace (a documented limit: it needs a probe failure within the request and an image as
+  the last `file`; untested beyond the test named below); on v2 the reservation waits as the image path's does, and S1,
+  S3 and the settled lookup are each awaited at most `STORE_CALL_MS`. Cleanup may finish after the response, in the
+  request's background task, each step within `R2_CALL_MS` or `STORE_CALL_MS` (a release before staging within both),
+  all within the invocation's 30 s after the response; a disconnect does not start it before the staging's deadline
+  (MEDIA-2).
   `test/media-av-upload.test.ts` ("the staging of a video or audio upload (P6)", "a held ingress read answers 503 by
   V1_TIME_MS from arrival: nothing charged, S2 released, no input", "the route's bounded waits (code review r1)", "the
-  route's answers and its cleanup (code review r2)"),
-  `test/multipart-stream.test.ts` ("the closing line's padding").
+  route's answers and its cleanup (code review r2)", "M1 (limit): S1 `inactive` hands v1 to the image path, which may
+  complete after the give-up's 503"), `test/multipart-stream.test.ts` ("the closing line's padding").
 - **RES-2: parsing work is bounded.** Every regex, parser and normalization over input at the RES-1 cap has an
   adversarial fixture with a time bound. _Enforced (main)_ for status text:
   `test/statuses.test.ts` ("handles the worst case at the bound within a generous time"). _Enforced (main)_ for the
@@ -4969,8 +4983,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   v1 route's wait is on one clock from the request's arrival: every wait before S10 (the reservation, the read before
   the sniff, S1, the staging, S3 and the S9 polls every `V1_POLL_MS`, 2 s) is cut at the route's cut, arrival +
   `V1_TIME_MS` − `T_REPLY`, where S10 is asked; S10 is waited for until the give-up, arrival + `V1_TIME_MS`, and the
-  route answers 503 then unless an S10 answer was received. W5 is every v1 answer that is not S10's decision: the
-  give-up, and an S10 reply lost or failed, the job going on; a completion after that 503 is unattached and swept after
+  route answers 503 then unless an S10 answer was received. After S1 answers `inactive` the request is the image path's,
+  with its waits (RES-1's limit). W5 is S10's give-up and an S10 reply lost or failed, the job going on (a validation
+  refusal is not W5: it is decided before anything is queued); a completion after that 503 is unattached and swept after
   its grace. S10's decision stands whether or not its answer is sent: one decided just before the give-up leaves a
   completed upload unattached until the sweep, as W11 lets a decided answer cross a restore. `V1_TIME_MS` is a compiled
   constant, 90 s until a staging measurement sets it (`docs/media-processor.md`); these clauses are _Enforced (main)_

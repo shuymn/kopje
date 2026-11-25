@@ -115,13 +115,16 @@ answers while the processing goes on. Three times are separate. Staging writes t
 time and, on v1, before the decision's time. The answer is due by `V1_TIME_MS` on v1, every wait before the decision
 ending at the decision's time; on v2 the reservation waits as an image's does, and the slot, the queue and the lookup of
 an upload already queued are each given 30 s. Cleanup (aborting a staging, releasing it, deleting its input, abandoning
-the reservation) may finish after the answer, in the background, each step given 30 s; what it leaves the sweep, the
-`incoming/` orphan pass or R2's lifecycle rule removes. `V1_TIME_MS` is a constant of the release, not a setting: 90 s
-in this release, a provisional value to be set from a measurement on a staging instance, from the shortest time a
-measured browser client waits for an upload's answer, since one value serves every client. The edges of what each
-endpoint admits (the longest video of a given size, codec and ingress that still finishes in time) are estimated
-admission limits, not measured wall times, and are published here once runs at the edges on a staging instance measure
-them.
+the reservation) may finish after the answer, in the background, each step given 30 s, all within the 30 s the Worker
+lives after the answer; what it leaves the sweep, the `incoming/` orphan pass or R2's lifecycle rule removes. A client
+that disconnects does not start that cleanup before the staging's own time ends: an open staging is left to R2's
+lifecycle rule, and its slot stops counting at the staging's deadline. When the processor's probe fails while a v1
+request is read, the request goes on as an image with the image path's waits, and an image completing after the 503 is
+unattached and swept the same way. `V1_TIME_MS` is a constant of the release, not a setting: 90 s in this release, a
+provisional value to be set from a measurement on a staging instance, from the shortest time a measured browser client
+waits for an upload's answer, since one value serves every client. The edges of what each endpoint admits (the longest
+video of a given size, codec and ingress that still finishes in time) are estimated admission limits, not measured wall
+times, and are published here once runs at the edges on a staging instance measure them.
 
 A video is re-encoded to an H.264 and AAC MP4 (at most 1080p at 60 fps up to 120 s, 720p at 30 fps up to 300 s, 480p
 at 30 fps up to 600 s), audio to MP3; a longer file, or one past the processing envelope, is refused with 422. Two
