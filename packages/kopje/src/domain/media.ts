@@ -126,7 +126,7 @@ function notEmojiSql(m: string): string {
   return `NOT EXISTS (SELECT 1 FROM custom_emojis ${m}_e WHERE ${m}_e.id = ${m}.id)`;
 }
 
-export function ownUpload(db: Db, accountId: string, id: string, now: number): MediaRow | undefined {
+function ownUpload(db: Db, accountId: string, id: string, now: number): MediaRow | undefined {
   return db.first<MediaRow>(
     `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m
 		WHERE m.id = ?1 AND m.account_id = ?2 AND m.status_id IS NULL AND ${liveMediaSql("m", "?3")}`,
@@ -616,14 +616,23 @@ export const deleteMedia = userMediaDeleteOperation.atStoreTime("now")<{ id: str
   (db, { id, now }, { accountId }) => deleteOwnMedia(db, accountId, id, now),
 );
 
-// deleteMedia's rules for one row of `accountId`, at `now` (also S11's for a finished upload, media-processing.ts).
-export function deleteOwnMedia(db: Db, accountId: string, id: string, now: number): MediaDeleted {
-  const row = db.first<{ used: number; kept: number }>(
-    `SELECT status_id IS NOT NULL OR scheduled_status_id IS NOT NULL AS used, gc_at IS NULL AS kept
+// deleteMedia's rules for one row of `accountId`, at `now` (also S11's for a finished upload, media-processing.ts,
+// which passes the row's `used` and `kept` as it read them).
+export function deleteOwnMedia(
+  db: Db,
+  accountId: string,
+  id: string,
+  now: number,
+  read?: { used: number; kept: number },
+): MediaDeleted {
+  const row =
+    read ??
+    db.first<{ used: number; kept: number }>(
+      `SELECT status_id IS NOT NULL OR scheduled_status_id IS NOT NULL AS used, gc_at IS NULL AS kept
 			FROM media_attachments WHERE id = ? AND account_id = ?`,
-    id,
-    accountId,
-  );
+      id,
+      accountId,
+    );
   if (row === undefined) {
     return "not_found";
   }

@@ -2,11 +2,18 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ownerMedia, V2_PROCESS_MS, type AvFacts } from "../src/domain/media-processing";
+import {
+  deleteOwnerMedia,
+  ownerMedia,
+  updateOwnerMedia,
+  V2_PROCESS_MS,
+  type AvFacts,
+} from "../src/domain/media-processing";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
-import { fileKey, originalKey } from "../src/platform/media-files";
+import { fileKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
 import { ownerRun } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
+import { imageUpload } from "./av-posting-helpers";
 import { BUILD, testKernel } from "./helpers";
 import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS } from "./media-helpers";
 import {
@@ -27,6 +34,7 @@ import {
   T0,
   VIDEO,
 } from "./media-processing-helpers";
+import { observedSql } from "./read-helpers";
 
 // The owner's GET, PUT and DELETE of a video or audio upload in each state (#1828 P9, MEDIA-1), through the routes, with
 // rows made by the Store's own operations (domain/media-processing.ts): 206 masked while processing, 422 once failed or
@@ -215,6 +223,109 @@ describe("the owner's reads of an upload in each state (P9)", () => {
   });
 });
 
+const OWNER_OPS = [ownerMedia, updateOwnerMedia, deleteOwnerMedia] as const;
+
+// One of the owner's operations run through ownerRun in the Store, counting its marker reads: `answer` the
+// operation's status (or DELETE's answer), or the Store's refusal.
+async function counted(
+  w: AvWorld,
+  op: (typeof OWNER_OPS)[number],
+  id: string,
+  who: Who = "alice",
+  marker: () => Promise<number | null> = () => Promise.resolve(null),
+) {
+  let reads = 0;
+  const credential = who === "alice" ? w.alice : w.bob;
+  const input = op === updateOwnerMedia ? { credential, id, changes: { description: "bob's" } } : { credential, id };
+  const answered = await runInDurableObject(w.store, (_instance, state) =>
+    ownerRun(testKernel(state), BUILD, op as typeof ownerMedia, input, () => {
+      reads++;
+      return marker();
+    }),
+  );
+  const value = answered.status === "ok" ? (answered.value as unknown) : answered.status;
+  return { answer: typeof value === "string" ? value : (value as { status: string }).status, reads };
+}
+describe("another account's upload is never normalized or read past its owner check (code review r1 M1)", () => {
+  it("leaves another account's overdue upload untouched on DELETE", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    const before = await held(w.store, up.id);
+    clock(before.row!.deadline_at!);
+    expect(await del(w, up.id, "bob")).toEqual({ status: 404, body: NOT_FOUND });
+    expect(await held(w.store, up.id)).toEqual(before);
+  });
+
+  it("leaves another account's staging reservation a restore fenced untouched, row and slot", async () => {
+    const w = await avWorld();
+    const up = await staged(w);
+    const taken = await bookmark(w.store);
+    await restore(w.store, taken, T0 + 6 * SECOND);
+    clock(T0 + 7 * SECOND);
+    const before = await held(w.store, up.id);
+    expect(before).toMatchObject({ row: { state: "staging" }, slot: { phase: "staging" } });
+    expect(await del(w, up.id, "bob")).toEqual({ status: 404, body: NOT_FOUND });
+    expect(await held(w.store, up.id)).toEqual(before);
+  });
+
+  it("reads no marker for another account's upload, in any operation", async () => {
+    for (const make of [staged, queued, started]) {
+      const w = await avWorld();
+      const up = await make(w);
+      clock(T0 + 5 * SECOND);
+      const before = await held(w.store, up.id);
+      for (const op of OWNER_OPS) {
+        expect(await counted(w, op, up.id, "bob")).toEqual({ answer: "not_found", reads: 0 });
+      }
+      expect(await held(w.store, up.id)).toEqual(before);
+    }
+  });
+});
+
+describe("a restore marker that cannot be read (code review r1 M2)", () => {
+  async function unreadable<T>(w: AvWorld, run: () => Promise<T>): Promise<T> {
+    const key = restoreMarkerKey(w.store.id.toString());
+    await env.MEDIA.put(key, "{");
+    try {
+      return await run();
+    } finally {
+      await env.MEDIA.delete(key);
+    }
+  }
+
+  it("refuses GET, PUT and DELETE of an upload K3 could act on with a 503, and writes nothing", async () => {
+    for (const make of [staged, queued, started]) {
+      const w = await avWorld();
+      const up = await make(w);
+      const taken = await bookmark(w.store);
+      await restore(w.store, taken, T0 + 6 * SECOND);
+      clock(T0 + 7 * SECOND);
+      const before = await held(w.store, up.id);
+      const described = await description(w, up.id);
+      const statuses = await unreadable(w, async () => [
+        (await get(w, up.id)).status,
+        (await put(w, up.id, { description: "lost" })).status,
+        (await del(w, up.id)).status,
+      ]);
+      expect(statuses).toEqual([503, 503, 503]);
+      expect(await held(w.store, up.id)).toEqual(before);
+      expect(await description(w, up.id)).toBe(described);
+    }
+  });
+
+  it("answers an upload K3 cannot act on without reading the marker", async () => {
+    const w = await avWorld();
+    const up = await completed(w);
+    clock(T0 + 5 * SECOND);
+    const statuses = await unreadable(w, async () => [
+      (await get(w, up.id)).status,
+      (await put(w, up.id, { description: "kept" })).status,
+    ]);
+    expect(statuses).toEqual([200, 200]);
+    expect(await description(w, up.id)).toBe("kept");
+  });
+});
+
 // A DELETE through the route runs a sweep after its response (sweepSoon), which removes a doomed row and its keys.
 async function swept(w: AvWorld, id: string): Promise<void> {
   expect(await held(w.store, id)).toMatchObject({ row: null, att: null });
@@ -397,18 +508,33 @@ describe("S10's 200 through the owner's presenter (PR4-1 code review r1 M4)", ()
   });
 });
 
-describe("the owner's two passes (store.ts ownerRun)", () => {
-  async function getCounted(w: AvWorld, id: string) {
-    let reads = 0;
-    const answered = await runInDurableObject(w.store, async (_instance, state) => {
-      return ownerRun(testKernel(state), BUILD, ownerMedia, { credential: w.alice, id }, () => {
-        reads++;
-        return Promise.resolve(null);
-      });
+describe("an image's GET, PUT and DELETE read what they read before #1828 (code review r1)", () => {
+  it("runs one media statement for GET, three for PUT and three for DELETE", async () => {
+    const w = await avWorld();
+    const id = await imageUpload(w);
+    const statements = await runInDurableObject(w.store, (_instance, state) => {
+      const counts: number[] = [];
+      for (const op of OWNER_OPS) {
+        let n = 0;
+        const counting = observedSql(state.storage.sql, (_rows, query) => {
+          if (/\bmedia_(attachments|processing|av_slots)\b/.test(query)) {
+            n++;
+          }
+        });
+        const input = { credential: w.alice, id, now: Date.now(), restoredAt: "unread" as const };
+        const answered = (op as typeof updateOwnerMedia).run(counting, { ...input, changes: { description: "a" } });
+        expect(answered).toMatchObject({ status: "ok" });
+        counts.push(n);
+      }
+      return counts;
     });
-    return { status: answered.status === "ok" ? answered.value.status : answered.status, reads };
-  }
+    // On cd9292004: getMedia's ownUpload; updateMedia's ownUpload, UPDATE and ownUpload; deleteOwnMedia's used and kept,
+    // ownUpload and UPDATE.
+    expect(statements).toEqual([1, 3, 3]);
+  });
+});
 
+describe("the owner's two passes (store.ts ownerRun)", () => {
   it("reads the restore marker only for an upload whose processing row K3 could act on", async () => {
     const cases: [(w: AvWorld) => Promise<{ id: string }>, string, number][] = [
       [queued, "processing", 1],
@@ -419,7 +545,7 @@ describe("the owner's two passes (store.ts ownerRun)", () => {
       const w = await avWorld();
       const up = await make(w);
       clock(T0 + 5 * SECOND);
-      expect(await getCounted(w, up.id)).toEqual({ status, reads });
+      expect(await counted(w, ownerMedia, up.id)).toEqual({ answer: status, reads });
     }
   });
 });

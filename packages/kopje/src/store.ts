@@ -27,7 +27,12 @@ import {
 import { errorFields } from "./platform/error-message";
 import { restoreMarkerKey } from "./platform/media-files";
 import { type ImportAuthority, StoreAdmin } from "./platform/store-admin";
-import { type MaintenanceReason, toStoreUnavailable, WRITE_REFUSALS } from "./platform/store-errors";
+import {
+  type MaintenanceReason,
+  storeMaintenanceError,
+  toStoreUnavailable,
+  WRITE_REFUSALS,
+} from "./platform/store-errors";
 import { readFlags } from "./platform/store-flags";
 import { type OperationInput, type StoreOperation, StoreKernel, type TimedOperation } from "./platform/store-kernel";
 import { defineRpc, STORE_RPC, type StoreRpc } from "./store-rpc";
@@ -86,7 +91,8 @@ const asksMarker = (output: Authorized<unknown>) =>
 // The owner's GET, PUT and DELETE of an upload (domain/media-processing.ts ownerMedia, updateOwnerMedia,
 // deleteOwnerMedia), in startImagePath's two passes: the first without the restore marker, which an upload without a
 // processing row K3 could act on (every image) answers; one with such a row answers `needs_marker`, writing nothing,
-// and the operation runs again with the marker read (null when it cannot be read, as S10's read takes it).
+// and the operation runs again with the marker read. A marker that cannot be read refuses the call as transient (503),
+// unlike S10's read (v1Final), whose one answer besides maintenance K3 cannot change.
 export async function ownerRun<O>(
   kernel: StoreKernel,
   callerBuild: string,
@@ -107,7 +113,9 @@ export async function ownerRun<O>(
   try {
     restoredAt = await readMarker();
   } catch {
-    restoredAt = null;
+    // Without the marker the answer could show, change or delete a record a restore fenced as K3 would not leave
+    // it: the call is refused as retryable (503), the first pass having written nothing.
+    throw storeMaintenanceError("transient");
   }
   const second = await kernel.execute(callerBuild, op, { ...input, restoredAt });
   if (asksMarker(second)) {
@@ -635,7 +643,9 @@ export class Store extends DurableObject<Env> {
       return decided;
     }
     // Without the marker the read is still exact for the one answer it gives besides `maintenance`: a completed
-    // upload has no processing row, so K3 cannot change it, and it is answered from its token and gc_at.
+    // upload has no processing row, so K3 cannot change it, and it is answered from its token and gc_at; anything
+    // else answers `maintenance` with or without the marker. So an unreadable marker is taken as none here, where the
+    // owner's operations (ownerRun), which answer an unfinished upload, refuse the call.
     let restoredAt: number | null;
     try {
       restoredAt = await this.#restoredAt();
