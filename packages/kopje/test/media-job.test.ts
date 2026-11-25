@@ -293,6 +293,29 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     };
   }
 
+  // r4 M4 (Codex): the still is optional, so an early error of it (a gateway's reply, a body cut short, a still
+  // breaking its contract) is as one held to its cut: the verified video completes with the default poster.
+  it.each([
+    ["a still answered 502", { stillFailure: { status: 502 } }],
+    ["a still cut short of its Content-Length", { stillLength: "short" as const }],
+    ["a still with no Content-Length", { stillLength: "none" as const }],
+  ])("completes the video with its poster on %s", async (_name, extra) => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const output = await avFixture("r1-av.mp4");
+    const fake = fakeControl({
+      output,
+      durationMs: String(await durationMs("r1-av.mp4")),
+      still: await stillPng(),
+      ...extra,
+    });
+    await runUpload(uploadDeps(w, fake.control), await jobOf(w, up));
+    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1, type: "video" });
+    expect(await objects(up.id, up.token)).toMatchObject({ original: true, full: true, small: null });
+    expect(fake.calls).toContain("GET /normalize/still");
+  });
+
   it("completes with the poster and records an infrastructure failure when Images refuses a still verifyStill passed (9412)", async () => {
     const codec = new TestCodec();
     codec.failEncode = 9412;

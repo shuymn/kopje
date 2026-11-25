@@ -270,11 +270,20 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     stage.name = "still";
     stage.at = deps.now();
     const previewEnd = outputCut(allocation, "preview", stage.at);
-    // The still and its preview are optional: begun only with T_PREVIEW_MIN left, and past their cut the upload goes on
-    // with its poster, the container's still request aborted.
+    // The still and its preview are optional: begun only with T_PREVIEW_MIN left; past their cut the upload goes on with
+    // its poster, the container's still request aborted, and so it does when the still fails before it (a reply, a
+    // body or a read outside the still's contract). The activation probe holds the still to its contract instead.
     let preview: Preview | null = null;
     if (previewEnd - deps.now() >= T_PREVIEW_MIN) {
-      const png = await race(deps, result.still(), previewEnd);
+      const asked = result.still().catch((error: unknown) => {
+        console.warn({
+          event: "kopje.media.job.preview_failed",
+          ...at(),
+          ...(error instanceof TranscoderUnavailable ? { reason: error.reason } : errorFields(error)),
+        });
+        return null;
+      });
+      const png = await race(deps, asked, previewEnd);
       if (png === CUT) {
         cut.abort();
         console.warn({ event: "kopje.media.job.cut", ...at() });
