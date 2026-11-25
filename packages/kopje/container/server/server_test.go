@@ -188,16 +188,18 @@ func TestFailuresAnswerCodesOnly(t *testing.T) {
 			fakeTools(t, videoProbe())
 			t.Setenv("FAKE_PROBE", "/nonexistent")
 		}, normalizeURL, []byte("x"), 422, "unreadable"},
+		// 2 s before the still's reserve: under the 2,142 ms that fixedEstimateMs alone needs, with room for the probe.
 		{"outside the envelope", func(t *testing.T) { fakeTools(t, videoProbe()) },
-			"/normalize?work_ms=5000&still_ms=4800", []byte("x"), 422, "envelope"},
+			"/normalize?work_ms=7000&still_ms=5000", []byte("x"), 422, "envelope"},
 		{"encoder fails", func(t *testing.T) {
 			fakeTools(t, videoProbe())
 			t.Setenv("FAKE_EXIT", "1")
 		}, normalizeURL, []byte("x"), 500, "encode_failed"},
+		// work_ms leaves the 1,580 ms audio estimate its 0.7 share (2,258 ms) after a probe of up to 1.2 s.
 		{"encode passes its time", func(t *testing.T) {
 			fakeTools(t, probeOf("2", stream("audio", "aac", 0, 0, "0/0", "2")))
-			t.Setenv("FAKE_SLEEP", "3")
-		}, "/normalize?work_ms=2500&still_ms=0", []byte("x"), 504, "timeout"},
+			t.Setenv("FAKE_SLEEP", "5")
+		}, "/normalize?work_ms=3500&still_ms=0", []byte("x"), 504, "timeout"},
 		{"still without video", func(t *testing.T) { fakeTools(t, probeOf("2", stream("audio", "aac", 0, 0, "0/0", "2"))) },
 			"/still", []byte("x"), 422, "no_video"},
 		// Not the input's: ffprobe that does not start, or that the host kills, is the container's failure.
@@ -764,17 +766,18 @@ func (b *slowBody) Read(p []byte) (int, error) {
 
 // The work deadline counts from the request's arrival, the input's time included: an input delivered slowly leaves
 // the encode less time, and an encode that overruns is cut at the work deadline rather than at a fixed time after the
-// input (P8; with the old fixed encode_ms of 2.5 s this answered 3.5 s after arrival).
+// input (P8).
 func TestASlowInputAnswersWithinTheWorkDeadline(t *testing.T) {
 	fakeTools(t, probeOf("2", stream("audio", "aac", 0, 0, "0/0", "2")))
 	t.Setenv("FAKE_SLEEP", "5")
-	req := httptest.NewRequest("POST", "/normalize?work_ms=3500&still_ms=0", &slowBody{sleep: time.Second})
+	// work_ms leaves the 1,580 ms audio estimate its 0.7 share (2,258 ms) after a slow input of up to 2.7 s.
+	req := httptest.NewRequest("POST", "/normalize?work_ms=5000&still_ms=0", &slowBody{sleep: time.Second})
 	req.ContentLength = -1
 	rec := httptest.NewRecorder()
 	arrival := time.Now()
 	newMux(threadsDefault).ServeHTTP(rec, req)
 	elapsed := time.Since(arrival)
-	if rec.Code != 504 || rec.Header().Get("Kopje-Error") != "timeout" || elapsed > 3800*time.Millisecond {
+	if rec.Code != 504 || rec.Header().Get("Kopje-Error") != "timeout" || elapsed > 5300*time.Millisecond {
 		t.Fatalf("%d %q after %v", rec.Code, rec.Header().Get("Kopje-Error"), elapsed)
 	}
 }
@@ -943,7 +946,8 @@ func TestTheSizeMarkerComesFirst(t *testing.T) {
 		{"libdav1d's diagnostic, the output whole", "dav1d", "", "", normalizeURL, 422, "pixels"},
 		{"an output the rewrite cannot read", "1", "libx264", "", normalizeURL, 422, "pixels"},
 		{"the same without the marker", "", "libx264", "", normalizeURL, 500, "strip_failed"},
-		{"the deadline expired", "1", "", "3", "/normalize?work_ms=2700&still_ms=100", 504, "timeout"},
+		// The ~1,650 ms estimate's 0.7 share (2,353 ms) within the encode time, with room for the probe.
+		{"the deadline expired", "1", "", "5", "/normalize?work_ms=4000&still_ms=100", 504, "timeout"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			// A short AV1 video, its estimate within every case's encode time.
