@@ -28,6 +28,7 @@ import { toStoreUnavailable } from "../src/platform/store-errors";
 import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { markedRun } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
+import { concat } from "./av-helpers";
 import { imageUpload } from "./av-posting-helpers";
 import { BUILD, deferred, gateMarker, holdingMarker, rejectionOf, testKernel } from "./helpers";
 import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS } from "./media-helpers";
@@ -88,20 +89,16 @@ const NOT_FOUND = { error: "Record not found" };
 
 type Who = "alice" | "bob";
 
-async function answer(response: Response): Promise<{ status: number; body: unknown }> {
-  return { status: response.status, body: await response.json() };
-}
-
 function get(w: AvWorld, id: string, who: Who = "alice") {
-  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token)).then(answer);
+  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token)).then(answerOf);
 }
 
 function put(w: AvWorld, id: string, body: Record<string, unknown>, who: Who = "alice") {
-  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token, json(body, { method: "PUT" }))).then(answer);
+  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token, json(body, { method: "PUT" }))).then(answerOf);
 }
 
 function del(w: AvWorld, id: string, who: Who = "alice") {
-  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token, { method: "DELETE" })).then(answer);
+  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token, { method: "DELETE" })).then(answerOf);
 }
 
 async function description(w: AvWorld, id: string): Promise<string | undefined> {
@@ -1196,7 +1193,7 @@ describe("a video or audio upload through the route (v2)", () => {
     expect(w.runs).toEqual([{ id, token: expect.any(String), teardownId: (await slotOf(w, id))?.teardown_id }]);
     expect(await charged(w.store)).toBe(1);
     expect((await held(w.store, id)).row?.state).toBe("pending");
-    const shown = await w.h.request(`/api/v1/media/${id}`, bearer(w.h.users.alice.token)).then(answer);
+    const shown = await get(w, id);
     expect(shown).toEqual({ status: 206, body: accepted.body });
     expect(accepted.body).toMatchObject({ type: "video", url: null, description: "a clip" });
   });
@@ -1208,13 +1205,13 @@ describe("a video or audio upload through the route (v2)", () => {
     const file = mp4(20_000);
     const enc = new TextEncoder();
     const B = "kopje-route-boundary";
-    const body = concatBytes([
+    const body = concat(
       enc.encode(
         `--${B}\r\nContent-Disposition: form-data; name="file"; filename="v.mp4"\r\nContent-Type: video/mp4\r\n\r\n`,
       ),
       file,
       enc.encode(`\n--${B}\r\nContent-Disposition: form-data; name="description"\r\n\r\na clip\r\n--${B}--\r\n`),
-    ]);
+    );
     const response = await postMedia(w, { body, contentType: `multipart/form-data; boundary=${B}` });
     const accepted = await answerOf(response);
     expect(accepted).toMatchObject({ status: 202, body: { description: "a clip" } });
@@ -1225,7 +1222,7 @@ describe("a video or audio upload through the route (v2)", () => {
     const w = await routeWorld();
     const { body } = multipartBody([videoPart()]);
     const text = new TextEncoder().encode("junk");
-    const closed = concatBytes([body.subarray(0, body.byteLength - 2), text]);
+    const closed = concat(body.subarray(0, body.byteLength - 2), text);
     const response = await postMedia(w, {
       body: closed,
       contentType: "multipart/form-data; boundary=kopje-route-boundary",
@@ -1308,20 +1305,8 @@ describe("the parts of a video or audio upload (P7, C2-M6)", () => {
   });
 
   it.each([
-    [
-      "before",
-      (file: ReturnType<typeof videoPart>) => [
-        { name: "thumbnail", data: imageBytes(), filename: "t.png", type: "image/png" },
-        file,
-      ],
-    ],
-    [
-      "after",
-      (file: ReturnType<typeof videoPart>) => [
-        file,
-        { name: "thumbnail", data: imageBytes(), filename: "t.png", type: "image/png" },
-      ],
-    ],
+    ["before", (file: ReturnType<typeof videoPart>) => [THUMB_FILE, file]],
+    ["after", (file: ReturnType<typeof videoPart>) => [file, THUMB_FILE]],
   ])("refuses a thumbnail part %s the file: 422, no input, nothing charged", async (_, parts) => {
     const w = await routeWorld();
     const response = await postMedia(w, multipartBody(parts(videoPart())));
@@ -1356,10 +1341,7 @@ describe("the parts of a video or audio upload (P7, C2-M6)", () => {
     expect(w.gate.calls).toContain("releaseStaging");
   });
   it("decides a text file part or a thumbnail file before the video without taking a slot", async () => {
-    for (const first of [
-      { name: "file", data: "text" },
-      { name: "thumbnail", data: imageBytes(), filename: "t.png", type: "image/png" },
-    ]) {
+    for (const first of [{ name: "file", data: "text" }, THUMB_FILE]) {
       const w = await routeWorld();
       const response = await postMedia(w, multipartBody([first, videoPart()]));
       expect(response.status).toBe(422);
@@ -1376,30 +1358,8 @@ describe("the parts of a video or audio upload (P7, C2-M6)", () => {
     async (_, fenced) => {
       const landed = deferred();
       const hold = deferred();
-      const bucket = new Proxy(env.MEDIA, {
-        get(target, method: string) {
-          const value = (target as unknown as Record<string, unknown>)[method];
-          if (method !== "createMultipartUpload") {
-            return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
-          }
-          return async (key: string) => {
-            const upload = await target.createMultipartUpload(key);
-            return {
-              key: upload.key,
-              uploadId: upload.uploadId,
-              uploadPart: (n: number, part: Uint8Array) => upload.uploadPart(n, part),
-              // The completion commits, and its reply is held past the cut.
-              complete: async (p: R2UploadedPart[]) => {
-                const object = await upload.complete(p);
-                landed.resolve();
-                await hold.promise;
-                return object;
-              },
-              abort: () => upload.abort(),
-            };
-          };
-        },
-      });
+      // The completion commits, and its reply is held past the cut.
+      const { bucket } = hookedBucket({ holdComplete: { committed: () => landed.resolve(), reply: hold.promise } });
       const w = await routeWorld({ bucket });
       const response = postMedia(w, multipartBody([videoPart()]));
       await landed.promise;
@@ -1517,27 +1477,11 @@ describe("the staging of a video or audio upload (P6)", () => {
     const parts: number[] = [];
     let body: SlowBody | null = null;
     let peak = 0;
-    const bucket = new Proxy(env.MEDIA, {
-      get(target, method: string) {
-        const value = (target as unknown as Record<string, unknown>)[method];
-        if (method !== "createMultipartUpload") {
-          return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
-        }
-        return async (key: string) => {
-          const upload = await target.createMultipartUpload(key);
-          return {
-            key: upload.key,
-            uploadId: upload.uploadId,
-            uploadPart: (n: number, part: Uint8Array) => {
-              parts.push(part.byteLength);
-              // What was read and not yet written: the part itself and what the reader holds besides it.
-              peak = Math.max(peak, (body?.pulled ?? 0) - parts.slice(0, -1).reduce((a, b) => a + b, 0));
-              return upload.uploadPart(n, part);
-            },
-            complete: (p: R2UploadedPart[]) => upload.complete(p),
-            abort: () => upload.abort(),
-          };
-        };
+    const { bucket } = hookedBucket({
+      onPart: (part) => {
+        parts.push(part.byteLength);
+        // What was read and not yet written: the part itself and what the reader holds besides it.
+        peak = Math.max(peak, (body?.pulled ?? 0) - parts.slice(0, -1).reduce((a, b) => a + b, 0));
       },
     });
     const w = await routeWorld({ bucket });
@@ -1645,7 +1589,7 @@ describe("the route's rows of 1.1 and 1.4", () => {
     expect(await charged(w.store)).toBe(1);
     expect(await input(id)).toEqual(file);
     // The 202 shows the upload as GET shows it now: completed (code review r1 M5).
-    const shown = await w.h.request(`/api/v1/media/${id}`, bearer(w.h.users.alice.token)).then(answer);
+    const shown = await get(w, id);
     expect(shown.status).toBe(200);
     expect(posted.body).toEqual(shown.body);
   });
@@ -1661,7 +1605,7 @@ describe("the route's rows of 1.1 and 1.4", () => {
     await startJob(w, id);
     repeat.resolve();
     const posted = await answerOf(await response);
-    const shown = await w.h.request(`/api/v1/media/${id}`, bearer(w.h.users.alice.token)).then(answer);
+    const shown = await get(w, id);
     expect(shown.status).toBe(206);
     expect(posted).toEqual({ status: 202, body: shown.body });
   });
@@ -1762,7 +1706,7 @@ describe("the v1 wait (P8, H1, C2-M3, r4 H1, M5, W5)", () => {
     await routeAt(w, v.arrival + V1_POLL_MS);
     const answered = await answerOf(await v.response);
     expect(answered.status).toBe(200);
-    expect(await w.h.request(`/api/v1/media/${v.id}`, bearer(w.h.users.alice.token)).then(answer)).toEqual(answered);
+    expect(await get(w, v.id)).toEqual(answered);
   });
 
   it("answers a video without a still with VIDEO_POSTER (P16)", async () => {
@@ -2015,16 +1959,6 @@ describe("Images and the active path (Q1, route side)", () => {
     ]);
   });
 });
-
-function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(chunks.reduce((sum, c) => sum + c.byteLength, 0));
-  let at = 0;
-  for (const c of chunks) {
-    out.set(c, at);
-    at += c.byteLength;
-  }
-  return out;
-}
 
 // Every wait of the route bounded, and no write started after its cut (code review r1 H1, M1-M3, LOW).
 describe("the route's bounded waits (code review r1)", () => {
@@ -2343,10 +2277,7 @@ describe("the route's answers and its cleanup (code review r2)", () => {
     expect(await input(await lastUpload(w))).toBeNull();
   });
 
-  // A documented limit (code review r3 M1): S1 answering `inactive` hands the request to the image path, whose waits
-  // are its own; v1 still answers 503 at the give-up, and the image may complete after it, unattached until the sweep.
-  // A documented limit (code review r3 M1, r4 M1): S1 answering `inactive` hands the request to the image path, whose
-  // waits are its own. v1 still answers 503 at the give-up; the image path then charges Images (the account's and the
+  // A documented limit: S1 answering `inactive` hands the request to the image path, whose waits are its own. v1 still answers 503 at the give-up; the image path then charges Images (the account's and the
   // instance's TRANSFORMS_PER_UPLOAD, at startTransforms) whether or not an image comes of it, and charges no AV job.
   // Here neither file makes an image (the harness's Images refuses the PNG as Images refuses an MP4), so the
   // reservation is abandoned and left to the sweep; an image completing after the 503 is not exercised.

@@ -47,7 +47,7 @@ import {
   storeClock,
 } from "./media-helpers";
 import { clock, forgetRestore } from "./media-processing-helpers";
-import { routeWorld } from "./media-route-helpers";
+import { mp4, routeWorld } from "./media-route-helpers";
 import { animatedWebp, exifOrientation, webpChunk } from "./remote-media-fixtures";
 import {
   community,
@@ -1604,10 +1604,7 @@ describe("an unreadable restore marker", () => {
 describe("the upload route with video and audio active (P1, Q1, C2-M6)", () => {
   const month = new Date(NOW).toISOString().slice(0, 7);
   const png = () => new File([bytes(PNG_PLAIN)], "a.png", { type: "image/png" });
-  const video = () =>
-    new File([new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0])], "v.mp4", {
-      type: "video/mp4",
-    });
+  const video = () => new File([mp4(16)], "v.mp4", { type: "video/mp4" });
 
   it("refuses active and unsupported types by their bytes through the image pipeline, and an MP4 takes the AV branch", async () => {
     const w = await routeWorld();

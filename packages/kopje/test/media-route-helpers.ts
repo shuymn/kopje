@@ -4,6 +4,7 @@ import { incomingKey } from "../src/platform/media-files";
 import type { MediaProcessorClient } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
+import { concat } from "./av-helpers";
 import { deferred } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { type AvWorld, avWorld, clock } from "./media-processing-helpers";
@@ -229,13 +230,7 @@ export function multipartBody(parts: readonly Part[]): { body: Uint8Array; conte
     chunks.push(encoder.encode("\r\n"));
   }
   chunks.push(encoder.encode(`--${BOUNDARY}--\r\n`));
-  const body = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
-  let at = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return { body, contentType: `multipart/form-data; boundary=${BOUNDARY}` };
+  return { body: concat(...chunks), contentType: `multipart/form-data; boundary=${BOUNDARY}` };
 }
 
 // An MP4's first bytes (an `isom` ftyp, which sniffAvUpload reads as video) followed by `size` - 16 bytes.
@@ -342,13 +337,17 @@ export async function lastUpload(w: RouteWorld, who: "alice" | "bob" = "alice"):
   return row.id;
 }
 
-// ---- An R2 bucket whose multipart calls a test may hold or count (code review r1 M1-M3)
+// ---- An R2 bucket whose multipart calls a test may hold, observe or count
 
 export type BucketHooks = {
   // The create's reply, held after R2 created the upload.
   holdCreate?: Promise<void>;
   // Each part's reply, held after R2 stored the part (the last part sent: the final one of a small file).
   holdPart?: Promise<void>;
+  // Each part as the route sends it, before R2 stores it.
+  onPart?: (part: Uint8Array) => void;
+  // complete()'s reply, held after R2 committed the object; `committed` is called then.
+  holdComplete?: { committed: () => void; reply: Promise<void> };
   // abort() and delete() that never answer.
   stallAbort?: boolean;
   stallDelete?: boolean;
@@ -385,14 +384,20 @@ export function hookedBucket(hooks: BucketHooks): {
           uploadId: upload.uploadId,
           uploadPart: async (n: number, part: Uint8Array) => {
             counts.parts++;
+            hooks.onPart?.(part);
             const uploaded = await upload.uploadPart(n, part);
             partReached.resolve();
             await hooks.holdPart;
             return uploaded;
           },
-          complete: (p: R2UploadedPart[]) => {
+          complete: async (p: R2UploadedPart[]) => {
             counts.completes++;
-            return upload.complete(p);
+            const object = await upload.complete(p);
+            if (hooks.holdComplete !== undefined) {
+              hooks.holdComplete.committed();
+              await hooks.holdComplete.reply;
+            }
+            return object;
           },
           abort: () => {
             counts.aborts++;
@@ -406,7 +411,7 @@ export function hookedBucket(hooks: BucketHooks): {
 }
 
 // POST like postMedia, also giving the response as it is sent (before the background work it leaves settles) and the
-// number of waitUntil registrations made so far (code review r2).
+// number of waitUntil registrations made so far.
 export function postWatched(
   w: RouteWorld,
   body: { body: Uint8Array | ReadableStream<Uint8Array>; contentType: string },
