@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import { imageBlurhash } from "../src/platform/blurhash";
+import { DeadlinePassed, within } from "../src/platform/deadline";
 import { isAnimated } from "../src/platform/image-bytes";
 import {
   type EncodeOptions,
@@ -13,8 +14,10 @@ import {
   RGBA_CALL_MS,
   RGBA_MIN_CALL_MS,
   SMALL_EDGE,
+  stillEncodes,
 } from "../src/platform/images";
 import { ANIMATED_GIF, ANIMATED_WEBP, APNG, PNG_PLAIN, WEBP_PLAIN, WIDE_PNG } from "./fixtures/images";
+import { fakeBinding } from "./images-binding";
 import { bytes, recordRgba, TestCodec } from "./media-helpers";
 
 // The chunks of a PNG (type, data) and of a WebP, walked plainly to check the fixtures.
@@ -323,5 +326,23 @@ describe("processImage, the preview blurhash", () => {
     const result = await processImage(codec, bytes(WIDE_PNG));
     expect(codec.outputs.map((call) => call.options.format)).toEqual(["image/png", "image/png"]);
     expect(result).toMatchObject({ ok: true, image: { blurhash: null }, blurhashStop: null });
+  });
+});
+
+describe("stillEncodes's body read (r2 M6)", () => {
+  it("ends at its guard's deadline when Images answers and then holds its body", async () => {
+    // Headers at once, then a body that never ends.
+    const held = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(10));
+      },
+    });
+    const codec = imagesCodec(fakeBinding({ info: { format: "image/png", width: 320, height: 180 }, output: held }));
+    const end = Date.now() + 50;
+    const answer = stillEncodes(codec, PNG_PLAIN, { width: 320, height: 180 }, (work) => within(work, end, Date.now));
+    const late = new Promise<"still waiting">((resolve) => setTimeout(() => resolve("still waiting"), 500));
+    // The guard's give-up passes on (the probe's no-verdict `timeout`), at the deadline rather than never.
+    const settled = await Promise.race([answer.catch((error: unknown) => error), late]);
+    expect(settled).toBeInstanceOf(DeadlinePassed);
   });
 });

@@ -516,10 +516,12 @@ export async function stillEncodes(
   guard: CallGuard,
 ): Promise<"passed" | "failed" | "quota" | "retry"> {
   try {
+    // The body is read under the guard and within STILL_OUTPUT_LIMIT, as the upload's preview reads it.
     const small = await encodeChecked(codec, png, {
       ...fit(size, SMALL_EDGE),
       format: "image/webp",
       still: true,
+      limit: STILL_OUTPUT_LIMIT,
       guard,
     });
     return servedStill(small) ? "passed" : "failed";
