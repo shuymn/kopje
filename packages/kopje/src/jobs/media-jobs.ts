@@ -192,13 +192,15 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
   ) => {
     const creating = deps.bucket.createMultipartUpload(key, options);
     const late = (upload: R2MultipartUpload) => abortOne({ variant, upload });
-    uploads.push({ variant, upload: await bounded(deps, creating, end, cut, late) });
+    const upload = await bounded(deps, creating, end, cut, late);
+    uploads.push({ variant, upload });
+    return upload;
   };
   // D4 and the aborts together, neither waiting on the other; then the cause: an unconfirmed stop records
   // `unavailable` whatever the cause was, and ends the invocation.
   // The container's output body until the verifier reads it: an exit before that cancels it, and its request with it.
   let unread: { file: ReadableStream<Uint8Array>; cut: AbortController } | null = null;
-  const stopThen = async (cause: ProcessorFailure | null): Promise<UploadEnd> => {
+  const stopThen = async (cause: ProcessorFailure): Promise<UploadEnd> => {
     if (unread !== null) {
       unread.cut.abort();
       unread.file.cancel().catch(() => {});
@@ -210,10 +212,8 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
       await failLive();
       return { stopped: false };
     }
-    if (cause !== null) {
-      console.warn({ event: "kopje.media.job.failed", ...at(), cause });
-      await fail(cause);
-    }
+    console.warn({ event: "kopje.media.job.failed", ...at(), cause });
+    await fail(cause);
     return { stopped: true };
   };
   try {
@@ -264,9 +264,8 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     stage.at = deps.now();
     const transferEnd = transferCut(allocation);
     const type = { httpMetadata: { contentType: result.type } };
-    await begin("original", originalKey(job.id), type, transferEnd, cut);
-    await begin("full", fileKey(job.token, "full"), type, transferEnd, cut);
-    const [original, full] = uploads.map((entry) => entry.upload) as [R2MultipartUpload, R2MultipartUpload];
+    const original = await begin("original", originalKey(job.id), type, transferEnd, cut);
+    const full = await begin("full", fileKey(job.token, "full"), type, transferEnd, cut);
     unread = null;
     const verified = await bounded(
       deps,
