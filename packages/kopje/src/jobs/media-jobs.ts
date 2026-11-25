@@ -155,15 +155,12 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
       console.warn({ event: "kopje.media.job.output_refused", ...at(), rule: verified.rule, stages: result.stages });
       return await stopThen("verifier");
     }
-    let preview: Preview | null = null;
-    if (result.kind === "video") {
-      stage.name = "still";
-      stage.at = deps.now();
-      const png = await result.still();
-      if (png !== null && verifyStill(png) === null) {
-        preview = await poster(deps, job, allocation.cuts.preview, png);
-      }
-    }
+    // A video's still; the adapter answers null for audio, which has none (Kopje-Still is a video's header).
+    stage.name = "still";
+    stage.at = deps.now();
+    const png = await result.still();
+    const preview =
+      png !== null && verifyStill(png) === null ? await poster(deps, job, allocation.cuts.preview, png) : null;
     // D4: the container stops before any final write.
     stage.name = "commit";
     stage.at = deps.now();
@@ -230,7 +227,8 @@ function previewFacts({ width, height, blurhash }: Preview): NonNullable<AvFacts
 // S5 before one write: a grant counted on the processor's clock from the reading taken before the call, asked again
 // when it ran out before the write could start. False when refused (or the Store refuses writes).
 async function granted(deps: UploadDeps, job: UploadJob, write: AvWrite): Promise<boolean> {
-  while (deps.now() < job.deadline) {
+  // Ends when S5 refuses, as it does from the job's deadline_at on the Store's clock (one media clock).
+  for (;;) {
     const asked = deps.now();
     const grant = await deps.store.confirmAvWrite(deps.build, { id: job.id, startId: job.startId, write });
     if (grant.status !== "grant") {
@@ -240,7 +238,6 @@ async function granted(deps: UploadDeps, job: UploadJob, write: AvWrite): Promis
       return true;
     }
   }
-  return false;
 }
 
 // The output through the verifier into both uploads, PART_BYTES a part, parts uploaded and not completed: the facts,
