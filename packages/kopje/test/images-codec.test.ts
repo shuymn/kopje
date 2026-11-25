@@ -298,10 +298,10 @@ describe("processImage, the preview blurhash", () => {
       expect(RGBA_CALL_MS).toBeLessThan(10 * 60_000);
       const codec = new TestCodec();
       codec.stallRgba = stall;
-      // Each reading of the clock is RGBA_CALL_MS - 300 ms later: the skip check, the cap's start, then the guard,
-      // which has 300 ms of the cap left; the end is ten minutes away.
+      // The clock's first readings are each RGBA_CALL_MS - 300 ms later: the skip check, the cap's start, then the
+      // guard, which has 300 ms of the cap left, where it stays; the end is ten minutes away.
       let reads = 0;
-      const now = () => T + reads++ * (RGBA_CALL_MS - 300);
+      const now = () => T + Math.min(reads++, 2) * (RGBA_CALL_MS - 300);
       const started = Date.now();
       const result = await processImage(codec, bytes(WIDE_PNG), { blurhash: { end: T + 10 * 60_000, now } });
       expect(Date.now() - started).toBeLessThan(25_000);

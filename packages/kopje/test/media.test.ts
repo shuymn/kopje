@@ -1331,14 +1331,15 @@ describe("the blurhash of a local upload", () => {
     async (stall) => {
       const h = await users();
       h.codec.stallRgba = stall;
-      // Once the preview is made, a minute after the reservation, each reading of the clock is RGBA_CALL_MS - 300 ms
-      // later: the RGBA guard has 300 ms of its cap left, with the save reserve thirteen minutes away.
+      // Once the preview is made, a minute after the reservation, the clock's first readings are each RGBA_CALL_MS -
+      // 300 ms later: the RGBA guard has 300 ms of its cap left, where it stays, with the save reserve thirteen
+      // minutes away.
       const encode = h.codec.encode.bind(h.codec);
       h.codec.encode = async (input, options) => {
         const output = await encode(input, options);
         if (options.still === true) {
           let reads = 0;
-          h.now.mockImplementation(() => NOW + 60_000 + reads++ * (RGBA_CALL_MS - 300));
+          h.now.mockImplementation(() => NOW + 60_000 + Math.min(reads++, 2) * (RGBA_CALL_MS - 300));
         }
         return output;
       };

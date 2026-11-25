@@ -1,7 +1,7 @@
 import { STILL_LONG_EDGE, STILL_OUTPUT_LIMIT } from "./av-bytes";
 import { imageBlurhash, type Rgba } from "./blurhash";
 import { readBodyPrefix } from "./body";
-import { DeadlinePassed, within } from "./deadline";
+import { DeadlinePassed, inTime } from "./deadline";
 import {
   IMAGE_MATRIX_LIMIT,
   type ImageType,
@@ -381,7 +381,8 @@ async function previewBlurhash(
   }
   const until = Math.min(end, now() + RGBA_CALL_MS);
   try {
-    const guard: CallGuard = (work) => within(work, until, now);
+    // An answer settling at or past `until` is not used either (inTime), even before the guard's timer fires.
+    const guard: CallGuard = (work) => inTime(work, until, now);
     const rgba = await encodeRgba(codec, input, transform, small, PREVIEW_RGBA_LIMIT, guard);
     return { blurhash: imageBlurhash(rgba), stop: null };
   } catch (error) {

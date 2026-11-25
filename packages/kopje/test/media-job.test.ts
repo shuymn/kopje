@@ -433,7 +433,7 @@ describe("the upload's still (G2-3, C2-M4)", () => {
   async function timed(options: {
     replyAt: (at: { still: number; deadline: number }) => number;
     transferMs: number;
-    images: "healthy" | "held" | "late";
+    images: "healthy" | "held" | "late" | "late-rgba";
     completeMs?: { original?: number; full?: number };
   }) {
     const w = await avWorld();
@@ -460,6 +460,22 @@ describe("the upload's still (G2-3, C2-M4)", () => {
         clock(outputCut(allocation, "preview", reply + options.transferMs) + 1);
         return answer;
       };
+    }
+    if (options.images === "late-rgba") {
+      // The RGBA output answers once the faked clock is past the preview's cut, before its guard's timer fires.
+      const encode = codec.encode.bind(codec);
+      codec.encode = (bytes, encoding) =>
+        encoding.format !== "rgba"
+          ? encode(bytes, encoding)
+          : encode(bytes, {
+              ...encoding,
+              guard: (work) =>
+                encoding.guard!(async () => {
+                  const answer = await work();
+                  clock(outputCut(allocation, "preview", reply + options.transferMs) + 1);
+                  return answer;
+                }),
+            });
     }
     const { bucket, log } = multipartLog(options.completeMs === undefined ? {} : { completeMs: options.completeMs });
     const output = await avFixture("r1-av.mp4");
@@ -537,6 +553,14 @@ describe("the upload's still (G2-3, C2-M4)", () => {
       transferMs: 0,
       images: "late" as const,
       expected: { completed: true, previewed: false },
+    },
+    {
+      // LOW (r4): the RGBA output settling past the preview's cut leaves the checked WebP without a blurhash.
+      name: "Images' RGBA answering after the preview's cut (r4 LOW): S6 with the WebP, no blurhash",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 0,
+      images: "late-rgba" as const,
+      expected: { completed: true, previewed: true, blurhash: "" },
     },
   ])("$name", async (row) => {
     const result = await timed(row);
