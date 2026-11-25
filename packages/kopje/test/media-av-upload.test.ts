@@ -682,28 +682,34 @@ describe("S10's 200 through the owner's presenter (PR4-1 code review r1 M4)", ()
 });
 
 describe("an image's GET, PUT and DELETE read what they read before #1828 (code review r1)", () => {
-  it("runs one media statement for GET, three for PUT and three for DELETE", async () => {
+  it("runs one media statement for GET, three for PUT and three for DELETE, reading the row's description as before", async () => {
     const w = await avWorld();
     const id = await imageUpload(w);
     const statements = await runInDurableObject(w.store, (_instance, state) => {
       const counts: number[] = [];
+      const rowReads: number[] = [];
       for (const op of OWNER_OPS) {
         let n = 0;
-        const counting = observedSql(state.storage.sql, (_rows, query) => {
+        let full = 0;
+        const counting = observedSql(state.storage.sql, (rows, query) => {
           if (/\bmedia_(attachments|processing|av_slots)\b/.test(query)) {
             n++;
+          }
+          if (rows.some((row) => "description" in row)) {
+            full++;
           }
         });
         const input = { credential: w.alice, id, now: Date.now(), restoredAt: "unread" as const };
         const answered = (op as typeof updateOwnerMedia).run(counting, { ...input, changes: { description: "a" } });
         expect(answered).toMatchObject({ status: "ok" });
         counts.push(n);
+        rowReads.push(full);
       }
-      return counts;
+      return { counts, rowReads };
     });
     // On cd9292004: getMedia's ownUpload; updateMedia's ownUpload, UPDATE and ownUpload; deleteOwnMedia's used and kept,
-    // ownUpload and UPDATE.
-    expect(statements).toEqual([1, 3, 3]);
+    // ownUpload and UPDATE. The presented row (its description) is read once by GET, twice by PUT and once by DELETE.
+    expect(statements).toEqual({ counts: [1, 3, 3], rowReads: [1, 2, 1] });
   });
 });
 

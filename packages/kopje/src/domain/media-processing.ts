@@ -996,25 +996,25 @@ export const deleteAvUpload = userMediaDeleteOperation.atStoreTime("now")<
   MediaDeleted | NeedsMarker
 >((db, { id, now, restoredAt }, { accountId }) => {
   checkId(id);
-  const own = ownerRow(db, accountId, id, now);
-  if (needsMarker(own, restoredAt)) {
-    return { status: "needs_marker" };
-  }
-  return deleteUpload(db, own, accountId, id, now, restoredAt === "unread" ? null : restoredAt);
+  return deleteUpload(db, accountId, id, now, restoredAt);
 });
 
-// S11 on the upload `own` names, read before K3 and K4 so another account's record is never normalized: one without a
-// processing row by deleteMedia's rules, from the row already read.
+// S11 on the upload `id`, its ownership read before the marker is asked for and before K3 and K4, so another account's
+// record is never normalized: one without a processing row by deleteMedia's rules, from the facts already read (the
+// attachment's row itself is read once, by ownUpload, as before #1828).
 function deleteUpload(
   db: Db,
-  own: OwnerRow | undefined,
   accountId: string,
   id: string,
   now: number,
-  restoredAt: number | null,
-): MediaDeleted {
+  restoredAt: OwnerMarker,
+): MediaDeleted | NeedsMarker {
+  const own = ownerFacts(db, accountId, id, now);
   if (own === undefined) {
     return "not_found";
+  }
+  if (needsMarker(own, restoredAt)) {
+    return { status: "needs_marker" };
   }
   // An AV reservation never staged has no processing row either: S11 dooms it below.
   const reservation =
@@ -1022,7 +1022,7 @@ function deleteUpload(
   if (own.processing === null && !reservation) {
     return deleteOwnMedia(db, accountId, id, now, own);
   }
-  const { att, row } = normalize(db, id, now, restoredAt);
+  const { att, row } = normalize(db, id, now, restoredAt === "unread" ? null : restoredAt);
   if (row?.state === "staging") {
     return "not_found";
   }
@@ -1042,10 +1042,18 @@ function deleteUpload(
 export type OwnerMarker = number | null | "unread";
 type NeedsMarker = { status: "needs_marker" };
 
-// The upload `id` of `accountId`'s, read in one statement before anything else of it (undefined for another
-// account's or none): its columns as the presenter takes them, its processing row's state (null without one), whether
-// it is live and unattached (`own`, media.ts ownUpload's rule) and deleteMedia's `used` and `kept`.
-type OwnerRow = MediaRow & { processing: ProcessingRow["state"] | null; own: number; used: number; kept: number };
+// What the owner's operations decide on of the upload `id` of `accountId`'s, read in one statement before anything else
+// of it (undefined for another account's or none): its type, its processing row's state (null without one), whether it
+// is live and unattached (`own`, media.ts ownUpload's rule) and deleteMedia's `used` and `kept`. GET and PUT read it
+// with the columns the presenter takes (ownerRow); DELETE without them (ownerFacts).
+type OwnerFacts = {
+  type: string;
+  processing: ProcessingRow["state"] | null;
+  own: number;
+  used: number;
+  kept: number;
+};
+type OwnerRow = MediaRow & OwnerFacts;
 
 function ownerRow(db: Db, accountId: string, id: string, now: number): OwnerRow | undefined {
   return db.first<OwnerRow>(
@@ -1060,8 +1068,21 @@ function ownerRow(db: Db, accountId: string, id: string, now: number): OwnerRow 
   );
 }
 
+function ownerFacts(db: Db, accountId: string, id: string, now: number): OwnerFacts | undefined {
+  return db.first<OwnerFacts>(
+    `SELECT m.type AS type, (SELECT p.state FROM media_processing p WHERE p.media_id = m.id) AS processing,
+				m.status_id IS NULL AND ${liveMediaSql("m", "?3")} AS own,
+				m.status_id IS NOT NULL OR m.scheduled_status_id IS NOT NULL AS used, m.gc_at IS NULL AS kept
+			FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX}
+			WHERE m.id = ?1 AND m.account_id = ?2`,
+    id,
+    accountId,
+    iso(now),
+  );
+}
+
 // Whether the owner's operation needs the marker: the upload has a processing row K3 could act on.
-function needsMarker(own: OwnerRow | undefined, restoredAt: OwnerMarker): boolean {
+function needsMarker(own: OwnerFacts | undefined, restoredAt: OwnerMarker): boolean {
   return restoredAt === "unread" && own?.processing != null && own.processing !== "failed";
 }
 
@@ -1135,13 +1156,7 @@ export const updateOwnerMedia = userWriteOperation.atStoreTime("now")<
 export const deleteOwnerMedia = userMediaDeleteOperation.atStoreTime("now")<
   { id: string; now: number; restoredAt: OwnerMarker },
   MediaDeleted | NeedsMarker
->((db, { id, now, restoredAt }, { accountId }) => {
-  const own = ownerRow(db, accountId, id, now);
-  if (needsMarker(own, restoredAt)) {
-    return { status: "needs_marker" };
-  }
-  return deleteUpload(db, own, accountId, id, now, restoredAt === "unread" ? null : restoredAt);
-});
+>((db, { id, now, restoredAt }, { accountId }) => deleteUpload(db, accountId, id, now, restoredAt));
 
 // Nothing: the Store runs it to learn whether an operation's kind would be admitted when it cannot read the restore
 // marker (store.ts #avWrite).
