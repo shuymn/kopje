@@ -7,11 +7,10 @@ import {
   imageReservation,
   imageUpload,
   NOT_READY,
-  notFound,
   postAs,
 } from "./av-posting-helpers";
 import { avWorld, type AvWorld, clock, completed, queued, reserve, SECOND, T0 } from "./media-processing-helpers";
-import { posting } from "./status-helpers";
+import { mediaNotFound, posting } from "./status-helpers";
 
 // An edit's media under the posting rules for video and audio (#1828 P10, decision C9): an edit whose set of media is
 // new is held to them; one that keeps the set the status shows keeps today's outcome, so a status the cutover converted
@@ -25,9 +24,13 @@ function edit(w: AvWorld, id: string, body: Record<string, unknown>) {
   return posting(w.h, w.h.users.alice.token, body, { method: "PUT", path: `/api/v1/statuses/${id}` });
 }
 
-// A status of alice's holding a video among two images, as the cutover converts one (the video made one after the post).
-async function convertedStatus(w: AvWorld): Promise<{ id: string; media: string[] }> {
-  const media = [await imageUpload(w), await imageUpload(w), await imageUpload(w)];
+// A status of alice's holding a video among `count - 1` images, as the cutover converts one (its second made a video
+// after the post).
+async function convertedStatus(w: AvWorld, count = 3): Promise<{ id: string; media: string[] }> {
+  const media: string[] = [];
+  for (let i = 0; i < count; i++) {
+    media.push(await imageUpload(w));
+  }
   const posted = await postAs(w, { status: "converted", media_ids: media });
   expect(posted.status).toBe(200);
   await convertToVideo(w, media[1]!);
@@ -53,11 +56,7 @@ describe("an edit's media (P10)", () => {
   it("keeps a converted set of five shown rows when the edit names the four the status shows (code review r1 M3)", async () => {
     const w = await avWorld();
     clock(T0 + SECOND);
-    const media = [await imageUpload(w), await imageUpload(w), await imageUpload(w), await imageUpload(w)];
-    const posted = await postAs(w, { status: "converted", media_ids: media });
-    expect(posted.status).toBe(200);
-    const id = (posted.body as { id: string }).id;
-    await convertToVideo(w, media[1]!);
+    const { id, media } = await convertedStatus(w, 4);
     // A fifth shown row after the four, as the cutover may leave one: the status shows the first MAX_STATUS_MEDIA.
     const fifth = await imageUpload(w);
     await sql(
@@ -139,7 +138,7 @@ describe("an edit's media (P10)", () => {
     const id = (posted.body as { id: string }).id;
     expect(await edit(w, id, { status: "x", media_ids: [pending.id] })).toEqual({ status: 422, body: NOT_READY });
     for (const other of [reservation, bobs.id]) {
-      expect(await edit(w, id, { status: "x", media_ids: [other] })).toEqual(notFound(other));
+      expect(await edit(w, id, { status: "x", media_ids: [other] })).toEqual(mediaNotFound(other));
     }
   });
 

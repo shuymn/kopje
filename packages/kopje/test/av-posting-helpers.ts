@@ -58,7 +58,3 @@ export async function convertToVideo(w: AvWorld, id: string): Promise<void> {
 export function postAs(w: AvWorld, body: Record<string, unknown>, who: "alice" | "bob" = "alice") {
   return posting(w.h, w.h.users[who].token, body);
 }
-
-export function notFound(id: string) {
-  return { status: 422, body: { error: `Media ${id} not found or already attached to another post` } };
-}

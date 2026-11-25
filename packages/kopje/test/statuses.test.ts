@@ -10,7 +10,7 @@ import { APP_NAME_LIMIT, APP_WEBSITE_LIMIT, MAX_MEDIA_DESCRIPTION_LENGTH } from 
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, type App, bearer, form, json, login, setSetting, settle, sql } from "./api-helpers";
 import { countingStore, NOW } from "./app-helpers";
-import { IMAGES_AND_VIDEO, imageReservation, imageUpload, NOT_READY, notFound, postAs } from "./av-posting-helpers";
+import { IMAGES_AND_VIDEO, imageReservation, imageUpload, NOT_READY, postAs } from "./av-posting-helpers";
 import { BUILD } from "./helpers";
 import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS, storeClock } from "./media-helpers";
 import {
@@ -2772,7 +2772,7 @@ describe("video and audio in a new post (#1828 P10, decision C9)", () => {
     const bobs = await queued(w, { up: await reserve(w, T0, "bob") });
     clock(T0 + 5 * SECOND);
     for (const id of [staging.id, reservation, bobs.id]) {
-      expect(await postAs(w, { status: "x", media_ids: [id] })).toEqual(notFound(id));
+      expect(await postAs(w, { status: "x", media_ids: [id] })).toEqual(mediaNotFound(id));
     }
     // bob's own post finds his upload still processing.
     expect(await postAs(w, { status: "x", media_ids: [bobs.id] }, "bob")).toEqual({ status: 422, body: NOT_READY });
