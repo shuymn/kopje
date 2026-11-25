@@ -11,12 +11,12 @@ import { BUILD } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { fakeControl, jobOf, multipartLog, putInput, stillPng, uploadDeps } from "./media-job-helpers";
 import { avWorld, clock, held, HOUR, started } from "./media-processing-helpers";
+import { encodeWebp } from "./webp-fixtures";
 
 // The plan's T_COMMIT and the output transfer's share of it (domain/media-processing.ts).
 const T_COMMIT_MS = 6000;
 const T_TRANSFER_MS = 5000;
 type Cuts = { still: number; transfer: number; preview: number };
-import { encodeWebp } from "./webp-fixtures";
 
 // runUpload (jobs/media-jobs.ts, the PR4 plan's 1.3 D3-D7) through the production Store and the media bucket, the
 // container answering as container/server/main.go does.
@@ -295,6 +295,22 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     expect(spent.charged).toBe(0);
     expect(spent.files.small).toBeNull();
     expect(spent.after.att?.processed).toBe(1);
+  });
+
+  it("prunes the transformation counters of months before the previous one, as the image path's charge does", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const old = ["images_transforms:2000-01", "images_account_transforms:2000-01:1"];
+    for (const name of old) {
+      await sql(w.store, "INSERT INTO kopje_state (name, value) VALUES (?, '5')", name);
+    }
+    const output = await avFixture("r1-av.mp4");
+    const fake = fakeControl({ output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() });
+    await runUpload(uploadDeps(w, fake.control), await jobOf(w, up));
+    expect((await objects(up.id, up.token)).small).not.toBeNull();
+    const left = await sql<{ name: string }>(w.store, "SELECT name FROM kopje_state WHERE name LIKE '%2000-01%'");
+    expect(left).toEqual([]);
   });
 
   it("writes no small Images made past STILL_LONG_EDGE, as the rebuild refuses it, and completes with the poster (M5)", async () => {

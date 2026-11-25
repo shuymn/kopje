@@ -291,8 +291,23 @@ function budgetRefusal(
   return null;
 }
 
+// Removes the transformation counters of months before the previous one (at most ten local accounts, so this stays
+// small), as a charge to the month `now` is in does.
+function pruneTransformMonths(db: Db, now: number): void {
+  db.run(
+    `DELETE FROM kopje_state WHERE (substr(name, 1, ?1) = ?2 AND substr(name, ?1 + 1, 7) < ?5)
+			OR (substr(name, 1, ?3) = ?4 AND substr(name, ?3 + 1, 7) < ?5)`,
+    TRANSFORMS.length,
+    TRANSFORMS,
+    ACCOUNT_TRANSFORMS.length,
+    ACCOUNT_TRANSFORMS,
+    previousMonth(now),
+  );
+}
+
 // Charges TRANSFORMS_PER_POSTER to the instance budget and `accountId`'s share of the month `now` is in, as an
-// upload's transformations are; false, and nothing charged, when either has no room.
+// upload's transformations are (pruning months before the previous one); false, and nothing charged, when either has no
+// room.
 export function chargePosterTransforms(
   db: Db,
   accountId: string,
@@ -304,6 +319,7 @@ export function chargePosterTransforms(
   if (!fits(names.account, monthlyTransforms.account) || !fits(names.instance, monthlyTransforms.instance)) {
     return false;
   }
+  pruneTransformMonths(db, now);
   for (const name of [names.instance, names.account]) {
     setState(db, name, String(Number(state(db, name) ?? "0") + TRANSFORMS_PER_POSTER));
   }
@@ -404,16 +420,7 @@ export const startTransforms = userWriteOperation.atStoreTime("storeNow")<
   if (refused !== null) {
     return refused;
   }
-  // Counters of months before the previous one go (at most ten local accounts, so this stays small).
-  db.run(
-    `DELETE FROM kopje_state WHERE (substr(name, 1, ?1) = ?2 AND substr(name, ?1 + 1, 7) < ?5)
-			OR (substr(name, 1, ?3) = ?4 AND substr(name, ?3 + 1, 7) < ?5)`,
-    TRANSFORMS.length,
-    TRANSFORMS,
-    ACCOUNT_TRANSFORMS.length,
-    ACCOUNT_TRANSFORMS,
-    previousMonth(now),
-  );
+  pruneTransformMonths(db, now);
   const names = budgetNames(accountId, now);
   for (const name of [names.instance, names.account]) {
     setState(db, name, String(Number(state(db, name) ?? "0") + TRANSFORMS_PER_UPLOAD));
