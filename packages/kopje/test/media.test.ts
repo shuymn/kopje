@@ -46,6 +46,7 @@ import {
   clocksAt,
   storeClock,
 } from "./media-helpers";
+import { clock, forgetRestore } from "./media-processing-helpers";
 import { routeWorld } from "./media-route-helpers";
 import { animatedWebp, exifOrientation, webpChunk } from "./remote-media-fixtures";
 import {
@@ -1559,6 +1560,43 @@ describe("an unreadable restore marker", () => {
       await env.MEDIA.delete(key);
     }
   });
+
+  // With the processor bound and a budget, but its probe absent or failed, uploads are inactive and an image reserves
+  // as before: no AV candidate whose start reads the marker (#1828 PR4-4 code review r1 M4).
+  it.each(["absent", "fail"] as const)(
+    "uploads an ordinary image with the probe %s and the marker unreadable",
+    async (probe) => {
+      const w = await routeWorld({ probe });
+      const key = restoreMarkerKey(w.store.id.toString());
+      await env.MEDIA.put(key, "{");
+      try {
+        const form = mediaForm(bytes(PNG_PLAIN), {}, "photo.png", "image/png");
+        expect((await upload(w.h, w.h.users.alice, form)).status).toBe(200);
+      } finally {
+        await env.MEDIA.delete(key);
+      }
+    },
+  );
+
+  it.each(["absent", "fail"] as const)(
+    "uploads an ordinary image with the probe %s across a restore after its reservation",
+    async (probe) => {
+      const w = await routeWorld({ probe });
+      const start = w.gate.hold("startTransforms");
+      const reached = w.gate.reached("startTransforms");
+      const response = upload(w.h, w.h.users.alice, mediaForm(bytes(PNG_PLAIN), {}, "photo.png", "image/png"));
+      await reached;
+      clock(Date.now() + 1000);
+      await env.MEDIA.put(restoreMarkerKey(w.store.id.toString()), JSON.stringify({ at: Date.now() }));
+      try {
+        clock(Date.now() + 1000);
+        start.resolve();
+        expect((await response).status).toBe(200);
+      } finally {
+        await forgetRestore(w.store);
+      }
+    },
+  );
 });
 
 // The upload route with video and audio active (#1828 PR4-4, mastodon/media-av.ts): the first `file` part's signature

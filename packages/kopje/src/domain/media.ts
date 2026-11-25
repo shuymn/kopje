@@ -200,7 +200,8 @@ export const reserveMedia = userWriteOperation.atStoreTime("storeNow")<
     accountId,
     token,
     storeNow,
-    avCandidate === undefined ? "image" : AV_CANDIDATE_TYPE,
+    // A candidate only when uploads are active: otherwise the reservation is an ordinary image's (PR4-4 r1 M4).
+    active ? AV_CANDIDATE_TYPE : "image",
   );
   if ("retry" in reserved) {
     return { status: "retry" };

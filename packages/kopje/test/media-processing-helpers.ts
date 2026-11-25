@@ -30,7 +30,12 @@ export function clock(ms: number): void {
 
 // deps wraps the Store stub the app calls (apiHarness), for a test that holds a route's call.
 // overrides: the env's (a test of the upload route sets MEDIA_UPLOAD_MONTHLY_JOBS).
-export async function avWorld(deps: Parameters<typeof community>[2] = {}, overrides: Record<string, unknown> = {}) {
+// probe: the normalize profile's verdict for BUILD (default a pass; absent records none).
+export async function avWorld(
+  deps: Parameters<typeof community>[2] = {},
+  overrides: Record<string, unknown> = {},
+  probe: "pass" | "fail" | "absent" = "pass",
+) {
   const h = await community(["alice", "bob"], "read write", deps, overrides);
   vi.useFakeTimers({ toFake: ["Date"] });
   clock(T0);
@@ -41,7 +46,9 @@ export async function avWorld(deps: Parameters<typeof community>[2] = {}, overri
   });
   const alice = await credentialOf("alice");
   const bob = await credentialOf("bob");
-  await passProbe(h.store);
+  if (probe !== "absent") {
+    await passProbe(h.store, BUILD, true, probe);
+  }
   return { h, store: h.store, alice, bob };
 }
 
@@ -72,7 +79,12 @@ export async function reserve(w: AvWorld, at = Date.now(), who: "alice" | "bob" 
 }
 
 // A passed probe of the normalize profile for `build` (the claim and its result through the Store).
-export async function passProbe(store: StoreStub, build = BUILD, imagesVerified = true): Promise<void> {
+export async function passProbe(
+  store: StoreStub,
+  build = BUILD,
+  imagesVerified = true,
+  outcome: "pass" | "fail" = "pass",
+): Promise<void> {
   const claimed = await store.claimMediaProbe(BUILD, { profile: "normalize@standard-4", build, due: false });
   if (claimed.status !== "claimed") {
     throw new Error(`not claimed: ${claimed.status}`);
@@ -80,7 +92,7 @@ export async function passProbe(store: StoreStub, build = BUILD, imagesVerified 
   await store.recordMediaProbeResult(BUILD, {
     profile: "normalize@standard-4",
     claim: claimed.claim,
-    outcome: "pass",
+    outcome,
     imagesVerified,
     imageTag: null,
   });

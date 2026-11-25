@@ -158,7 +158,10 @@ export type RouteWorld = AvWorld & {
 };
 
 // bucket: the media bucket the route writes to (default: the test's, env.MEDIA).
-export async function routeWorld(options: { budget?: number; bucket?: R2Bucket } = {}): Promise<RouteWorld> {
+// probe: the normalize verdict (default a pass, so uploads are active).
+export async function routeWorld(
+  options: { budget?: number; bucket?: R2Bucket; probe?: "pass" | "fail" | "absent" } = {},
+): Promise<RouteWorld> {
   const runs: Run[] = [];
   const skew = { ms: 0 };
   const timers = new RouteTimers(() => Date.now() + skew.ms);
@@ -185,6 +188,7 @@ export async function routeWorld(options: { budget?: number; bucket?: R2Bucket }
       MEDIA_UPLOAD_MONTHLY_JOBS: String(options.budget ?? 10),
       ...(options.bucket === undefined ? {} : { MEDIA: options.bucket }),
     },
+    options.probe,
   );
   w.h.now.mockImplementation(() => Date.now() + skew.ms);
   const advance = async (at: number) => {
