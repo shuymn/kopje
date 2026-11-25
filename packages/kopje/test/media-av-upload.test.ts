@@ -11,10 +11,11 @@ import {
 } from "../src/domain/media-processing";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
 import { fileKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
+import { toStoreUnavailable } from "../src/platform/store-errors";
 import { ownerRun } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
 import { imageUpload } from "./av-posting-helpers";
-import { BUILD, testKernel } from "./helpers";
+import { BUILD, rejectionOf, testKernel } from "./helpers";
 import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS } from "./media-helpers";
 import {
   AUDIO,
@@ -348,7 +349,7 @@ describe("DELETE through the route (S11)", () => {
       clock(T0 + 5 * SECOND);
       const slot = (await held(w.store, up.id)).slot;
       // The Store's own S11, so the doom is seen before a sweep removes the row.
-      expect(await w.store.deleteOwnerMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
+      expect(await w.store.deleteMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
         status: "ok",
         value: "deleted",
       });
@@ -373,7 +374,7 @@ describe("DELETE through the route (S11)", () => {
     const up = await started(w);
     clock(T0 + 5 * SECOND);
     // The first DELETE commits; its reply never reaches the client.
-    await w.store.deleteOwnerMedia(BUILD, { credential: w.alice, id: up.id });
+    await w.store.deleteMedia(BUILD, { credential: w.alice, id: up.id });
     expect(await del(w, up.id)).toEqual({ status: 404, body: NOT_FOUND });
     expect((await held(w.store, up.id)).att).toMatchObject({ gc_at: "1970-01-01T00:00:00.000Z" });
   });
@@ -388,7 +389,7 @@ describe("a DELETE across a restore (W13, Codex r7)", () => {
     clock(T0 + 7 * SECOND);
     // The restored row is fenced: the owner's read meets it failed, as the round's S13 would leave it.
     expect(await get(w, up.id)).toEqual({ status: 422, body: PROCESSING_ERROR });
-    expect(await w.store.deleteOwnerMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
+    expect(await w.store.deleteMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
       status: "ok",
       value: "deleted",
     });
@@ -401,7 +402,7 @@ describe("a DELETE across a restore (W13, Codex r7)", () => {
     const taken = await bookmark(w.store);
     await restore(w.store, taken, T0 + 6 * SECOND);
     clock(T0 + 7 * SECOND);
-    expect(await w.store.deleteOwnerMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
+    expect(await w.store.deleteMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
       status: "ok",
       value: "deleted",
     });
@@ -429,7 +430,7 @@ describe("a DELETE across a restore (W13, Codex r7)", () => {
       const taken = await bookmark(w.store);
       clock(T0 + 5 * SECOND);
       // The Store's own S11, with no sweep after it.
-      expect(await w.store.deleteOwnerMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
+      expect(await w.store.deleteMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
         status: "ok",
         value: "deleted",
       });
@@ -531,6 +532,23 @@ describe("an image's GET, PUT and DELETE read what they read before #1828 (code 
     // On cd9292004: getMedia's ownUpload; updateMedia's ownUpload, UPDATE and ownUpload; deleteOwnMedia's used and kept,
     // ownUpload and UPDATE.
     expect(statements).toEqual([1, 3, 3]);
+  });
+});
+
+describe("the Store's entry points across a deploy (code review r1)", () => {
+  it("keeps getMedia, updateMedia and deleteMedia, so a Worker of another build is refused as version-mismatch", async () => {
+    const w = await avWorld();
+    const up = await queued(w);
+    const other = "0.0.0-other";
+    const input = { credential: w.alice, id: up.id };
+    const calls = [
+      () => w.store.getMedia(other, input),
+      () => w.store.updateMedia(other, { ...input, changes: { description: "x" } }),
+      () => w.store.deleteMedia(other, input),
+    ];
+    for (const call of calls) {
+      expect(toStoreUnavailable(await rejectionOf(call()))?.reason).toBe("version-mismatch");
+    }
   });
 });
 

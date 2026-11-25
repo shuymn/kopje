@@ -506,10 +506,7 @@ function ownerAnswer(c: ApiContext, outcome: OwnerMedia): Response {
 // GET /api/v1/media/:id.
 export const getMedia: ApiHandler = async (c, deps) => {
   const credential = userCredential(c, deps);
-  return ownerAnswer(
-    c,
-    authorized(await storeCall(c, deps, (s, b) => s.ownerMedia(b, { credential, id: mediaId(c) }))),
-  );
+  return ownerAnswer(c, authorized(await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c) }))));
 };
 
 // PUT and PATCH /api/v1/media/:id: description and focus of own unattached media, also while it is processing.
@@ -523,13 +520,13 @@ export const updateMedia: ApiHandler = withParams(
       // MediaController#set_media_attachment finds the media (404) before update! validates it (422): a read, so it is
       // answered in readonly maintenance too, as an edit's target is (statuses.ts editTarget). The form's problem is
       // answered before the upload's own state, a failed one's included (Mastodon checks the processing first).
-      const found = authorized(await storeCall(c, deps, (s, b) => s.ownerMedia(b, { credential, id: mediaId(c) })));
+      const found = authorized(await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c) })));
       return found.status === "not_found" ? recordNotFound() : mastodonError(422, problem);
     }
     const changes: MediaChanges = { description, focus: parseFocus(p.get("focus")) };
     return ownerAnswer(
       c,
-      authorized(await storeCall(c, deps, (s, b) => s.updateOwnerMedia(b, { credential, id: mediaId(c), changes }))),
+      authorized(await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes }))),
     );
   },
   { files: THUMBNAIL_FILE },
@@ -539,7 +536,7 @@ export const updateMedia: ApiHandler = withParams(
 // deletes its R2 objects after the response.
 export const deleteMedia: ApiHandler = async (c, deps) => {
   const credential = userCredential(c, deps);
-  const outcome = authorized(await storeCall(c, deps, (s, b) => s.deleteOwnerMedia(b, { credential, id: mediaId(c) })));
+  const outcome = authorized(await storeCall(c, deps, (s, b) => s.deleteMedia(b, { credential, id: mediaId(c) })));
   if (outcome === "not_found") {
     return recordNotFound();
   }

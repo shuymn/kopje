@@ -739,7 +739,7 @@ describe("an abandoned candidate", () => {
       status: "ok",
       value: "abandoned",
     });
-    expect(await w.store.ownerMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
+    expect(await w.store.getMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
       status: "ok",
       value: { status: "not_found" },
     });
@@ -880,7 +880,7 @@ describe("a row without a URL is never live, nor a doomed one completed", () => 
     const id = await completedImage(w, T0);
     await sql(w.store, "UPDATE media_attachments SET url = '', gc_at = NULL WHERE id = ?", id);
     clock(T0 + SECOND);
-    expect(await w.store.ownerMedia(BUILD, { credential: w.alice, id })).toEqual({
+    expect(await w.store.getMedia(BUILD, { credential: w.alice, id })).toEqual({
       status: "ok",
       value: { status: "not_found" },
     });

@@ -660,16 +660,18 @@ export class Store extends DurableObject<Env> {
   }
 
   // The owner's GET, PUT and DELETE /api/v1/media/:id (ownerRun): a refusal of the Store's (maintenance, a dump, an
-  // import) is thrown as any operation's.
-  ownerMedia(callerBuild: string, input: OwnerInput<typeof mediaProcessing.ownerMedia>) {
+  // import) is thrown as any operation's. The names are the ones these routes called before #1828, so a Worker of the
+  // other build met during a deploy is refused as version-mismatch (503), not by a missing method; deleteMedia is also
+  // a profile request's discard (mastodon/media.ts).
+  getMedia(callerBuild: string, input: OwnerInput<typeof mediaProcessing.ownerMedia>) {
     return ownerRun(this.#kernel, callerBuild, mediaProcessing.ownerMedia, input, () => this.#restoredAt());
   }
 
-  updateOwnerMedia(callerBuild: string, input: OwnerInput<typeof mediaProcessing.updateOwnerMedia>) {
+  updateMedia(callerBuild: string, input: OwnerInput<typeof mediaProcessing.updateOwnerMedia>) {
     return ownerRun(this.#kernel, callerBuild, mediaProcessing.updateOwnerMedia, input, () => this.#restoredAt());
   }
 
-  deleteOwnerMedia(callerBuild: string, input: OwnerInput<typeof mediaProcessing.deleteOwnerMedia>) {
+  deleteMedia(callerBuild: string, input: OwnerInput<typeof mediaProcessing.deleteOwnerMedia>) {
     return ownerRun(this.#kernel, callerBuild, mediaProcessing.deleteOwnerMedia, input, () => this.#restoredAt());
   }
 

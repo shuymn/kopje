@@ -612,12 +612,9 @@ export type MediaDeleted = "deleted" | "in_use" | "not_found";
 // image is one the cutover kept for good (cli/lib/cutover/convert.js) and could not link to a status: an image legacy
 // kept unattached, or one that earlier versions of no single status name (migration 0015_media_shown links the
 // others). No Kopje write leaves such a row, so it is refused as in use too.
-export const deleteMedia = userMediaDeleteOperation.atStoreTime("now")<{ id: string; now: number }, MediaDeleted>(
-  (db, { id, now }, { accountId }) => deleteOwnMedia(db, accountId, id, now),
-);
-
-// deleteMedia's rules for one row of `accountId`, at `now` (also S11's for a finished upload, media-processing.ts,
-// which passes the row's `used` and `kept` as it read them).
+//
+// The rules for one row of `accountId`, at `now` (media-processing.ts deleteOwnerMedia, S11's for a finished upload,
+// passes the row's `used` and `kept` as it read them).
 export function deleteOwnMedia(
   db: Db,
   accountId: string,
