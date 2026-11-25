@@ -32,6 +32,7 @@ import {
   restore,
   SECOND,
   staged,
+  type Started,
   started,
   T0,
   VIDEO,
@@ -499,23 +500,33 @@ describe("a DELETE across a restore (W13, Codex r7)", () => {
 });
 
 describe("the owner's text and masks while processing (code review r1)", () => {
-  it("keeps the description and focus a PUT wrote while pending through S6, shown by GET", async () => {
-    const w = await avWorld();
-    const up = await started(w);
-    clock(T0 + 3 * SECOND);
-    expect((await put(w, up.id, { description: "later", focus: "0.5,0.75" })).status).toBe(206);
-    clock(T0 + 4 * SECOND);
-    const done = await w.store.completeAvUpload(BUILD, {
-      id: up.id,
-      token: up.token,
-      startId: up.startId,
-      facts: VIDEO,
-    });
-    expect(done.status).toBe("done");
-    expect(await get(w, up.id)).toMatchObject({
-      status: 200,
-      body: { description: "later", meta: { focus: { x: 0.5, y: 0.75 } } },
-    });
+  it("keeps the description and focus a PUT wrote while pending or running through S6, shown by GET", async () => {
+    for (const startAfterPut of [true, false]) {
+      const w = await avWorld();
+      // Pending: queued, its PUT before its start; running: started before its PUT.
+      const up = startAfterPut ? await queued(w) : await started(w);
+      clock(T0 + 3 * SECOND);
+      expect(await held(w.store, up.id)).toMatchObject({ row: { state: startAfterPut ? "pending" : "running" } });
+      expect((await put(w, up.id, { description: "later", focus: "0.5,0.75" })).status).toBe(206);
+      let startId = (up as Partial<Started>).startId;
+      if (startAfterPut) {
+        const answer = await w.store.startNormalize(BUILD, { id: up.id, token: up.token, invocation: "inv-pending" });
+        expect(answer.status).toBe("started");
+        startId = (answer as { startId: string }).startId;
+      }
+      clock(T0 + 4 * SECOND);
+      const done = await w.store.completeAvUpload(BUILD, {
+        id: up.id,
+        token: up.token,
+        startId: startId!,
+        facts: VIDEO,
+      });
+      expect(done.status).toBe("done");
+      expect(await get(w, up.id)).toMatchObject({
+        status: 200,
+        body: { description: "later", meta: { focus: { x: 0.5, y: 0.75 } } },
+      });
+    }
   });
 
   it("writes nothing on a PUT of an upload a restore fenced, the marker read", async () => {
@@ -525,11 +536,15 @@ describe("the owner's text and masks while processing (code review r1)", () => {
     await restore(w.store, taken, T0 + 6 * SECOND);
     clock(T0 + 7 * SECOND);
     const before = await held(w.store, up.id);
+    const text = () =>
+      sql(w.store, "SELECT description, focus_x, focus_y, focus_given FROM media_attachments WHERE id = ?", up.id);
+    const written = await text();
     expect(await put(w, up.id, { description: "later", focus: "0.5,0.5" })).toEqual({
       status: 422,
       body: PROCESSING_ERROR,
     });
     expect(await held(w.store, up.id)).toEqual(before);
+    expect(await text()).toEqual(written);
     expect(await description(w, up.id)).toBe("a clip");
   });
 
