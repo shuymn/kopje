@@ -584,8 +584,6 @@ export const STORE_RPC = {
   reserveMedia: media.reserveMedia,
   completeMedia: media.completeMedia,
   abandonMedia: media.abandonMedia,
-  getMedia: media.getMedia,
-  updateMedia: media.updateMedia,
   deleteMedia: media.deleteMedia,
   removeProfileImage: media.removeProfileImage,
   dueOrphans: media.dueOrphans,

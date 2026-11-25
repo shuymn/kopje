@@ -29,7 +29,7 @@ import { restoreMarkerKey } from "./platform/media-files";
 import { type ImportAuthority, StoreAdmin } from "./platform/store-admin";
 import { type MaintenanceReason, toStoreUnavailable, WRITE_REFUSALS } from "./platform/store-errors";
 import { readFlags } from "./platform/store-flags";
-import { type OperationInput, type StoreOperation, StoreKernel } from "./platform/store-kernel";
+import { type OperationInput, type StoreOperation, StoreKernel, type TimedOperation } from "./platform/store-kernel";
 import { defineRpc, STORE_RPC, type StoreRpc } from "./store-rpc";
 import { StreamHub } from "./stream-hub";
 import { buildOf, PACKAGE_VERSION } from "./version";
@@ -76,6 +76,44 @@ export async function startImagePath(
     throw new Error("the start asked for the marker it was given");
   }
   return { status: "ok", value: second.value };
+}
+
+type OwnerInput<Op> = Omit<OperationInput<Op>, "restoredAt">;
+
+const asksMarker = (output: Authorized<unknown>) =>
+  output.status === "ok" && (output.value as { status?: unknown }).status === "needs_marker";
+
+// The owner's GET, PUT and DELETE of an upload (domain/media-processing.ts ownerMedia, updateOwnerMedia,
+// deleteOwnerMedia), in startImagePath's two passes: the first without the restore marker, which an upload without a
+// processing row K3 could act on (every image) answers; one with such a row answers `needs_marker`, writing nothing,
+// and the operation runs again with the marker read (null when it cannot be read, as S10's read takes it).
+export async function ownerRun<O>(
+  kernel: StoreKernel,
+  callerBuild: string,
+  operation: TimedOperation<never, Authorized<O | { status: "needs_marker" }>, "now">,
+  input: object,
+  readMarker: () => Promise<number | null>,
+): Promise<Authorized<Exclude<O, { status: "needs_marker" }>>> {
+  const op = operation as TimedOperation<
+    { now: number; [field: string]: unknown },
+    Authorized<O | { status: "needs_marker" }>,
+    "now"
+  >;
+  const first = await kernel.executeQuiet(callerBuild, op, { ...input, restoredAt: "unread" }, asksMarker);
+  if (!asksMarker(first)) {
+    return first as Authorized<Exclude<O, { status: "needs_marker" }>>;
+  }
+  let restoredAt: number | null;
+  try {
+    restoredAt = await readMarker();
+  } catch {
+    restoredAt = null;
+  }
+  const second = await kernel.execute(callerBuild, op, { ...input, restoredAt });
+  if (asksMarker(second)) {
+    throw new Error("the owner's operation asked for the marker it was given");
+  }
+  return second as Authorized<Exclude<O, { status: "needs_marker" }>>;
 }
 
 async function lastRestore(bucket: R2Bucket, key: string): Promise<number | null> {
@@ -609,6 +647,20 @@ export class Store extends DurableObject<Env> {
 
   deleteAvUpload(callerBuild: string, input: AvInput<typeof mediaProcessing.deleteAvUpload>) {
     return this.#avWrite(callerBuild, mediaProcessing.deleteAvUpload, input);
+  }
+
+  // The owner's GET, PUT and DELETE /api/v1/media/:id (ownerRun): a refusal of the Store's (maintenance, a dump, an
+  // import) is thrown as any operation's.
+  ownerMedia(callerBuild: string, input: OwnerInput<typeof mediaProcessing.ownerMedia>) {
+    return ownerRun(this.#kernel, callerBuild, mediaProcessing.ownerMedia, input, () => this.#restoredAt());
+  }
+
+  updateOwnerMedia(callerBuild: string, input: OwnerInput<typeof mediaProcessing.updateOwnerMedia>) {
+    return ownerRun(this.#kernel, callerBuild, mediaProcessing.updateOwnerMedia, input, () => this.#restoredAt());
+  }
+
+  deleteOwnerMedia(callerBuild: string, input: OwnerInput<typeof mediaProcessing.deleteOwnerMedia>) {
+    return ownerRun(this.#kernel, callerBuild, mediaProcessing.deleteOwnerMedia, input, () => this.#restoredAt());
   }
 
   mediaDispatchRound(callerBuild: string) {

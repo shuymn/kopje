@@ -11,7 +11,7 @@ import {
 } from "../platform/stored-bounds";
 import { type CredentialAccount, credentialAccount, presentFor, type PresentInput } from "./accounts";
 import { actorSnapshot, recordActorUpdate } from "./actor-update";
-import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
+import { userMediaDeleteOperation, userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
 import { setState, state } from "./kopje-state";
 import { NORMALIZE_PROFILE, probePassed } from "./media-probes";
@@ -126,7 +126,7 @@ function notEmojiSql(m: string): string {
   return `NOT EXISTS (SELECT 1 FROM custom_emojis ${m}_e WHERE ${m}_e.id = ${m}.id)`;
 }
 
-function ownUpload(db: Db, accountId: string, id: string, now: number): MediaRow | undefined {
+export function ownUpload(db: Db, accountId: string, id: string, now: number): MediaRow | undefined {
   return db.first<MediaRow>(
     `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m
 		WHERE m.id = ?1 AND m.account_id = ?2 AND m.status_id IS NULL AND ${liveMediaSql("m", "?3")}`,
@@ -512,15 +512,6 @@ export const abandonMedia = userMediaDeleteOperation.atStoreTime("now")<{ id: st
   return "abandoned";
 });
 
-export const getMedia = userReadOperation.atStoreTime("now")<{ id: string; now: number }, MediaAttachment | null>((
-  db,
-  { id, now },
-  { accountId },
-) => {
-  const row = ownUpload(db, accountId, id, now);
-  return row === undefined ? null : presentMedia(row);
-});
-
 export type ProfileImage = "avatar" | "header";
 
 // In the order a request applies them.
@@ -595,13 +586,9 @@ export const removeProfileImage = userMediaDeleteOperation<
 
 export type MediaChanges = { description?: string | undefined; focus?: { x: number; y: number } | undefined };
 
-export const updateMedia = userWriteOperation.atStoreTime("now")<
-  { id: string; changes: MediaChanges; now: number },
-  MediaAttachment | null
->((db, { id, changes, now }, { accountId }) => {
-  if (ownUpload(db, accountId, id, now) === undefined) {
-    return null;
-  }
+// The description and focus a PUT sends, written on the upload `id` (media-processing.ts updateOwnerMedia, the owner's
+// PUT /api/v1/media/:id, for a finished upload and one still processing alike).
+export function describeMedia(db: Db, id: string, changes: MediaChanges): void {
   db.run(
     `UPDATE media_attachments SET description = COALESCE(?, description), focus_x = COALESCE(?, focus_x),
 				focus_y = COALESCE(?, focus_y), focus_given = COALESCE(?, focus_given)
@@ -612,9 +599,7 @@ export const updateMedia = userWriteOperation.atStoreTime("now")<
     changes.focus === undefined ? null : 1,
     id,
   );
-  const row = ownUpload(db, accountId, id, now);
-  return row === undefined ? null : presentMedia(row);
-});
+}
 
 export type MediaDeleted = "deleted" | "in_use" | "not_found";
 
