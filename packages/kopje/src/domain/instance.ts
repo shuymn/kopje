@@ -23,6 +23,7 @@ import { accessAdminRefusal } from "./admin-authority";
 import { campaignYear, wrapstodonOn } from "./annual-reports";
 import { availableLocalSql } from "./audience";
 import { forgetActivityAnswer } from "./instance-activity";
+import { type ActivationInput, isActive } from "./media-processing";
 import { logAction } from "./moderation-log";
 import { readOperation, sessionOperation, writeOperation } from "./operation";
 
@@ -61,6 +62,9 @@ type InstanceUsage = InstanceSettings & {
   // The account contact_username names, presented (an unavailable one redacted, VIS-30); null when none is set or
   // it names no account.
   contactAccount: Account | null;
+  // Whether video and audio uploads are active (#1828 design 4.13), read only when the Worker passes an activation:
+  // its binding and a positive MEDIA_UPLOAD_MONTHLY_JOBS (media-processing.ts isActive); false otherwise.
+  avUploads: boolean;
 };
 
 // What /api/v2/instance presents: the usage and the current annual report campaign (REST::InstanceSerializer#wrapstodon,
@@ -178,9 +182,9 @@ function activeWindow(now: number): [string, string] {
 // /api/v1/instance: the settings and every count it presents.
 // storeNow is the Store's own time (atStoreTime), the clock refreshDomainCount stamps the kept count with.
 export const instanceInfo = readOperation.atStoreTime("storeNow")<
-  { now: number; storeNow: number; present: PresentInput },
+  { now: number; storeNow: number; present: PresentInput; activation?: ActivationInput | undefined },
   InstanceInfo
->((db, { now, storeNow, present }) => {
+>((db, { now, storeNow, present, activation }) => {
   const fresh = db.first<{ n: number }>(FRESH_DOMAIN_COUNT_SQL, storeNow - DOMAIN_COUNT_FRESH_MS, storeNow);
   const counts = db.first<{ users: number; active: number; statuses: number | null; domains: number }>(
     fresh === undefined ? INSTANCE_COUNTS_SQL : INSTANCE_COUNTS_KEPT_SQL,
@@ -194,20 +198,22 @@ export const instanceInfo = readOperation.atStoreTime("storeNow")<
     statusCount: counts?.statuses ?? 0,
     domainCount: counts?.domains ?? 0,
     contactAccount: contactAccount(db, settings, presentFor(present, null)),
+    avUploads: activation !== undefined && isActive(db, activation, storeNow),
   };
 });
 
 // /api/v2/instance: the settings, the one count it presents (usage.users.active_month) and the campaign, judged at
 // storeNow, the Store's own time (atStoreTime), as the annual report operations judge it.
 export const instanceUsage = readOperation.atStoreTime("storeNow")<
-  { now: number; storeNow: number; present: PresentInput },
+  { now: number; storeNow: number; present: PresentInput; activation?: ActivationInput | undefined },
   InstanceV2
->((db, { now, storeNow, present }) => {
+>((db, { now, storeNow, present, activation }) => {
   const settings = settingsOf(db);
   return {
     ...settings,
     activeMonth: db.first<{ active: number }>(INSTANCE_ACTIVE_SQL, ...activeWindow(now))?.active ?? 0,
     contactAccount: contactAccount(db, settings, presentFor(present, null)),
+    avUploads: activation !== undefined && isActive(db, activation, storeNow),
     wrapstodon: campaignYear(storeNow, wrapstodonOn(db)),
   };
 });

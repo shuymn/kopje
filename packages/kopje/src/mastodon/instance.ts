@@ -1,6 +1,7 @@
 import { MAX_DISPLAY_NAME, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, MAX_NOTE } from "../domain/accounts";
 import { PIN_LIMIT } from "../domain/activities";
 import { MAX_FEATURED_TAGS } from "../domain/featured-tags";
+import { AV_UPLOAD_LIMIT } from "../domain/media-processing";
 import { DEFAULT_THUMBNAIL, DEFAULT_THUMBNAIL_DESCRIPTION, INSTANCE_ICONS } from "../platform/brand-assets";
 import { railsBlank } from "../platform/rails-blank";
 import { MAX_MEDIA_DESCRIPTION_LENGTH, PROFILE_DESCRIPTION_LIMIT } from "../platform/stored-bounds";
@@ -17,6 +18,7 @@ import {
 } from "./context";
 import { mastodonError } from "./errors";
 import { LANGUAGES } from "./languages";
+import { avUploadActivation } from "./media-av";
 
 // /api/v1/instance and /api/v2/instance in their Mastodon 4.7.5 shapes. The payloads are frozen by a contract test.
 //
@@ -58,7 +60,7 @@ const CONFIGURATION = {
   media_attachments: {
     supported_mime_types: ["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"],
     // Enforced by the upload (mastodon/media.ts); GIF, WebP and AVIF are re-encoded as WebP. No video or audio type
-    // is listed: they are refused.
+    // is listed while uploads of them are inactive: they are refused (AV_MEDIA_ATTACHMENTS otherwise).
     image_size_limit: 16777216,
     image_matrix_limit: 16777216,
     video_size_limit: 41943040,
@@ -67,6 +69,46 @@ const CONFIGURATION = {
   },
   polls: { max_options: 4, max_characters_per_option: 50, min_expiration: 300, max_expiration: 2629746 },
 };
+
+// While video and audio uploads are active (#1828 design 4.13; a spent budget keeps them advertised, the upload
+// answering 429): Mastodon 4.7.5's VIDEO_MIME_TYPES and AUDIO_MIME_TYPES (media_attachment.rb), less video/x-ms-asf,
+// which the container's demuxers do not read, and its source limits (media_attachment.rb:49-51), with Kopje's own cap
+// (AV_UPLOAD_LIMIT, where Mastodon takes 99 MiB: docs/mastodon-deviations.md).
+const AV_MIME_TYPES = [
+  "video/webm",
+  "video/mp4",
+  "video/quicktime",
+  "video/ogg",
+  "audio/wave",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/x-pn-wave",
+  "audio/vnd.wave",
+  "audio/ogg",
+  "audio/vorbis",
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/webm",
+  "audio/flac",
+  "audio/aac",
+  "audio/m4a",
+  "audio/x-m4a",
+  "audio/mp4",
+  "audio/3gpp",
+];
+
+const AV_MEDIA_ATTACHMENTS = {
+  ...CONFIGURATION.media_attachments,
+  supported_mime_types: [...CONFIGURATION.media_attachments.supported_mime_types, ...AV_MIME_TYPES],
+  video_size_limit: AV_UPLOAD_LIMIT,
+  video_frame_rate_limit: 120,
+  video_matrix_limit: 8294400,
+};
+
+// The configuration the instance endpoints present: today's, or with the uploads' advertisement while they are active.
+function configuration(avUploads: boolean): typeof CONFIGURATION {
+  return avUploads ? { ...CONFIGURATION, media_attachments: AV_MEDIA_ATTACHMENTS } : CONFIGURATION;
+}
 
 function placed<T extends { domain: string | null }>(
   c: ApiContext,
@@ -80,7 +122,9 @@ function placed<T extends { domain: string | null }>(
 export const instanceV1: ApiHandler = async (c, deps) => {
   const { info, domain, origin } = placed(
     c,
-    await storeCall(c, deps, (s, b) => s.instanceInfo(b, { now: deps.now(), present: present(c) })),
+    await storeCall(c, deps, (s, b) =>
+      s.instanceInfo(b, { now: deps.now(), present: present(c), activation: avUploadActivation(c.env, deps) }),
+    ),
   );
   return c.json({
     uri: domain,
@@ -96,7 +140,7 @@ export const instanceV1: ApiHandler = async (c, deps) => {
     registrations: false,
     approval_required: false,
     invites_enabled: false,
-    configuration: CONFIGURATION,
+    configuration: configuration(info.avUploads),
     contact_account: info.contactAccount,
     rules: info.rules,
   });
@@ -105,7 +149,9 @@ export const instanceV1: ApiHandler = async (c, deps) => {
 export const instanceV2: ApiHandler = async (c, deps) => {
   const { info, domain, origin } = placed(
     c,
-    await storeCall(c, deps, (s, b) => s.instanceUsage(b, { now: deps.now(), present: present(c) })),
+    await storeCall(c, deps, (s, b) =>
+      s.instanceUsage(b, { now: deps.now(), present: present(c), activation: avUploadActivation(c.env, deps) }),
+    ),
   );
   return c.json({
     domain,
@@ -129,7 +175,7 @@ export const instanceV2: ApiHandler = async (c, deps) => {
         terms_of_service: info.termsOfService ? `https://${domain}/terms-of-service` : null,
       },
       vapid: { public_key: vapidKey(c.env) },
-      ...CONFIGURATION,
+      ...configuration(info.avUploads),
       // REST::InstanceSerializer's account limits, in its order, from the constants that enforce them: the profile's
       // in code points (accountChanges in mastodon/accounts.ts, as Mastodon's `length`; the note as
       // NoteLengthValidator counts it), the featured hashtags' and the pins' in rows. Mastodon's v1 serializer has none
@@ -145,7 +191,10 @@ export const instanceV2: ApiHandler = async (c, deps) => {
         profile_field_name_limit: MAX_FIELD_NAME,
         profile_field_value_limit: MAX_FIELD_VALUE,
       },
-      media_attachments: { ...CONFIGURATION.media_attachments, description_limit: MAX_MEDIA_DESCRIPTION_LENGTH },
+      media_attachments: {
+        ...configuration(info.avUploads).media_attachments,
+        description_limit: MAX_MEDIA_DESCRIPTION_LENGTH,
+      },
       translation: { enabled: false },
       // Who may read the public, hashtag and link timelines: anyone, as Kopje serves them without a token.
       timelines_access: {
