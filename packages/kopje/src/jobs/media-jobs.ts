@@ -7,6 +7,7 @@ import {
   encodeLeft,
   type Endpoint,
   outputCut,
+  T_PREVIEW_MIN,
   type ProcessorFailure,
   remainingOf,
   T_MIN_ENCODE,
@@ -38,9 +39,10 @@ import type { StoreStub } from "../platform/store-client";
 // stop). Nothing is retried. Every wait from the container's start to D4 (R2, the Store, the container: R9 chooses its
 // timing) goes through one race against the current stage's cut on the processor's clock (`race`): the input and the
 // reply by the work deadline (the still's cut), the multipart creations, the body and its parts by the transfer's cut,
-// and the still, the poster's charge and its preview by the preview's cut (outputCut: each stage's allowance from its
-// start, never past what the later stages keep). A result that arrives at or after its cut is cleaned up when it does
-// (an upload aborted, a body cancelled, a Store answer ignored). Past a required wait's cut the container's requests
+// and the still, the poster's charge and its preview by the preview's cut (outputCut, allocated backwards from the
+// deadline: the transfer until T_FINISH before it, the optional preview T_PREVIEW from its start within the same
+// bound, skipped with less than T_PREVIEW_MIN left). A result that arrives at or after its cut is cleaned up when it
+// does (an upload aborted, a body cancelled, a Store answer ignored). Past a required wait's cut the container's requests
 // are aborted and the job ends as `timeout` (the Store records `deadline` instead once deadline_at has passed, K4); past
 // the poster's, the upload goes on with its poster.
 //
@@ -261,8 +263,18 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     stage.name = "still";
     stage.at = deps.now();
     const previewEnd = outputCut(allocation, "preview", stage.at);
-    const png = await bounded(deps, result.still(), previewEnd, cut);
-    const preview = png !== null && verifyStill(png) === null ? await poster(deps, job, previewEnd, png) : null;
+    // The still and its preview are optional: begun only with T_PREVIEW_MIN left, and past their cut the upload goes on
+    // with its poster, the container's still request aborted.
+    let preview: Preview | null = null;
+    if (previewEnd - deps.now() >= T_PREVIEW_MIN) {
+      const png = await race(deps, result.still(), previewEnd);
+      if (png === CUT) {
+        cut.abort();
+        console.warn({ event: "kopje.media.job.cut", ...at() });
+      } else if (png !== null && verifyStill(png) === null) {
+        preview = await poster(deps, job, previewEnd, png);
+      }
+    }
     // D4: the container stops before any final write.
     stage.name = "commit";
     stage.at = deps.now();

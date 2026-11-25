@@ -73,15 +73,18 @@ At most two uploads are processed at once (`MAX_AV_INFLIGHT`). An upload's conta
 which keeps a cleanup alarm before it starts anything: a job interrupted at any point is cleaned up by that alarm, and
 its capacity slot counts until the container's stop is confirmed, or for at most 24 hours after the job started
 (`HARD_HOLD_MS`). A container whose stop never succeeds is retried every minute; past those 24 hours Kopje admits
-another upload beside it, and Cloudflare bills that container until it stops. An upload's object keeps its record
-until its slot is released and its input deleted; from `V2_PROCESS_MS` + `HARD_HOLD_MS` after it was dispatched, with
-its container stopped, it drops the record as soon as the input is deleted (a delete that fails is retried every
-minute while R2 is down). A container or a call that
-stops answering does not hold an upload: Kopje waits for the input and the reply until the job's work deadline, for the
-output's transfer into R2 4.5 s from the reply, and for the still and its preview 3 s from the transfer's end (each cut
-never past what the later stages keep: the last 1.5 s are the stop, the grants, the writes and the completion). Past a
-cut it aborts the requests, stops the container and fails the upload as `timeout`; past the preview's, the upload keeps
-its poster.
+another upload beside it, and Cloudflare bills that container until it stops. An upload's object keeps its record until
+its slot is released and its input deleted; from `V2_PROCESS_MS` + `HARD_HOLD_MS` after it was dispatched, with its
+container stopped, it drops the record as soon as the input is deleted (a delete that fails is retried every minute
+while R2 is down). A container or a call that stops answering does not hold an upload: Kopje waits for the input and the
+reply until the job's work deadline. After the reply its time is allocated backwards from the job's deadline. The last
+`T_FINISH` (1.5 s) is kept for the container's stop, the write grants, the final writes and the completion: a starting
+value, the plan's 6 s commit stage less the 4.5 s measured for the output's transfer into R2, which PR4-4's edge runs on
+den-test measure. The transfer, which every upload needs, may run until then, using whatever time the encode left. The
+still and its preview are optional: they begin after the transfer, get 3 s within the same bound, and are skipped when
+less than 1 s is left (the WebP's share of the 3 s; below 2 s left, the blurhash alone is skipped). Past the reply's or
+the transfer's cut Kopje aborts the requests, stops the container and fails the upload as `timeout`; past the preview's,
+or when it is skipped, the upload keeps its poster.
 
 The cron also redispatches an upload whose start was lost (after 2 minutes), fails jobs past their deadline, and once an
 hour removes inputs under `incoming/` that are more than a day old and held by no upload, probe copies included.

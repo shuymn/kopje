@@ -448,8 +448,6 @@ describe("table 1.3 D3: every wait on the container ends at its cut", () => {
     { hang: "reply" as const, cut: "still" as const, uploads: [] as string[] },
     // The container answers and stalls mid-body: the body's cut is the transfer's, and both uploads are aborted.
     { hang: "body" as const, cut: "transfer" as const, uploads: ["full", "original"] },
-    // The still is never answered: its cut is the preview's, which leaves the stop and the writes their time.
-    { hang: "still" as const, cut: "preview" as const, uploads: ["full", "original"] },
   ])("a container that hangs at its $hang ends at the $cut cut as timeout, stopped, its slot released", async (c) => {
     const w = await avWorld();
     const p = await platformFor(w);
@@ -477,6 +475,31 @@ describe("table 1.3 D3: every wait on the container ends at its cut", () => {
     expect(p.aborts().toSorted()).toEqual(c.uploads);
     expect(p.writes()).toEqual([]);
     // D4, D8 and D9 in the same invocation: the container stopped, the input deleted, the slot released.
+    await cleared(w, p, up.id);
+  });
+});
+
+describe("the optional preview (r3 M1)", () => {
+  it("a container that never answers its still: the preview's cut aborts that request and the upload completes with its poster", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.hangNormalize("still");
+    const fired = p.fire();
+    await vi.waitFor(() => expect(p.hung()).toBe(true));
+    const row = (await held(w.store, up.id)).row!;
+    const [input] = await sql<{ input_bytes: number }>(
+      w.store,
+      "SELECT input_bytes FROM media_processing WHERE media_id = ?",
+      up.id,
+    );
+    const cut = outputCut(allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes), "preview", p.hungAt());
+    expect(p.lastWait()).toBe(cut);
+    p.expire(cut);
+    expect(await fired).toBe("returned");
+    expect(p.requestAborted()).toBe(true);
+    expect(p.writes()).toEqual(["original", "full"]);
+    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1 });
     await cleared(w, p, up.id);
   });
 });
@@ -522,8 +545,8 @@ describe("the stop and the R2 waits around a cut (M2)", () => {
     );
     expect(aborted).toHaveLength(2);
     expect(JSON.stringify(logged)).not.toContain(up.token);
-    // The transfer's cut is its allowance from the reply, well before deadline_at: S7 records the cut (D7).
-    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
+    // The transfer's cut is T_FINISH before deadline_at, so S7 is sent past it: the Store records the deadline (K4).
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "deadline" });
     await cleared(w, p, up.id);
   });
 

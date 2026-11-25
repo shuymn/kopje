@@ -76,18 +76,20 @@ export const T_STILL = SECOND;
 const T_PREVIEW = 3 * SECOND;
 // The output into R2, the confirmed stop, three S5 calls and writes, and S6.
 const T_COMMIT = 6 * SECOND;
-// Of T_COMMIT, the output's transfer into R2 (its measured 4.5 s p95), which the processor makes right after the
-// container's reply, before the still and the preview.
-const T_TRANSFER = 4500;
-// The rest of T_COMMIT, after the preview: the confirmed stop, the S5 calls and final writes, and S6.
-const T_FINISH = T_COMMIT - T_TRANSFER;
+// Of T_COMMIT, what the steps after the preview keep: the confirmed stop, the S5 grants and final writes, and S6. The
+// plan's T_COMMIT less the measured 4.5 s output into R2; a starting value the den-test edge runs measure (PR4-4).
+export const T_FINISH = 1500;
+// The least time the optional preview is begun with: its WebP's share of T_PREVIEW (Images' 0.33 s p95 rounded up),
+// the rest of T_PREVIEW being the RGBA_MIN_CALL_MS stillPreview needs for a blurhash (below which it skips that).
+export const T_PREVIEW_MIN = T_PREVIEW - 2 * SECOND;
 
-// The cut of one of the processor's stages after the container's reply, from the time it starts, in the order it runs
-// them: the transfer, then the still and its preview. Each has its allowance, but never past the deadline less what
-// the later stages keep, so a stage that ends early leaves its saving to the later ones.
+// The processor's cuts after the container's reply, allocated backwards from the deadline (#1828 PR4-2 fix r3): the
+// transfer is mandatory and ends only at the deadline less T_FINISH, so it may use what the encode left; the still
+// and its preview are optional, begun after the transfer, and end T_PREVIEW from their start but never past the
+// deadline less T_FINISH (`start` is the stage's start; the transfer's cut does not depend on it).
 export function outputCut(allocation: Pick<Allocation, "deadline">, stage: "transfer" | "preview", start: number) {
   return stage === "transfer"
-    ? Math.min(start + T_TRANSFER, allocation.deadline - T_PREVIEW - T_FINISH)
+    ? allocation.deadline - T_FINISH
     : Math.min(start + T_PREVIEW, allocation.deadline - T_FINISH);
 }
 // Sending S10 and its answer (v1).

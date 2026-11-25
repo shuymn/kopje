@@ -3521,11 +3521,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `V2_PROCESS_MS` + `HARD_HOLD_MS` after dispatch, with the container stopped and the input deleted (the PR4 plan's
   table 1.3). R9's timing holds nothing: every wait while the container runs ends at a cut on the processor's clock,
   through one race that cleans up a late result (its input and reply at the work deadline, its output's transfer and
-  multipart creations at the transfer's cut, its still, the poster's charge and preview at the preview's cut, the
-  activation probe at its one deadline), after which the requests are aborted, the container stopped and the job failed
-  `timeout`. The remote stills of PR5 are not built. `test/media-processor-steps.test.ts` (every step of table 1.3,
-  killed after it, recovered through the armed alarm; "the stop and its confirmation"; "table 1.3 D3: every wait on the
-  container ends at its cut"), `test/media-job-concurrency.test.ts` ("the start rule"), `test/media-job.test.ts`
+  multipart creations at the transfer's cut, its optional still, the poster's charge and preview at the preview's cut,
+  the activation probe at its one deadline), after which the requests are aborted, the container stopped and the job
+  failed `timeout`. The remote stills of PR5 are not built. `test/media-processor-steps.test.ts` (every step of table
+  1.3, killed after it, recovered through the armed alarm; "the stop and its confirmation"; "table 1.3 D3: every wait on
+  the container ends at its cut"), `test/media-job-concurrency.test.ts` ("the start rule"), `test/media-job.test.ts`
   ("records unavailable and reports the stop unconfirmed when the container does not stop"),
   `test/media-processor.test.ts` ("sets the alarm past the probe's deadline and destroy before the start, and ends the
   stages at the deadline").

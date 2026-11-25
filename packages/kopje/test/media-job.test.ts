@@ -388,40 +388,103 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     expect((await blurhashWith({ stillAt: (at) => at.preview - 2000 })).blurhash).toBe("");
   });
 
-  it("completes with the poster when the transfer is fast, Images is held to its cut and original's complete takes 1.5 s (r2 M1)", async () => {
+  // One job through the runner with controlled I/O: the reply's headers at `replyAt` (from the work deadline S and the
+  // job's deadline D), the body taking `transferMs`, Images healthy or held to its guard's cut, and R2's completes
+  // taking `completeMs`.
+  async function timed(options: {
+    replyAt: (at: { still: number; deadline: number }) => number;
+    transferMs: number;
+    images: "healthy" | "held";
+    completeMs?: { original?: number; full?: number };
+  }) {
     const w = await avWorld();
     const up = await started(w);
     await putInput(up.id);
     const job = await jobOf(w, up);
-    const { cuts } = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const allocation = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const reply = options.replyAt({ still: allocation.cuts.still, deadline: allocation.deadline });
     const codec = new TestCodec();
-    // Images answers nothing until its guard's cut on the faked clock.
-    codec.encode = async (_bytes, options) => {
-      for (;;) {
-        await options.guard!(() => Promise.resolve());
-        clock(Date.now() + 10);
-      }
-    };
-    const { bucket, log } = multipartLog({ completeMs: { original: 1500 } });
+    if (options.images === "held") {
+      // Images answers nothing until its guard's cut on the faked clock.
+      codec.encode = async (_bytes, encode) => {
+        for (;;) {
+          await encode.guard!(() => Promise.resolve());
+          clock(Date.now() + 10);
+        }
+      };
+    }
+    const { bucket, log } = multipartLog(options.completeMs === undefined ? {} : { completeMs: options.completeMs });
     const output = await avFixture("r1-av.mp4");
     const fake = fakeControl(
       { output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() },
-      { onReply: () => clock(cuts.still - 50) },
+      { onReply: () => clock(reply), transferMs: options.transferMs },
     );
     await runUpload(uploadDeps(w, fake.control, { bucket, images: codec }), job);
-    expect(log.filter((entry) => entry.startsWith("complete:"))).toEqual(["complete:original", "complete:full"]);
-    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1 });
-    expect((await objects(up.id, up.token)).small).toBeNull();
-  });
+    const after = await held(w.store, up.id);
+    return {
+      completed: after.att?.processed === 1,
+      failure: after.row?.failure ?? null,
+      completes: log.filter((entry) => entry.startsWith("complete:")),
+      blurhash: (await objects(up.id, up.token)).small?.customMetadata?.blurhash ?? null,
+      stillAsked: fake.calls.includes("GET /normalize/still"),
+      left: allocation.deadline - Date.now(),
+    };
+  }
 
-  it("completes an output whose headers come 50 ms before the still's cut and whose body takes 4.2 s (M3)", async () => {
-    const { held: after } = await blurhashWith({ replyAt: (at) => at.still - 50, transferMs: 4200 });
-    expect(after.att).toMatchObject({ processed: 1 });
-  });
-
-  it("keeps a healthy blurhash after a 1.2 s transfer that began at the still's cut (M3)", async () => {
-    const { blurhash } = await blurhashWith({ replyAt: (at) => at.still - 50, transferMs: 1200 });
-    expect(blurhash).toMatch(/^.{6,}$/);
+  // The budget's rule (r3 M1): backwards from the deadline, the transfer cut at D − T_FINISH, the preview optional.
+  it.each([
+    {
+      name: "fast transfer, Images held to its cut, original's complete 1.5 s (r2): S6 with the poster",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 0,
+      images: "held" as const,
+      completeMs: { original: 1500 },
+      expected: { completed: true, blurhash: null },
+    },
+    {
+      name: "4.2 s transfer from 50 ms before the work deadline (r1): S6",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 4200,
+      images: "healthy" as const,
+      expected: { completed: true },
+    },
+    {
+      name: "1.2 s transfer, healthy Images (r1): S6 with a blurhash",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 1200,
+      images: "healthy" as const,
+      expected: { completed: true, blurhash: expect.stringMatching(/^.{6,}$/) },
+    },
+    {
+      name: "headers 20 s before the deadline, 4.8 s transfer (r3): S6",
+      replyAt: (at: { deadline: number }) => at.deadline - 20_000,
+      transferMs: 4800,
+      images: "healthy" as const,
+      expected: { completed: true },
+    },
+    {
+      // The edge the den-test runs measure: the preview has its 3 s (not skipped), leaving 1.65 s, and final writes of
+      // 1.5 s + 0.2 s exceed T_FINISH: both files land, S6 comes 50 ms past the deadline, and K4 records `deadline`.
+      name: "4.4 s transfer at the edge, Images held, final writes 1.5 s + 0.2 s (r3 edge): deadline",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 4400,
+      images: "held" as const,
+      completeMs: { original: 1500, full: 200 },
+      expected: { completed: false, failure: "deadline" },
+    },
+    {
+      // The transfer ends 2.05 s before the deadline: 0.55 s is left for the preview, under T_PREVIEW_MIN, so it is
+      // skipped (no still asked for, no charge) and the upload completes with its poster.
+      name: "7 s transfer from 50 ms before the work deadline (r3 skip): S6 with the poster, no still asked for",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 7000,
+      images: "healthy" as const,
+      expected: { completed: true, blurhash: null, stillAsked: false },
+    },
+  ])("$name", async (row) => {
+    const result = await timed(row);
+    expect(result).toMatchObject(row.expected);
+    expect(result.completes).toEqual(["complete:original", "complete:full"]);
   });
 });
 
