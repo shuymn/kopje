@@ -772,6 +772,7 @@ export class UploadUnit {
           images: this.deps.images,
           monthlyTransforms: this.deps.monthlyTransforms(),
           now: this.deps.now,
+          wait: this.deps.wait,
         },
         {
           id: record.id,

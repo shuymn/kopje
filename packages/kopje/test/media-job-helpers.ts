@@ -111,6 +111,8 @@ export function uploadDeps(w: AvWorld, control: ContainerControl, overrides: Par
     images: new TestCodec(),
     monthlyTransforms: { instance: 4000, account: 400 },
     now: () => Date.now(),
+    // No cut fires unless a test sets one.
+    wait: () => new Promise<void>(() => {}),
     ...overrides,
   };
 }

@@ -3516,10 +3516,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the container starts with `enableInternet: false`; the object arms its cleanup alarm before anything else (D1), stops
   the container before the first S5 (D4), keeps its record, its alarm and the slot until the stop is confirmed and S8
   answers, and drops its record only `V2_PROCESS_MS` + `HARD_HOLD_MS` after dispatch with the container stopped (the
-  PR4 plan's table 1.3). The remote stills of PR5 are not built. `test/media-processor-steps.test.ts` (every step of
-  table 1.3, killed after it, recovered through the armed alarm; "the stop and its confirmation"),
-  `test/media-job-concurrency.test.ts` ("the start rule"), `test/media-job.test.ts` ("records unavailable and reports
-  the stop unconfirmed when the container does not stop").
+  PR4 plan's table 1.3). R9's timing holds nothing: every wait on the container ends at a cut on the processor's clock
+  (its reply at the work deadline, its output and still at the preview stage's cut, the activation probe at its one
+  deadline), after which the requests are aborted, the container stopped and the job failed `timeout`. The remote
+  stills of PR5 are not built. `test/media-processor-steps.test.ts` (every step of table 1.3, killed after it,
+  recovered through the armed alarm; "the stop and its confirmation"; "table 1.3 D3: every wait on the container ends
+  at its cut"), `test/media-job-concurrency.test.ts` ("the start rule"), `test/media-job.test.ts` ("records
+  unavailable and reports the stop unconfirmed when the container does not stop"), `test/media-processor.test.ts`
+  ("sets the alarm past the probe's deadline and destroy before the start, and ends the stages at the deadline").
 - **MEDIA-9: no processor output is published unverified.** Nothing reaches `originals/`, `files/` or
   `remote/<token>/still` unless Kopje's walker accepted the stream that is written, and every stored fact comes from
   the walker. _Enforced (main)_ for uploads: the output streams through `avVerifier`, held to the duration the container

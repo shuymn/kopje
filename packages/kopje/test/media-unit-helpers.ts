@@ -57,7 +57,16 @@ export class Storage {
 
 // A container as ctx.container presents it, answering as container/server/main.go does.
 function container(
-  platform: { kill: (name: string) => Promise<never> | null; destroyFails: () => boolean },
+  platform: {
+    kill: (name: string) => Promise<never> | null;
+    destroyFails: () => boolean;
+    // The /normalize answer never comes ("reply"), or stops after half its body ("body"), until the request is
+    // aborted; `hung` is called when it starts hanging.
+    hang: () => "reply" | "body" | "still" | null;
+    hung: () => void;
+    // Called when the hanging request's signal aborts.
+    aborted: () => void;
+  },
   output: {
     bytes: Uint8Array;
     durationMs: number;
@@ -75,12 +84,42 @@ function container(
         return Response.json({ ok: true });
       }
       if (path === "/normalize/still") {
+        if (platform.hang() === "still") {
+          init?.signal?.addEventListener("abort", platform.aborted);
+          platform.hung();
+          return new Promise<never>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+          });
+        }
         return new Response(output.still, {
           headers: { "content-type": "image/png", "content-length": String(output.still.byteLength) },
         });
       }
       await request.arrayBuffer();
-      return new Response(output.bytes, {
+      const signal = init?.signal ?? undefined;
+      const aborted = () =>
+        new Promise<never>((_, reject) => {
+          signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        });
+      const hang = platform.hang();
+      if (hang === "reply" || hang === "body") {
+        signal?.addEventListener("abort", platform.aborted);
+      }
+      if (hang === "reply") {
+        platform.hung();
+        return aborted();
+      }
+      const body =
+        hang === "body"
+          ? new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(output.bytes.subarray(0, output.bytes.byteLength >> 1));
+                platform.hung();
+                signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+              },
+            })
+          : output.bytes;
+      return new Response(body, {
         headers: {
           "content-type": "video/mp4",
           "content-length": String(output.bytes.byteLength),
@@ -135,6 +174,13 @@ export async function platformFor(w: AvWorld) {
   // Work run once before a final write starts ("original", "full", "small"), and the writes started.
   const beforeWrite = new Map<string, () => Promise<void>>();
   const writes: string[] = [];
+  // The multipart uploads aborted, by kind.
+  const aborts: string[] = [];
+  let hang: "reply" | "body" | "still" | null = null;
+  let hung = false;
+  let requestAborted = false;
+  // The unit's waits (deps.wait), each due at its time on the faked clock; they resolve only when a test expires them.
+  const waits: { due: number; resolve: () => void }[] = [];
   const writing = async (name: string) => {
     const hook = beforeWrite.get(name);
     beforeWrite.delete(name);
@@ -195,7 +241,10 @@ export async function platformFor(w: AvWorld) {
             key: upload.key,
             uploadId: upload.uploadId,
             uploadPart: upload.uploadPart.bind(upload),
-            abort: upload.abort.bind(upload),
+            abort: async () => {
+              aborts.push(name);
+              await upload.abort();
+            },
             complete: async (parts: R2UploadedPart[]) => {
               await writing(name);
               await (kill(`complete:${name}`) ?? Promise.resolve());
@@ -209,7 +258,13 @@ export async function platformFor(w: AvWorld) {
   });
   const storage = new Storage(kill);
   const made = container(
-    { kill, destroyFails: () => destroyFails },
+    {
+      kill,
+      destroyFails: () => destroyFails,
+      hang: () => hang,
+      hung: () => void (hung = true),
+      aborted: () => void (requestAborted = true),
+    },
     {
       bytes,
       durationMs: Math.round(verdict.facts.duration * 1000),
@@ -219,7 +274,7 @@ export async function platformFor(w: AvWorld) {
   const unit = () =>
     new UploadUnit({ container: made.container, storage, bucket } as unknown as UploadState, {
       now: () => Date.now(),
-      wait: () => new Promise<void>(() => {}),
+      wait: (ms: number) => new Promise<void>((resolve) => void waits.push({ due: Date.now() + ms, resolve })),
       build: BUILD,
       store: () => store,
       images: new TestCodec(),
@@ -239,6 +294,20 @@ export async function platformFor(w: AvWorld) {
     afterCall: (method: string, work: () => Promise<void>) => void after.set(method, work),
     beforeWrite: (name: "original" | "full" | "small", work: () => Promise<void>) => void beforeWrite.set(name, work),
     writes: () => writes,
+    aborts: () => aborts,
+    hangNormalize: (how: "reply" | "body" | "still") => void (hang = how),
+    hung: () => hung,
+    requestAborted: () => requestAborted,
+    // The latest wait's time, or null (a wait raced and won by its work stays pending, as a timer would).
+    lastWait: () => waits.at(-1)?.due ?? null,
+    // The clock set to `at`, and every wait due by then resolved.
+    expire(at: number): void {
+      clock(at);
+      for (const wait of waits.filter((pending) => pending.due <= at)) {
+        waits.splice(waits.indexOf(wait), 1);
+        wait.resolve();
+      }
+    },
     // Fires the armed alarm once, on a new instance, at its time: the alarm is consumed while it runs; an invocation
     // that dies leaves it due again unless it set another.
     async fire(): Promise<"returned" | "killed"> {

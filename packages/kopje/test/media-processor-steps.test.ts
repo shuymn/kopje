@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { HARD_HOLD_MS, V2_PROCESS_MS } from "../src/domain/media-processing";
+import { allocate, HARD_HOLD_MS, V2_PROCESS_MS } from "../src/domain/media-processing";
 import { incomingKey } from "../src/platform/media-files";
+import { sql } from "./api-helpers";
 import { putInput } from "./media-job-helpers";
 import { avWorld, clock, gate, held, queued } from "./media-processing-helpers";
 import { cleared, platformFor, upload } from "./media-unit-helpers";
@@ -191,5 +192,42 @@ describe("table 1.3: the stop and its confirmation", () => {
     expect(p.storage.alarm).toBeNull();
     expect(await env.MEDIA.head(incomingKey(up.id))).toBeNull();
     await gate(w.store, "maintenance", false);
+  });
+});
+
+describe("table 1.3 D3: every wait on the container ends at its cut", () => {
+  it.each([
+    // The container takes the input and never answers: the reply's cut is the work deadline (the still's cut).
+    { hang: "reply" as const, cut: "still" as const, uploads: [] as string[] },
+    // The container answers and stalls mid-body: the body's cut is the preview stage's, and both uploads are aborted.
+    { hang: "body" as const, cut: "preview" as const, uploads: ["full", "original"] },
+    // The still is never answered: its cut is the preview stage's too.
+    { hang: "still" as const, cut: "preview" as const, uploads: ["full", "original"] },
+  ])("a container that hangs at its $hang ends at the $cut cut as timeout, stopped, its slot released", async (c) => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.hangNormalize(c.hang);
+    const fired = p.fire();
+    await vi.waitFor(() => expect(p.hung()).toBe(true));
+    const row = (await held(w.store, up.id)).row!;
+    const [input] = await sql<{ input_bytes: number }>(
+      w.store,
+      "SELECT input_bytes FROM media_processing WHERE media_id = ?",
+      up.id,
+    );
+    const cut = allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes).cuts[c.cut];
+    // The wait the hang is raced against ends at the cut.
+    expect(p.lastWait()).toBe(cut);
+    expect(cut).toBeLessThan(row.deadline_at!);
+    p.expire(cut);
+    expect(await fired).toBe("returned");
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
+    // The container's request was aborted at the cut, and the uploads begun were aborted.
+    expect(p.requestAborted()).toBe(true);
+    expect(p.aborts().toSorted()).toEqual(c.uploads);
+    expect(p.writes()).toEqual([]);
+    // D4, D8 and D9 in the same invocation: the container stopped, the input deleted, the slot released.
+    await cleared(w, p, up.id);
   });
 });
