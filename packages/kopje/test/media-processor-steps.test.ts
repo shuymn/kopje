@@ -5,7 +5,7 @@ import {
   allocate,
   HARD_HOLD_MS,
   INCOMING_ORPHAN_AGE_MS,
-  outputCuts,
+  outputCut,
   V2_PROCESS_MS,
 } from "../src/domain/media-processing";
 import { incomingOrphans, R2_CALL_MS } from "../src/jobs/media-jobs";
@@ -414,7 +414,8 @@ describe("table 1.3 D3: every wait on the container ends at its cut", () => {
       up.id,
     );
     const allocation = allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes);
-    const cut = c.cut === "still" ? allocation.cuts.still : outputCuts(allocation)[c.cut];
+    // The hang is reached at its stage's start, and the fake's clock stands still from there.
+    const cut = c.cut === "still" ? allocation.cuts.still : outputCut(allocation, c.cut, p.hungAt());
     // The wait the hang is raced against ends at the cut.
     expect(p.lastWait()).toBe(cut);
     expect(cut).toBeLessThan(row.deadline_at!);
@@ -442,46 +443,83 @@ describe("the stop and the R2 waits around a cut (M2)", () => {
       up.id,
     );
     const allocation = allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes);
-    return { w, p, up, cuts: { still: allocation.cuts.still, ...outputCuts(allocation) } };
+    // A stage's cut, read once the run has reached that stage (its start is now: the fake's clock stands still).
+    const cutOf = (stage: "still" | "transfer" | "preview") =>
+      stage === "still" ? allocation.cuts.still : outputCut(allocation, stage, Date.now());
+    return { w, p, up, cutOf };
   }
 
   it("a held first abort leaves the second abort and the stop attempted, and the invocation ends within its bounds", async () => {
-    const { w, p, up, cuts } = await cutWorld();
+    const { w, p, up, cutOf } = await cutWorld();
     p.hangNormalize("body");
     p.hold("abort:original");
     p.hold("abort:full");
     const fired = p.fire();
     await vi.waitFor(() => expect(p.hung()).toBe(true));
-    p.expire(cuts.transfer);
+    p.expire(cutOf("transfer"));
     // Both aborts and the destroy start together; none waits on another.
     await vi.waitFor(() => expect(p.aborts().toSorted()).toEqual(["full", "original"]));
     await vi.waitFor(() => expect(p.running()).toBe(false));
     // The aborts are bounded: past R2_CALL_MS the job goes on to S7 and D8/D9 without them.
+    const logged: unknown[] = [];
+    vi.spyOn(console, "warn").mockImplementation((entry: unknown) => void logged.push(entry));
     p.expire(Date.now() + R2_CALL_MS);
     expect(await fired).toBe("returned");
-    // S7 is sent past deadline_at by then: the Store records the deadline (K4).
-    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "deadline" });
+    // DATA-5: the timed-out aborts are logged by the upload's id and variant, never by a key holding the file token.
+    const aborted = logged.filter((e) => (e as { event?: string }).event === "kopje.media.job.abort_failed");
+    expect(aborted.map((e) => (e as { variant?: string }).variant)).toEqual(
+      expect.arrayContaining(["full", "original"]),
+    );
+    expect(aborted).toHaveLength(2);
+    expect(JSON.stringify(logged)).not.toContain(up.token);
+    // The transfer's cut is its allowance from the reply, well before deadline_at: S7 records the cut (D7).
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
     await cleared(w, p, up.id);
   });
 
   it("a held input get ends at the work deadline, the container stopped", async () => {
-    const { w, p, up, cuts } = await cutWorld();
+    const { w, p, up, cutOf } = await cutWorld();
     p.hold("get");
     const fired = p.fire();
     await vi.waitFor(() => expect(p.held()).toContain("get"));
-    expect(p.lastWait()).toBe(cuts.still);
-    p.expire(cuts.still);
+    expect(p.lastWait()).toBe(cutOf("still"));
+    p.expire(cutOf("still"));
     expect(await fired).toBe("returned");
     expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
     await cleared(w, p, up.id);
   });
 
-  it("a held multipart creation ends at the transfer's cut, and the upload it makes later is aborted", async () => {
-    const { w, p, up, cuts } = await cutWorld();
+  it("a creation that answers exactly at the transfer's cut, before the timer, has its upload aborted (r2 M3)", async () => {
+    const { w, p, up, cutOf } = await cutWorld();
     p.hold("create:full");
     const fired = p.fire();
     await vi.waitFor(() => expect(p.held()).toContain("create:full"));
-    p.expire(cuts.transfer);
+    clock(cutOf("transfer"));
+    p.release("create:full");
+    expect(await fired).toBe("returned");
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
+    await vi.waitFor(() => expect(p.aborts().toSorted()).toEqual(["full", "original"]));
+    await cleared(w, p, up.id);
+  });
+
+  it("a held chargeAvPoster ends at the preview's cut: the container stops and the upload completes with its poster", async () => {
+    const { w, p, up, cutOf } = await cutWorld();
+    p.beforeCall("chargeAvPoster", () => new Promise<void>(() => {}));
+    const fired = p.fire();
+    await vi.waitFor(() => expect(p.storeCalls()).toContain("chargeAvPoster"));
+    p.expire(cutOf("preview"));
+    expect(await fired).toBe("returned");
+    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1 });
+    expect(p.writes()).toEqual(["original", "full"]);
+    await cleared(w, p, up.id);
+  });
+
+  it("a held multipart creation ends at the transfer's cut, and the upload it makes later is aborted", async () => {
+    const { w, p, up, cutOf } = await cutWorld();
+    p.hold("create:full");
+    const fired = p.fire();
+    await vi.waitFor(() => expect(p.held()).toContain("create:full"));
+    p.expire(cutOf("transfer"));
     expect(await fired).toBe("returned");
     expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
     await cleared(w, p, up.id);

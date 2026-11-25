@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TRANSFORMS_PER_POSTER } from "../src/domain/media";
-import { allocate } from "../src/domain/media-processing";
+import { allocate, outputCut } from "../src/domain/media-processing";
 import { incomingOrphans, runUpload } from "../src/jobs/media-jobs";
 import { fileKey, incomingKey, originalKey, probeInputKey } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
@@ -13,10 +13,8 @@ import { fakeControl, jobOf, multipartLog, putInput, stillPng, uploadDeps } from
 import { avWorld, clock, held, HOUR, started } from "./media-processing-helpers";
 import { encodeWebp } from "./webp-fixtures";
 
-// The plan's T_COMMIT and the output transfer's share of it (domain/media-processing.ts).
-const T_COMMIT_MS = 6000;
-const T_TRANSFER_MS = 5000;
-type Cuts = { still: number; transfer: number; preview: number };
+// The work deadline, the transfer's start, cut and end, and the preview's cut (outputCut), for one job.
+type Cuts = { still: number; reply: number; transfer: number; transferEnd: number; preview: number };
 
 // runUpload (jobs/media-jobs.ts, the PR4 plan's 1.3 D3-D7) through the production Store and the media bucket, the
 // container answering as container/server/main.go does.
@@ -190,21 +188,22 @@ describe("runUpload (P12)", () => {
     expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
   });
 
-  it("logs a rejected abort with its key and still stops the container and records the cause (M2)", async () => {
+  it("logs a rejected abort by its upload and variant and still stops the container and records the cause (M2)", async () => {
     const w = await avWorld();
     const up = await started(w);
     await putInput(up.id);
-    const logged: { event?: string; key?: string }[] = [];
-    vi.spyOn(console, "warn").mockImplementation((entry: { event?: string; key?: string }) => void logged.push(entry));
+    const logged: { event?: string; variant?: string }[] = [];
+    vi.spyOn(console, "warn").mockImplementation((entry: { event?: string }) => void logged.push(entry));
     const { bucket, log } = multipartLog({ failAbort: true });
     const output = await avFixture("r1-silent.mp4");
     const fake = fakeControl({ output, durationMs: String(await durationMs("r1-silent.mp4")), truncateAt: 1000 });
     await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, up));
     expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
-    expect(logged.filter((entry) => entry.event === "kopje.media.job.abort_failed").map((entry) => entry.key)).toEqual(
-      expect.arrayContaining([fileKey(up.token, "full"), originalKey(up.id)]),
-    );
-    expect(logged.filter((entry) => entry.event === "kopje.media.job.abort_failed")).toHaveLength(2);
+    // DATA-5: by the upload's id and a fixed variant, never by the key (full's holds the file token).
+    const aborted = logged.filter((entry) => entry.event === "kopje.media.job.abort_failed");
+    expect(aborted.map((entry) => entry.variant)).toEqual(expect.arrayContaining(["full", "original"]));
+    expect(aborted).toHaveLength(2);
+    expect(JSON.stringify(logged)).not.toContain(up.token);
     expect(fake.stops()).toBe(1);
     expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "verifier" });
   });
@@ -347,10 +346,10 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     expect(fake.calls).not.toContain("GET /normalize/still");
   });
 
-  // In execution order (M3): the output's transfer has T_TRANSFER from the still's cut, then the still and its preview
-  // until T_COMMIT less T_TRANSFER before the deadline, which is left for the stop and the writes.
+  // In execution order: the output's transfer from the reply's headers, then the still and its preview from the
+  // transfer's end, each stage's cut its allowance from its start but never past what the later stages keep.
   async function blurhashWith(options: {
-    replyAt?: (cut: Cuts) => number;
+    replyAt?: (cut: { still: number }) => number;
     transferMs?: number;
     stillAt?: (cut: Cuts) => number;
   }) {
@@ -358,17 +357,21 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     const up = await started(w);
     await putInput(up.id);
     const job = await jobOf(w, up);
-    const { cuts, deadline } = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const allocation = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const reply = options.replyAt?.({ still: allocation.cuts.still }) ?? Date.now();
+    const transferEnd = reply + (options.transferMs ?? 0);
     const at: Cuts = {
-      still: cuts.still,
-      transfer: cuts.still + T_TRANSFER_MS,
-      preview: deadline - (T_COMMIT_MS - T_TRANSFER_MS),
+      still: allocation.cuts.still,
+      reply,
+      transfer: outputCut(allocation, "transfer", reply),
+      transferEnd,
+      preview: outputCut(allocation, "preview", transferEnd),
     };
     const output = await avFixture("r1-av.mp4");
     const fake = fakeControl(
       { output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() },
       {
-        ...(options.replyAt === undefined ? {} : { onReply: () => clock(options.replyAt!(at)) }),
+        ...(options.replyAt === undefined ? {} : { onReply: () => clock(at.reply) }),
         ...(options.transferMs === undefined ? {} : { transferMs: options.transferMs }),
         ...(options.stillAt === undefined ? {} : { onStill: () => clock(options.stillAt!(at)) }),
       },
@@ -380,9 +383,35 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     };
   }
 
-  it("gives a preview begun after the whole transfer a blurhash, and none with 2 s left before its cut", async () => {
-    expect((await blurhashWith({ stillAt: (at) => at.transfer })).blurhash).toMatch(/^.{6,}$/);
+  it("gives a preview begun as the transfer ends a blurhash, and none with 2 s left before its cut", async () => {
+    expect((await blurhashWith({ stillAt: (at) => at.transferEnd })).blurhash).toMatch(/^.{6,}$/);
     expect((await blurhashWith({ stillAt: (at) => at.preview - 2000 })).blurhash).toBe("");
+  });
+
+  it("completes with the poster when the transfer is fast, Images is held to its cut and original's complete takes 1.5 s (r2 M1)", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const job = await jobOf(w, up);
+    const { cuts } = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const codec = new TestCodec();
+    // Images answers nothing until its guard's cut on the faked clock.
+    codec.encode = async (_bytes, options) => {
+      for (;;) {
+        await options.guard!(() => Promise.resolve());
+        clock(Date.now() + 10);
+      }
+    };
+    const { bucket, log } = multipartLog({ completeMs: { original: 1500 } });
+    const output = await avFixture("r1-av.mp4");
+    const fake = fakeControl(
+      { output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() },
+      { onReply: () => clock(cuts.still - 50) },
+    );
+    await runUpload(uploadDeps(w, fake.control, { bucket, images: codec }), job);
+    expect(log.filter((entry) => entry.startsWith("complete:"))).toEqual(["complete:original", "complete:full"]);
+    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1 });
+    expect((await objects(up.id, up.token)).small).toBeNull();
   });
 
   it("completes an output whose headers come 50 ms before the still's cut and whose body takes 4.2 s (M3)", async () => {

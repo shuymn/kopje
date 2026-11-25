@@ -197,6 +197,8 @@ export async function platformFor(w: AvWorld) {
   let failingDeletes = 0;
   let hang: "reply" | "body" | "still" | null = null;
   let hung = false;
+  // The faked time the hang began (vi.waitFor moves the faked Date on while a test waits for it).
+  let hungAt = 0;
   let requestAborted = false;
   // The unit's waits (deps.wait), each due at its time on the faked clock; they resolve only when a test expires them.
   const waits: { due: number; resolve: () => void }[] = [];
@@ -301,7 +303,10 @@ export async function platformFor(w: AvWorld) {
       destroyHeld: () => destroyHeld,
       destroying: () => void destroys++,
       hang: () => hang,
-      hung: () => void (hung = true),
+      hung: () => {
+        hung = true;
+        hungAt = Date.now();
+      },
       aborted: () => void (requestAborted = true),
     },
     {
@@ -347,6 +352,7 @@ export async function platformFor(w: AvWorld) {
     envMaintenance: (on: boolean) => void (maintenance = on),
     hangNormalize: (how: "reply" | "body" | "still") => void (hang = how),
     hung: () => hung,
+    hungAt: () => hungAt,
     requestAborted: () => requestAborted,
     // The latest wait's time, or null (a wait raced and won by its work stays pending, as a timer would).
     lastWait: () => waits.at(-1)?.due ?? null,

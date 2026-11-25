@@ -76,14 +76,19 @@ export const T_STILL = SECOND;
 const T_PREVIEW = 3 * SECOND;
 // The output into R2, the confirmed stop, three S5 calls and writes, and S6.
 const T_COMMIT = 6 * SECOND;
-// Of T_COMMIT, the output's transfer into R2 (its 4.5 s p95 rounded up), which the processor makes right after the
-// container's reply, before the still and the preview; the rest is the stop, the S5 calls, the writes and S6.
-const T_TRANSFER = 5 * SECOND;
+// Of T_COMMIT, the output's transfer into R2 (its measured 4.5 s p95), which the processor makes right after the
+// container's reply, before the still and the preview.
+const T_TRANSFER = 4500;
+// The rest of T_COMMIT, after the preview: the confirmed stop, the S5 calls and final writes, and S6.
+const T_FINISH = T_COMMIT - T_TRANSFER;
 
-// The processor's own cuts after the container's reply, in the order it runs them (#1828 fix r1 M3): the transfer has
-// T_TRANSFER from the still's cut, then the still and its preview until T_COMMIT less T_TRANSFER before the deadline.
-export function outputCuts(allocation: Pick<Allocation, "cuts" | "deadline">): { transfer: number; preview: number } {
-  return { transfer: allocation.cuts.still + T_TRANSFER, preview: allocation.deadline - (T_COMMIT - T_TRANSFER) };
+// The cut of one of the processor's stages after the container's reply, from the time it starts, in the order it runs
+// them: the transfer, then the still and its preview. Each has its allowance, but never past the deadline less what
+// the later stages keep, so a stage that ends early leaves its saving to the later ones.
+export function outputCut(allocation: Pick<Allocation, "deadline">, stage: "transfer" | "preview", start: number) {
+  return stage === "transfer"
+    ? Math.min(start + T_TRANSFER, allocation.deadline - T_PREVIEW - T_FINISH)
+    : Math.min(start + T_PREVIEW, allocation.deadline - T_FINISH);
 }
 // Sending S10 and its answer (v1).
 export const T_REPLY = 2 * SECOND;

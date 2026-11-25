@@ -6,7 +6,7 @@ import {
   type AvWrite,
   encodeLeft,
   type Endpoint,
-  outputCuts,
+  outputCut,
   type ProcessorFailure,
   remainingOf,
   T_MIN_ENCODE,
@@ -35,12 +35,14 @@ import type { StoreStub } from "../platform/store-client";
 // A failure before the writes stops the container first and records its cause: `refused` (the container refused the
 // input, or failed it as A5 states), `envelope`, `verifier` (the output refused: no upload is completed), `timeout` (a
 // stage cut passed before the job's deadline), `unavailable` (any other failure: the processor, R2, or an unconfirmed
-// stop). Nothing is retried. Every wait on the container ends at a cut on the processor's clock, whatever the
-// container does (R9 chooses its timing): its reply by the work deadline (the still's cut), the output's body by
-// T_TRANSFER after it, and the still and its preview by the cut that leaves the rest of T_COMMIT for the stop and the
-// writes (outputCuts). Past a cut the container's
-// requests are aborted and the job ends as `timeout` (the Store records `deadline` instead once deadline_at has passed,
-// K4).
+// stop). Nothing is retried. Every wait from the container's start to D4 (R2, the Store, the container: R9 chooses its
+// timing) goes through one race against the current stage's cut on the processor's clock (`race`): the input and the
+// reply by the work deadline (the still's cut), the multipart creations, the body and its parts by the transfer's cut,
+// and the still, the poster's charge and its preview by the preview's cut (outputCut: each stage's allowance from its
+// start, never past what the later stages keep). A result that arrives at or after its cut is cleaned up when it does
+// (an upload aborted, a body cancelled, a Store answer ignored). Past a required wait's cut the container's requests
+// are aborted and the job ends as `timeout` (the Store records `deadline` instead once deadline_at has passed, K4); past
+// the poster's, the upload goes on with its poster.
 //
 // The rounds, each its own error boundary (jobs/scheduled.ts): the dispatch round (S12, S13), the probe round
 // (normalize@standard-4's activation probe when it is due), and the incoming/ orphan pass. Logs carry codes and stage
@@ -75,20 +77,15 @@ class StageCut extends Error {}
 
 const CUT: unique symbol = Symbol("cut");
 
-// Whether `work` settles within `ms` on the processor's clock: its value, or CUT.
-async function settles<T>(deps: Pick<UploadDeps, "wait">, work: Promise<T>, ms: number): Promise<T | typeof CUT> {
-  work.catch(() => {});
-  return Promise.race([work, deps.wait(ms).then((): typeof CUT => CUT)]);
-}
-
-// `work` until `end` on the processor's clock: past it (or when it settles, or rejects, at or after `end`), `cut` is
-// aborted, which ends the container's requests and the bodies they stream, and StageCut is thrown.
-async function bounded<T>(
+// `work` raced against `end` on the processor's clock: its value, or CUT when the cut came first or `work` settled (or
+// rejected) at or after `end`. On CUT, `late` is attached to `work` itself, so a value that arrives after the cut, or
+// arrived with it before the timer ran, is cleaned up either way.
+async function race<T>(
   deps: Pick<UploadDeps, "now" | "wait">,
   work: Promise<T>,
   end: number,
-  cut: AbortController,
-): Promise<T> {
+  late: (value: T) => unknown = () => {},
+): Promise<T | typeof CUT> {
   work.catch(() => {});
   const left = end - deps.now();
   let settled: T | typeof CUT;
@@ -101,6 +98,23 @@ async function bounded<T>(
     settled = CUT;
   }
   if (settled === CUT || deps.now() >= end) {
+    work.then(late).catch(() => {});
+    return CUT;
+  }
+  return settled;
+}
+
+// A wait the job needs: past its cut, `cut` is aborted, which ends the container's requests and the bodies they
+// stream, and StageCut is thrown.
+async function bounded<T>(
+  deps: Pick<UploadDeps, "now" | "wait">,
+  work: Promise<T>,
+  end: number,
+  cut: AbortController,
+  late?: (value: T) => unknown,
+): Promise<T> {
+  const settled = await race(deps, work, end, late);
+  if (settled === CUT) {
     cut.abort();
     throw new StageCut();
   }
@@ -132,8 +146,8 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     job.deadline + (job.endpoint === "v1" ? T_REPLY : 0),
     job.inputBytes,
   );
-  const output = outputCuts(allocation);
-  const uploads: R2MultipartUpload[] = [];
+  // The two multipart uploads begun, by their fixed variant (what logs name: full's key holds the file token, DATA-5).
+  const uploads: { variant: "original" | "full"; upload: R2MultipartUpload }[] = [];
   const stage = { name: "start", at: deps.now() };
   // Where the job is, for its log events: the stage and the time since it began.
   const at = () => ({ id: job.id, stage: stage.name, ms: deps.now() - stage.at });
@@ -145,24 +159,30 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     }
   };
   // Each multipart upload begun aborted at once, each awaited at most R2_CALL_MS; one that fails or does not answer
-  // is logged with its key, and left to the bucket's lifecycle rule.
-  const abortOne = async (upload: R2MultipartUpload) => {
+  // is logged by the job's id and its variant, and left to the bucket's lifecycle rule.
+  const abortOne = async ({ variant, upload }: (typeof uploads)[number]) => {
     try {
-      if ((await settles(deps, upload.abort(), R2_CALL_MS)) === CUT) {
-        console.warn({ event: "kopje.media.job.abort_failed", ...at(), key: upload.key, reason: "timeout" });
+      if ((await race(deps, upload.abort(), deps.now() + R2_CALL_MS)) === CUT) {
+        console.warn({ event: "kopje.media.job.abort_failed", ...at(), variant, reason: "timeout" });
       }
     } catch (error) {
-      console.warn({ event: "kopje.media.job.abort_failed", ...at(), key: upload.key, ...errorFields(error) });
+      console.warn({ event: "kopje.media.job.abort_failed", ...at(), variant, ...errorFields(error) });
     }
   };
   const abortUploads = async () => {
     await Promise.all(uploads.splice(0).map(abortOne));
   };
-  // A multipart upload begun within the transfer's cut; one whose creation answers after the cut is aborted then.
-  const begin = async (key: string, options: R2MultipartOptions, cut: AbortController) => {
+  // A multipart upload begun by `end`; one whose creation answers at or after the cut is aborted when it does.
+  const begin = async (
+    variant: "original" | "full",
+    key: string,
+    options: R2MultipartOptions,
+    end: number,
+    cut: AbortController,
+  ) => {
     const creating = deps.bucket.createMultipartUpload(key, options);
-    creating.then((upload) => (cut.signal.aborted ? abortOne(upload) : undefined)).catch(() => {});
-    uploads.push(await bounded(deps, creating, output.transfer, cut));
+    const late = (upload: R2MultipartUpload) => abortOne({ variant, upload });
+    uploads.push({ variant, upload: await bounded(deps, creating, end, cut, late) });
   };
   // D4 and the aborts together, neither waiting on the other; then the cause: an unconfirmed stop records
   // `unavailable` whatever the cause was, and ends the invocation.
@@ -193,16 +213,16 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     stage.at = deps.now();
     // Every wait from here while the container runs ends at a cut; past one, `cut` aborts what is still asked of it.
     const cut = new AbortController();
-    const getting = deps.bucket.get(incomingKey(job.id));
-    getting.then((late) => (cut.signal.aborted ? late?.body.cancel() : undefined)).catch(() => {});
-    const object = await bounded(deps, getting, allocation.cuts.still, cut);
+    const object = await bounded(deps, deps.bucket.get(incomingKey(job.id)), allocation.cuts.still, cut, (late) =>
+      late?.body.cancel(),
+    );
     if (object === null) {
       console.warn({ event: "kopje.media.job.input_missing", ...at() });
       return await stopThen("unavailable");
     }
     const workMs = allocation.cuts.still - deps.now();
     if (workMs <= T_STILL) {
-      await object.body.cancel();
+      await race(deps, object.body.cancel(), allocation.cuts.still);
       return await stopThen("timeout");
     }
     const result = await bounded(
@@ -222,13 +242,15 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     }
     stage.name = "output";
     stage.at = deps.now();
+    const transferEnd = outputCut(allocation, "transfer", stage.at);
     const type = { httpMetadata: { contentType: result.type } };
-    await begin(originalKey(job.id), type, cut);
-    await begin(fileKey(job.token, "full"), type, cut);
+    await begin("original", originalKey(job.id), type, transferEnd, cut);
+    await begin("full", fileKey(job.token, "full"), type, transferEnd, cut);
+    const [original, full] = uploads.map((entry) => entry.upload) as [R2MultipartUpload, R2MultipartUpload];
     const verified = await bounded(
       deps,
-      verifyInto(result, uploads as [R2MultipartUpload, R2MultipartUpload]),
-      output.transfer,
+      verifyInto(result, [original, full], (write) => bounded(deps, write, transferEnd, cut)),
+      transferEnd,
       cut,
     );
     if ("rule" in verified) {
@@ -238,8 +260,9 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     // A video's still; the adapter answers null for audio, which has none (Kopje-Still is a video's header).
     stage.name = "still";
     stage.at = deps.now();
-    const png = await bounded(deps, result.still(), output.preview, cut);
-    const preview = png !== null && verifyStill(png) === null ? await poster(deps, job, output.preview, png) : null;
+    const previewEnd = outputCut(allocation, "preview", stage.at);
+    const png = await bounded(deps, result.still(), previewEnd, cut);
+    const preview = png !== null && verifyStill(png) === null ? await poster(deps, job, previewEnd, png) : null;
     // D4: the container stops before any final write.
     stage.name = "commit";
     stage.at = deps.now();
@@ -249,7 +272,6 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
       await fail("unavailable");
       return { stopped: false };
     }
-    const [original, full] = uploads as [R2MultipartUpload, R2MultipartUpload];
     const writes: [AvWrite, () => Promise<unknown>][] = [
       ["original", () => original.complete(verified.parts[0])],
       ["full", () => full.complete(verified.parts[1])],
@@ -328,6 +350,8 @@ async function granted(deps: UploadDeps, job: UploadJob, write: AvWrite): Promis
 async function verifyInto(
   result: Extract<NormalizeResult, { ok: true }>,
   [original, full]: [R2MultipartUpload, R2MultipartUpload],
+  // Each part write's wait, raced against the transfer's cut.
+  within: <T>(write: Promise<T>) => Promise<T>,
 ): Promise<Verified | { rule: string }> {
   const { stream, verdict, abort } = avVerifier(result.type, result.length, { expectedDuration: result.duration });
   const parts: [R2UploadedPart[], R2UploadedPart[]] = [[], []];
@@ -338,7 +362,7 @@ async function verifyInto(
   const flush = async () => {
     const part = buffer.subarray(0, filled);
     const number = parts[0].length + 1;
-    const [a, b] = await Promise.all([original.uploadPart(number, part), full.uploadPart(number, part)]).catch(
+    const [a, b] = await within(Promise.all([original.uploadPart(number, part), full.uploadPart(number, part)])).catch(
       (error: unknown) => {
         writeFailed = { error };
         throw error;
@@ -370,7 +394,8 @@ async function verifyInto(
   } catch {
     abort();
     if (writeFailed !== null) {
-      await reader.cancel().catch(() => {});
+      // Not awaited: the failure is R2's whatever the body's cancel does.
+      reader.cancel().catch(() => {});
       throw (writeFailed as { error: unknown }).error;
     }
   }
@@ -399,13 +424,15 @@ async function verifyInto(
 // A video's preview from its still: charged right before stillPreview, or none (the poster) when the budgets have no
 // room or Images does not make it. Images refusing a PNG verifyStill passed (9412, 9413, 9520) says the profile's
 // stills are not usable: recorded as an infrastructure failure, which has the probe round probe again; 9422 is not.
+// Every Store call is raced against the preview's cut `end`: past it the poster stands, and a late answer is ignored.
 async function poster(deps: UploadDeps, job: UploadJob, end: number, png: Uint8Array): Promise<Preview | null> {
-  const charged = await deps.store.chargeAvPoster(deps.build, {
+  const charging: Promise<{ status: string }> = deps.store.chargeAvPoster(deps.build, {
     id: job.id,
     startId: job.startId,
     monthlyTransforms: deps.monthlyTransforms,
   });
-  if (charged.status !== "charged") {
+  const charged = await race(deps, charging, end);
+  if (charged === CUT || charged.status !== "charged") {
     return null;
   }
   try {
@@ -422,7 +449,11 @@ async function poster(deps: UploadDeps, job: UploadJob, end: number, png: Uint8A
     }
     if (made.reason === "unsupported") {
       console.warn({ event: "kopje.media.job.still_refused", id: job.id });
-      await deps.store.recordMediaInfrastructureFailure(deps.build, { profile: NORMALIZE_PROFILE, build: deps.build });
+      await race(
+        deps,
+        deps.store.recordMediaInfrastructureFailure(deps.build, { profile: NORMALIZE_PROFILE, build: deps.build }),
+        end,
+      );
     }
   } catch (error) {
     console.warn({ event: "kopje.media.job.preview_failed", id: job.id, ...errorFields(error) });
