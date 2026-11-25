@@ -114,20 +114,21 @@ and a failed one stays failed; so does one whose decision was not received (its 
 answers while the processing goes on. Three times are separate. Staging writes to R2 start only within the staging's own
 time and, on v1, before the decision's time. The answer is due by `V1_TIME_MS` on v1, every wait before the decision
 ending at the decision's time; on v2 the reservation waits as an image's does, and the slot, the queue and the lookup of
-an upload already queued are each given 30 s. Cleanup (aborting a staging, releasing it, deleting its input, abandoning
-the reservation) may finish after the answer, in the background, each step given 30 s, all within the 30 s the Worker
-lives after the answer; what it leaves the sweep, the `incoming/` orphan pass or R2's lifecycle rule removes. The route
-has no disconnect trigger: a client that disconnects starts that cleanup only when the body's read fails or the
-staging's own time ends. An incomplete staging is left to the bucket's rule aborting incomplete multipart uploads, a
-slot that is still staging stops counting at the staging's deadline, and a queue call already sent may still accept the
-upload, charge it and process it as any other. When the processor's probe fails while a v1 request is read, the request
-goes on as an image with the image path's waits: after the 503 it may still use three Images transformations, image or
-not, and an image completing then is unattached and swept the same way. `V1_TIME_MS` is a constant of the release, not a
-setting: 90 s in this release, a provisional value to be set from a measurement on a staging instance, from the shortest
-time a measured browser client waits for an upload's answer, since one value serves every client. The edges of what each
-endpoint admits (the longest video of a given size, codec and ingress that still finishes in time) are estimated
-admission limits, not measured wall times, and are published here once runs at the edges on a staging instance measure
-them.
+an upload already queued are each given 30 s per attempt. Cleanup (aborting a staging, releasing it, deleting its input,
+abandoning the reservation) may finish after the answer, in the background, each step given 30 s, all within the 30 s
+the Worker lives after the answer; what it leaves the sweep, the `incoming/` orphan pass or R2's lifecycle rule removes.
+The route has no disconnect trigger: a client that disconnects starts that cleanup only when the staging ends on its own
+(the body's read or an R2 write fails) or the staging's own time ends, while the Worker still lives. An incomplete
+staging is left to the bucket's rule aborting incomplete multipart uploads, a slot that is still staging stops counting
+at the staging's deadline, and a queue call already sent may still accept the upload, charge it and process it as any
+other. When the slot's request finds the processor inactive (its probe failed after the reservation), a v1 request goes
+on as an image with the image path's waits: after the 503 it may still deduct three units from the account's and the
+instance's Images allowances, image or not, and an image completing then is unattached and swept the same way.
+`V1_TIME_MS` is a constant of the release, not a setting: 90 s in this release, a provisional value to be set from a
+measurement on a staging instance, from the shortest time a measured browser client waits for an upload's answer, since
+one value serves every client. The edges of what each endpoint admits (the longest video of a given size, codec and
+ingress that still finishes in time) are estimated admission limits, not measured wall times, and are published here
+once runs at the edges on a staging instance measure them.
 
 A video is re-encoded to an H.264 and AAC MP4 (at most 1080p at 60 fps up to 120 s, 720p at 30 fps up to 300 s, 480p
 at 30 fps up to 600 s), audio to MP3; a longer file, or one past the processing envelope, is refused with 422. Two

@@ -3784,7 +3784,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   of it (an MP4 alone is charged and refused), and may complete an image, unattached and swept after its grace (a
   documented limit: it needs a probe failure within the request; the charge after the 503 is tested, an image completing
   after it is not); on v2 the reservation waits as the image path's does, and S1, S3 and the settled lookup are each
-  awaited at most `STORE_CALL_MS`. Cleanup may finish after the response, in the request's background task, each step
+  awaited at most `STORE_CALL_MS` per attempt (S1 and S3 repeat once after a rejection). Cleanup may finish after the
+  response, in the request's background task, each step
   within `R2_CALL_MS` or `STORE_CALL_MS` (a release before staging within both), all within the invocation's 30 s after
   the response; the route has no disconnect trigger (MEDIA-2's limit), and a production disconnect is outside what the
   tests enforce. `test/media-av-upload.test.ts` ("the staging of a video or audio upload (P6)", "a held ingress read
