@@ -691,14 +691,16 @@ function containerControl(
 // thing it stores besides its alarm. The steps, each set and confirmed after the one alarm D1 arms:
 //   D0 run         the record and an alarm for now in one storage transaction; a record without an alarm gets one;
 //                  otherwise nothing, so a repeated run, or one during alarm(), starts no second invocation
-//   D1 entry       the record-age stop: a record V2_PROCESS_MS + HARD_HOLD_MS old with no container running deletes
-//                  the input, then the storage (W9; a failed delete keeps the record for the alarm's repeat); else an invocation id drawn in memory and the alarm set for
-//                  CLEANUP_RETRY_MS later and confirmed (sync), which every later step relies on
-//   D2 S4          started: runUpload (D3-D7, jobs/media-jobs.ts); settled or gone: the cleanup replay; maintenance
-//                  (or no answer): a running container is stopped, and the invocation ends with the record and alarm
-//                  kept, so the alarm repeats it
-//   D4             the confirmed stop; an unconfirmed one ends the invocation with no Store write, its granted slot
-//                  counting, and the alarm repeats it
+//   D1 entry       the record-age stop: a record V2_PROCESS_MS + HARD_HOLD_MS old with no container running re-arms,
+//                  deletes the input (bounded), then the storage (W9; a delete not answered keeps the record for the
+//                  alarm's repeat); else an invocation id drawn in memory and the alarm set for CLEANUP_RETRY_MS later
+//                  and confirmed (sync), which every later step relies on
+//   D2 S4          a container still running here (an earlier invocation's) is stopped first, and an unconfirmed
+//                  stop ends the invocation with no Store write; started: runUpload (D3-D7, jobs/media-jobs.ts);
+//                  settled or gone: the cleanup replay; maintenance (or no answer): a running container is stopped,
+//                  and the invocation ends with the record and alarm kept, so the alarm repeats it
+//   D4             the confirmed stop; an unconfirmed one ends the invocation (S7 awaited at most STORE_CALL_MS), its
+//                  granted slot counting, and the alarm repeats it
 //   D8 input       incoming/<id> deleted, awaited at most R2_CALL_MS; D9 follows whatever it did, so the slot is
 //                  released on its own
 //   D9 S8          the stop confirmation with the record's teardown_id, only after a confirmed stop: `released`, with
@@ -775,6 +777,12 @@ export class UploadUnit {
       // The Worker's maintenance gates the start as the Store's does: the record and D1's alarm stay, so it repeats.
       if (this.deps.maintenance()) {
         await this.#stop();
+        return;
+      }
+      // A container already running here is an earlier invocation's (this one starts its own only after S4): it is
+      // stopped before S4, so no Store call waits with it running; an unconfirmed stop ends the invocation, the record
+      // and D1's alarm kept, the slot counting.
+      if (container?.running === true && !(await this.#stop())) {
         return;
       }
       const asked = this.deps.now();

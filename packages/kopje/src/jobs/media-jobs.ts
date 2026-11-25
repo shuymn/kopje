@@ -73,6 +73,8 @@ export type UploadDeps = ContainerControl & {
 
 // The most one R2 call of the cleanup (a multipart upload's abort) is awaited.
 export const R2_CALL_MS = 30_000;
+// The most S7 is awaited after an unconfirmed stop: the container may still run, and the alarm retries the stop.
+export const STORE_CALL_MS = 30_000;
 
 // A wait on the container that reached its cut.
 class StageCut extends Error {}
@@ -160,6 +162,11 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
       console.warn({ event: "kopje.media.job.fail_failed", ...at(), ...errorFields(error) });
     }
   };
+  // S7 `unavailable` with the container perhaps still running: awaited at most STORE_CALL_MS, so the invocation ends
+  // and the alarm retries the stop (a late answer is ignored).
+  const failLive = async () => {
+    await race(deps, fail("unavailable"), deps.now() + STORE_CALL_MS);
+  };
   // Each multipart upload begun aborted at once, each awaited at most R2_CALL_MS; one that fails or does not answer
   // is logged by the job's id and its variant, and left to the bucket's lifecycle rule.
   const abortOne = async ({ variant, upload }: (typeof uploads)[number]) => {
@@ -192,7 +199,7 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     const [stopped] = await Promise.all([deps.stop(), abortUploads()]);
     if (!stopped) {
       console.warn({ event: "kopje.media.job.stop_failed", ...at() });
-      await fail("unavailable");
+      await failLive();
       return { stopped: false };
     }
     if (cause !== null) {
@@ -281,7 +288,7 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     if (!(await deps.stop())) {
       await abortUploads();
       console.warn({ event: "kopje.media.job.stop_failed", ...at() });
-      await fail("unavailable");
+      await failLive();
       return { stopped: false };
     }
     const writes: [AvWrite, () => Promise<unknown>][] = [

@@ -8,7 +8,7 @@ import {
   outputCut,
   V2_PROCESS_MS,
 } from "../src/domain/media-processing";
-import { incomingOrphans, R2_CALL_MS } from "../src/jobs/media-jobs";
+import { incomingOrphans, R2_CALL_MS, STORE_CALL_MS } from "../src/jobs/media-jobs";
 import { incomingKey } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
 import { BUILD } from "./helpers";
@@ -24,6 +24,22 @@ import { post } from "./status-helpers";
 afterEach(() => {
   vi.useRealTimers();
 });
+
+// Runs `fired` to its end, expiring each held destroy's bound once that destroy has started.
+async function through(p: Awaited<ReturnType<typeof platformFor>>, fired: Promise<string>): Promise<string> {
+  let ended: string | null = null;
+  void fired.then((value) => void (ended = value));
+  let seen = p.destroys();
+  for (let i = 0; i < 200 && ended === null; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const due = p.lastWait();
+    if (ended === null && p.destroys() > seen && due !== null) {
+      seen = p.destroys();
+      p.expire(due);
+    }
+  }
+  return ended ?? "pending";
+}
 
 // Table 1.3: each step, the invocation killed just after it, and what the alarm's replay leaves.
 const STEPS: { step: string; killAt: string; completes: boolean }[] = [
@@ -253,22 +269,6 @@ describe("table 1.3: the stop and its confirmation", () => {
     expect((await held(w.store, up.id)).att?.processed).toBe(1);
   });
 
-  // Runs `fired` to its end, expiring each held destroy's bound once that destroy has started.
-  async function through(p: Awaited<ReturnType<typeof platformFor>>, fired: Promise<string>): Promise<string> {
-    let ended: string | null = null;
-    void fired.then((value) => void (ended = value));
-    let seen = p.destroys();
-    for (let i = 0; i < 200 && ended === null; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      const due = p.lastWait();
-      if (ended === null && p.destroys() > seen && due !== null) {
-        seen = p.destroys();
-        p.expire(due);
-      }
-    }
-    return ended ?? "pending";
-  }
-
   it("a destroy held in two invocations ends each at its bound with no S8, the record, slot and alarm kept", async () => {
     const w = await avWorld();
     const p = await platformFor(w);
@@ -395,6 +395,54 @@ describe("D8: the input is deleted before the record goes (M1, MEDIA-3)", () => 
     expect(p.storage.map.size).toBe(0);
     expect(await env.MEDIA.head(incomingKey(up.id))).toBeNull();
     await gate(w.store, "maintenance", false);
+  });
+});
+
+describe("no Store call holds a live container (r3 M2)", () => {
+  it("an S7 that never answers after an unconfirmed stop ends at STORE_CALL_MS; the next alarm retries the destroy", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.failDestroy(true);
+    let holding = true;
+    p.beforeCall("failNormalize", () => (holding ? new Promise<void>(() => {}) : Promise.resolve()));
+    const fired = p.fire();
+    await vi.waitFor(() => expect(p.storeCalls()).toContain("failNormalize"));
+    p.expire(Date.now() + STORE_CALL_MS);
+    expect(await fired).toBe("returned");
+    expect(p.running()).toBe(true);
+    expect((await held(w.store, up.id)).slot).not.toBeNull();
+    expect(p.storage.map.size).toBe(1);
+    expect(p.storage.alarm).not.toBeNull();
+    holding = false;
+    p.failDestroy(false);
+    await p.fire();
+    expect(p.running()).toBe(false);
+    await p.settle();
+    await cleared(w, p, up.id);
+  });
+
+  it("a replay stops an earlier invocation's container before S4, and returns with the slot held when that stop fails", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    // The first invocation dies with its container running (D3).
+    p.killNext("destroy");
+    expect(await p.fire()).toBe("killed");
+    expect(p.running()).toBe(true);
+    p.failDestroy(true);
+    let holding = true;
+    p.beforeCall("startNormalize", () => (holding ? new Promise<void>(() => {}) : Promise.resolve()));
+    p.clearCalls();
+    expect(await through(p, p.fire())).toBe("returned");
+    expect(p.storeCalls()).not.toContain("startNormalize");
+    expect(p.running()).toBe(true);
+    expect((await held(w.store, up.id)).slot).not.toBeNull();
+    expect(p.storage.alarm).not.toBeNull();
+    holding = false;
+    p.failDestroy(false);
+    await p.settle();
+    await cleared(w, p, up.id);
   });
 });
 
