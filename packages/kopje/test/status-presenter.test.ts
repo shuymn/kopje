@@ -64,6 +64,34 @@ describe("a playable file's meta (P16)", () => {
     });
   });
 
+  it("shows a playable file's dimensions only as positive integers within the stored bound, and its duration as the verifier's (code review r2 M2)", () => {
+    const tiny = 0.0000012345678901234567;
+    expect(
+      presentMedia(
+        row("video", {
+          original: { width: tiny, height: 2, duration: 8 },
+          small: { width: 65_536, height: 360 },
+        }),
+        ORIGIN,
+      ).meta,
+    ).toEqual({ original: { duration: 8 } });
+    expect(presentMedia(row("video", { original: { width: 65_535, height: 1 } }), ORIGIN).meta).toEqual({
+      original: { width: 65_535, height: 1, size: "65535x1", aspect: 65_535 },
+    });
+    // One sample at 48 kHz up to the audio limit; shorter or longer is not the verifier's.
+    const duration = (d: number) => presentMedia(row("audio", { original: { duration: d } }), ORIGIN).meta;
+    expect([duration(1 / 48_000), duration(1200), duration(1 / 48_001), duration(1200.5)]).toEqual([
+      { original: { duration: 1 / 48_000 } },
+      { original: { duration: 1200 } },
+      null,
+      null,
+    ]);
+    // An image's dimensions as before: any positive finite numbers.
+    expect(presentMedia(row("image", { original: { width: tiny, height: 2 } }), ORIGIN).meta).toEqual({
+      original: { width: tiny, height: 2, size: `${tiny}x2`, aspect: tiny / 2 },
+    });
+  });
+
   it("shows no meta for a stored meta that is not an object", () => {
     expect(presentMedia(row("video", "[1]"), ORIGIN).meta).toBeNull();
     expect(presentMedia(row("video", null), ORIGIN).meta).toBeNull();

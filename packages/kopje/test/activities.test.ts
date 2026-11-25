@@ -21,18 +21,35 @@ describe("a playable file's Document (P16)", () => {
     expect(playableDocumentFacts("audio", JSON.stringify(avMeta.audio.meta))).toEqual(avMeta.audio.document);
   });
 
-  it("writes a whole number of seconds as Ruby's Float does, and leaves out what ISO 8601 cannot write", () => {
+  it("writes a whole number of seconds as Ruby's Float does, and a fraction down to one sample at 48 kHz in decimal", () => {
     const of = (duration: unknown) => playableDocumentFacts("audio", JSON.stringify({ original: { duration } }));
-    expect([of(8), of(0.5), of(1e-4), of(1e16 - 2)]).toEqual([
+    expect([of(8), of(0.5), of(1e-4), of(1 / 48_000), of(1200)]).toEqual([
       { duration: "PT8.0S" },
       { duration: "PT0.5S" },
       { duration: "PT0.0001S" },
-      { duration: "PT9999999999999998.0S" },
+      // The verifier's shortest (one sample at 48 kHz), in decimal: ISO 8601 has no exponent (code review r2).
+      { duration: "PT0.000020833333333333333S" },
+      { duration: "PT1200.0S" },
     ]);
-    expect([of(5e-5), of(1e16), of(0), of(-1), of("8")]).toEqual([{}, {}, {}, {}, {}]);
+    // Past what the verifier produces either way, or not a positive number: left out.
+    expect([of(1 / 48_001), of(1200.5), of(0), of(-1), of("8")]).toEqual([{}, {}, {}, {}, {}]);
     // An image's and a gifv's stored facts are not written.
     expect(playableDocumentFacts("image", JSON.stringify(avMeta.video.meta))).toEqual({});
     expect(playableDocumentFacts("gifv", JSON.stringify(avMeta.video.meta))).toEqual({});
+  });
+
+  it("writes a width and a height each where stored, as positive integers within the stored bound (code review r2)", () => {
+    const of = (original: unknown) => playableDocumentFacts("video", JSON.stringify({ original }));
+    expect([of({ width: 640 }), of({ height: 360 }), of({ width: 65_535, height: 1 })]).toEqual([
+      { width: 640 },
+      { height: 360 },
+      { width: 65_535, height: 1 },
+    ]);
+    expect([
+      of({ width: 640.5 }),
+      of({ width: 65_536 }),
+      of({ width: 0.0000012345678901234567, height: "360" }),
+    ]).toEqual([{}, {}, {}]);
   });
 
   it("publishes a completed video's and audio file's facts in the Note, and an image's Document as before", async () => {
