@@ -2302,6 +2302,65 @@ describe("the route's answers and its cleanup (code review r2)", () => {
 
   // RES-1's text bound comes first: a thumbnail past API_BODY_LIMIT answers 413 before the description is judged
   // (docs/mastodon-deviations.md).
+  // Rails' last part wins (code review r3 M5): a trailing empty `thumbnail` means none, as on the image path.
+  it("M5: a thumbnail file then an empty thumbnail text queues, as the image path reads the last", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody([videoPart(), THUMB_FILE, { name: "thumbnail", data: "" }]));
+    expect(response.status).toBe(202);
+  });
+
+  it("M5: an empty thumbnail text then a thumbnail file answers 422", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody([videoPart(), { name: "thumbnail", data: "" }, THUMB_FILE]));
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Thumbnail must be blank" },
+    });
+  });
+
+  // S2, then the delete its `released` authorizes, then the abandonment (code review r3 M3).
+  it("M3: a staging refusal's authorized delete starts while abandonMedia is held", async () => {
+    const { bucket, counts } = hookedBucket({});
+    const w = await routeWorld({ bucket });
+    const abandon = w.gate.hold("abandonMedia");
+    const abandoning = w.gate.reached("abandonMedia");
+    const post = postWatched(w, multipartBody([videoPart(), PNG_PART]));
+    expect((await post.answered).status).toBe(422);
+    await vi.waitFor(() => expect(counts.deletes).toBe(1));
+    expect(w.gate.calls).toContain("releaseStaging");
+    await abandoning;
+    abandon.resolve();
+    await post.done;
+    expect(await input(await lastUpload(w))).toBeNull();
+  });
+
+  // A documented limit (code review r3 M1): S1 answering `inactive` hands the request to the image path, whose waits
+  // are its own; v1 still answers 503 at the give-up, and the image may complete after it, unattached until the sweep.
+  it("M1 (limit): S1 `inactive` hands v1 to the image path, which may complete after the give-up's 503", async () => {
+    const w = await routeWorld();
+    const arrival = Date.now();
+    const s1 = w.gate.hold("takeAvSlot");
+    const reached = w.gate.reached("takeAvSlot");
+    const { body, contentType } = multipartBody([videoPart(mp4(200_000)), PNG_PART]);
+    const stream = new SlowBody(body, { chunk: 1024, holdAt: 100_000 });
+    const post = postWatched(w, { body: stream.stream(), contentType }, "v1");
+    await reached;
+    await failProbe(w);
+    s1.resolve();
+    await stream.reachedHold.promise;
+    await w.advance(arrival + V1_TIME_MS);
+    expect(await answerOf(await post.answered)).toEqual({
+      status: 503,
+      body: { error: "Media processing took too long. Try a shorter file." },
+    });
+    stream.release();
+    await post.done;
+    expect(w.gate.calls).toContain("startTransforms");
+    const after = await held(w.store, await lastUpload(w));
+    expect(after).toMatchObject({ row: null, slot: null, att: { type: "image", processed: 1 } });
+    expect(after.att?.gc_at).not.toBeNull();
+  });
+
   it("M6: a thumbnail past API_BODY_LIMIT answers 413 before an invalid description", async () => {
     const w = await routeWorld();
     const response = await postMedia(

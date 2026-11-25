@@ -243,6 +243,12 @@ async function bounded(
 // asked for, so it runs while the invocation lives whatever the client does, and the answer never waits for it. Its
 // steps run in turn, each awaited at most its bound (R2_CALL_MS for R2, STORE_CALL_MS for the Store); it ends once the
 // route is done (`close`), every step has run and every value it waits for has arrived or passed its bound.
+type Within = <T>(
+  ms: number,
+  call: () => Promise<T>,
+  failed: (fields: Record<string, unknown>) => void,
+) => Promise<T | typeof CUT>;
+
 class Cleanup {
   readonly #c: ApiContext;
   readonly #deps: ApiDeps;
@@ -259,6 +265,24 @@ class Cleanup {
   // `step` after the steps before it, awaited at most `ms` from its start.
   step(ms: number, step: () => Promise<unknown>, failed: (fields: Record<string, unknown>) => void): void {
     this.#chain = this.#chain.then(() => bounded(this.#deps, step, ms, failed));
+  }
+
+  // `run` after the steps before it, as one step whose calls each `within` awaits at most its bound: a value that
+  // answers later is not used (code review r3 M3), what it would have authorized left to the bounds that reclaim it.
+  sequence(run: (within: Within) => Promise<void>): void {
+    const within: Within = async (ms, call, failed) => {
+      try {
+        const value = await by(this.#deps, call, this.#deps.now() + ms);
+        if (value === CUT) {
+          failed({ timedOut: true });
+        }
+        return value;
+      } catch (error) {
+        failed(errorFields(error));
+        return CUT;
+      }
+    };
+    this.#chain = this.#chain.then(() => run(within));
   }
 
   // Work left running past the answer (v1's flow after its give-up): the task ends once it settles.
@@ -780,21 +804,25 @@ class AvUpload {
     return problem === undefined ? params : { error: problem };
   }
 
-  // A staging exit (P7, the staging time): the refusal's answer at once; after it, in the request's cleanup, S2, the
-  // input deleted only on its `released`, and the reservation abandoned.
+  // A staging exit (P7, the staging time): the refusal's answer at once; after it, in the request's cleanup and in this
+  // order (code review r3 M3), S2 awaited at most STORE_CALL_MS, the input deleted only on the `released` received
+  // within it, and the reservation abandoned.
   #exit(stagedAt: number, refusal: StagingRefusal): Response {
-    this.#a.cleanup.step(
-      STORE_CALL_MS,
-      async () => {
-        const released = await reply(() =>
+    this.#a.cleanup.sequence(async (within) => {
+      const released = await within(
+        STORE_CALL_MS,
+        () =>
           storeCall(this.#c, this.#deps, (s, b) => s.releaseStaging(b, { id: this.#id, token: this.#token, stagedAt })),
+        (fields) => console.warn({ event: "kopje.media.upload.release_failed", ...fields }),
+      );
+      if (released !== CUT && released.status === "released") {
+        await within(
+          R2_CALL_MS,
+          () => this.#c.env.MEDIA.delete(incomingKey(this.#id)),
+          (fields) => console.warn({ event: "kopje.media.upload.input_delete_failed", ...fields }),
         );
-        if (released !== UNKNOWN && released.status === "released") {
-          this.#deleteInput();
-        }
-      },
-      (fields) => console.warn({ event: "kopje.media.upload.release_failed", ...fields }),
-    );
+      }
+    });
     this.#abandon();
     return mastodonError(refusal.status, refusal.answer);
   }
