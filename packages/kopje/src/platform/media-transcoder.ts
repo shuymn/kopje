@@ -71,8 +71,14 @@ export type NormalizeResult =
 // No answer, a failed connection, or an answer outside the /normalize contract (a status or code it does not give, a
 // 200 without its kind, length or declared duration): the processor is unavailable, whatever the input. `reason` is a
 // code, never a body.
+// `protocol`: the container answered, deterministically, outside its contract (a status or code the server never gives
+// for this request, a 200 that breaks the reply's headers): a build that answers so always will. Otherwise the failure
+// says nothing of the build (a lost connection, busy, a read that failed).
 export class TranscoderUnavailable extends Error {
-  constructor(readonly reason: string) {
+  constructor(
+    readonly reason: string,
+    readonly protocol = false,
+  ) {
     super(`media processor unavailable: ${reason}`);
     this.name = "TranscoderUnavailable";
   }

@@ -230,7 +230,11 @@ export async function normalize(port: Fetcher, job: NormalizeJob): Promise<Norma
     if (response.status === 504 && code === "timeout") {
       return { ok: false, outcome: "timeout", code, stages };
     }
-    throw new TranscoderUnavailable(`normalize:${code ?? response.status}`);
+    // Busy is the server's state; any other reply here is outside its contract.
+    throw new TranscoderUnavailable(
+      `normalize:${code ?? response.status}`,
+      !(response.status === 429 && code === "busy"),
+    );
   }
   const type = response.headers.get("content-type");
   const kind = response.headers.get("kopje-kind");
@@ -249,7 +253,7 @@ export async function normalize(port: Fetcher, job: NormalizeJob): Promise<Norma
     response.body === null
   ) {
     await response.body?.cancel();
-    throw new TranscoderUnavailable("normalize-contract");
+    throw new TranscoderUnavailable("normalize-contract", true);
   }
   return {
     ok: true,
@@ -279,7 +283,9 @@ async function normalizeStill(port: Fetcher, signal: AbortSignal | undefined): P
   try {
     return await readStill(response);
   } catch (error) {
-    throw new TranscoderUnavailable(error instanceof ProbeFailure ? error.failure : "still-read");
+    // A status or type the server never answers for the still is the build's; a body cut short may be the connection.
+    const failure = error instanceof ProbeFailure ? error.failure : "still-read";
+    throw new TranscoderUnavailable(failure, failure === "still-status" || failure.startsWith("still:"));
   }
 }
 

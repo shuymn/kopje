@@ -107,12 +107,27 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     ["a readiness answered 404", {}, "wrong" as const, "healthz"],
     ["a reply that breaks the /normalize contract", { durationMs: null }, undefined, "normalize-contract"],
     ["a refused clip", { failure: { status: 422, code: "pixels" } }, undefined, "normalize:pixels"],
+    // M10: a healthy /healthz with no /normalize is the build's, deterministically.
+    ["a /normalize answered 404", { failure: { status: 404, code: "not_found" } }, undefined, "normalize:not_found"],
+    [
+      "a /normalize answered 500 internal",
+      { failure: { status: 500, code: "internal" } },
+      undefined,
+      "normalize:internal",
+    ],
   ])("fails on %s, and health is degraded", async (_name, extra, ready, reason) => {
     const store = await freshStore();
     const { run } = await probeOnce(store, await genuine(extra), { ready });
     expect(run).toMatchObject({ status: "recorded", verdict: { outcome: "fail" } });
     expect(run.status === "recorded" && run.verdict.outcome === "fail" && run.verdict.reason).toContain(reason);
     expect(await health(store)).toMatchObject({ ok: false, state: "degraded" });
+  });
+
+  it("a busy container reaches no verdict: the last verdict stands", async () => {
+    const store = await freshStore();
+    const { run } = await probeOnce(store, await genuine({ failure: { status: 429, code: "busy" } }));
+    expect(run).toMatchObject({ status: "recorded", verdict: { outcome: "no-verdict" } });
+    expect(await health(store)).toMatchObject({ state: "provisioned", lastProbe: "unavailable" });
   });
 
   it("a start never ready reaches no verdict: provisioned with lastProbe unavailable, and after a pass the pass is kept (M10)", async () => {

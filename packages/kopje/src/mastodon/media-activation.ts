@@ -94,7 +94,7 @@ export async function probeWork(
     return encoded === "failed" ? { outcome: "fail", reason: "images" } : { outcome: "no-verdict", reason: "images" };
   } catch (error) {
     if (error instanceof TranscoderUnavailable) {
-      return error.reason === "normalize-contract"
+      return error.protocol
         ? { outcome: "fail", reason: error.reason }
         : { outcome: "no-verdict", reason: error.reason };
     }
