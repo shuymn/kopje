@@ -533,7 +533,8 @@ async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => nu
         () => stillEncodes(call.images, png, pngSize(png), (work) => within(work, until, call.now)),
         until,
       );
-      outcome = encoded === "quota" ? QUOTA : encoded === "retry" ? RETRY : encoded;
+      // Images refusing the PNG, or its output failing the still's checks, is the still's failure here.
+      outcome = encoded === "quota" ? QUOTA : encoded === "retry" ? RETRY : encoded === "passed" ? "passed" : "failed";
     }
   } finally {
     await call.settled(() => call.bucket.delete(key));

@@ -507,15 +507,16 @@ export async function stillBlurhash(
 }
 
 // Whether Images re-encodes the media processor's PNG `png` of `size` into a checked still WebP within SMALL_EDGE (the
-// `still@standard-1` probe's last step, design 4.15). "failed" only when the PNG is refused as input (INPUT_ERRORS) or
-// the output fails its checks, which say the profile's still is not usable; "quota" for 9422 and "retry" for any other
-// failure of the service, which say nothing of the profile.
+// `still@standard-1` probe's last step, design 4.15): "refused" when the PNG is refused as input (INPUT_ERRORS), which
+// says the container's still is not usable; "bad-output" when Images' own output fails the still's checks; "quota" for
+// 9422 and "retry" for any other failure of the service. The probes take only "refused" as the build's; the media
+// rebuild takes both "refused" and "bad-output" as its still's failure.
 export async function stillEncodes(
   codec: ImageCodec,
   png: Uint8Array,
   size: Size,
   guard: CallGuard,
-): Promise<"passed" | "failed" | "quota" | "retry"> {
+): Promise<"passed" | "refused" | "bad-output" | "quota" | "retry"> {
   try {
     // The body is read under the guard and within STILL_OUTPUT_LIMIT, as the upload's preview reads it.
     const small = await encodeChecked(codec, png, {
@@ -525,9 +526,12 @@ export async function stillEncodes(
       limit: STILL_OUTPUT_LIMIT,
       guard,
     });
-    return servedStill(small) ? "passed" : "failed";
+    return servedStill(small) ? "passed" : "bad-output";
   } catch (error) {
     const reason = codecFailure(error);
-    return reason === "output" || reason === "unsupported" ? "failed" : reason === "quota" ? "quota" : "retry";
+    if (reason === "unsupported") {
+      return "refused";
+    }
+    return reason === "output" ? "bad-output" : reason === "quota" ? "quota" : "retry";
   }
 }

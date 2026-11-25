@@ -33,6 +33,8 @@ export type ServerAnswer = {
   lengthOff?: number;
   // The body ends with one empty chunk.
   emptyTail?: boolean;
+  // The body errors after its first chunk (a connection reset).
+  reset?: boolean;
 };
 
 export function fakeControl(
@@ -107,6 +109,10 @@ export function fakeControl(
           if (options.transferMs !== undefined && pulled === 2) {
             clock(Date.now() + options.transferMs);
             controller.enqueue(sent.subarray(half));
+            return undefined;
+          }
+          if (answer.reset === true) {
+            controller.error(new Error("connection reset"));
             return undefined;
           }
           if (options.open === true) {

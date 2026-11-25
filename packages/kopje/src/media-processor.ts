@@ -42,6 +42,7 @@ import { errorFields } from "./platform/error-message";
 import { type ImageCodec, imagesCodec } from "./platform/images";
 import { incomingKey } from "./platform/media-files";
 import {
+  type BuildEvidence,
   type MediaProcessorClient,
   NORMALIZE_INPUT_FAILURES,
   NORMALIZE_REFUSALS,
@@ -59,6 +60,26 @@ import { buildOf } from "./version";
 
 // The port container/server listens on.
 const PORT = 8080;
+// The protocol version the server's /healthz must answer (container/server/main.go normalizeProtocol): 2 is
+// /normalize's one work deadline. An image that answers another, or none (the probe_ms/encode_ms image), does not speak
+// it, which a probe takes as the build's.
+export const NORMALIZE_PROTOCOL = 2;
+
+// What a /healthz answer says: ready (this protocol), `route` (404: a build without the server), `protocol` (another
+// version, or none), or null (not yet: any other status, a lost connection), which is polled again.
+async function healthAnswer(response: Response): Promise<"ready" | "route" | "protocol" | null> {
+  if (response.status === 404) {
+    await response.body?.cancel();
+    return "route";
+  }
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    return null;
+  }
+  const body: unknown = await response.json().catch(() => null);
+  const version = typeof body === "object" && body !== null ? (body as { protocol?: unknown }).protocol : undefined;
+  return version === NORMALIZE_PROTOCOL ? "ready" : "protocol";
+}
 // The first start on a host pulls the image (the experiment's first pulls took 3.2 and 7.9 s); a probe waits longer.
 const READY_MS = 90_000;
 const READY_POLL_MS = 250;
@@ -126,6 +147,8 @@ class ProbeFailure extends Error {
     readonly failure: string,
     // The container refused the input itself (readStill).
     readonly input?: StillInputRefusal,
+    // What in the answer shows the image does not speak the protocol.
+    readonly evidence?: BuildEvidence,
   ) {
     super(failure);
   }
@@ -146,15 +169,17 @@ async function readStill(response: Response): Promise<Uint8Array> {
   if (response.status !== 200 || response.headers.get("content-type") !== "image/png") {
     await response.body?.cancel();
     const code = errorCode(response);
+    const evidence = response.status === 200 ? "contract" : replyEvidence(response.status, code);
     throw new ProbeFailure(
-      code !== null ? `still:${reasonCode(response.status, code)}` : "still-status",
+      response.status !== 200 ? `still:${reasonCode(response.status, code)}` : "still-status",
       inputRefusal(response.status, code),
+      evidence ?? undefined,
     );
   }
   const declared = Number(response.headers.get("content-length"));
   if (!Number.isSafeInteger(declared) || declared <= 0 || declared > STILL_OUTPUT_LIMIT || response.body === null) {
     await response.body?.cancel();
-    throw new ProbeFailure("still-length");
+    throw new ProbeFailure("still-length", undefined, "contract");
   }
   // From here the headers kept the contract: a body that ends short is the connection's (still-truncated); one longer
   // than declared is not (still-length).
@@ -168,7 +193,7 @@ async function readStill(response: Response): Promise<Uint8Array> {
     }
     if (read + value.byteLength > declared) {
       await reader.cancel();
-      throw new ProbeFailure("still-length");
+      throw new ProbeFailure("still-length", undefined, "contract");
     }
     out.set(value, read);
     read += value.byteLength;
@@ -198,12 +223,16 @@ function errorCode(response: Response): string | null {
   return code !== null && /^[a-z_]{1,32}$/.test(code) ? code : null;
 }
 
-// The one reply other than a 200 that is evidence of the build, on /normalize and /normalize/still alike: the route
-// answered 404 (not_found, or no code), which a server that serves the route never does. Every other status and code
-// (busy, a slow or short input, the server's own failure, a gateway's reply, a code R9's container chooses) may be the
-// moment's or the input's, and says nothing of the build (TranscoderUnavailable's `protocol` false).
-function routeMissing(status: number, code: string | null): boolean {
-  return status === 404 && (code === null || code === "not_found");
+// The replies other than a 200 that are evidence of the build, on every route of the protocol alike, by their status:
+// a 404 (not_found, or no code) on a route the protocol names, which a server that serves it never answers, and a 405
+// on the method it names. Every other status and code (busy, a slow or short input, the server's own failure, a
+// gateway's reply, a code R9's container chooses, a 500 naming not_found among them) may be the moment's or the
+// input's, and says nothing of the build.
+function replyEvidence(status: number, code: string | null): BuildEvidence | null {
+  if (status === 404 && (code === null || code === "not_found")) {
+    return "route";
+  }
+  return status === 405 ? "method" : null;
 }
 
 // The Kopje-Error codes the server answers (container/server/main.go, plan.go). Any other value, which R9's container
@@ -263,7 +292,7 @@ export async function normalize(port: Fetcher, job: NormalizeJob): Promise<Norma
     }
     throw new TranscoderUnavailable(
       `normalize:${reasonCode(response.status, code)}`,
-      routeMissing(response.status, code),
+      replyEvidence(response.status, code),
     );
   }
   const type = response.headers.get("content-type");
@@ -283,7 +312,7 @@ export async function normalize(port: Fetcher, job: NormalizeJob): Promise<Norma
     response.body === null
   ) {
     await response.body?.cancel();
-    throw new TranscoderUnavailable("normalize-contract", true);
+    throw new TranscoderUnavailable("normalize-contract", "contract");
   }
   return {
     ok: true,
@@ -313,15 +342,16 @@ async function normalizeStill(port: Fetcher, signal: AbortSignal | undefined): P
   }
   if (response.status !== 200) {
     await response.body?.cancel();
-    throw new TranscoderUnavailable(`still:${reasonCode(response.status, code)}`, routeMissing(response.status, code));
+    throw new TranscoderUnavailable(`still:${reasonCode(response.status, code)}`, replyEvidence(response.status, code));
   }
   try {
     return await readStill(response);
   } catch (error) {
     // A 200 whose type or length the server never answers for the still is the build's; a body cut short, or a read
     // that fails, may be the connection's.
-    const failure = error instanceof ProbeFailure ? error.failure : "still-read";
-    throw new TranscoderUnavailable(failure, failure === "still-status" || failure === "still-length");
+    throw error instanceof ProbeFailure
+      ? new TranscoderUnavailable(error.failure, error.evidence ?? null)
+      : new TranscoderUnavailable("still-read");
   }
 }
 
@@ -347,19 +377,16 @@ async function startReady(
   for (;;) {
     const poll = new AbortController();
     const ready = await before(
-      port.fetch("http://container/healthz", { signal: poll.signal }).then(
-        async (response) => {
-          await response.body?.cancel();
-          return response.ok;
-        },
-        () => false,
-      ),
+      port.fetch("http://container/healthz", { signal: poll.signal }).then(healthAnswer, () => null),
       readyBy,
       deps,
       poll,
     );
-    if (ready === true) {
+    if (ready === "ready") {
       break;
+    }
+    if (ready === "route" || ready === "protocol") {
+      throw new ProbeFailure("healthz", undefined, ready);
     }
     if (ready === TIMED_OUT || deps.now() >= readyBy) {
       throw new ProbeFailure("ready");
@@ -428,6 +455,7 @@ async function runStill(
         failure: error.failure,
         image,
         ...(error.input === undefined ? {} : { input: error.input }),
+        ...(error.evidence === undefined ? {} : { evidence: error.evidence }),
       };
     } else {
       result = { ok: false, failure: "operation", image };
@@ -672,7 +700,8 @@ export class ProcessorUnit {
 
 // The container of one unit of work as jobs/media-jobs.ts drives it: started on `instance` with Internet access
 // disabled and polled at /healthz until `by` (a 404 there, which the server never answers, is `wrong`: a build without
-// the server), the normalize adapter, and the confirmed stop (destroyContainer).
+// the server; a version other than NORMALIZE_PROTOCOL, or none, is `incompatible`), the normalize adapter, and the
+// confirmed stop (destroyContainer).
 function containerControl(
   container: Container,
   deps: ProbeDeps,
@@ -691,18 +720,12 @@ function containerControl(
       for (;;) {
         const poll = new AbortController();
         const status = await before(
-          port.fetch("http://container/healthz", { signal: poll.signal }).then(
-            async (response) => {
-              await response.body?.cancel();
-              return response.status;
-            },
-            () => null,
-          ),
+          port.fetch("http://container/healthz", { signal: poll.signal }).then(healthAnswer, () => null),
           by,
           deps,
           poll,
         );
-        if (status === 200) {
+        if (status === "ready") {
           const info = await before(
             container.inspect().catch(() => null),
             by,
@@ -711,8 +734,11 @@ function containerControl(
           image = info === TIMED_OUT ? image : (info?.image ?? image);
           return port;
         }
-        if (status === 404) {
+        if (status === "route") {
           return "wrong";
+        }
+        if (status === "protocol") {
+          return "incompatible";
         }
         if (status === TIMED_OUT || deps.now() >= by) {
           return null;

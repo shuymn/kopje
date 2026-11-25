@@ -222,7 +222,7 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
       return await stopThen("timeout");
     }
     const port = await deps.ready(readyBy);
-    if (port === null || port === "wrong") {
+    if (port === null || port === "wrong" || port === "incompatible") {
       return await stopThen(deps.now() >= readyBy ? "timeout" : "unavailable");
     }
     stage.name = "input";

@@ -77,7 +77,7 @@ export type AdminDeps = AccessDeps & {
   mediaProcessor: (env: Env) => MediaProcessorClient | null;
 };
 
-type AdminVariables = { auth: ImportAuthority };
+type AdminVariables = { auth: ImportAuthority; probeEnd: number };
 type AdminEnv = { Bindings: Env; Variables: AdminVariables };
 
 type Refusal = { ok: false; code: string; message: string };
@@ -245,6 +245,15 @@ function adminAllowed(identity: AccessIdentity, access: AccessSettings): string 
 
 export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, images, mediaProcessor }: AdminDeps) {
   const admin = new Hono<AdminEnv>();
+  // A probe request's one deadline starts on its arrival, before its credential is checked (adminGate), so it bounds
+  // the whole request (mastodon/media-activation.ts PROBE_ROUTE_MS).
+  admin.use(
+    "/media-processor/probe",
+    createMiddleware<AdminEnv>(async (c, next) => {
+      c.set("probeEnd", now() + PROBE_ROUTE_MS);
+      await next();
+    }),
+  );
   const stub = (c: Context<AdminEnv>): StoreStub => store(c.env);
 
   admin.use(
@@ -604,12 +613,14 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
   // through the container, the verifier and Images, and the verdict recorded for this build. still@standard-1's is a
   // check (stillCheck) that records nothing: the media rebuild records that profile's probe under its own lease. Both
   // start a container and write R2, so maintenance and a read-only Store refuse them (503) before anything starts. The
-  // request has one deadline, PROBE_ROUTE_MS from its start, which every step ends by (probeSteps): its body, the still
-  // check's health, and each step of the probe or check; a body or health that does not answer by its step answers 504.
+  // request has one deadline, PROBE_ROUTE_MS from its arrival (the middleware above), which every step ends by
+  // (probeSteps): its body, the still check's health, and each step of the probe or check; a body or health that does
+  // not answer by its step answers 504. Work it does not wait for (a late copy's delete) is kept alive by waitUntil.
   admin.post("/media-processor/probe", async (c) => {
-    const end = now() + PROBE_ROUTE_MS;
-    const step = probeSteps(end, now);
-    const body = await step(jsonBody(c), PROBE_BODY_MS);
+    const end = c.get("probeEnd");
+    const retain = (work: Promise<unknown>) => c.executionCtx.waitUntil(work.catch(() => {}));
+    const step = probeSteps(end, now, undefined, retain);
+    const body = await step(() => jsonBody(c), PROBE_BODY_MS);
     if (body === OVER) {
       return c.json({ error: "the request body did not arrive in time", code: "probe-timeout" }, 504);
     }
@@ -633,12 +644,12 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
     }
     if (profile === "normalize@standard-4") {
       const probed = await activationProbe(
-        { build: build(c.env), store: stub(c), bucket: c.env.MEDIA, processor: processor.uploads, now, end },
+        { build: build(c.env), store: stub(c), bucket: c.env.MEDIA, processor: processor.uploads, now, end, retain },
         false,
       );
       return c.json({ probe: probed });
     }
-    const health = await step(stub(c).health(build(c.env)), PROBE_STORE_MS);
+    const health = await step(() => stub(c).health(build(c.env)), PROBE_STORE_MS);
     if (health === OVER) {
       return c.json({ error: "the Store did not answer in time", code: "probe-timeout" }, 504);
     }
@@ -648,7 +659,14 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
     return c.json({
       probe: {
         status: "checked",
-        verdict: await stillCheck({ bucket: c.env.MEDIA, stills: processor.stills, images: images(c.env), now, end }),
+        verdict: await stillCheck({
+          bucket: c.env.MEDIA,
+          stills: processor.stills,
+          images: images(c.env),
+          now,
+          end,
+          retain,
+        }),
       },
     });
   });

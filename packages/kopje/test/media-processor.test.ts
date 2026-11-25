@@ -11,6 +11,7 @@ import {
   CLEANUP_RETRY_MS,
   DESTROY_MS,
   normalize,
+  NORMALIZE_PROTOCOL,
   PROBE_MS,
   type ProbeDeps,
   processorClient,
@@ -161,7 +162,7 @@ function ok(body: Uint8Array, type: string, headers: Record<string, string> = {}
 // The container server as container/server/main.go answers: healthz, normalize (with a still) and still.
 function server(overrides: Partial<Record<string, Handler>> = {}): Handler {
   const routes: Record<string, Handler> = {
-    "/healthz": () => Response.json({ ok: true }),
+    "/healthz": () => Response.json({ ok: true, protocol: NORMALIZE_PROTOCOL }),
     "/normalize": () => genuine(),
     "/normalize/still": () => ok(GENUINE.still, "image/png"),
     "/still": () => ok(PNG, "image/png", { "kopje-encode-ms": "40" }),
@@ -289,7 +290,7 @@ describe("normalize adapter", () => {
     expect(thrown).toBeInstanceOf(TranscoderUnavailable);
     expect((thrown as TranscoderUnavailable).reason).not.toContain("error");
     // Only a missing route is evidence of the build (r4); every other reply may be the moment's or the input's.
-    expect((thrown as TranscoderUnavailable).protocol).toBe(status === 404);
+    expect((thrown as TranscoderUnavailable).evidence).toBe(status === 404 ? "route" : null);
   });
 
   it("logs an unknown Kopje-Error by its status, as R9's container chooses its bytes (r3)", async () => {
@@ -432,6 +433,20 @@ describe("MediaProcessor", () => {
     const state = fakeState(undefined);
     const report = await probe(unit(state.ctx));
     expect(report).toMatchObject({ ok: false, failure: "no-container" });
+  });
+
+  // r5: the image before the one work deadline (cd9292004) answers /healthz 200 without a protocol version and 400
+  // bad_request to work_ms: the probe fails on its /healthz and sends it nothing, rather than repeating no-verdict.
+  it("fails the probe of an image whose /healthz names no protocol version, sending it nothing", async () => {
+    const fake = fakeContainer(
+      server({
+        "/healthz": () => Response.json({ ok: true, bootId: "old" }),
+        "/normalize": () =>
+          new Response('{"error":"bad_request"}', { status: 400, headers: { "kopje-error": "bad_request" } }),
+      }),
+    );
+    expect(await probe(unit(fakeState(fake.container).ctx))).toMatchObject({ ok: false, failure: "protocol" });
+    expect(fake.calls.filter((call) => call.startsWith("POST"))).toEqual([]);
   });
 
   // r4 M3 (Codex's interleaving): probe A, given up at its deadline while its still is held, destroys its container
@@ -781,6 +796,43 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
       },
     };
   }
+
+  // r5: the status carries the evidence, through the still adapter as through normalize's: a bare 404 on /still and a
+  // 405 show an image that does not speak the protocol, a 500 naming not_found does not, and neither does a /healthz
+  // without this protocol's version pass as ready.
+  it.each([
+    ["a bare 404 on /still", () => new Response(null, { status: 404 }), "route"],
+    [
+      "a 405 on /still",
+      () => new Response(null, { status: 405, headers: { "kopje-error": "method_not_allowed" } }),
+      "method",
+    ],
+    [
+      "a 500 naming not_found",
+      () => new Response(null, { status: 500, headers: { "kopje-error": "not_found" } }),
+      undefined,
+    ],
+  ] as const)("carries the evidence of %s", async (_name, answer, evidence) => {
+    await env.MEDIA.put("originals/140000000000000041", new Uint8Array([1]));
+    const fake = counted(undefined, { "/still": answer });
+    const outcome = await unit({ ...fakeState(fake.container).ctx, bucket: bucket() }).stillNow(
+      "originals/140000000000000041",
+      75_000,
+    );
+    expect(outcome).toMatchObject({ ok: false });
+    expect("evidence" in outcome ? outcome.evidence : undefined).toBe(evidence ?? undefined);
+  });
+
+  it("fails readiness, with protocol evidence, on a /healthz without this protocol's version", async () => {
+    await env.MEDIA.put("originals/140000000000000042", new Uint8Array([1]));
+    const fake = counted(undefined, { "/healthz": () => Response.json({ ok: true }) });
+    const outcome = await unit({ ...fakeState(fake.container).ctx, bucket: bucket() }).stillNow(
+      "originals/140000000000000042",
+      75_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "healthz", evidence: "protocol" });
+    expect(fake.calls).not.toContain("POST /still");
+  });
 
   it("streams its one input key into /still on standard-1 without Internet, and answers the PNG once destroyed", async () => {
     const input = new Uint8Array(5000).fill(3);

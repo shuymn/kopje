@@ -20,10 +20,11 @@ import type { StoreStub } from "../platform/store-client";
 // container control both it and an upload's work drive (media-processor.ts).
 
 // The container of one unit of work, as the Durable Object drives it: started and ready by `by` (null: not ready,
-// `wrong` when it answered readiness with a status the server never gives, which a probe takes as the build's), the
+// `wrong` when it answered readiness with a status the server never gives, `incompatible` when its /healthz names
+// another protocol or none, which a probe takes as the build's), the
 // adapter (media-processor.ts normalize), and the stop, true once confirmed (destroy() answered and it no longer runs).
 export type ContainerControl = {
-  ready: (by: number) => Promise<Fetcher | "wrong" | null>;
+  ready: (by: number) => Promise<Fetcher | "wrong" | "incompatible" | null>;
   normalize: (port: Fetcher, job: NormalizeJob) => Promise<NormalizeResult>;
   stop: () => Promise<boolean>;
 };
@@ -38,19 +39,21 @@ export function pngSize(png: Uint8Array): Size {
 
 // A probe answers `fail` only on positive evidence that the build is wrong, and `no-verdict` on anything else (an
 // existing pass kept, health unchanged). The evidence, exhaustively: /healthz answered 404 (a build without the
-// server); /normalize or /normalize/still answered 404 with /healthz healthy (TranscoderUnavailable `protocol`); a 200
-// that breaks the reply's contract (its headers, kind or length); an output the verifier refuses, or whose declared
-// duration disagrees with the file; a still verifyStill refuses; Images refusing that verified still as input
-// (stillEncodes `failed`). Every other answer (any code the server answers, envelope, encode_failed, internal, truncated
-// and no_output among them; a video answered without a still; busy, a timeout, a lost connection) says nothing of the
-// build. An ordinary upload keeps A5: its input's failures are its outcome (jobs/media-jobs.ts).
+// server), or without this protocol's version (media-processor.ts NORMALIZE_PROTOCOL); a route of the protocol
+// answered 404, or its method 405 (TranscoderUnavailable `evidence`, judged by the status); a 200 that breaks the
+// reply's contract (its headers, kind or length, a body longer than declared among it); a complete output the verifier
+// refuses, or whose declared duration disagrees with the file; a still verifyStill refuses; Images refusing that
+// verified still as input (stillEncodes `refused`). Every other answer (any code the server answers, envelope,
+// encode_failed, internal, truncated and no_output among them; a video answered without a still; busy, a timeout, a
+// lost connection, a body cut short or one whose source failed; Images' own output failing its checks) says nothing of
+// the build. An ordinary upload keeps A5: its input's failures are its outcome (jobs/media-jobs.ts).
 
 // The packaged clip's envelope (container/probe.mp4: 192x144 H.264 at 15 fps for 2 s, with AAC): planVideo's estimate
 // (container/server/plan.go) is 1500 + 192·144·30·1.0/1e6 + 192·144·30·21/1e6 + 2·40 = 1,598.25 ms, which fits
 // estimateSafety (0.7) of an encode time of 2,284 ms and no less (plan_test.go TestProbeClipEnvelope holds the two
 // equal).
 export const PROBE_ENVELOPE_MS = 2_284;
-// The clip's way in before the encode (its 0.2 MB body received, then ffprobe twice): not in plan.go's arithmetic, so a
+// The clip's way in before the encode (its 23,696-byte body received, then ffprobe twice): not in plan.go's arithmetic, so a
 // starting value that the den-test runs measure, as T_FINISH (Kopje-Input-Ms and Kopje-Probe-Ms).
 const PROBE_STAGES_MS = 1_000;
 // The probe's still reserve: room for contention, within G13's 5 s and server's still_ms < work_ms.
@@ -77,8 +80,8 @@ export async function probeWork(
   const left = () => Math.min(workMs, deadline - deps.now());
   try {
     const port = await deps.ready(deadline);
-    if (port === "wrong") {
-      return { outcome: "fail", reason: "healthz" };
+    if (port === "wrong" || port === "incompatible") {
+      return { outcome: "fail", reason: port === "wrong" ? "healthz" : "protocol" };
     }
     if (port === null) {
       return { outcome: "no-verdict", reason: "ready" };
@@ -105,9 +108,34 @@ export async function probeWork(
     if (!result.ok) {
       return { outcome: "no-verdict", reason: `normalize:${result.code}` };
     }
+    // The bytes the container sent, counted to the body's own end beside the verifier: transport (a source that failed,
+    // or a body that ended short of its length, which the verifier refuses by whichever check meets the missing bytes
+    // first) says nothing of the build; a complete file the verifier refuses, or one longer than declared, does.
+    const [verifying, counting] = result.file.tee();
+    const sent = (async () => {
+      const reader = counting.getReader();
+      let bytes = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            return { bytes, ended: true };
+          }
+          bytes += value.byteLength;
+        }
+      } catch {
+        return { bytes, ended: false };
+      }
+    })();
     const { stream, verdict, abort } = avVerifier(result.type, result.length, { expectedDuration: result.duration });
-    await result.file.pipeThrough(stream).pipeTo(new WritableStream()).catch(abort);
+    await verifying.pipeThrough(stream).pipeTo(new WritableStream()).catch(abort);
     const verified = await verdict;
+    if (!verified.ok) {
+      const { bytes, ended } = await sent;
+      if (!ended || bytes < result.length) {
+        return { outcome: "no-verdict", reason: ended ? "output-short" : "output-read" };
+      }
+    }
     if (!verified.ok || result.kind !== "video") {
       return { outcome: "fail", reason: verified.ok ? "kind" : `output:${verified.rule}` };
     }
@@ -121,9 +149,7 @@ export async function probeWork(
     return { outcome: "still", png };
   } catch (error) {
     if (error instanceof TranscoderUnavailable) {
-      return error.protocol
-        ? { outcome: "fail", reason: error.reason }
-        : { outcome: "no-verdict", reason: error.reason };
+      return { outcome: error.evidence !== null ? "fail" : "no-verdict", reason: error.reason };
     }
     return { outcome: "no-verdict", reason: error instanceof DeadlinePassed ? "timeout" : "operation" };
   }
@@ -147,28 +173,39 @@ export async function probeFinish(
   }
   try {
     const encoded = await stillEncodes(images, stage.png, pngSize(stage.png), (work) => within(work, deadline, now));
-    if (encoded === "passed" || encoded === "quota") {
-      return { outcome: "pass", imagesVerified: encoded === "passed" };
-    }
-    return { outcome: encoded === "failed" ? "fail" : "no-verdict", reason: "images" };
+    return imagesVerdict(encoded);
   } catch (error) {
     return { outcome: "no-verdict", reason: error instanceof DeadlinePassed ? "timeout" : "operation" };
   }
 }
 
+// Images on the verified still: `pass` (unverified on 9422), `fail` only when it refused the PNG as input, and
+// no-verdict for its own output failing the still's checks or any other failure of it.
+function imagesVerdict(encoded: Awaited<ReturnType<typeof stillEncodes>>): ProbeVerdict {
+  if (encoded === "passed" || encoded === "quota") {
+    return { outcome: "pass", imagesVerified: encoded === "passed" };
+  }
+  if (encoded === "refused") {
+    return { outcome: "fail", reason: "images" };
+  }
+  return { outcome: "no-verdict", reason: encoded === "bad-output" ? "images-output" : "images" };
+}
+
 type ProbeStore = Pick<StoreStub, "claimMediaProbe" | "recordMediaProbeResult">;
 
 // The probes run on an HTTP request (the CLI's) as well as in the cron, where no alarm or cron limit bounds them, so
-// the request has one deadline, PROBE_ROUTE_MS from its start (app/admin.ts), and each of its steps ends at the
-// earlier of that deadline and its own bound (probeSteps): reading the request body, a Store call (the still check's
-// health, the claim, the record) at most PROBE_STORE_MS, the clip's copy put or delete in R2 at most PROBE_COPY_MS (a
-// copy whose delete never answers is the orphan pass's; one whose put answers late is deleted then), and the call to
-// the probe object at most its own deadline and destroy (media-processor.ts PROBE_MS, 210 s, and DESTROY_MS, 30 s) plus
-// its way there and back, PROBE_CALL_MS. The bounds add up to the deadline.
-export const PROBE_COPY_MS = 10_000;
-export const PROBE_CALL_MS = 250_000;
-export const PROBE_STORE_MS = 20_000;
-export const PROBE_BODY_MS = 10_000;
+// the request has one deadline, PROBE_ROUTE_MS from its arrival (app/admin.ts, before the credential is checked), and
+// each of its steps ends at the earlier of that deadline and its own bound (probeSteps): reading the request body at
+// most PROBE_BODY_MS, a Store call (the still check's health, the claim, the record) at most PROBE_STORE_MS, the clip's
+// copy put or delete in R2 at most PROBE_COPY_MS (a copy whose delete never answers is the orphan pass's; one whose put
+// answers late is deleted then), and the call to the probe object at most its own deadline and destroy
+// (media-processor.ts PROBE_MS, 210 s, and DESTROY_MS, 30 s) plus 5 s for its way there and back, PROBE_CALL_MS. The
+// bounds add up to the deadline, 280 s: 20 s under the 300 s the CLI's fetch (Node's Undici, headersTimeout) waits for
+// the response's headers.
+export const PROBE_COPY_MS = 5_000;
+export const PROBE_CALL_MS = 245_000;
+export const PROBE_STORE_MS = 10_000;
+export const PROBE_BODY_MS = 5_000;
 export const PROBE_ROUTE_MS = PROBE_BODY_MS + 2 * PROBE_STORE_MS + 2 * PROBE_COPY_MS + PROBE_CALL_MS;
 // The still check's call: STILL_CHECK_MS, which includes the object's destroy, plus its way there and back.
 const STILL_CHECK_CALL_MS = 85_000;
@@ -177,35 +214,66 @@ type Wait = (ms: number) => Promise<void>;
 const timerWait: Wait = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 export const OVER: unique symbol = Symbol("over");
 
-// The steps of one probe request, each ending at the earlier of `end` and its own bound `ms`: `work`'s value, or OVER
-// when that passes first (a late answer is ignored; a rejection passes on).
-export function probeSteps(end: number, now: () => number, wait: Wait = timerWait) {
-  return async <P extends PromiseLike<unknown>>(work: P, ms: number): Promise<Awaited<P> | typeof OVER> => {
-    const running = Promise.resolve<Awaited<P>>(work as PromiseLike<Awaited<P>>);
+// The steps of one probe request, each started by `start` only before `end` and ending at the earlier of `end` and its
+// own bound `ms`: its value, or OVER when that passes first or it settles at or past `end` (so a late answer starts no
+// later step; a rejection passes on). `cleanup` starts even past `end` (the copy's delete, which may still settle, is
+// handed to `retain`); `keep` uses an answer settling past `end` (the record, issued before it under its claim's fence).
+export function probeSteps(
+  end: number,
+  now: () => number,
+  wait: Wait = timerWait,
+  retain: (work: Promise<unknown>) => void = () => {},
+) {
+  return async <P extends PromiseLike<unknown>>(
+    start: () => P,
+    ms: number,
+    options: { cleanup?: boolean; keep?: boolean } = {},
+  ): Promise<Awaited<P> | typeof OVER> => {
+    if (options.cleanup !== true && now() >= end) {
+      return OVER;
+    }
+    const running = Promise.resolve().then(start) as Promise<Awaited<P>>;
     running.catch(() => {});
-    return Promise.race([running, wait(Math.max(0, Math.min(ms, end - now()))).then((): typeof OVER => OVER)]);
+    if (options.cleanup === true) {
+      retain(running);
+    }
+    const settled = await Promise.race([
+      running,
+      wait(Math.max(0, Math.min(ms, end - now()))).then((): typeof OVER => OVER),
+    ]);
+    return settled !== OVER && options.keep !== true && options.cleanup !== true && now() >= end ? OVER : settled;
   };
 }
 type Step = ReturnType<typeof probeSteps>;
 
 // The probe copy's put of `input` at `key`, bounded: false when it did not answer in time, and the copy it may still
 // make is deleted once it does.
-async function putCopy(step: Step, bucket: Pick<R2Bucket, "put" | "delete">, key: string, input: Uint8Array) {
-  const put = bucket.put(key, input);
-  if ((await step(put, PROBE_COPY_MS)) !== OVER) {
+async function putCopy(
+  step: Step,
+  bucket: Pick<R2Bucket, "put" | "delete">,
+  key: string,
+  input: Uint8Array,
+  retain: (work: Promise<unknown>) => void,
+) {
+  let put: Promise<unknown> | null = null;
+  if ((await step(() => (put = bucket.put(key, input)), PROBE_COPY_MS)) !== OVER) {
     return true;
   }
-  put.then(
-    () => bucket.delete(key).catch(() => {}),
-    () => {},
-  );
+  if (put !== null) {
+    retain(
+      (put as Promise<unknown>).then(
+        () => bucket.delete(key).catch(() => {}),
+        () => {},
+      ),
+    );
+  }
   return false;
 }
 
 // The probe copy's delete, bounded; one that fails or does not answer is left to the orphan pass.
 async function dropCopy(step: Step, bucket: Pick<R2Bucket, "delete">, key: string): Promise<void> {
   try {
-    if ((await step(bucket.delete(key), PROBE_COPY_MS)) === OVER) {
+    if ((await step(() => bucket.delete(key), PROBE_COPY_MS, { cleanup: true })) === OVER) {
       console.warn({ event: "kopje.media.probe.copy_failed", step: "delete", reason: "timeout" });
     }
   } catch (error) {
@@ -235,13 +303,16 @@ export async function activationProbe(
     wait?: Wait;
     now?: () => number;
     end?: number;
+    // Keeps work the request does not wait for alive past its response (waitUntil).
+    retain?: (work: Promise<unknown>) => void;
   },
   due: boolean,
 ): Promise<ProbeRun> {
   const now = deps.now ?? Date.now;
-  const step = probeSteps(deps.end ?? now() + PROBE_ROUTE_MS, now, deps.wait);
+  const retain = deps.retain ?? (() => {});
+  const step = probeSteps(deps.end ?? now() + PROBE_ROUTE_MS, now, deps.wait, retain);
   const claim = await step(
-    deps.store.claimMediaProbe(deps.build, { profile: NORMALIZE_PROFILE, build: deps.build, due }),
+    () => deps.store.claimMediaProbe(deps.build, { profile: NORMALIZE_PROFILE, build: deps.build, due }),
     PROBE_STORE_MS,
   );
   if (claim === OVER) {
@@ -254,10 +325,10 @@ export async function activationProbe(
   const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
   let verdict: ProbeVerdict & { image?: string | null };
   try {
-    if (!(await putCopy(step, deps.bucket, key, deps.processor.probeInput))) {
+    if (!(await putCopy(step, deps.bucket, key, deps.processor.probeInput, retain))) {
       verdict = { outcome: "no-verdict", reason: "copy" };
     } else {
-      const answered = await step(deps.processor.probeNormalize(key), PROBE_CALL_MS);
+      const answered = await step(() => deps.processor.probeNormalize(key), PROBE_CALL_MS);
       verdict = answered === OVER ? { outcome: "no-verdict", reason: "timeout" } : answered;
     }
   } catch (error) {
@@ -271,14 +342,16 @@ export async function activationProbe(
     console.warn({ event: "kopje.media.probe.verdict", outcome: result.outcome, reason: result.reason });
   }
   const recorded = await step(
-    deps.store.recordMediaProbeResult(deps.build, {
-      profile: NORMALIZE_PROFILE,
-      claim: claim.claim,
-      outcome: result.outcome,
-      imagesVerified: result.outcome === "pass" && result.imagesVerified,
-      imageTag: probeImageTag(image),
-    }),
+    () =>
+      deps.store.recordMediaProbeResult(deps.build, {
+        profile: NORMALIZE_PROFILE,
+        claim: claim.claim,
+        outcome: result.outcome,
+        imagesVerified: result.outcome === "pass" && result.imagesVerified,
+        imageTag: probeImageTag(image),
+      }),
     PROBE_STORE_MS,
+    { keep: true },
   );
   if (recorded === OVER) {
     console.warn({ event: "kopje.media.probe.unconfirmed", step: "record" });
@@ -297,9 +370,11 @@ const STILL_CHECK_MS = 75_000;
 // The still profile's check on request: the packaged clip copied to incoming/probe-<nonce>, a still of it on the
 // profile's object (stills.probe), verifyStill, and Images (stillEncodes); the copy deleted, each step ending by `end`
 // (probeSteps). It records nothing: the profile's record is the media rebuild's, which probes it under its own lease
-// (L4). As the activation probe, `fail` only on evidence of the build: the /still route answered 404, verifyStill
-// refusing the PNG, or Images refusing it; `pass` with imagesVerified false when Images answered 9422; `no-verdict`
-// for anything else (the container's refusal of the clip and every other code among them).
+// (L4). As the activation probe, `fail` only on evidence of the build: the container's answers showing it does not
+// speak the protocol (StillOutcome `evidence`: its /healthz, a 404 on /still or a 405, a 200 breaking the reply),
+// verifyStill refusing the PNG, or Images refusing it as input; `pass` with imagesVerified false when Images answered
+// 9422; `no-verdict` for anything else (the container's refusal of the clip, every other code, and Images' own output
+// failing its checks among them).
 export async function stillCheck(deps: {
   bucket: Pick<R2Bucket, "put" | "delete">;
   stills: StillMaker;
@@ -307,34 +382,29 @@ export async function stillCheck(deps: {
   now: () => number;
   wait?: Wait;
   end?: number;
+  retain?: (work: Promise<unknown>) => void;
 }): Promise<ProbeVerdict & { image: string | null }> {
-  const step = probeSteps(deps.end ?? deps.now() + PROBE_ROUTE_MS, deps.now, deps.wait);
+  const retain = deps.retain ?? (() => {});
+  const step = probeSteps(deps.end ?? deps.now() + PROBE_ROUTE_MS, deps.now, deps.wait, retain);
   const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
   const deadline = deps.now() + STILL_CHECK_MS;
   try {
-    if (!(await putCopy(step, deps.bucket, key, deps.stills.probeInput))) {
+    if (!(await putCopy(step, deps.bucket, key, deps.stills.probeInput, retain))) {
       return { outcome: "no-verdict", reason: "copy", image: null };
     }
-    const out = await step(deps.stills.probe(key, STILL_CHECK_MS), STILL_CHECK_CALL_MS);
+    const out = await step(() => deps.stills.probe(key, STILL_CHECK_MS), STILL_CHECK_CALL_MS);
     if (out === OVER) {
       return { outcome: "no-verdict", reason: "timeout", image: null };
     }
     if (!out.ok) {
-      return {
-        outcome: out.failure === "still:not_found" ? "fail" : "no-verdict",
-        reason: out.failure,
-        image: out.image,
-      };
+      return { outcome: out.evidence !== undefined ? "fail" : "no-verdict", reason: out.failure, image: out.image };
     }
     if (verifyStill(out.png) !== null) {
       return { outcome: "fail", reason: "still", image: out.image };
     }
     const png = out.png;
     const encoded = await stillEncodes(deps.images, png, pngSize(png), (work) => within(work, deadline, deps.now));
-    if (encoded === "passed" || encoded === "quota") {
-      return { outcome: "pass", imagesVerified: encoded === "passed", image: out.image };
-    }
-    return { outcome: encoded === "failed" ? "fail" : "no-verdict", reason: "images", image: out.image };
+    return { ...imagesVerdict(encoded), image: out.image };
   } catch (error) {
     if (error instanceof DeadlinePassed) {
       return { outcome: "no-verdict", reason: "timeout", image: null };

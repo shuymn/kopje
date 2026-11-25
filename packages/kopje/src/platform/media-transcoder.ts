@@ -71,13 +71,12 @@ export type NormalizeResult =
 // No answer, a failed connection, or an answer outside the /normalize contract (a status or code it does not give, a
 // 200 without its kind, length or declared duration): the processor is unavailable, whatever the input. `reason` is a
 // code, never a body.
-// `protocol`: positive evidence that the build is wrong (a route answered 404, a 200 that breaks the reply's headers or
-// length): a build that answers so always will. Otherwise the failure says nothing of the build (any other status or
-// code, a lost connection, a read that failed).
+// `evidence`: what in the answer shows the build is wrong (BuildEvidence), a build that answers so always will; null
+// when the failure says nothing of the build (any other status or code, a lost connection, a read that failed).
 export class TranscoderUnavailable extends Error {
   constructor(
     readonly reason: string,
-    readonly protocol = false,
+    readonly evidence: BuildEvidence | null = null,
   ) {
     super(`media processor unavailable: ${reason}`);
     this.name = "TranscoderUnavailable";
@@ -125,9 +124,22 @@ export const STILL_INPUT_REFUSALS = [
 ] as const;
 export type StillInputRefusal = (typeof STILL_INPUT_REFUSALS)[number];
 
+// Positive evidence, from the container's answers, that the image does not speak the processor's protocol: its
+// /healthz without this protocol's version (`protocol`), a route the protocol names answered 404 (`route`, bare or
+// not_found), the method it names answered 405 (`method`), or a 200 that breaks the reply's headers or length
+// (`contract`). Judged by the status, never by the code alone (media-processor.ts replyEvidence).
+export type BuildEvidence = "protocol" | "route" | "method" | "contract";
+
 export type StillOutcome =
   | { ok: true; png: Uint8Array; image: string | null }
-  | { ok: false; failure: string; image: string | null; pending?: true; input?: StillInputRefusal };
+  | {
+      ok: false;
+      failure: string;
+      image: string | null;
+      pending?: true;
+      input?: StillInputRefusal;
+      evidence?: BuildEvidence;
+    };
 
 // What the media rebuild uses of the processor (design 4.16): a still of an original, and the `still@standard-1`
 // probe. Each runs on standard-1 in the caller's invocation, reads its one input key from the media bucket once and

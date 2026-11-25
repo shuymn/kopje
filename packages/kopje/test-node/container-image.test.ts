@@ -82,4 +82,15 @@ describe("the media processor's image in the kopje package", () => {
     expect(ts).toBeDefined();
     expect(ts).toBe(go);
   });
+
+  // The protocol version the Worker requires of /healthz (src/media-processor.ts NORMALIZE_PROTOCOL) is the one the
+  // server answers (container/server/main.go normalizeProtocol).
+  it("holds the Worker's protocol version to the server's", () => {
+    const worker = readFileSync(new URL("../src/media-processor.ts", import.meta.url), "utf8");
+    const server = readFileSync(new URL("server/main.go", container), "utf8");
+    const ts = /export const NORMALIZE_PROTOCOL = (\d+);/.exec(worker)?.[1];
+    const go = /const normalizeProtocol = (\d+)/.exec(server)?.[1];
+    expect(ts).toBeDefined();
+    expect(ts).toBe(go);
+  });
 });
