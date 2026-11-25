@@ -272,9 +272,12 @@ class Cleanup {
   sequence(run: (within: Within) => Promise<void>): void {
     const within: Within = async (ms, call, failed) => {
       try {
-        const value = await by(this.#deps, call, this.#deps.now() + ms);
-        if (value === CUT) {
+        const end = this.#deps.now() + ms;
+        const value = await by(this.#deps, call, end);
+        // The deadline is the route's clock, whichever of the reply and the timer settles first (code review r4 M3).
+        if (value === CUT || this.#deps.now() > end) {
           failed({ timedOut: true });
+          return CUT;
         }
         return value;
       } catch (error) {

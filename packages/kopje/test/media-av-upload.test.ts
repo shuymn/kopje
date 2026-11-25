@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DOOMED_AT } from "../src/domain/media";
+import { DOOMED_AT, TRANSFORMS_PER_UPLOAD } from "../src/domain/media";
 import {
   AV_UPLOAD_LIMIT,
   deleteOwnerMedia,
@@ -1722,6 +1722,15 @@ describe("the route's rows of 1.1 and 1.4", () => {
   });
 });
 
+// The Images counters (the instance's and the account's), by name.
+async function transformCounters(w: RouteWorld): Promise<string[]> {
+  const rows = await sql<{ value: string }>(
+    w.store,
+    "SELECT value FROM kopje_state WHERE name LIKE 'images_transforms:%' OR name LIKE 'images_account_transforms:%' ORDER BY name",
+  );
+  return rows.map((r) => r.value);
+}
+
 // A failed probe of the normalize profile for this build: uploads are inactive.
 async function failProbe(w: RouteWorld): Promise<void> {
   await sql(
@@ -2336,29 +2345,67 @@ describe("the route's answers and its cleanup (code review r2)", () => {
 
   // A documented limit (code review r3 M1): S1 answering `inactive` hands the request to the image path, whose waits
   // are its own; v1 still answers 503 at the give-up, and the image may complete after it, unattached until the sweep.
-  it("M1 (limit): S1 `inactive` hands v1 to the image path, which may complete after the give-up's 503", async () => {
-    const w = await routeWorld();
-    const arrival = Date.now();
-    const s1 = w.gate.hold("takeAvSlot");
-    const reached = w.gate.reached("takeAvSlot");
-    const { body, contentType } = multipartBody([videoPart(mp4(200_000)), PNG_PART]);
-    const stream = new SlowBody(body, { chunk: 1024, holdAt: 100_000 });
-    const post = postWatched(w, { body: stream.stream(), contentType }, "v1");
+  // A documented limit (code review r3 M1, r4 M1): S1 answering `inactive` hands the request to the image path, whose
+  // waits are its own. v1 still answers 503 at the give-up; the image path then charges Images (the account's and the
+  // instance's TRANSFORMS_PER_UPLOAD, at startTransforms) whether or not an image comes of it, and charges no AV job.
+  // Here neither file makes an image (the harness's Images refuses the PNG as Images refuses an MP4), so the
+  // reservation is abandoned and left to the sweep; an image completing after the 503 is not exercised.
+  it.each([
+    ["an image as the last file", [videoPart(mp4(200_000)), PNG_PART]],
+    ["no image at all", [videoPart(mp4(200_000))]],
+  ] as const)(
+    "M1 (limit): S1 `inactive` hands v1 to the image path, which charges Images after the give-up's 503: %s",
+    async (_, parts) => {
+      const w = await routeWorld();
+      const arrival = Date.now();
+      const s1 = w.gate.hold("takeAvSlot");
+      const reached = w.gate.reached("takeAvSlot");
+      const { body, contentType } = multipartBody([...parts]);
+      const stream = new SlowBody(body, { chunk: 1024, holdAt: 100_000 });
+      const post = postWatched(w, { body: stream.stream(), contentType }, "v1");
+      await reached;
+      await failProbe(w);
+      s1.resolve();
+      await stream.reachedHold.promise;
+      await w.advance(arrival + V1_TIME_MS);
+      expect(await answerOf(await post.answered)).toEqual({
+        status: 503,
+        body: { error: "Media processing took too long. Try a shorter file." },
+      });
+      expect(await transformCounters(w)).toEqual([]);
+      stream.release();
+      await post.done;
+      expect(w.gate.calls).toContain("startTransforms");
+      expect(await transformCounters(w)).toEqual([String(TRANSFORMS_PER_UPLOAD), String(TRANSFORMS_PER_UPLOAD)]);
+      expect(await charged(w.store)).toBe(0);
+      expect(await held(w.store, await lastUpload(w))).toMatchObject({
+        row: null,
+        slot: null,
+        att: { type: "image", processed: 1, url: "" },
+      });
+    },
+  );
+
+  // S2's wait is a deadline on the route's clock (code review r4 M3): a `released` received past it, before its timer
+  // fired, deletes nothing; the input is left to reclamation.
+  it("M3: an S2 `released` received after its deadline, before the timer fires, deletes nothing", async () => {
+    const { bucket, counts } = hookedBucket({});
+    const w = await routeWorld({ bucket });
+    const s2 = w.gate.hold("releaseStaging", "after");
+    const reached = w.gate.reached("releaseStaging");
+    const post = postWatched(w, multipartBody([videoPart(), PNG_PART]));
+    expect((await post.answered).status).toBe(422);
     await reached;
-    await failProbe(w);
-    s1.resolve();
-    await stream.reachedHold.promise;
-    await w.advance(arrival + V1_TIME_MS);
-    expect(await answerOf(await post.answered)).toEqual({
-      status: 503,
-      body: { error: "Media processing took too long. Try a shorter file." },
-    });
-    stream.release();
+    clock(Date.now() + STORE_CALL_MS + 1);
+    s2.resolve();
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    w.timers.fire();
     await post.done;
-    expect(w.gate.calls).toContain("startTransforms");
-    const after = await held(w.store, await lastUpload(w));
-    expect(after).toMatchObject({ row: null, slot: null, att: { type: "image", processed: 1 } });
-    expect(after.att?.gc_at).not.toBeNull();
+    expect(counts.deletes).toBe(0);
+    expect(w.gate.calls).toContain("abandonMedia");
   });
 
   it("M6: a thumbnail past API_BODY_LIMIT answers 413 before an invalid description", async () => {
