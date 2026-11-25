@@ -78,7 +78,7 @@ const T_PREVIEW = 3 * SECOND;
 const T_COMMIT = 6 * SECOND;
 // Of T_COMMIT, the output's transfer into R2 (its 4.5 s p95 rounded up), which the processor makes right after the
 // container's reply, before the still and the preview; the rest is the stop, the S5 calls, the writes and S6.
-export const T_TRANSFER = 5 * SECOND;
+const T_TRANSFER = 5 * SECOND;
 
 // The processor's own cuts after the container's reply, in the order it runs them (#1828 fix r1 M3): the transfer has
 // T_TRANSFER from the still's cut, then the still and its preview until T_COMMIT less T_TRANSFER before the deadline.
