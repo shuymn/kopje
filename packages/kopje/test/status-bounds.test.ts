@@ -452,7 +452,14 @@ type Parts = {
   spoiler: string;
   // The source text a local status keeps for editing; none for a remote one.
   source?: string | null;
-  media: { url: string; preview: string | null; description: string; meta: string | null; blurhash?: string | null }[];
+  media: {
+    type?: string;
+    url: string;
+    preview: string | null;
+    description: string;
+    meta: string | null;
+    blurhash?: string | null;
+  }[];
   mentions: string[];
   tags: string[];
   poll: string[] | null;
@@ -488,11 +495,12 @@ async function storedStatus(t: Setup, author: string, parts: Parts): Promise<str
       t.store,
       `INSERT INTO media_attachments (id, account_id, status_id, position, type, url, preview_url, description, meta,
 				focus_x, focus_y, blurhash)
-			VALUES (?, ?, ?, ?, 'image', ?, ?, ?, ?, -1, -1, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, -1, -1, ?)`,
       nextId(),
       author,
       id,
       position,
+      m.type ?? "image",
       m.url,
       m.preview,
       m.description,
@@ -530,9 +538,21 @@ async function storedStatus(t: Setup, author: string, parts: Parts): Promise<str
   return id;
 }
 
-// A meta of MEDIA_META_BYTES: the dimensions, padded with a key presentMedia does not read.
+// A meta of MEDIA_META_BYTES: the dimensions and a video's facts at their longest (status-presenter.ts playableFacts: a
+// frame rate of two safe integers, a duration of 17 significant digits that the Note's Document writes too, from 1e-4
+// on, and the largest safe bitrate), padded with a key presentMedia does not read.
 const MAX_META = (() => {
-  const base = { original: { width: 100_000, height: 100_000 }, small: { width: 100_000, height: 100_000 }, x: "" };
+  const base = {
+    original: {
+      width: 100_000,
+      height: 100_000,
+      frame_rate: `${Number.MAX_SAFE_INTEGER}/${Number.MAX_SAFE_INTEGER}`,
+      duration: 0.00012345678901234567,
+      bitrate: Number.MAX_SAFE_INTEGER,
+    },
+    small: { width: 100_000, height: 100_000 },
+    x: "",
+  };
   return JSON.stringify({ ...base, x: "x".repeat(1024 - JSON.stringify(base).length) });
 })();
 
@@ -582,8 +602,10 @@ async function maximalParts(t: Setup, fill: Fill = "escaped"): Promise<Parts> {
     content,
     source: content,
     spoiler: fill === "raw" ? "x".repeat(SPOILER_BYTES - 2) : C.repeat(Math.floor((SPOILER_BYTES - 2) / 6)),
-    // URLs at their byte bound, of ASCII (raw) or of backslashes JSON escapes (the others); a 5x5 blurhash.
+    // Videos (the cutover may keep four in one status, each with its facts), URLs at their byte bound, of ASCII (raw)
+    // or of backslashes JSON escapes (the others); a 5x5 blurhash.
     media: Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => ({
+      type: "video",
       url:
         fill === "raw" ? atLimit(`https://${HOST}/m/${i}/`, MEDIA_URL_LIMIT) : escapingUrl(`https://m.example/${i}/?`),
       preview:
@@ -3150,7 +3172,7 @@ describe("the table of maxima (RES-3)", () => {
     // The conversation's spare under the ceiling (one card in that shape): at least SPARE_FLOOR (#1142), and
     // SHAPE_CEILING_PERCENT is the least whole percent that keeps it.
     const spare = LIMIT - conservative.conversation!;
-    expect(spare).toBe(71_182);
+    expect(spare).toBe(70_302);
     expect(spare).toBeGreaterThanOrEqual(SPARE_FLOOR);
     expect(ceiling(SHAPE_CEILING_PERCENT - 1) - conservative.conversation!).toBeLessThan(SPARE_FLOOR);
     expect(conservative).toEqual(CONSERVATIVE_JSON);
@@ -3224,15 +3246,15 @@ describe("the table of maxima (RES-3)", () => {
     const kinds = await streamedKinds();
     const most = Math.max(...Object.values(kinds));
     expect({ ...kinds, most }).toEqual({
-      status: 6_057_734,
-      conversation: 7_394_679,
-      notification: 6_867_051,
+      status: 6_058_614,
+      conversation: 7_395_559,
+      notification: 6_867_931,
       announcement: ANNOUNCEMENT_JSON,
-      most: 7_394_679,
+      most: 7_395_559,
     });
-    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_723_568);
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_725_328);
     const { streamed } = await measureFill("escaped");
-    expect(streamed).toEqual({ conversation: 7_312_332, conversationPayload: 8_160_844, notification: 6_154_921 });
+    expect(streamed).toEqual({ conversation: 7_313_212, conversationPayload: 8_161_788, notification: 6_155_801 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);
     expect(streamed!.conversationPayload).toBeLessThanOrEqual(2 * most + 2);
     expect(streamed!.notification).toBeLessThanOrEqual(kinds.notification);
@@ -3541,7 +3563,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
       expect({ ...measuredNote, featured: featuredBytes, whole }).toEqual({
         ...NOTE_FILLS.escaped,
         ...NOTE_COUNTS,
-        featured: 4_489_880,
+        featured: 4_490_192,
         whole: 1,
       });
     },
