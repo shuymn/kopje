@@ -110,17 +110,43 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     ["a refused clip", { failure: { status: 422, code: "pixels" } }, undefined, "normalize:pixels"],
     // M10: a healthy /healthz with no /normalize is the build's, deterministically.
     ["a /normalize answered 404", { failure: { status: 404, code: "not_found" } }, undefined, "normalize:not_found"],
-    [
-      "a /normalize answered 500 internal",
-      { failure: { status: 500, code: "internal" } },
-      undefined,
-      "normalize:internal",
-    ],
+    ["a still with no Content-Length", { stillLength: "none" as const }, undefined, "still-length"],
   ])("fails on %s, and health is degraded", async (_name, extra, ready, reason) => {
     const store = await freshStore();
     const { run } = await probeOnce(store, await genuine(extra), { ready });
     expect(run).toMatchObject({ status: "recorded", verdict: { outcome: "fail" } });
     expect(run.status === "recorded" && run.verdict.outcome === "fail" && run.verdict.reason).toContain(reason);
+    expect(await health(store)).toMatchObject({ ok: false, state: "degraded" });
+  });
+
+  // r2 M2: what a server or the network does for a moment says nothing of the build.
+  it.each([
+    ["408 input_timeout", { failure: { status: 408, code: "input_timeout" } }],
+    ["500 internal", { failure: { status: 500, code: "internal" } }],
+    ["502", { failure: { status: 502 } }],
+    ["503", { failure: { status: 503 } }],
+    ["a still cut short of its Content-Length", { stillLength: "short" as const }],
+  ])("keeps an existing pass on %s: no verdict, health ready", async (_name, extra) => {
+    const store = await freshStore();
+    expect((await probeOnce(store, await genuine())).run).toMatchObject({ verdict: { outcome: "pass" } });
+    // An upload's infrastructure failure makes the profile due again.
+    await store.recordMediaInfrastructureFailure(BUILD, { profile: "normalize@standard-4", build: BUILD });
+    clock(T0 + PROBE_RETRY_MS + SECOND);
+    const { run } = await probeOnce(store, await genuine(extra), { due: true });
+    expect(run).toMatchObject({ status: "recorded", verdict: { outcome: "no-verdict" } });
+    expect(await health(store)).toMatchObject({ ok: true, state: "ready" });
+  });
+
+  it("revokes an existing pass on a /normalize answered 404 by a healthy container", async () => {
+    const store = await freshStore();
+    expect((await probeOnce(store, await genuine())).run).toMatchObject({ verdict: { outcome: "pass" } });
+    // An upload's infrastructure failure makes the profile due again.
+    await store.recordMediaInfrastructureFailure(BUILD, { profile: "normalize@standard-4", build: BUILD });
+    clock(T0 + PROBE_RETRY_MS + SECOND);
+    const { run } = await probeOnce(store, await genuine({ failure: { status: 404, code: "not_found" } }), {
+      due: true,
+    });
+    expect(run).toMatchObject({ status: "recorded", verdict: { outcome: "fail" } });
     expect(await health(store)).toMatchObject({ ok: false, state: "degraded" });
   });
 

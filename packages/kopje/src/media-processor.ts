@@ -156,6 +156,8 @@ async function readStill(response: Response): Promise<Uint8Array> {
     await response.body?.cancel();
     throw new ProbeFailure("still-length");
   }
+  // From here the headers kept the contract: a body that ends short is the connection's (still-truncated); one longer
+  // than declared is not (still-length).
   const out = new Uint8Array(declared);
   const reader = (response.body as ReadableStream<Uint8Array>).getReader();
   let read = 0;
@@ -172,7 +174,7 @@ async function readStill(response: Response): Promise<Uint8Array> {
     read += value.byteLength;
   }
   if (read !== declared) {
-    throw new ProbeFailure("still-length");
+    throw new ProbeFailure("still-truncated");
   }
   return out;
 }
@@ -195,6 +197,10 @@ function errorCode(response: Response): string | null {
   const code = response.headers.get("kopje-error");
   return code !== null && /^[a-z_]{1,32}$/.test(code) ? code : null;
 }
+
+// Replies outside the input's outcomes that say nothing of the build: 408 input_timeout (the input arrived too slowly),
+// 429 busy, 500 internal (the server could not set up its work: a directory, ffprobe), and a gateway's 502, 503 or 504.
+const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
 // The normalize adapter (design 4.2; #1828 PR4 plan, section 3 "PR4-2"): one POST /normalize on a ready container with
 // the job's input as its body and its work deadline, its answer read against the server's contract
@@ -230,11 +236,9 @@ export async function normalize(port: Fetcher, job: NormalizeJob): Promise<Norma
     if (response.status === 504 && code === "timeout") {
       return { ok: false, outcome: "timeout", code, stages };
     }
-    // Busy is the server's state; any other reply here is outside its contract.
-    throw new TranscoderUnavailable(
-      `normalize:${code ?? response.status}`,
-      !(response.status === 429 && code === "busy"),
-    );
+    // Busy, a slow input, the server's own internal failure and a gateway's reply are the moment's (TRANSIENT_STATUSES);
+    // any other reply here is outside the server's contract, the build's.
+    throw new TranscoderUnavailable(`normalize:${code ?? response.status}`, !TRANSIENT_STATUSES.has(response.status));
   }
   const type = response.headers.get("content-type");
   const kind = response.headers.get("kopje-kind");
@@ -283,9 +287,13 @@ async function normalizeStill(port: Fetcher, signal: AbortSignal | undefined): P
   try {
     return await readStill(response);
   } catch (error) {
-    // A status or type the server never answers for the still is the build's; a body cut short may be the connection.
+    // A status, type or length the server never answers for the still is the build's; a body cut short, or a read
+    // that fails, may be the connection's.
     const failure = error instanceof ProbeFailure ? error.failure : "still-read";
-    throw new TranscoderUnavailable(failure, failure === "still-status" || failure.startsWith("still:"));
+    throw new TranscoderUnavailable(
+      failure,
+      failure === "still-status" || failure === "still-length" || failure.startsWith("still:"),
+    );
   }
 }
 

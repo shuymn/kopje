@@ -21,8 +21,10 @@ export type ServerAnswer = {
   type?: "video/mp4" | "audio/mpeg";
   durationMs?: string | null;
   still?: Uint8Array | null;
-  // A status and code in place of the output.
-  failure?: { status: number; code: string; body?: string };
+  // A status and code in place of the output (no code: no Kopje-Error, as a platform's reply has none).
+  failure?: { status: number; code?: string; body?: string };
+  // The still's Content-Length: none, or 100 bytes more than its body (a body cut short).
+  stillLength?: "none" | "short";
   // The response's body ends after this many bytes, whatever its Content-Length says.
   truncateAt?: number;
   // The Content-Length declared this many bytes off the body's length.
@@ -54,14 +56,32 @@ export function fakeControl(
       if (url.pathname === "/normalize/still") {
         options.onStill?.();
         const png = answer.still ?? null;
-        return png === null
-          ? new Response(null, { status: 404, headers: { "kopje-error": "no_still" } })
-          : new Response(png, { headers: { "content-type": "image/png", "content-length": String(png.byteLength) } });
+        if (png === null) {
+          return new Response(null, { status: 404, headers: { "kopje-error": "no_still" } });
+        }
+        if (answer.stillLength !== undefined) {
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(png);
+              controller.close();
+            },
+          });
+          const headers: Record<string, string> = { "content-type": "image/png" };
+          if (answer.stillLength === "short") {
+            headers["content-length"] = String(png.byteLength + 100);
+          }
+          return new Response(body, { headers });
+        }
+        return new Response(png, {
+          headers: { "content-type": "image/png", "content-length": String(png.byteLength) },
+        });
       }
       await request.arrayBuffer();
       if (answer.failure !== undefined) {
         const { status, code, body } = answer.failure;
-        return new Response(body ?? `{"error":"${code}"}`, { status, headers: { "kopje-error": code } });
+        return code === undefined
+          ? new Response(body ?? "Bad Gateway", { status })
+          : new Response(body ?? `{"error":"${code}"}`, { status, headers: { "kopje-error": code } });
       }
       const output = answer.output ?? new Uint8Array();
       const type = answer.type ?? "video/mp4";

@@ -288,8 +288,9 @@ describe("normalize adapter", () => {
     const thrown = await normalize(fake.container.getTcpPort(8080), job()).catch((error: unknown) => error);
     expect(thrown).toBeInstanceOf(TranscoderUnavailable);
     expect((thrown as TranscoderUnavailable).reason).not.toContain("error");
-    // Only busy is the server's state; every other such reply is outside its contract (M10).
-    expect((thrown as TranscoderUnavailable).protocol).toBe(code !== "busy");
+    // Busy, a slow input and the server's internal failure are the moment's; every other such reply is outside its
+    // contract (r2 M2).
+    expect((thrown as TranscoderUnavailable).protocol).toBe(![408, 429, 500].includes(status));
   });
 
   it.each([
