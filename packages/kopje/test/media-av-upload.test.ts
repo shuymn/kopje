@@ -19,6 +19,7 @@ import { imageUpload } from "./av-posting-helpers";
 import { BUILD, deferred, rejectionOf, testKernel } from "./helpers";
 import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS } from "./media-helpers";
 import {
+  ACTIVE,
   AUDIO,
   type AvWorld,
   avWorld,
@@ -27,6 +28,7 @@ import {
   completed,
   failed,
   held,
+  queue,
   queued,
   reserve,
   restore,
@@ -413,6 +415,92 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
       ];
       expect(refusals).toEqual(Array.from({ length: 7 }, () => "transient"));
       expect([await held(w.store, running.id), await held(w2.store, pending.id)]).toEqual(before);
+    });
+
+    it("refuses the processor's fence-dependent writes S1-S5 and S7 and the sweep's checkpoint, writing nothing", async () => {
+      const cases: [string, (w: AvWorld) => Promise<{ id: string; run: () => Promise<unknown> }>][] = [
+        [
+          "S1",
+          async (w) => {
+            const up = await reserve(w);
+            const run = () =>
+              w.store.takeAvSlot(BUILD, {
+                id: up.id,
+                token: up.token,
+                kind: "video",
+                v1Left: null,
+                activation: ACTIVE,
+              });
+            return { id: up.id, run };
+          },
+        ],
+        [
+          "S2",
+          async (w) => {
+            const up = await staged(w);
+            return {
+              id: up.id,
+              run: () => w.store.releaseStaging(BUILD, { id: up.id, token: up.token, stagedAt: up.stagedAt }),
+            };
+          },
+        ],
+        [
+          "S3",
+          async (w) => {
+            const up = await staged(w);
+            return { id: up.id, run: () => queue(w, up, up.stagedAt) };
+          },
+        ],
+        [
+          "S4",
+          async (w) => {
+            const up = await queued(w);
+            return {
+              id: up.id,
+              run: () => w.store.startNormalize(BUILD, { id: up.id, token: up.token, invocation: "inv-x" }),
+            };
+          },
+        ],
+        [
+          "S5",
+          async (w) => {
+            const up = await started(w);
+            return {
+              id: up.id,
+              run: () => w.store.confirmAvWrite(BUILD, { id: up.id, startId: up.startId, write: "full" }),
+            };
+          },
+        ],
+        [
+          "S7",
+          async (w) => {
+            const up = await started(w);
+            return {
+              id: up.id,
+              run: () => w.store.failNormalize(BUILD, { id: up.id, startId: up.startId, cause: "unavailable" }),
+            };
+          },
+        ],
+        [
+          "incomingSwept",
+          async (w) => {
+            const claimed = (await w.store.incomingSweepClaim(BUILD)) as { claim: number };
+            return { id: "", run: () => w.store.incomingSwept(BUILD, { claim: claimed.claim, cursor: null }) };
+          },
+        ],
+      ];
+      const refused: Record<string, unknown> = {};
+      for (const [name, make] of cases) {
+        const w = await avWorld();
+        const { id, run } = await make(w);
+        clock(T0 + 3 * SECOND);
+        const before = id === "" ? null : await held(w.store, id);
+        refused[name] = await unreadable(w, () => transient(run()), "{}");
+        if (before !== null) {
+          expect(await held(w.store, id), name).toEqual(before);
+        }
+      }
+      expect(refused).toEqual(Object.fromEntries(cases.map(([name]) => [name, "transient"])));
     });
 
     it("refuses the sweep's classification, which checks its claim against the restore", async () => {
