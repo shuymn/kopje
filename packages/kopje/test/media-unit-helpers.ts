@@ -51,6 +51,7 @@ export class Storage {
     await (this.kill("commit:run") ?? Promise.resolve());
     this.map = txn.map;
     this.alarm = txn.alarm;
+    await (this.kill("committed:run") ?? Promise.resolve());
     return out;
   }
 }
@@ -60,6 +61,9 @@ function container(
   platform: {
     kill: (name: string) => Promise<never> | null;
     destroyFails: () => boolean;
+    // A destroy that never answers, the container left running; `destroying` is called as each one starts.
+    destroyHeld: () => boolean;
+    destroying: () => void;
     // The /normalize answer never comes ("reply"), or stops after half its body ("body"), until the request is
     // aborted; `hung` is called when it starts hanging.
     hang: () => "reply" | "body" | "still" | null;
@@ -141,7 +145,11 @@ function container(
       running = true;
     },
     async destroy() {
+      platform.destroying();
       await (platform.kill("destroy") ?? Promise.resolve());
+      if (platform.destroyHeld()) {
+        return new Promise<never>(() => {});
+      }
       if (platform.destroyFails()) {
         throw new Error("destroy failed");
       }
@@ -157,7 +165,8 @@ export type Platform = Awaited<ReturnType<typeof platformFor>>;
 
 // The platform of one upload's object, over the world's Store and the media bucket. `killAt` names the call at which
 // the next invocation dies: "before:<method>" (the call is never sent), "after:<method>" (it commits, its reply never
-// arrives), or "destroy", "commit:run", "delete" (the input's).
+// arrives), or "destroy", "commit:run" (inside D0's transaction), "committed:run" (just after it), "delete" (the
+// input's).
 export async function platformFor(w: AvWorld) {
   const bytes = await avFixture("r1-silent.mp4");
   const verdict = await verifyBytes("video/mp4", bytes);
@@ -166,6 +175,8 @@ export async function platformFor(w: AvWorld) {
   }
   const state = { killAt: null as string | null, killed: null as PromiseWithResolvers<void> | null };
   let destroyFails = false;
+  let destroyHeld = false;
+  let destroys = 0;
   let storeCalls: string[] = [];
   // Work run once before a Store call is sent (an operator gate set at that moment).
   const before = new Map<string, () => Promise<void>>();
@@ -287,6 +298,8 @@ export async function platformFor(w: AvWorld) {
     {
       kill,
       destroyFails: () => destroyFails,
+      destroyHeld: () => destroyHeld,
+      destroying: () => void destroys++,
       hang: () => hang,
       hung: () => void (hung = true),
       aborted: () => void (requestAborted = true),
@@ -316,6 +329,8 @@ export async function platformFor(w: AvWorld) {
     storeCalls: () => storeCalls,
     clearCalls: () => void (storeCalls = []),
     failDestroy: (on: boolean) => void (destroyFails = on),
+    holdDestroy: (on: boolean) => void (destroyHeld = on),
+    destroys: () => destroys,
     killNext: (at: string) => void (state.killAt = at),
     beforeCall: (method: string, work: () => Promise<void>) => void before.set(method, work),
     afterCall: (method: string, work: () => Promise<void>) => void after.set(method, work),

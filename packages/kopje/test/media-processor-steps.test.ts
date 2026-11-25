@@ -122,6 +122,54 @@ describe("table 1.3: D0 run", () => {
   });
 });
 
+describe("table 1.3: D0 and D8 around a kill (r1 claim gaps)", () => {
+  it("D0 commits the record and its alarm together: a kill just after its transaction leaves both", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await queued(w);
+    await putInput(up.id);
+    p.killNext("committed:run");
+    void p.unit().run(up.id, up.token, up.teardownId);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(p.storage.map.size).toBe(1);
+    expect(p.storage.alarm).not.toBeNull();
+    await p.settle();
+    await cleared(w, p, up.id);
+    expect((await held(w.store, up.id)).att?.processed).toBe(1);
+  });
+
+  it("run arriving while alarm() runs (after D1) finds D1's alarm and changes nothing: one container, one job", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    let during: { alarm: number | null; size: number } | null = null;
+    p.beforeCall("startNormalize", async () => {
+      const armed = p.storage.alarm;
+      await p.unit().run(up.id, up.token, "a repeat");
+      during = { alarm: p.storage.alarm, size: p.storage.map.size };
+      expect(during.alarm).toBe(armed);
+    });
+    expect(await p.fire()).toBe("returned");
+    expect(during).toMatchObject({ size: 1 });
+    expect(during!.alarm).not.toBeNull();
+    await cleared(w, p, up.id);
+    expect(p.starts()).toBe(1);
+    expect(p.storeCalls().filter((call) => call === "startNormalize")).toHaveLength(1);
+  });
+
+  it("D8 is repeated by the replay after a kill before S8: two deletes of the input", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.killNext("before:releaseAvSlot");
+    expect(await p.fire()).toBe("killed");
+    expect(p.deletes().filter((key) => key === incomingKey(up.id))).toHaveLength(1);
+    await p.settle();
+    await cleared(w, p, up.id);
+    expect(p.deletes().filter((key) => key === incomingKey(up.id))).toHaveLength(2);
+  });
+});
+
 describe("table 1.3: the stop and its confirmation", () => {
   it("never calls S8 before a confirmed stop; a stop that keeps failing is retried with no Store write while the granted slot counts (W10)", async () => {
     const w = await avWorld();
@@ -197,6 +245,86 @@ describe("table 1.3: the stop and its confirmation", () => {
     await p.settle();
     await cleared(w, p, up.id);
     expect((await held(w.store, up.id)).att?.processed).toBe(1);
+  });
+
+  // Runs `fired` to its end, expiring each held destroy's bound once that destroy has started.
+  async function through(p: Awaited<ReturnType<typeof platformFor>>, fired: Promise<string>): Promise<string> {
+    let ended: string | null = null;
+    void fired.then((value) => void (ended = value));
+    let seen = p.destroys();
+    for (let i = 0; i < 200 && ended === null; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const due = p.lastWait();
+      if (ended === null && p.destroys() > seen && due !== null) {
+        seen = p.destroys();
+        p.expire(due);
+      }
+    }
+    return ended ?? "pending";
+  }
+
+  it("a destroy held in two invocations ends each at its bound with no S8, the record, slot and alarm kept", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.holdDestroy(true);
+    for (const invocation of [1, 2]) {
+      p.clearCalls();
+      expect(await through(p, p.fire()), `invocation ${invocation}`).toBe("returned");
+      expect(p.destroys()).toBeGreaterThanOrEqual(invocation);
+      expect(p.running()).toBe(true);
+      expect(p.storeCalls()).not.toContain("releaseAvSlot");
+      expect(p.storage.map.size).toBe(1);
+      expect(p.storage.alarm).not.toBeNull();
+      expect((await held(w.store, up.id)).slot).not.toBeNull();
+    }
+    p.holdDestroy(false);
+    await p.settle();
+    await cleared(w, p, up.id);
+  });
+
+  it("an S8 that failed leaves the slot held, and one committed whose reply was lost leaves it released; the record and alarm stay in both until the replay", async () => {
+    for (const lost of [false, true]) {
+      const w = await avWorld();
+      const p = await platformFor(w);
+      const up = await upload(w, p);
+      if (lost) {
+        p.killNext("after:releaseAvSlot");
+        expect(await p.fire()).toBe("killed");
+      } else {
+        p.beforeCall("releaseAvSlot", () => Promise.reject(new Error("store unreachable")));
+        expect(await p.fire()).toBe("returned");
+      }
+      const slot = (await held(w.store, up.id)).slot;
+      expect(slot === null, `lost: ${lost}`).toBe(lost);
+      expect(p.storage.map.size).toBe(1);
+      expect(p.storage.alarm).not.toBeNull();
+      p.clearCalls();
+      await p.settle();
+      expect(p.storeCalls()).toContain("releaseAvSlot");
+      await cleared(w, p, up.id);
+    }
+  });
+
+  it("with the container already stopped, keeps the record one millisecond before V2_PROCESS_MS + HARD_HOLD_MS and drops it at that age (W9)", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    const { at } = p.storage.map.get("upload") as { at: number };
+    // S8 refused throughout (maintenance); the first alarm stops the container.
+    await gate(w.store, "maintenance", true);
+    await p.fire();
+    expect(p.running()).toBe(false);
+    p.storage.alarm = at + V2_PROCESS_MS + HARD_HOLD_MS - 1;
+    await p.fire();
+    expect(p.storage.map.size).toBe(1);
+    expect(await env.MEDIA.head(incomingKey(up.id))).not.toBeNull();
+    p.storage.alarm = at + V2_PROCESS_MS + HARD_HOLD_MS;
+    await p.fire();
+    expect(p.storage.map.size).toBe(0);
+    expect(p.storage.alarm).toBeNull();
+    expect(await env.MEDIA.head(incomingKey(up.id))).toBeNull();
+    await gate(w.store, "maintenance", false);
   });
 
   it("drops a record only V2_PROCESS_MS + HARD_HOLD_MS after D0 and only with the container stopped, deleting the input (W9)", async () => {
