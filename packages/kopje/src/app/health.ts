@@ -113,7 +113,7 @@ async function mediaProcessorCheck(
     ok: true,
     state: "ready",
     imagesVerified: verdict.imagesVerified !== false,
-    ...(failure !== null && failure.version === build && failure.at > verdict.at
+    ...(failure !== null && failure.version === build && failure.at >= verdict.at
       ? { infrastructureFailure: true }
       : {}),
     ...usage,

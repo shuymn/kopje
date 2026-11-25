@@ -202,6 +202,16 @@ describe("health's mediaProcessor (P23)", () => {
     await runUpload(uploadDeps(w, fakeControl(await genuine()).control, { images: refusing }), await jobOf(w, up));
     expect(await health(w.store)).toMatchObject({ ok: true, state: "ready", infrastructureFailure: true, budget: 10 });
   });
+
+  it("notes an infrastructure failure stamped in the pass's millisecond, as the probe schedule makes a probe due", async () => {
+    const w = await avWorld();
+    await w.store.recordMediaInfrastructureFailure(BUILD, { profile: "normalize@standard-4", build: BUILD });
+    // Due within the pass's cooldown (not_due when it is not).
+    expect(
+      (await w.store.claimMediaProbe(BUILD, { profile: "normalize@standard-4", build: BUILD, due: true })).status,
+    ).toBe("cooldown");
+    expect(await health(w.store)).toMatchObject({ ok: true, state: "ready", infrastructureFailure: true });
+  });
 });
 
 describe("the still check of still@standard-1 (kopje-admin media-processor probe)", () => {
