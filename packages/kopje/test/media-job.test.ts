@@ -82,9 +82,12 @@ describe("runUpload (P12)", () => {
     const long = await started(w);
     await putInput(long.id);
     const fake = fakeControl({ output, durationMs: String(ms + 4000) });
-    const end = await runUpload(uploadDeps(w, fake.control), await jobOf(w, long));
+    const { bucket, log } = multipartLog();
+    const end = await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, long));
     expect(end).toEqual({ stopped: true });
     expect((await held(w.store, long.id)).row).toMatchObject({ state: "failed", failure: "verifier" });
+    expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
+    expect(log.filter((entry) => entry.startsWith("complete:"))).toEqual([]);
     // Both multipart uploads stay uncompleted.
     expect(await objects(long.id, long.token)).toMatchObject({ original: false, full: false, small: null });
   });
@@ -246,9 +249,13 @@ describe("runUpload (P12)", () => {
     const failing = { ...env.MEDIA, get: () => Promise.reject(new Error("SECRET-R2-BODY")) } as unknown as R2Bucket;
     const other = await started(w);
     await runUpload(uploadDeps(w, fakeControl({}).control, { bucket: failing }), await jobOf(w, other));
-    const text = JSON.stringify(logged) + JSON.stringify(await held(w.store, up.id));
+    const text =
+      JSON.stringify(logged) +
+      JSON.stringify(await held(w.store, up.id)) +
+      JSON.stringify(await held(w.store, other.id));
     expect(logged.length).toBeGreaterThan(0);
     expect(text).not.toContain(body);
+    expect(text).not.toContain("SECRET-R2-BODY");
     expect((await held(w.store, other.id)).row).toMatchObject({ failure: "unavailable" });
   });
 });
@@ -437,6 +444,47 @@ describe("incomingOrphans (G14, W3)", () => {
     expect(await env.MEDIA.head(orphan)).toBeNull();
     expect(await env.MEDIA.head(probe)).toBeNull();
     expect(await env.MEDIA.head(incomingKey(up.id))).not.toBeNull();
+  });
+
+  it("lists 1,000 keys a page from the checkpoint, advances it on success and keeps a non-empty one on failure", async () => {
+    const w = await avWorld();
+    const orphan = incomingKey("300000000000009996");
+    await env.MEDIA.put(orphan, "x");
+    const asked: R2ListOptions[] = [];
+    // R2 answers each page as truncated at "page-2" until `last`.
+    let last = false;
+    let failDelete = false;
+    const bucket = {
+      list: async (options: R2ListOptions) => {
+        asked.push(options);
+        const page = await env.MEDIA.list({ prefix: options.prefix! });
+        return last ? { ...page, truncated: false } : { ...page, truncated: true, cursor: "page-2" };
+      },
+      delete: (keys: string[]) => (failDelete ? Promise.reject(new Error("r2")) : env.MEDIA.delete(keys)),
+    } as unknown as R2Bucket;
+    const cursor = async () => {
+      const [state] = await sql<{ value: string }>(
+        w.store,
+        "SELECT value FROM kopje_state WHERE name = 'media_incoming_sweep'",
+      );
+      return (JSON.parse(state?.value ?? "{}") as { cursor?: string }).cursor;
+    };
+    pastRealTime(25 * HOUR);
+    await incomingOrphans({ build: BUILD, store: w.store, bucket });
+    expect(asked[0]).toEqual({ prefix: "incoming/", limit: 1000 });
+    expect(await cursor()).toBe("page-2");
+    await env.MEDIA.put(orphan, "x");
+    pastRealTime(50 * HOUR);
+    failDelete = true;
+    await expect(incomingOrphans({ build: BUILD, store: w.store, bucket })).rejects.toThrow("r2");
+    expect(asked[1]).toEqual({ prefix: "incoming/", limit: 1000, cursor: "page-2" });
+    expect(await cursor()).toBe("page-2");
+    pastRealTime(53 * HOUR);
+    failDelete = false;
+    last = true;
+    await incomingOrphans({ build: BUILD, store: w.store, bucket });
+    expect(asked[2]).toEqual({ prefix: "incoming/", limit: 1000, cursor: "page-2" });
+    expect(await cursor()).toBe("");
   });
 
   it("keeps the cursor when the delete fails, and repeats the page harmlessly on the next claim", async () => {
