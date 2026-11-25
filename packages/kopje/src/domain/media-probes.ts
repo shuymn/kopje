@@ -14,8 +14,9 @@ import { readOperation, writeOperation } from "./operation";
 //
 // A use is admitted while its profile's verdict passed for the running build (probePassed); an infrastructure failure
 // after the pass revokes nothing and only makes the profile due for a probe again (claimProbe). One claim is shared by
-// the CLI and the cron's probe round: claimProbe refuses within PROBE_RETRY_MS of the last claim for the same build, and
-// recordProbeResult records only under the claim it is given, so two probers never both record. The media rebuild
+// the CLI and the cron's probe round: claimProbe refuses a claim for the same build within PROBE_RETRY_MS of the last one
+// when that one recorded a result, and within PROBE_CLAIM_MS when it recorded none, and recordProbeResult records only
+// under the claim it is given, so two probers never both record. The media rebuild
 // probes `still@standard-1` under its own lease (domain/media-rebuild.ts probeRecord and recordProbe) over the same
 // records: its attempt removes the verdict before the probe runs.
 
