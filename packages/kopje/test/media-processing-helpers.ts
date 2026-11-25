@@ -97,6 +97,9 @@ export const VIDEO: AvFacts = {
   preview: { width: 640, height: 360, blurhash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj" },
 };
 
+// A completed video without a still (S6 with no preview).
+export const VIDEO_NO_STILL: AvFacts = { ...VIDEO, preview: null };
+
 export const AUDIO: AvFacts = {
   kind: "audio",
   contentType: "audio/mpeg",

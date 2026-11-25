@@ -3,13 +3,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DOOMED_AT } from "../src/domain/media";
-import {
-  deleteOwnerMedia,
-  ownerMedia,
-  updateOwnerMedia,
-  V2_PROCESS_MS,
-  type AvFacts,
-} from "../src/domain/media-processing";
+import { deleteOwnerMedia, ownerMedia, updateOwnerMedia, V2_PROCESS_MS } from "../src/domain/media-processing";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
 import { fileKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
 import { readRestore } from "../src/platform/restore-marker";
@@ -40,6 +34,7 @@ import {
   started,
   T0,
   VIDEO,
+  VIDEO_NO_STILL,
 } from "./media-processing-helpers";
 import { observedSql } from "./read-helpers";
 import { storeWith } from "./setup-helpers";
@@ -1033,11 +1028,9 @@ describe("a DELETE across a restore at the route (W13, Codex r7)", () => {
 });
 
 describe("S10's 200 through the owner's presenter (PR4-1 code review r1 M4)", () => {
-  const NO_STILL: AvFacts = { ...VIDEO, preview: null };
-
   it.each([
     ["a video with a still", VIDEO],
-    ["a video without one", NO_STILL],
+    ["a video without one", VIDEO_NO_STILL],
     ["an audio upload", AUDIO],
   ] as const)("S6 then S10 for %s answers what the owner's GET shows", async (_name, facts) => {
     const w = await avWorld();
@@ -1048,7 +1041,7 @@ describe("S10's 200 through the owner's presenter (PR4-1 code review r1 M4)", ()
     expect(shown.status).toBe(200);
     expect(decided).toEqual({ status: 200, media: shown.body });
     const origin = new URL((shown.body as { url: string }).url).origin;
-    if (facts === NO_STILL) {
+    if (facts === VIDEO_NO_STILL) {
       expect(shown.body).toMatchObject({ preview_url: `${origin}${VIDEO_POSTER}`, blurhash: null });
       expect((shown.body as { meta: Record<string, unknown> }).meta).not.toHaveProperty("small");
     }
