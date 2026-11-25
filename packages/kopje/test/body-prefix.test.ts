@@ -128,3 +128,21 @@ describe("readBodyPrefix", () => {
     expect(await readBodyPrefix(null, 10)).toEqual({ bytes: new Uint8Array(0), limitReached: false, observed: 0 });
   });
 });
+
+describe("readBodyPrefix under a guard that gives up (r2)", () => {
+  it("leaves no unhandled rejection from the read it cancels", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (event: PromiseRejectionEvent) => void unhandled.push(event.reason);
+    addEventListener("unhandledrejection", listener);
+    try {
+      // A workerd stream whose read is pending: cancelling it rejects that read ("Stream was cancelled").
+      const { readable } = new IdentityTransformStream();
+      const given = readBodyPrefix(readable, 10, () => Promise.reject(new Error("deadline")));
+      await expect(given).rejects.toThrow("deadline");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      removeEventListener("unhandledrejection", listener);
+    }
+  });
+});

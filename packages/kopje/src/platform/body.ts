@@ -46,6 +46,13 @@ export async function readBoundedBody(message: Request | Response, limit: number
 // federation/card-images.ts): the buffer is then the caller's, and stays alive while the view does.
 export type BodyPrefix = { bytes: Uint8Array; limitReached: boolean; observed: number };
 
+// A read handed to a guard that may give up on it: its rejection, when the stream is then cancelled under it, is
+// observed here so that it is never unhandled.
+function observed<T>(read: Promise<T>): Promise<T> {
+  read.catch(() => {});
+  return read;
+}
+
 export async function readBodyPrefix(
   body: ReadableStream<Uint8Array> | null,
   limit: number,
@@ -68,7 +75,7 @@ export async function readBodyPrefix(
   try {
     if (byob !== null) {
       while (offset < size) {
-        const { done, value } = await guard(byob.read(new Uint8Array(buffer, offset, size - offset)));
+        const { done, value } = await guard(observed(byob.read(new Uint8Array(buffer, offset, size - offset))));
         // The view's buffer is detached by every read, the EOF read included: take it back each time.
         if (value === undefined) {
           // Only a stream cancelled elsewhere ends without the view; its bytes went with the buffer.
@@ -84,7 +91,7 @@ export async function readBodyPrefix(
       const dest = new Uint8Array(buffer);
       const chunks = reader as ReadableStreamDefaultReader<Uint8Array>;
       while (offset < size) {
-        const { done, value } = await guard(chunks.read());
+        const { done, value } = await guard(observed(chunks.read()));
         if (done) {
           break;
         }
