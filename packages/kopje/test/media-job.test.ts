@@ -173,7 +173,7 @@ describe("runUpload (P12)", () => {
     expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
   });
 
-  it("fails an output whose part upload R2 rejects unavailable, and cancels the container's body", async () => {
+  it("fails an output whose part upload R2 rejects unavailable, and cancels the container's body without waiting on it", async () => {
     const w = await avWorld();
     const up = await started(w);
     await putInput(up.id);
@@ -182,7 +182,23 @@ describe("runUpload (P12)", () => {
     const output = await new Response(made.stream()).bytes();
     const { bucket, log } = multipartLog({ failPart: true });
     const fake = fakeControl({ output, durationMs: "10000" }, { open: true });
-    await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, up));
+    // The reader's own cancel() is passed on to the body but never settles: the runner does not wait on it.
+    const cancel = Object.getOwnPropertyDescriptor(ReadableStreamDefaultReader.prototype, "cancel")!.value as (
+      this: ReadableStreamDefaultReader,
+      reason?: unknown,
+    ) => Promise<void>;
+    const holding = vi.spyOn(ReadableStreamDefaultReader.prototype, "cancel").mockImplementation(function (
+      this: ReadableStreamDefaultReader,
+      reason?: unknown,
+    ) {
+      cancel.call(this, reason).catch(() => {});
+      return new Promise<void>(() => {});
+    });
+    try {
+      await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, up));
+    } finally {
+      holding.mockRestore();
+    }
     expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "unavailable" });
     expect(fake.cancels()).toBe(1);
     expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
