@@ -21,11 +21,12 @@
 // or the alarm destroying one, answers "busy" (setting the alarm for now in the first case); a constructor that finds
 // one sets the alarm for now and does nothing else. The object stores nothing but its alarm.
 //
-// The smoke probe (probeNow) runs the packaged fixture through the operation, with no verifier. stillNow runs /still on
-// standard-1 for the media rebuild (design 4.16, mastodon/media-rebuild-av.ts): its one input key is read from the
-// media bucket once and streamed as the request body, and the PNG comes back to the caller, which checks it. On a
-// probe object it is the rebuild's `still@standard-1` probe and follows the same single-owner rule as probeNow; on a
-// fresh object (rb:<nonce>) it is one rebuild still. Both answer only once the container is destroyed, and a still
+// probeNormalize is the activation probe of normalize@standard-4 (mastodon/media-activation.ts probeWork) on a copy of
+// the packaged clip. stillNow runs /still on standard-1 for the media rebuild (design 4.16, mastodon/media-rebuild-av.ts)
+// and the still check of `kopje-admin media-processor probe`: its one input key is read from the media bucket once and
+// streamed as the request body, and the PNG comes back to the caller, which checks it. On a probe object it is the
+// still@standard-1 probe and follows the same single-owner rule as probeNormalize; on a fresh object (rb:<nonce>) it is
+// one rebuild still. Both answer only once the container is destroyed, and a still
 // only by its deadline: its destroy ends STILL_CLEANUP_MS before it, the removal of the object's storage and alarm is
 // awaited until it, and one that has not finished by then is left to the alarm, which repeats it until it is done.
 import { DurableObject } from "cloudflare:workers";
@@ -47,7 +48,6 @@ import {
   type NormalizeJob,
   type NormalizeResult,
   type ProbeProfile,
-  type ProbeReport,
   type ProbeVerdict,
   STILL_INPUT_REFUSALS,
   type StillInputRefusal,
@@ -60,12 +60,11 @@ import { buildOf } from "./version";
 // The port container/server listens on.
 const PORT = 8080;
 // The first start on a host pulls the image (the experiment's first pulls took 3.2 and 7.9 s); a probe waits longer.
-export const READY_MS = 90_000;
+const READY_MS = 90_000;
 const READY_POLL_MS = 250;
-// The work deadline the probe gives normalize and its still's reserve (container/server/main.go), and the bound on
-// the whole operation.
+// The work deadline the activation probe gives normalize (container/server/main.go), and the bound on the whole
+// operation.
 const PROBE_WORK_MS = 70_000;
-const PROBE_STILL_MS = 10_000;
 const OPERATION_MS = 120_000;
 // AV_OUTPUT_LIMIT and STILL_OUTPUT_LIMIT (platform/av-bytes.ts) bound what is read of a response body
 // (container/server/main.go refuses first).
@@ -82,11 +81,6 @@ export const STILL_CALL_MS = 75_000;
 export const STILL_TEARDOWN_MS = 10_000;
 const STILL_CLEANUP_MS = 2_000;
 const STILL_PROFILE = "still@standard-1" satisfies ProbeProfile;
-
-const OPERATIONS = {
-  normalize: { path: `/normalize?work_ms=${PROBE_WORK_MS}&still_ms=${PROBE_STILL_MS}`, type: "video/mp4" },
-  still: { path: "/still", type: "image/png" },
-} as const;
 
 type ProcessorEnv = Env & { MEDIA_PROCESSOR?: DurableObjectNamespace<MediaProcessor> };
 
@@ -147,33 +141,6 @@ function inputRefusal(status: number, code: string | null): StillInputRefusal | 
   return (refusal === "too_large" ? status === 413 : status === 422) ? refusal : undefined;
 }
 
-// Reads a response body of the declared length, at most `limit` bytes, counting as it reads: a body longer than its
-// Content-Length or the limit is cancelled at the first byte past it.
-async function readBounded(response: Response, limit: number, stage: string): Promise<number> {
-  const declared = Number(response.headers.get("content-length"));
-  if (!Number.isSafeInteger(declared) || declared <= 0 || declared > limit || response.body === null) {
-    await response.body?.cancel();
-    throw new ProbeFailure(`${stage}-length`);
-  }
-  const reader = (response.body as ReadableStream<Uint8Array>).getReader();
-  let read = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    read += value.byteLength;
-    if (read > declared) {
-      await reader.cancel();
-      throw new ProbeFailure(`${stage}-length`);
-    }
-  }
-  if (read !== declared) {
-    throw new ProbeFailure(`${stage}-length`);
-  }
-  return read;
-}
-
 // The body of a 200 image/png response, read within STILL_OUTPUT_LIMIT and its declared length, as bytes.
 async function readStill(response: Response): Promise<Uint8Array> {
   if (response.status !== 200 || response.headers.get("content-type") !== "image/png") {
@@ -210,16 +177,7 @@ async function readStill(response: Response): Promise<Uint8Array> {
   return out;
 }
 
-// A response of the operation: 200 with the expected type, or the server's error code.
-async function expectOutput(response: Response, type: string, limit: number, stage: string): Promise<number> {
-  if (response.status !== 200 || response.headers.get("content-type") !== type) {
-    await response.body?.cancel();
-    const code = response.headers.get("kopje-error");
-    throw new ProbeFailure(code !== null && /^[a-z_]{1,32}$/.test(code) ? `${stage}:${code}` : `${stage}-status`);
-  }
-  return readBounded(response, limit, stage);
-}
-
+// The server's stage times (its Kopje-*-Ms headers), each a whole number of milliseconds.
 function stageTimes(headers: Headers): Record<string, number> {
   const stages: Record<string, number> = {};
   for (const name of ["input", "probe", "encode", "still", "encode-cpu", "estimate"]) {
@@ -323,86 +281,6 @@ async function normalizeStill(port: Fetcher, signal: AbortSignal | undefined): P
   } catch (error) {
     throw new TranscoderUnavailable(error instanceof ProbeFailure ? error.failure : "still-read");
   }
-}
-
-// The smoke probe of one profile on a container that is not running: start, readiness, the operation on the fixture,
-// and destroy, every stage ending at `deadline`. It never throws; destroy() is attempted whatever happened before it,
-// and its failure is reported as `destroyed: false` for the caller to clean up.
-export async function smokeProbe(
-  container: Container,
-  profile: ProbeProfile,
-  deps: ProbeDeps = defaultDeps,
-  deadline: number = deps.now() + PROBE_MS,
-): Promise<ProbeReport> {
-  const started = deps.now();
-  const [operation, instance] = profile.split("@") as [
-    "normalize" | "still",
-    "standard-1" | "standard-3" | "standard-4",
-  ];
-  const report: ProbeReport = {
-    ok: false,
-    profile,
-    failure: null,
-    image: { configured: container.images.media ?? null, running: null },
-    startToReadyMs: null,
-    operationMs: null,
-    wallMs: 0,
-    stages: {},
-    outputBytes: null,
-    stillBytes: null,
-    destroyed: false,
-  };
-  try {
-    if (report.image.configured === null) {
-      throw new ProbeFailure("no-image");
-    }
-    const ready = await startReady(container, report.image.configured, operation, instance, deps, started, deadline);
-    report.startToReadyMs = ready.readyMs;
-    report.image.running = ready.running;
-    const port = ready.port;
-
-    const fixture = decodeFixture();
-    const begun = deps.now();
-    const spec = OPERATIONS[operation];
-    const aborted = new AbortController();
-    const run = async () => {
-      const response = await port.fetch(`http://container${spec.path}`, {
-        method: "POST",
-        body: fixture,
-        headers: { "content-type": "application/octet-stream", "content-length": String(fixture.byteLength) },
-        signal: aborted.signal,
-      });
-      report.stages = stageTimes(response.headers);
-      report.outputBytes = await expectOutput(
-        response,
-        spec.type,
-        operation === "normalize" ? AV_OUTPUT_LIMIT : STILL_OUTPUT_LIMIT,
-        operation,
-      );
-      if (operation === "normalize") {
-        if (response.headers.get("kopje-kind") !== "video" || response.headers.get("kopje-still") !== "true") {
-          throw new ProbeFailure("normalize-kind");
-        }
-        const still = await port.fetch("http://container/normalize/still", { signal: aborted.signal });
-        report.stillBytes = await expectOutput(still, "image/png", STILL_OUTPUT_LIMIT, "normalize-still");
-      }
-    };
-    if ((await before(run(), deadline, deps, aborted)) === TIMED_OUT) {
-      throw new ProbeFailure("operation-deadline");
-    }
-    report.operationMs = deps.now() - begun;
-    report.ok = true;
-  } catch (error) {
-    report.failure = error instanceof ProbeFailure ? error.failure : "operation";
-    if (!(error instanceof ProbeFailure)) {
-      console.warn({ event: "kopje.media.probe.failed", profile, ...errorFields(error) });
-    }
-  } finally {
-    report.destroyed = await destroyContainer(container, deps);
-    report.ok &&= report.destroyed;
-    report.wallMs = deps.now() - started;
-  }
-  return report;
 }
 
 // Starts the container with Internet access disabled on `instance`, polls /healthz until it answers (within READY_MS
@@ -541,23 +419,6 @@ async function destroyContainer(container: Container, deps: ProbeDeps, by?: numb
   }
 }
 
-// The report of a probe that started no container.
-function unstarted(profile: ProbeProfile, failure: string): ProbeReport {
-  return {
-    ok: false,
-    profile,
-    failure,
-    image: { configured: null, running: null },
-    startToReadyMs: null,
-    operationMs: null,
-    wallMs: 0,
-    stages: {},
-    outputBytes: null,
-    stillBytes: null,
-    destroyed: true,
-  };
-}
-
 // The parts of a Durable Object's state a unit of work uses.
 export type UnitState = {
   readonly container?: Container | undefined;
@@ -588,17 +449,6 @@ export class ProcessorUnit {
     }
   }
 
-  async probeNow(profile: ProbeProfile): Promise<ProbeReport> {
-    const owned = await this.#owned(
-      PROBE_MS,
-      (deadline, container) => smokeProbe(container, profile, this.deps, deadline),
-      // smokeProbe's destroy may take DESTROY_MS past its deadline.
-      (deadline) => deadline + DESTROY_MS,
-      (report) => report,
-    );
-    return "refused" in owned ? { ...unstarted(profile, owned.refused), destroyed: owned.destroyed } : owned;
-  }
-
   // A still of the object at `key` (the rebuild's still or its still probe), within `ms` of now and at most
   // STILL_CALL_MS.
   async stillNow(key: string, ms: number): Promise<StillOutcome> {
@@ -621,9 +471,10 @@ export class ProcessorUnit {
     return outcome;
   }
 
-  // The activation probe of normalize@standard-4 on the copy of the clip at `key` (jobs/media-jobs.ts probeWork), on
-  // this object's one container under the same single-owner rule as probeNow; a probe that cannot run here (busy, no
-  // container, storage) reaches no verdict.
+  // The activation probe of normalize@standard-4 on the copy of the clip at `key` (mastodon/media-activation.ts
+  // probeWork), on this object's one container under the single-owner rule (#owned), every stage ending at its one
+  // deadline (PROBE_MS): one that has not answered by then reaches no verdict, its requests aborted. A probe that cannot
+  // run here (busy, no container, storage) reaches no verdict.
   async probeNormalize(key: string): Promise<ProbeVerdict & { image: string | null }> {
     const { bucket, images } = this.state;
     const owned = await this.#owned<ProbeVerdict & { image: string | null; destroyed: boolean }>(
@@ -633,12 +484,15 @@ export class ProcessorUnit {
           return { outcome: "no-verdict", reason: "no-bucket", image: null, destroyed: true };
         }
         const control = containerControl(container, this.deps, "normalize", "standard-4");
-        const verdict = await probeWork(
-          { ...control, bucket, images, now: this.deps.now },
-          key,
+        const aborted = new AbortController();
+        const settled = await before(
+          probeWork({ ...control, bucket, images, now: this.deps.now }, key, deadline, PROBE_WORK_MS, aborted.signal),
           deadline,
-          PROBE_WORK_MS,
+          this.deps,
+          aborted,
         );
+        const verdict: ProbeVerdict =
+          settled === TIMED_OUT ? { outcome: "no-verdict", reason: "operation-deadline" } : settled;
         const destroyed = await destroyContainer(container, this.deps);
         return { ...verdict, image: control.image(), destroyed };
       },
@@ -1010,10 +864,6 @@ export class MediaProcessor extends DurableObject<Env> {
     return this.#unit.probeNormalize(key);
   }
 
-  probeNow(profile: ProbeProfile): Promise<ProbeReport> {
-    return this.#unit.probeNow(profile);
-  }
-
   stillNow(key: string, ms: number): Promise<StillOutcome> {
     return this.#unit.stillNow(key, ms);
   }
@@ -1043,9 +893,6 @@ export function processorClient(env: Env, build: string) {
         return { ok: false, failure: "unavailable", image: null };
       });
   return {
-    probeNow(profile: ProbeProfile): Promise<ProbeReport> {
-      return namespace.getByName(`p:${build}:${profile}`).probeNow(profile);
-    },
     stills: {
       still: (key, ms) => still(`rb:${crypto.randomUUID()}`, key, ms),
       probe: (key, ms) => still(`p:${build}:${STILL_PROFILE}`, key, ms),

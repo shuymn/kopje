@@ -24,7 +24,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - The first part of video and audio support: the package ships the media processor's container (`container/`, a
   pinned ffmpeg build and a small server with fixed operations), the `MediaProcessor` Durable Object that runs it, and
   `kopje-admin media-processor probe`: for `normalize@standard-4` it runs the activation probe and records its
-  verdict, and for `still@standard-1` it makes one still of the packaged clip. The instance template gains a
+  verdict, and for `still@standard-1` it checks a still of the packaged clip (its PNG and Images) and records
+  nothing, the media rebuild recording its own probe of that profile. The instance template gains a
   commented, optional block that adds it (`deploy/README.md`, "Video and audio"); without the block nothing changes.
   Uploads stay image-only in this release. An instance that adds it must also export `MediaProcessor` from
   `src/index.ts` (`export { default, MediaProcessor, Store } from "kopje"`), or `wrangler deploy` fails; the

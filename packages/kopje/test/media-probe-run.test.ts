@@ -4,8 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { healthReport } from "../src/app/health";
 import { PROBE_RETRY_MS } from "../src/domain/media-probes";
 import { runUpload } from "../src/jobs/media-jobs";
-import { activationProbe } from "../src/mastodon/media-activation";
+import { activationProbe, stillCheck } from "../src/mastodon/media-activation";
 import { readConfig } from "../src/platform/config";
+import type { StillOutcome } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
 import { avFixture, verifyBytes } from "./av-helpers";
 import { BUILD } from "./helpers";
@@ -161,5 +162,61 @@ describe("health's mediaProcessor (P23)", () => {
     refusing.failEncode = 9412;
     await runUpload(uploadDeps(w, fakeControl(await genuine()).control, { images: refusing }), await jobOf(w, up));
     expect(await health(w.store)).toMatchObject({ ok: true, state: "ready", infrastructureFailure: true, budget: 10 });
+  });
+});
+
+describe("the still check of still@standard-1 (kopje-admin media-processor probe)", () => {
+  async function check(out: StillOutcome, codec = new TestCodec()) {
+    const store = await freshStore();
+    const before = await store.mediaProbeRecords(BUILD, { profile: "still@standard-1" });
+    const verdict = await stillCheck({
+      bucket: env.MEDIA,
+      stills: {
+        still: () => Promise.reject(new Error("unused")),
+        probe: () => Promise.resolve(out),
+        probeInput: new Uint8Array([1, 2, 3]),
+      },
+      images: codec,
+      now: () => Date.now(),
+    });
+    // It records nothing: the profile's record is the rebuild's (L4).
+    expect(await store.mediaProbeRecords(BUILD, { profile: "still@standard-1" })).toEqual(before);
+    expect((await env.MEDIA.list({ prefix: "incoming/probe-" })).objects).toEqual([]);
+    return verdict;
+  }
+
+  it("passes a still Images re-encodes, unverified on 9422, and fails one Images refuses", async () => {
+    const png = await stillPng();
+    expect(await check({ ok: true, png, image: "img" })).toEqual({
+      outcome: "pass",
+      imagesVerified: true,
+      image: "img",
+    });
+    const quota = new TestCodec();
+    quota.failEncode = 9422;
+    expect(await check({ ok: true, png, image: null }, quota)).toMatchObject({
+      outcome: "pass",
+      imagesVerified: false,
+    });
+    const refusing = new TestCodec();
+    refusing.failEncode = 9412;
+    expect(await check({ ok: true, png: await truncatedStill(), image: null }, refusing)).toMatchObject({
+      outcome: "fail",
+      reason: "images",
+    });
+  });
+
+  it("fails a clip the container refuses as input and a PNG verifyStill refuses; anything else reaches no verdict", async () => {
+    expect(await check({ ok: false, failure: "still:pixels", input: "pixels", image: null })).toMatchObject({
+      outcome: "fail",
+    });
+    expect(await check({ ok: true, png: new Uint8Array(10), image: null })).toMatchObject({
+      outcome: "fail",
+      reason: "still",
+    });
+    expect(await check({ ok: false, failure: "ready", image: null })).toMatchObject({
+      outcome: "no-verdict",
+      reason: "ready",
+    });
   });
 });

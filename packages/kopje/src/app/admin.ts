@@ -6,7 +6,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { AnnouncementChanges } from "../domain/announcements";
 import type { LoaderDeps } from "../federation/loader";
 import { uploadEmoji } from "../mastodon/emoji-upload";
-import { activationProbe } from "../mastodon/media-activation";
+import { activationProbe, stillCheck } from "../mastodon/media-activation";
 import { rebuildMedia } from "../mastodon/media-rebuild";
 import { parseScheduledAt } from "../mastodon/statuses";
 import { type AccessSettings, adminRefusal, adminUsable, normalizeTeamDomain } from "../platform/access-settings";
@@ -21,7 +21,7 @@ import { isProbeProfile, type MediaProcessorClient, PROBE_PROFILES } from "../pl
 import { readQueueBacklog } from "../platform/queue-backlog";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreResolver, StoreStub } from "../platform/store-client";
-import { toStoreUnavailable } from "../platform/store-errors";
+import { type MaintenanceReason, StoreUnavailableError, toStoreUnavailable } from "../platform/store-errors";
 import { storedAnnouncementText, storedEmojiCategory, withinDeliveryHostBound } from "../platform/stored-bounds";
 import { type AccessDeps, type AccessIdentity, verifyAccessClaims } from "../security/access-jwt";
 import { constantTimeEqual, randomToken } from "../security/tokens";
@@ -591,11 +591,11 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
 
   // ---- media processor (src/media-processor.ts)
 
-  // A probe of one execution profile. normalize@standard-4's is its activation probe (jobs/media-jobs.ts
+  // A probe of one execution profile. normalize@standard-4's is its activation probe (mastodon/media-activation.ts
   // activationProbe): one claim shared with the probe round, the packaged clip copied to incoming/probe-<nonce> and run
-  // through the container, the verifier and Images, and the verdict recorded for this build. It writes the Store, so
-  // maintenance and a read-only Store refuse it (503) before any container starts. still@standard-1's is the smoke
-  // probe, which writes nothing.
+  // through the container, the verifier and Images, and the verdict recorded for this build. still@standard-1's is a
+  // check (stillCheck) that records nothing: the media rebuild records that profile's probe under its own lease. Both
+  // start a container and write R2, so maintenance and a read-only Store refuse them (503) before anything starts.
   admin.post("/media-processor/probe", async (c) => {
     const { profile } = await jsonBody(c);
     if (!isProbeProfile(profile)) {
@@ -618,7 +618,16 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
       );
       return c.json({ probe: probed });
     }
-    return c.json({ report: await processor.probeNow(profile) });
+    const health = await stub(c).health(build(c.env));
+    if (health.readonly) {
+      throw new StoreUnavailableError(readonlyReason(health));
+    }
+    return c.json({
+      probe: {
+        status: "checked",
+        verdict: await stillCheck({ bucket: c.env.MEDIA, stills: processor.stills, images: images(c.env), now }),
+      },
+    });
   });
 
   // ---- local emoji administration (domain/local-emojis.ts; AUTH-5, MEDIA-5)
@@ -1130,4 +1139,15 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
 
 export function isAdminPath(path: string): boolean {
   return path === ADMIN_PREFIX || path.startsWith(`${ADMIN_PREFIX}/`);
+}
+
+// Why a read-only Store refuses a write, from its health: maintenance, a dump's freeze, an import, or an upgrade.
+function readonlyReason(health: Awaited<ReturnType<StoreStub["health"]>>): MaintenanceReason {
+  if (health.maintenance) {
+    return "maintenance";
+  }
+  if (health.dump !== null) {
+    return "dump-in-progress";
+  }
+  return health.import !== null ? "import-in-progress" : "upgrade-in-progress";
 }

@@ -64,11 +64,12 @@ Commands
   media-processor probe [<profile>...]
                                 probe the media processor for each profile (default: all of
                                 normalize@standard-4 and still@standard-1). normalize@standard-4 runs the activation
-                                probe and records its verdict for the deployed version (docs/media-processor.md;
-                                refused in maintenance and while the Store is read-only, and not run again within an
-                                hour of the last); still@standard-1 makes one still of the packaged clip. Prints each
-                                result. Exits 1 when a probe did not pass, 3 when the instance has no MediaProcessor
-                                binding (deploy/README.md, "Video and audio")
+                                probe and records its verdict for the deployed version, not again within an hour of
+                                the last (docs/media-processor.md); still@standard-1 checks the profile (a still of the
+                                packaged clip, its PNG and Images) and records nothing: the media rebuild records its
+                                own probe of it. Both are refused in maintenance and while the Store is read-only.
+                                Prints each result. Exits 1 when a probe did not pass, 3 when the instance has no
+                                MediaProcessor binding (deploy/README.md, "Video and audio")
   emoji [--after <id>]          list the local custom emoji, enabled and disabled, oldest first
   emoji add <shortcode> <file> [--category <name>] [--unlisted] [--replace]
                                 add a custom emoji: a PNG, GIF or WebP below 256 KiB, at most 1024x1024 pixels, and
@@ -1036,15 +1037,11 @@ export async function run({
             }
             throw error;
           }
-          // normalize@standard-4: its activation probe's verdict, recorded for the build; a probe claimed within the
-          // cooldown is not run again. still@standard-1: the smoke probe's report.
-          if (result.probe !== undefined) {
-            print(result.probe);
-            failed ||= result.probe.status !== "recorded" || result.probe.verdict.outcome !== "pass";
-          } else {
-            print(result.report);
-            failed ||= result.report?.ok !== true;
-          }
+          // normalize@standard-4: its activation probe's verdict, recorded for the build ("recorded"; a probe claimed
+          // within the cooldown is not run again and has none). still@standard-1: its check's verdict, recorded nowhere
+          // ("checked"). The exit status follows the verdict.
+          print(result.probe);
+          failed ||= result.probe.verdict?.outcome !== "pass";
         }
         return failed ? 1 : 0;
       }

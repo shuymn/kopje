@@ -42,7 +42,7 @@ export class AdminError extends Error {
  *   "/admin/deliveries/retry": { retried: number, refused: number, skipped: number, more: boolean,
  *     next: string | null },
  *   "/admin/jobs/retry": { reset: number, more: boolean },
- *   "/admin/media-processor/probe": { report?: { ok: boolean } & Json; probe?: { status: string; verdict: { outcome: string } } & Json },
+ *   "/admin/media-processor/probe": { probe: { status: string; verdict?: { outcome: string } } & Json },
  *   "/admin/media/rebuild": { counts: Record<string, number>, problems: unknown[], stopped: string | null,
  *     done: boolean, next: string | null },
  *   "/admin/keys/rewrap": { counts: { rewrapped: number, current: number, failed: number }, failures: unknown[],

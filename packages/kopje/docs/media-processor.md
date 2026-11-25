@@ -45,8 +45,11 @@ An upload whose still Images refuses as input, though the verifier passed it, co
 records an infrastructure failure, which has the next cron probe again; it revokes nothing. A container answer that is
 a processing outcome of the input (a 500 such as `encode_failed`) is the upload's own failure, never the processor's.
 
-`kopje-admin media-processor probe` runs the same probe on request. It writes the Store, so it is refused while the
-instance is in maintenance or its Store is read-only, and the CLI prints that refusal.
+`kopje-admin media-processor probe` runs the same probe on request (`normalize@standard-4`, or every profile by
+default). For `still@standard-1` the command is a check: a still of the packaged clip on standard-1, its PNG through
+Kopje's checks and Images, with the same outcomes, and nothing recorded, because the media rebuild records its own probe
+of that profile under its lease. Both start a container and write a probe copy to the media bucket, so they are refused
+while the instance is in maintenance or its Store is read-only, and the CLI prints that refusal.
 
 ## Health
 

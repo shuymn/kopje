@@ -13,27 +13,6 @@ export function isProbeProfile(value: unknown): value is ProbeProfile {
   return (PROBE_PROFILES as readonly unknown[]).includes(value);
 }
 
-// What a smoke probe saw: the container started on the profile's instance type, answered /healthz, and ran its
-// operation on the packaged fixture (container/probe.mp4) streamed as the request body. No verifier runs on the output
-// yet: `ok` means a 200 of the expected type within the output limit and its declared length. Times are milliseconds
-// of the Durable Object's clock; the stage times are the server's (its Kopje-*-Ms headers).
-export type ProbeReport = {
-  ok: boolean;
-  profile: ProbeProfile;
-  // Why it failed: a stage of the probe, or the server's error code.
-  failure: string | null;
-  // What ctx.container reports of the image: the configured reference and the running container's.
-  image: { configured: string | null; running: string | null };
-  startToReadyMs: number | null;
-  operationMs: number | null;
-  wallMs: number;
-  stages: Record<string, number>;
-  outputBytes: number | null;
-  stillBytes: number | null;
-  // destroy() returned and the container no longer runs.
-  destroyed: boolean;
-};
-
 // ---- normalize (design 4.2, 4.3; #1828 PR4 plan, section 3 "PR4-2")
 
 // What the container is given for one upload: its one input, streamed with its length, and the work deadline in
@@ -115,7 +94,6 @@ export type UploadProcessor = {
 
 // The processor as the app layer reaches it, through the binding the instance template's optional block adds.
 export type MediaProcessorClient = {
-  probeNow(profile: ProbeProfile): Promise<ProbeReport>;
   readonly stills: StillMaker;
   readonly uploads: UploadProcessor;
 };

@@ -1,6 +1,6 @@
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { run } from "../cli/lib/main.js";
 import { createApp } from "../src/app/app";
@@ -14,8 +14,6 @@ import {
   type ProbeDeps,
   processorClient,
   ProcessorUnit,
-  READY_MS,
-  smokeProbe,
   STILL_CALL_MS,
   STILL_TEARDOWN_MS,
   type UnitState,
@@ -23,14 +21,16 @@ import {
 import {
   PROBE_PROFILES,
   type ProbeProfile,
-  type ProbeReport,
   type StillMaker,
   TranscoderUnavailable,
   type UploadProcessor,
 } from "../src/platform/media-transcoder";
 import { accessToken, adminClaims, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
 import { NOW } from "./app-helpers";
+import { avFixture, verifyBytes } from "./av-helpers";
 import { BUILD, deferred, migratedStore } from "./helpers";
+import { TestCodec } from "./media-helpers";
+import { stillPng } from "./media-job-helpers";
 import { gate, type GATES } from "./media-processing-helpers";
 import { memoryIO } from "./ops-helpers";
 
@@ -120,6 +120,36 @@ const unusedUploads: UploadProcessor = {
 const MP4 = new Uint8Array(1000).fill(7);
 const PNG = new Uint8Array(300).fill(9);
 
+// A genuine normalize answer (a verified MP4, its declared duration, a still verifyStill passes), which the activation
+// probe passes; and the key of its input's copy in the media bucket.
+const GENUINE: { mp4: Uint8Array; durationMs: string; still: Uint8Array } = {
+  mp4: new Uint8Array(),
+  durationMs: "",
+  still: new Uint8Array(),
+};
+const PROBE_KEY = `incoming/probe-${"a".repeat(32)}`;
+beforeAll(async () => {
+  GENUINE.mp4 = await avFixture("r1-av.mp4");
+  const verdict = await verifyBytes("video/mp4", GENUINE.mp4);
+  if (!verdict.ok) {
+    throw new Error("fixture refused");
+  }
+  GENUINE.durationMs = String(Math.round(verdict.facts.duration * 1000));
+  GENUINE.still = await stillPng();
+  await env.MEDIA.put(
+    PROBE_KEY,
+    Uint8Array.from(atob(PROBE_FIXTURE_BASE64), (c) => c.charCodeAt(0)),
+  );
+});
+
+function genuine(): Response {
+  return ok(GENUINE.mp4, "video/mp4", {
+    "kopje-kind": "video",
+    "kopje-still": "true",
+    "kopje-duration-ms": GENUINE.durationMs,
+  });
+}
+
 function ok(body: Uint8Array, type: string, headers: Record<string, string> = {}): Response {
   return new Response(body, {
     headers: { "content-type": type, "content-length": String(body.byteLength), ...headers },
@@ -130,14 +160,8 @@ function ok(body: Uint8Array, type: string, headers: Record<string, string> = {}
 function server(overrides: Partial<Record<string, Handler>> = {}): Handler {
   const routes: Record<string, Handler> = {
     "/healthz": () => Response.json({ ok: true }),
-    "/normalize": () =>
-      ok(MP4, "video/mp4", {
-        "kopje-kind": "video",
-        "kopje-still": "true",
-        "kopje-encode-ms": "1200",
-        "kopje-probe-ms": "15",
-      }),
-    "/normalize/still": () => ok(PNG, "image/png"),
+    "/normalize": () => genuine(),
+    "/normalize/still": () => ok(GENUINE.still, "image/png"),
     "/still": () => ok(PNG, "image/png", { "kopje-encode-ms": "40" }),
     ...overrides,
   };
@@ -186,219 +210,6 @@ function fixtureBytes(): Uint8Array {
   return Uint8Array.from(atob(PROBE_FIXTURE_BASE64), (c) => c.charCodeAt(0));
 }
 
-describe("smoke probe", () => {
-  it("runs normalize on the profile's instance type without Internet, streams the fixture and destroys", async () => {
-    const fake = fakeContainer(server());
-    const report = await smokeProbe(fake.container, "normalize@standard-4", clock());
-    expect(report).toMatchObject({
-      ok: true,
-      failure: null,
-      outputBytes: MP4.byteLength,
-      stillBytes: PNG.byteLength,
-      destroyed: true,
-      stages: { encode: 1200, probe: 15 },
-      image: {
-        configured: "registry.cloudflare.com/acct/media@sha256:abc",
-        running: "registry.cloudflare.com/acct/media@sha256:abc-running",
-      },
-    });
-    expect(fake.started()).toMatchObject({ instance: "standard-4", enableInternet: false });
-    expect(fake.calls).toEqual([
-      "start",
-      "GET /healthz",
-      "POST /normalize?work_ms=70000&still_ms=10000",
-      "GET /normalize/still",
-      "destroy",
-    ]);
-    // The input is the packaged fixture, as the request body.
-    expect(fake.bodies).toEqual([fixtureBytes()]);
-    expect(fake.container.running).toBe(false);
-  });
-
-  it("runs still on standard-1", async () => {
-    const fake = fakeContainer(server());
-    const report = await smokeProbe(fake.container, "still@standard-1", clock());
-    expect(report).toMatchObject({ ok: true, outputBytes: PNG.byteLength, stillBytes: null, destroyed: true });
-    expect(fake.started()).toMatchObject({ instance: "standard-1", enableInternet: false });
-    expect(fake.calls).toEqual(["start", "GET /healthz", "POST /still", "destroy"]);
-  });
-
-  it("waits for readiness and gives up after READY_MS, destroying the container", async () => {
-    let answered = 0;
-    const slow = fakeContainer(
-      server({
-        "/healthz": () => {
-          answered++;
-          return answered < 4 ? new Response(null, { status: 503 }) : Response.json({ ok: true });
-        },
-      }),
-    );
-    const time = clock();
-    const report = await smokeProbe(slow.container, "still@standard-1", time);
-    expect(report).toMatchObject({ ok: true, failure: null });
-    expect(report.startToReadyMs).toBe(750);
-
-    const never = fakeContainer(
-      server({
-        "/healthz": () => {
-          throw new Error("connection refused");
-        },
-      }),
-    );
-    const refused = await smokeProbe(never.container, "still@standard-1", clock());
-    expect(refused).toMatchObject({ ok: false, failure: "ready", destroyed: true, outputBytes: null });
-    expect(refused.wallMs).toBe(READY_MS);
-    expect(never.calls.at(-1)).toBe("destroy");
-    expect(never.calls.filter((c) => c.startsWith("POST"))).toEqual([]);
-  });
-
-  // One absolute deadline covers a healthz call that never settles, the image inspection and the operation.
-  it("ends a stalled readiness call, inspection or operation at its deadline and destroys the container", async () => {
-    const never = () => new Promise<Response>(() => {});
-    const stalled = fakeContainer(server({ "/healthz": never }));
-    const time = clock();
-    const ready = await smokeProbe(stalled.container, "still@standard-1", time);
-    expect(ready).toMatchObject({ ok: false, failure: "ready", destroyed: true });
-    expect(ready.wallMs).toBe(READY_MS);
-    expect(stalled.calls).toEqual(["start", "GET /healthz", "destroy"]);
-
-    const inspecting = fakeContainer(server(), { inspect: () => new Promise(() => {}) });
-    const inspected = await smokeProbe(inspecting.container, "still@standard-1", clock());
-    expect(inspected).toMatchObject({ ok: true, image: { running: null }, destroyed: true });
-
-    const operating = fakeContainer(server({ "/still": never }));
-    const operated = await smokeProbe(operating.container, "still@standard-1", clock());
-    expect(operated).toMatchObject({ ok: false, failure: "operation-deadline", destroyed: true });
-    expect(operating.calls.at(-1)).toBe("destroy");
-  });
-
-  it("reports the server's error code and nothing of its body", async () => {
-    const fake = fakeContainer(
-      server({
-        "/normalize": () =>
-          new Response('{"error":"envelope"} ffmpeg said something', {
-            status: 422,
-            headers: { "kopje-error": "envelope", "content-type": "application/json" },
-          }),
-      }),
-    );
-    const report = await smokeProbe(fake.container, "normalize@standard-4", clock());
-    expect(report).toMatchObject({ ok: false, failure: "normalize:envelope", destroyed: true, outputBytes: null });
-    expect(JSON.stringify(report)).not.toContain("ffmpeg");
-    // A code outside the server's shape is not repeated.
-    const odd = fakeContainer(
-      server({ "/still": () => new Response(null, { status: 500, headers: { "kopje-error": "Some <b>Thing</b>" } }) }),
-    );
-    expect((await smokeProbe(odd.container, "still@standard-1", clock())).failure).toBe("still-status");
-  });
-
-  it("refuses an output whose length differs from its declared length or passes the limit", async () => {
-    const cases: [string, Handler, string][] = [
-      // Declared shorter than sent: refused at the first byte past it.
-      [
-        "longer",
-        () => new Response(new Uint8Array(20), { headers: { "content-type": "image/png", "content-length": "10" } }),
-        "still-length",
-      ],
-      [
-        "shorter",
-        () =>
-          new Response(
-            new ReadableStream({
-              start(controller) {
-                controller.enqueue(new Uint8Array(5));
-                controller.close();
-              },
-            }),
-            { headers: { "content-type": "image/png", "content-length": "10" } },
-          ),
-        "still-length",
-      ],
-      [
-        "over the still limit",
-        () =>
-          new Response(new Uint8Array(1), {
-            headers: { "content-type": "image/png", "content-length": String(3 * 1024 * 1024) },
-          }),
-        "still-length",
-      ],
-      [
-        "no length",
-        () => new Response(new Uint8Array(10), { headers: { "content-type": "image/png" } }),
-        "still-length",
-      ],
-      ["another type", () => ok(PNG, "image/jpeg"), "still-status"],
-    ];
-    for (const [name, handler, failure] of cases) {
-      const fake = fakeContainer(server({ "/still": handler }));
-      const report = await smokeProbe(fake.container, "still@standard-1", clock());
-      expect(report, name).toMatchObject({ ok: false, failure, destroyed: true });
-    }
-    const huge = fakeContainer(
-      server({
-        "/normalize": () =>
-          new Response(new Uint8Array(1), {
-            headers: { "content-type": "video/mp4", "content-length": String(AV_OUTPUT_LIMIT + 1) },
-          }),
-      }),
-    );
-    expect((await smokeProbe(huge.container, "normalize@standard-4", clock())).failure).toBe("normalize-length");
-  });
-
-  // The reader stops at the first chunk past the declared length, however much more the container sends.
-  it("stops reading an output at the first byte past its declared length", async () => {
-    let pulled = 0;
-    const endless = fakeContainer(
-      server({
-        "/still": () =>
-          new Response(
-            new ReadableStream({
-              pull(controller) {
-                pulled++;
-                controller.enqueue(new Uint8Array(8));
-                if (pulled === 1000) {
-                  controller.close();
-                }
-              },
-            }),
-            { headers: { "content-type": "image/png", "content-length": "10" } },
-          ),
-      }),
-    );
-    expect((await smokeProbe(endless.container, "still@standard-1", clock())).failure).toBe("still-length");
-    expect(pulled).toBeLessThan(10);
-  });
-
-  it("refuses a normalize without its video still", async () => {
-    const audio = fakeContainer(server({ "/normalize": () => ok(MP4, "video/mp4", { "kopje-kind": "audio" }) }));
-    expect((await smokeProbe(audio.container, "normalize@standard-4", clock())).failure).toBe("normalize-kind");
-    const noStill = fakeContainer(
-      server({ "/normalize/still": () => new Response(null, { status: 404, headers: { "kopje-error": "no_still" } }) }),
-    );
-    expect((await smokeProbe(noStill.container, "normalize@standard-4", clock())).failure).toBe(
-      "normalize-still:no_still",
-    );
-  });
-
-  it("reports a destroy that throws, and is not ok then", async () => {
-    const fake = fakeContainer(server(), {
-      destroy: () => Promise.reject(new Error("destroy failed")),
-    });
-    const report = await smokeProbe(fake.container, "still@standard-1", clock());
-    expect(report).toMatchObject({ ok: false, failure: null, destroyed: false, outputBytes: PNG.byteLength });
-  });
-
-  it("starts nothing without a configured image", async () => {
-    const fake = fakeContainer(server(), { image: null });
-    expect(await smokeProbe(fake.container, "still@standard-1", clock())).toMatchObject({
-      ok: false,
-      failure: "no-image",
-      destroyed: true,
-    });
-    expect(fake.calls).toEqual([]);
-  });
-});
-
 // The normalize adapter (#1828 PR4 plan, section 3 "PR4-2"): the work deadline protocol and the answer's contract.
 describe("normalize adapter", () => {
   const input = (bytes: Uint8Array) => ({
@@ -423,7 +234,7 @@ describe("normalize adapter", () => {
     }
     expect(result).toMatchObject({ kind: "video", type: "video/mp4", length: MP4.byteLength, duration: 2 });
     expect(new Uint8Array(await new Response(result.file).arrayBuffer())).toEqual(MP4);
-    expect(await result.still()).toEqual(PNG);
+    expect(await result.still()).toEqual(GENUINE.still);
     expect(fake.calls).toEqual(["start", "POST /normalize?work_ms=41000&still_ms=1000", "GET /normalize/still"]);
     expect(fake.bodies).toEqual([fixtureBytes()]);
   });
@@ -549,7 +360,7 @@ function fakeState(
     sync: () => options.sync?.() ?? Promise.resolve(),
   };
   return {
-    ctx: { container, storage } as UnitState,
+    ctx: { container, storage, bucket: env.MEDIA, images: new TestCodec() } as UnitState,
     alarm: () => alarm,
     cleared: () => cleared,
     fire: async (object: ProcessorUnit) => {
@@ -559,11 +370,27 @@ function fakeState(
   };
 }
 
-// The unit as MediaProcessor's constructor makes it.
+// The unit as MediaProcessor's constructor makes it, and what probe() reads of it.
+const units = new WeakMap<ProcessorUnit, { container: Container | undefined; now: () => number }>();
 function unit(state: UnitState, deps?: ProbeDeps): ProcessorUnit {
   const made = new ProcessorUnit(state, deps);
+  units.set(made, { container: state.container, now: deps?.now ?? (() => Date.now()) });
   made.start();
   return made;
+}
+
+// The activation probe on the unit (probeNormalize) of the clip's copy at PROBE_KEY, as the single-owner rule's tests
+// read it: whether it passed, why not, whether its container no longer runs, and its wall time on the unit's clock.
+async function probe(object: ProcessorUnit) {
+  const { container, now } = units.get(object)!;
+  const begun = now();
+  const verdict = await object.probeNormalize(PROBE_KEY);
+  return {
+    ok: verdict.outcome === "pass",
+    failure: verdict.outcome === "pass" ? null : verdict.reason,
+    destroyed: container?.running !== true,
+    wallMs: now() - begun,
+  };
 }
 
 // A container whose destroy runs `destroy` (default: succeeds), counting its starts.
@@ -593,14 +420,14 @@ function frozen(at: number): { t: number; deps: ProbeDeps } {
 describe("MediaProcessor", () => {
   it("answers no-container when the class runs without a container", async () => {
     const state = fakeState(undefined);
-    const report = await unit(state.ctx).probeNow("still@standard-1");
+    const report = await probe(unit(state.ctx));
     expect(report).toMatchObject({ ok: false, failure: "no-container" });
   });
 
   it("leaves no alarm after a probe whose container was destroyed", async () => {
     const fake = fakeContainer(server());
     const state = fakeState(fake.container);
-    const report = await unit(state.ctx).probeNow("still@standard-1");
+    const report = await probe(unit(state.ctx));
     expect(report.ok).toBe(true);
     expect(state.alarm()).toBeNull();
   });
@@ -610,12 +437,12 @@ describe("MediaProcessor", () => {
   it("sets the alarm past the probe's deadline and destroy before the start, and ends the stages at the deadline", async () => {
     const time = clock();
     let atStart: number | null = null;
-    const fake = fakeContainer(server({ "/still": () => new Promise<Response>(() => {}) }), {
+    const fake = fakeContainer(server({ "/normalize": () => new Promise<Response>(() => {}) }), {
       onStart: () => (atStart = state.alarm()),
     });
     const state = fakeState(fake.container);
     const begun = time.now();
-    const report = await unit(state.ctx, time).probeNow("still@standard-1");
+    const report = await probe(unit(state.ctx, time));
     expect(atStart).toBe(begun + PROBE_MS + DESTROY_MS);
     expect(report).toMatchObject({ ok: false, failure: "operation-deadline", destroyed: true });
     expect(report.wallMs).toBe(PROBE_MS);
@@ -631,19 +458,19 @@ describe("MediaProcessor", () => {
         new Promise<void>((resolve, reject) => (confirm = (ok) => (ok ? resolve() : reject(new Error("commit"))))),
     });
     const object = unit(state.ctx);
-    const pending = object.probeNow("still@standard-1");
+    const pending = probe(object);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(fake.starts()).toBe(0);
     confirm(true);
     expect((await pending).ok).toBe(true);
     expect(fake.starts()).toBe(1);
 
-    const failed = object.probeNow("still@standard-1");
+    const failed = probe(object);
     await new Promise((resolve) => setTimeout(resolve, 20));
     confirm(false);
     expect(await failed).toMatchObject({ ok: false, failure: "storage", destroyed: true });
     expect(fake.starts()).toBe(1);
-    const retried = object.probeNow("still@standard-1");
+    const retried = probe(object);
     await new Promise((resolve) => setTimeout(resolve, 20));
     confirm(true);
     expect((await retried).ok).toBe(true);
@@ -658,7 +485,7 @@ describe("MediaProcessor", () => {
     const fake = fakeContainer(server(), { onStart: () => (atStart = state.alarm()) });
     const state = fakeState(fake.container, { sync: () => new Promise<void>((resolve) => (confirm = resolve)) });
     const object = unit(state.ctx, time.deps);
-    const b = object.probeNow("still@standard-1");
+    const b = probe(object);
     await new Promise((resolve) => setTimeout(resolve, 20));
     await state.fire(object);
     expect(fake.calls).toEqual([]);
@@ -675,17 +502,17 @@ describe("MediaProcessor", () => {
     const fake = counted();
     const state = fakeState(fake.container, { sync: () => new Promise<void>((resolve) => (confirm = resolve)) });
     const object = unit(state.ctx, time.deps);
-    const held = object.probeNow("still@standard-1");
+    const held = probe(object);
     await new Promise((resolve) => setTimeout(resolve, 20));
     time.t += PROBE_MS + DESTROY_MS;
     await state.fire(object);
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: false, failure: "busy" });
+    expect(await probe(object)).toMatchObject({ ok: false, failure: "busy" });
     time.t += 1;
     confirm();
     expect(await held).toMatchObject({ ok: false, failure: "storage-late", destroyed: true });
     expect(fake.starts()).toBe(0);
     // The next probe runs as usual.
-    const next = object.probeNow("still@standard-1");
+    const next = probe(object);
     await new Promise((resolve) => setTimeout(resolve, 20));
     confirm();
     expect((await next).ok).toBe(true);
@@ -694,21 +521,22 @@ describe("MediaProcessor", () => {
 
   // An output that settles at the deadline, before the deadline's timer runs, is refused; one just before it is not.
   it("refuses an output that arrives at the deadline", async () => {
-    for (const [late, failure] of [
-      [0, "operation-deadline"],
-      [-1, null],
+    for (const [late, atDeadline] of [
+      [0, true],
+      [-1, false],
     ] as const) {
       const time = frozen(5_000_000);
       const fake = fakeContainer(
         server({
-          "/still": () => {
+          "/normalize": () => {
             time.t = 5_000_000 + PROBE_MS + late;
-            return ok(PNG, "image/png");
+            return genuine();
           },
         }),
       );
-      const report = await unit(fakeState(fake.container).ctx, time.deps).probeNow("still@standard-1");
-      expect(report.failure, `late by ${late}`).toBe(failure);
+      const report = await probe(unit(fakeState(fake.container).ctx, time.deps));
+      // Just before the deadline the output is taken, and Images, left 1 ms, runs out of time.
+      expect(report.failure, `late by ${late}`).toBe(atDeadline ? "operation-deadline" : "timeout");
       expect(report.destroyed).toBe(true);
     }
   });
@@ -717,10 +545,7 @@ describe("MediaProcessor", () => {
   it("answers busy to a second call made in the same turn", async () => {
     const fake = counted();
     const object = unit(fakeState(fake.container).ctx);
-    const [first, second] = await Promise.all([
-      object.probeNow("still@standard-1"),
-      object.probeNow("still@standard-1"),
-    ]);
+    const [first, second] = await Promise.all([probe(object), probe(object)]);
     expect(first.ok).toBe(true);
     expect(second).toMatchObject({ failure: "busy" });
     expect(fake.starts()).toBe(1);
@@ -730,19 +555,19 @@ describe("MediaProcessor", () => {
     let release = () => {};
     const held = new Promise<void>((resolve) => (release = resolve));
     const fake = counted(undefined, {
-      "/still": async () => {
+      "/normalize": async () => {
         await held;
-        return ok(PNG, "image/png");
+        return genuine();
       },
     });
     const object = unit(fakeState(fake.container).ctx);
-    const first = object.probeNow("still@standard-1");
+    const first = probe(object);
     await vi.waitFor(() => expect(fake.starts()).toBe(1));
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: false, failure: "busy", destroyed: true });
+    expect(await probe(object)).toMatchObject({ ok: false, failure: "busy" });
     release();
     expect((await first).ok).toBe(true);
     expect(fake.starts()).toBe(1);
-    expect((await object.probeNow("still@standard-1")).ok).toBe(true);
+    expect((await probe(object)).ok).toBe(true);
     expect(fake.starts()).toBe(2);
   });
 
@@ -753,13 +578,14 @@ describe("MediaProcessor", () => {
     const state = fakeState(fake.container);
     const object = unit(state.ctx);
     const before = Date.now();
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: null, destroyed: false });
+    // The probe's own stop failed: no verdict, the container left to the alarm.
+    expect(await probe(object)).toMatchObject({ failure: "destroy", destroyed: false });
     expect(state.alarm()).toBeGreaterThanOrEqual(before + CLEANUP_RETRY_MS);
     for (let i = 0; i < 10; i++) {
       await state.fire(object);
       // The alarm that failed set itself again.
       expect(state.alarm()).not.toBeNull();
-      expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: "busy", destroyed: false });
+      expect(await probe(object)).toMatchObject({ failure: "busy", destroyed: false });
     }
     expect(fake.starts()).toBe(1);
     expect(fake.container.running).toBe(true);
@@ -771,7 +597,7 @@ describe("MediaProcessor", () => {
     expect(fake.container.running).toBe(false);
     // The orphan is gone: the object's storage goes with it.
     expect(state.cleared()).toBe(1);
-    expect((await object.probeNow("still@standard-1")).ok).toBe(true);
+    expect((await probe(object)).ok).toBe(true);
     expect(fake.starts()).toBe(2);
   });
 
@@ -797,14 +623,14 @@ describe("MediaProcessor", () => {
     });
     const state = fakeState(fake.container);
     const object = unit(state.ctx, time.deps);
-    expect((await object.probeNow("still@standard-1")).destroyed).toBe(false);
+    expect((await probe(object)).destroyed).toBe(false);
     failing = false;
     const alarming = state.fire(object);
     await vi.waitFor(() => expect(fake.container.running).toBe(false));
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: "busy" });
+    expect(await probe(object)).toMatchObject({ failure: "busy" });
     reply();
     await alarming;
-    expect((await object.probeNow("still@standard-1")).ok).toBe(true);
+    expect((await probe(object)).ok).toBe(true);
   });
 
   // A destroy that never settles counts as failed after DESTROY_MS: the probe answers, and the alarm owns the rest.
@@ -814,16 +640,16 @@ describe("MediaProcessor", () => {
     const fake = counted(() => (stalled ? new Promise<void>(() => {}) : Promise.resolve()));
     const state = fakeState(fake.container);
     const object = unit(state.ctx, time);
-    const report = await object.probeNow("still@standard-1");
+    const report = await probe(object);
     expect(report).toMatchObject({ ok: false, destroyed: false });
     expect(report.wallMs).toBeGreaterThanOrEqual(DESTROY_MS);
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: "busy", destroyed: false });
+    expect(await probe(object)).toMatchObject({ failure: "busy", destroyed: false });
     await state.fire(object);
     expect(fake.container.running).toBe(true);
     stalled = false;
     await state.fire(object);
     expect(fake.container.running).toBe(false);
-    expect((await object.probeNow("still@standard-1")).ok).toBe(true);
+    expect((await probe(object)).ok).toBe(true);
     expect(fake.starts()).toBe(2);
   });
 
@@ -832,7 +658,7 @@ describe("MediaProcessor", () => {
     const fake = flaky(() => true);
     const state = fakeState(fake.container, { failAlarmOn: [2] });
     const begun = time.now();
-    const report = await unit(state.ctx, time).probeNow("still@standard-1");
+    const report = await probe(unit(state.ctx, time));
     expect(report.destroyed).toBe(false);
     expect(fake.container.running).toBe(true);
     expect(state.alarm()).toBe(begun + PROBE_MS + DESTROY_MS);
@@ -843,9 +669,9 @@ describe("MediaProcessor", () => {
     const fake = flaky(() => false);
     const state = fakeState(fake.container, { failAlarmOn: [1] });
     const object = unit(state.ctx);
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: false, failure: "storage", destroyed: true });
+    expect(await probe(object)).toMatchObject({ ok: false, failure: "storage", destroyed: true });
     expect(fake.starts()).toBe(0);
-    expect((await object.probeNow("still@standard-1")).ok).toBe(true);
+    expect((await probe(object)).ok).toBe(true);
     expect(fake.starts()).toBe(1);
   });
 
@@ -854,11 +680,11 @@ describe("MediaProcessor", () => {
     const fake = flaky(() => false);
     const state = fakeState(fake.container, { failDeleteAll: true });
     const object = unit(state.ctx);
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: true, destroyed: true });
+    expect(await probe(object)).toMatchObject({ ok: true, destroyed: true });
     expect(state.alarm()).not.toBeNull();
     await state.fire(object);
     expect(fake.calls.filter((c) => c === "destroy")).toHaveLength(1);
-    expect((await object.probeNow("still@standard-1")).ok).toBe(true);
+    expect((await probe(object)).ok).toBe(true);
     expect(fake.starts()).toBe(2);
   });
 
@@ -873,13 +699,13 @@ describe("MediaProcessor", () => {
     const object = unit(state.ctx, time);
     await vi.waitFor(() => expect(state.alarm()).toBe(time.now()));
     expect(fake.calls).toEqual(["start"]);
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: "busy", destroyed: false });
+    expect(await probe(object)).toMatchObject({ failure: "busy", destroyed: false });
     await state.fire(object);
     expect(fake.container.running).toBe(true);
     stalled = false;
     await state.fire(object);
     expect(fake.container.running).toBe(false);
-    expect((await object.probeNow("still@standard-1")).ok).toBe(true);
+    expect((await probe(object)).ok).toBe(true);
   });
 });
 
@@ -1125,7 +951,7 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     const object = unit({ ...fakeState(fake.container).ctx, bucket: bucket() });
     const first = object.stillNow("incoming/probe-0123456789abcdef0123456789abcdef", 60_000);
     await vi.waitFor(() => expect(fake.starts()).toBe(1));
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: false, failure: "busy" });
+    expect(await probe(object)).toMatchObject({ ok: false, failure: "busy" });
     expect(await object.stillNow("incoming/probe-0123456789abcdef0123456789abcdef", 60_000)).toMatchObject({
       ok: false,
       failure: "busy",
@@ -1196,7 +1022,7 @@ describe("processorClient", () => {
     expect(processorClient(env, "build")).toBeNull();
   });
 
-  it("probes each profile on its one object, named for the version and the profile", async () => {
+  it("runs the activation probe on the profile's one object, named for the version and the profile", async () => {
     const names: string[] = [];
     const objects = new Map<string, ProcessorUnit>();
     const namespace = {
@@ -1208,34 +1034,18 @@ describe("processorClient", () => {
       },
     };
     const client = processorClient({ ...env, MEDIA_PROCESSOR: namespace } as never, "v1");
-    expect((await client?.probeNow("still@standard-1"))?.ok).toBe(true);
-    expect((await client?.probeNow("still@standard-1"))?.ok).toBe(true);
-    expect((await client?.probeNow("normalize@standard-4"))?.ok).toBe(true);
-    expect(names).toEqual(["p:v1:still@standard-1", "p:v1:still@standard-1", "p:v1:normalize@standard-4"]);
+    expect((await client?.uploads.probeNormalize(PROBE_KEY))?.outcome).toBe("pass");
+    expect((await client?.uploads.probeNormalize(PROBE_KEY))?.outcome).toBe("pass");
+    expect(names).toEqual(["p:v1:normalize@standard-4", "p:v1:normalize@standard-4"]);
   });
 });
 
 describe("POST /admin/media-processor/probe and kopje-admin media-processor probe", () => {
-  function report(profile: ProbeProfile, ok = true): ProbeReport {
-    return {
-      ok,
-      profile,
-      failure: ok ? null : "ready",
-      image: { configured: null, running: null },
-      startToReadyMs: null,
-      operationMs: null,
-      wallMs: 1,
-      stages: {},
-      outputBytes: null,
-      stillBytes: null,
-      destroyed: true,
-    };
-  }
-
   // The admin app with this processor (null: no binding), and the CLI's fetch through an Access edge that turns its
   // service token into a JWT.
+  // `passes` answers whether the profile's container run passes (null: no binding).
   async function harness(
-    probe: ((profile: ProbeProfile) => Promise<ProbeReport>) | null,
+    passes: ((profile: ProbeProfile) => Promise<boolean>) | null,
     gated: keyof typeof GATES | null = null,
   ) {
     const team = await adminTeam();
@@ -1244,22 +1054,31 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     if (gated !== null) {
       await gate(store, gated, true);
     }
-    // normalize@standard-4's activation probe, its verdict from the same report.
+    // normalize@standard-4's activation probe, and still@standard-1's still: a PNG verifyStill passes, or one it
+    // refuses.
     const uploads: UploadProcessor = {
       ...unusedUploads,
-      probeNormalize: async () => {
-        const answer = await probe!("normalize@standard-4");
-        return answer.ok
+      probeNormalize: async () =>
+        (await passes!("normalize@standard-4"))
           ? { outcome: "pass", imagesVerified: true, image: null }
-          : { outcome: "fail", reason: "ready", image: null };
-      },
+          : { outcome: "fail", reason: "ready", image: null },
+    };
+    const stills: StillMaker = {
+      ...unusedStills,
+      probeInput: new Uint8Array([1, 2, 3]),
+      probe: async () => ({
+        ok: true,
+        png: (await passes!("still@standard-1")) ? GENUINE.still : new Uint8Array(10),
+        image: null,
+      }),
     };
     const app = createApp({
       build: () => BUILD,
       now: () => NOW,
       store: () => store,
       fetch: team.fetch,
-      mediaProcessor: () => (probe === null ? null : { probeNow: probe, stills: unusedStills, uploads }),
+      images: () => new TestCodec(),
+      mediaProcessor: () => (passes === null ? null : { stills, uploads }),
     });
     const call = (request: Request) => app.fetch(request, env, createExecutionContext());
     const post = async (profile: unknown) =>
@@ -1299,36 +1118,51 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
   }
 
   it("refuses an unknown profile, and answers 409 without the binding", async () => {
-    const probe = vi.fn((profile: ProbeProfile) => Promise.resolve(report(profile)));
-    const bound = await harness(probe);
+    const passes = vi.fn(() => Promise.resolve(true));
+    const bound = await harness(passes);
     expect((await bound.post("normalize@standard-2")).status).toBe(400);
     expect((await bound.post(undefined)).status).toBe(400);
-    expect(probe).not.toHaveBeenCalled();
+    expect(passes).not.toHaveBeenCalled();
+    const copies = async () => (await env.MEDIA.list({ prefix: "incoming/probe-" })).objects.map((o) => o.key);
+    const before = await copies();
     const good = await bound.post("still@standard-1");
     expect(good.status).toBe(200);
-    expect(await good.json()).toEqual({ report: report("still@standard-1") });
-    expect(probe).toHaveBeenCalledOnce();
+    // The still check records nothing, and its copy of the clip is gone.
+    expect(await good.json()).toEqual({
+      probe: { status: "checked", verdict: { outcome: "pass", imagesVerified: true, image: null } },
+    });
+    expect(passes).toHaveBeenCalledOnce();
+    expect(await copies()).toEqual(before);
 
     const refused = await (await harness(null)).post("still@standard-1");
     expect(refused.status).toBe(409);
     expect(await refused.json()).toMatchObject({ code: "media-processor-unbound" });
   });
 
-  it("probes every profile by default, prints each report and exits by the outcome", async () => {
+  it("probes every profile by default, prints each verdict and exits by the outcome", async () => {
     const seen: ProbeProfile[] = [];
     const all = await harness((profile) => {
       seen.push(profile);
-      return Promise.resolve(report(profile));
+      return Promise.resolve(true);
     });
     const passed = await all.cli(["media-processor", "probe"]);
     expect(passed.code, passed.err).toBe(0);
     // The CLI's list is the Worker's.
     expect(seen).toEqual([...PROBE_PROFILES]);
-    expect(passed.out).toContain('"profile": "still@standard-1"');
+    expect(passed.out).toContain('"status": "checked"');
+    expect(passed.out).toContain('"status": "recorded"');
 
-    const one = await harness((profile) => Promise.resolve(report(profile, profile !== "normalize@standard-4")));
+    const one = await harness((profile) => Promise.resolve(profile !== "normalize@standard-4"));
     expect((await one.cli(["media-processor", "probe", "still@standard-1"])).code).toBe(0);
     expect((await one.cli(["media-processor", "probe", "normalize@standard-4"])).code).toBe(1);
+    // A second normalize probe within the hour is not run: no verdict, exit 1.
+    const again = await all.cli(["media-processor", "probe", "normalize@standard-4"]);
+    expect(again.code).toBe(1);
+    expect(again.out).toContain('"status": "cooldown"');
+    const still = await harness((profile) => Promise.resolve(profile !== "still@standard-1"));
+    const failed = await still.cli(["media-processor", "probe", "still@standard-1"]);
+    expect(failed.code).toBe(1);
+    expect(failed.out).toContain('"outcome": "fail"');
     // A type P27 did not choose is no profile.
     expect((await one.cli(["media-processor", "probe", "normalize@standard-3"])).code).toBe(2);
     expect((await one.cli(["media-processor", "probe", "normalize@standard-2"])).code).toBe(2);
@@ -1339,16 +1173,23 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     expect(unbound.err).toContain("not bound");
   });
 
-  it.each(["maintenance", "dump"] as const)(
-    "refuses the activation probe while the Store refuses writes (%s), and the CLI prints the refusal",
-    async (gated) => {
-      const probe = vi.fn((profile: ProbeProfile) => Promise.resolve(report(profile)));
-      const refused = await harness(probe, gated);
-      expect((await refused.post("normalize@standard-4")).status).toBeGreaterThanOrEqual(400);
-      const printed = await refused.cli(["media-processor", "probe", "normalize@standard-4"]);
+  it.each([
+    ["maintenance", "normalize@standard-4"],
+    ["dump", "normalize@standard-4"],
+    ["maintenance", "still@standard-1"],
+    ["dump", "still@standard-1"],
+  ] as const)(
+    "refuses a probe while the Store refuses writes (%s, %s), and the CLI prints the refusal",
+    async (gated, profile) => {
+      const passes = vi.fn(() => Promise.resolve(true));
+      const refused = await harness(passes, gated);
+      const answer = await refused.post(profile);
+      expect(answer.status).toBe(503);
+      expect(await answer.json()).toMatchObject({ code: gated === "maintenance" ? "maintenance" : "dump-in-progress" });
+      const printed = await refused.cli(["media-processor", "probe", profile]);
       expect(printed.code).not.toBe(0);
-      expect(printed.err).toMatch(gated === "maintenance" ? /maintenance/ : /read-?only|dump|writes/i);
-      expect(probe).not.toHaveBeenCalled();
+      expect(printed.err).toMatch(gated === "maintenance" ? /maintenance/ : /dump/);
+      expect(passes).not.toHaveBeenCalled();
     },
   );
 });

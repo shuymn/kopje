@@ -1,7 +1,7 @@
 import { NORMALIZE_PROFILE, probeImageTag } from "../domain/media-probes";
 import { T_STILL } from "../domain/media-processing";
 import { avVerifier, verifyStill } from "../platform/av-bytes";
-import { within } from "../platform/deadline";
+import { DeadlinePassed, within } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { toHex } from "../platform/hex";
 import { type ImageCodec, type Size, stillEncodes } from "../platform/images";
@@ -10,6 +10,7 @@ import {
   type NormalizeJob,
   type NormalizeResult,
   type ProbeVerdict,
+  type StillMaker,
   TranscoderUnavailable,
   type UploadProcessor,
 } from "../platform/media-transcoder";
@@ -48,6 +49,7 @@ export async function probeWork(
   key: string,
   deadline: number,
   workMs: number,
+  signal?: AbortSignal,
 ): Promise<ProbeVerdict> {
   try {
     const port = await deps.ready(deadline);
@@ -65,6 +67,7 @@ export async function probeWork(
       input: { body: object.body as ReadableStream<Uint8Array>, size: object.size },
       workMs: Math.min(workMs, deadline - deps.now()),
       stillMs: T_STILL,
+      ...(signal === undefined ? {} : { signal }),
     });
     if (!result.ok) {
       return result.outcome === "timeout"
@@ -95,7 +98,7 @@ export async function probeWork(
         ? { outcome: "fail", reason: error.reason }
         : { outcome: "no-verdict", reason: error.reason };
     }
-    return { outcome: "no-verdict", reason: "operation" };
+    return { outcome: "no-verdict", reason: error instanceof DeadlinePassed ? "timeout" : "operation" };
   }
 }
 
@@ -144,4 +147,50 @@ export async function activationProbe(
   return recorded.status === "recorded"
     ? { status: "recorded", verdict: result }
     : { status: "stale", verdict: result };
+}
+
+// ---- The still check of still@standard-1 (kopje-admin media-processor probe)
+
+// The most the check gives its still: the rebuild's still stage (STILL_CALL_MS in media-processor.ts).
+const STILL_CHECK_MS = 75_000;
+
+// The still profile's check on request: the packaged clip copied to incoming/probe-<nonce>, a still of it on the
+// profile's object (stills.probe), verifyStill, and Images (stillEncodes); the copy deleted. It records nothing: the
+// profile's record is the media rebuild's, which probes it under its own lease (L4). `fail` when the container refuses
+// the clip as input, verifyStill refuses the PNG, or Images refuses it; `pass` with imagesVerified false when Images
+// answered 9422; `no-verdict` for any other failure of the processor or of Images.
+export async function stillCheck(deps: {
+  bucket: Pick<R2Bucket, "put" | "delete">;
+  stills: StillMaker;
+  images: ImageCodec;
+  now: () => number;
+}): Promise<ProbeVerdict & { image: string | null }> {
+  const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
+  const deadline = deps.now() + STILL_CHECK_MS;
+  try {
+    await deps.bucket.put(key, deps.stills.probeInput);
+    const out = await deps.stills.probe(key, STILL_CHECK_MS);
+    if (!out.ok) {
+      return out.input === undefined
+        ? { outcome: "no-verdict", reason: out.failure, image: out.image }
+        : { outcome: "fail", reason: `input:${out.input}`, image: out.image };
+    }
+    if (verifyStill(out.png) !== null) {
+      return { outcome: "fail", reason: "still", image: out.image };
+    }
+    const png = out.png;
+    const encoded = await stillEncodes(deps.images, png, pngSize(png), (work) => within(work, deadline, deps.now));
+    if (encoded === "passed" || encoded === "quota") {
+      return { outcome: "pass", imagesVerified: encoded === "passed", image: out.image };
+    }
+    return { outcome: encoded === "failed" ? "fail" : "no-verdict", reason: "images", image: out.image };
+  } catch (error) {
+    if (error instanceof DeadlinePassed) {
+      return { outcome: "no-verdict", reason: "timeout", image: null };
+    }
+    console.warn({ event: "kopje.media.probe.failed", ...errorFields(error) });
+    return { outcome: "no-verdict", reason: "unavailable", image: null };
+  } finally {
+    await deps.bucket.delete(key).catch(() => {});
+  }
 }
