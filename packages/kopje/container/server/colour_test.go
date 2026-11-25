@@ -147,7 +147,7 @@ func TestAFailedColourDiscoveryLeavesTheHeaders(t *testing.T) {
 	}
 }
 
-// The colour discovery shares the header probe's budget: a probe_ms the two together exceed answers the timeout.
+// The colour discovery shares the header probe's cut: a cut the two together pass answers the timeout.
 func TestColourDiscoveryIsWithinTheProbeBudget(t *testing.T) {
 	headerOnly := stream("video", "hevc", 320, 240, "30/1", "2")
 	headerOnly.ColorTransfer, headerOnly.ColorPrimaries = "unknown", "unknown"
@@ -163,11 +163,12 @@ func TestColourDiscoveryIsWithinTheProbeBudget(t *testing.T) {
 	}
 	t.Setenv("FAKE_HEADERS", headers)
 	t.Setenv("FAKE_PROBE_SLEEP", "0.4")
-	rec := do(t, newMux(threadsDefault), "POST", "/normalize?probe_ms=600&encode_ms=60000", []byte("input"))
+	rec := do(t, newMux(threadsDefault), "POST", "/normalize?work_ms=60600&still_ms=60000", []byte("input"))
 	if rec.Code != 504 || rec.Header().Get("Kopje-Error") != "timeout" {
 		t.Fatalf("normalize %d %q", rec.Code, rec.Header().Get("Kopje-Error"))
 	}
-	// The control: the same input tagged by colr needs no discovery and fits the budget.
+	// The control: the same input tagged by colr needs no discovery, so its probe ends within the cut, and the envelope
+	// check then meets the little time left.
 	tagged := headerOnly
 	tagged.ColorTransfer, tagged.ColorPrimaries = "bt709", "bt709"
 	encoded, err = json.Marshal(probeOf("2", tagged))
@@ -177,7 +178,7 @@ func TestColourDiscoveryIsWithinTheProbeBudget(t *testing.T) {
 	if err := os.WriteFile(headers, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if rec := do(t, newMux(threadsDefault), "POST", "/normalize?probe_ms=600&encode_ms=60000", []byte("input")); rec.Code != 200 {
+	if rec := do(t, newMux(threadsDefault), "POST", "/normalize?work_ms=60600&still_ms=60000", []byte("input")); rec.Code != 422 {
 		t.Fatalf("tagged normalize %d %q", rec.Code, rec.Header().Get("Kopje-Error"))
 	}
 }

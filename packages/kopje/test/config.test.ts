@@ -44,4 +44,20 @@ describe("readConfig", () => {
       ],
     });
   });
+
+  // The video and audio upload budget (#1828 design 4.4, P4): a whole number of jobs a UTC month, 0 by default; a
+  // budget without the MediaProcessor binding is a valid configuration that activates nothing (health says so).
+  it("reads MEDIA_UPLOAD_MONTHLY_JOBS as 0 by default, a budget without the binding as valid, and names a bad one", () => {
+    const { MEDIA_PROCESSOR: _processor, ...unbound } = env as Env & { MEDIA_PROCESSOR?: unknown };
+    const unset = readConfig(unbound);
+    expect(unset.ok && unset.config.MEDIA_UPLOAD_MONTHLY_JOBS).toBe(0);
+    const budget = readConfig({ ...unbound, MEDIA_UPLOAD_MONTHLY_JOBS: "25" });
+    expect(budget.ok && budget.config.MEDIA_UPLOAD_MONTHLY_JOBS).toBe(25);
+    for (const [value, issue] of [
+      ["-1", "MEDIA_UPLOAD_MONTHLY_JOBS: Too small: expected number to be >=0"],
+      ["2.5", "MEDIA_UPLOAD_MONTHLY_JOBS: Invalid input: expected int, received number"],
+    ] as const) {
+      expect(readConfig({ ...unbound, MEDIA_UPLOAD_MONTHLY_JOBS: value })).toEqual({ ok: false, issues: [issue] });
+    }
+  });
 });

@@ -14,8 +14,9 @@ import { readOperation, writeOperation } from "./operation";
 //
 // A use is admitted while its profile's verdict passed for the running build (probePassed); an infrastructure failure
 // after the pass revokes nothing and only makes the profile due for a probe again (claimProbe). One claim is shared by
-// the CLI and the cron's probe round: claimProbe refuses within PROBE_RETRY_MS of the last claim for the same build, and
-// recordProbeResult records only under the claim it is given, so two probers never both record. The media rebuild
+// the CLI and the cron's probe round: claimProbe refuses a claim for the same build within PROBE_RETRY_MS of the last one
+// when that one recorded a result, and within PROBE_CLAIM_MS when it recorded none, and recordProbeResult records only
+// under the claim it is given, so two probers never both record. The media rebuild
 // probes `still@standard-1` under its own lease (domain/media-rebuild.ts probeRecord and recordProbe) over the same
 // records: its attempt removes the verdict before the probe runs.
 
@@ -25,8 +26,12 @@ export type ProbeProfile = (typeof PROBE_PROFILES)[number];
 // The profile an upload runs on, whose pass admits video and audio uploads (design 4.15).
 export const NORMALIZE_PROFILE: ProbeProfile = "normalize@standard-4";
 
-// How soon a profile is claimed again for the same build (design 4.15).
+// How soon a profile is claimed again for the same build (design 4.15), once its claim recorded a result.
 export const PROBE_RETRY_MS = 60 * 60 * 1000;
+// How long a claim that recorded no result holds the profile: a probe request's whole bound and more
+// (mastodon/media-activation.ts PROBE_ROUTE_MS, which a test holds under it), so a claim whose reply was lost, or whose
+// request ended before its probe or its record, is over by then and holds nothing longer.
+export const PROBE_CLAIM_MS = 5 * 60 * 1000;
 
 export type ProbeRecord = {
   version: string;
@@ -174,6 +179,12 @@ export function probePassed(db: Db, profile: ProbeProfile, build: string, now: n
   return record !== null && record.version === build && record.ok;
 }
 
+// Whether an infrastructure failure for the verdict's build came at or after it (health shows it; the probe round
+// probes again).
+export function failedSince(failure: ProbeFailure | null, record: ProbeRecord): boolean {
+  return failure !== null && failure.version === record.version && failure.at >= record.at;
+}
+
 // Whether the profile needs a probe for `build`: no verdict for it, a failure, a pass Images did not verify, or an
 // infrastructure failure for the build at or after its pass.
 function probeDue(state: ProbeState, build: string): boolean {
@@ -181,7 +192,7 @@ function probeDue(state: ProbeState, build: string): boolean {
   if (record === null || record.version !== build || !record.ok || record.imagesVerified === false) {
     return true;
   }
-  return failure !== null && failure.version === build && failure.at >= record.at;
+  return failedSince(failure, record);
 }
 
 // The generic probe operations below (the CLI's and the probe round's) write NORMALIZE_PROFILE only: the still
@@ -195,7 +206,8 @@ function genericProfile(profile: ProbeProfile): void {
 
 export type ProbeClaim =
   | { status: "claimed"; claim: string }
-  // The profile was claimed for this build within PROBE_RETRY_MS: no claim before `retryAt`.
+  // The profile was claimed for this build within PROBE_RETRY_MS (a claim that recorded a result) or PROBE_CLAIM_MS
+  // (one that recorded none): no claim before `retryAt`.
   | { status: "cooldown"; retryAt: number }
   // `due` was asked and the profile has a verified pass for this build with no failure after it.
   | { status: "not_due" };
@@ -213,8 +225,11 @@ export const claimProbe = writeOperation.atStoreTime("now")<
     return { status: "not_due" };
   }
   const { attempt } = state;
-  if (attempt !== null && attempt.version === build && now - attempt.at < PROBE_RETRY_MS) {
-    return { status: "cooldown", retryAt: attempt.at + PROBE_RETRY_MS };
+  if (attempt !== null && attempt.version === build) {
+    const retryAt = attempt.at + (attempt.result === undefined ? PROBE_CLAIM_MS : PROBE_RETRY_MS);
+    if (now < retryAt) {
+      return { status: "cooldown", retryAt };
+    }
   }
   const claim = crypto.randomUUID();
   const value: ProbeAttempt = { version: build, at: now, claim };
@@ -225,7 +240,9 @@ export const claimProbe = writeOperation.atStoreTime("now")<
 // The outcome of the probe `claim` started (design 4.15; its classification is the prober's): `pass` and `fail`
 // replace the verdict, for the claim's build, and clear the infrastructure failure the probe answers; `no-verdict`
 // leaves the verdict. Only the profile's last claim records, once: a repeat answers `recorded` and changes nothing, and
-// a claim another has replaced answers `stale`.
+// a claim another has replaced answers `stale`. A pass whose claim is older than an infrastructure failure for its
+// build answers `stale` too, recording nothing: the failure is the newer evidence, and the claim, with no result,
+// holds the profile only for PROBE_CLAIM_MS.
 export const recordProbeResult = writeOperation.atStoreTime("now")<
   {
     profile: ProbeProfile;
@@ -238,12 +255,15 @@ export const recordProbeResult = writeOperation.atStoreTime("now")<
   { status: "recorded" } | { status: "stale" }
 >((db, { profile, claim, outcome, imagesVerified, imageTag, now }) => {
   genericProfile(profile);
-  const { attempt } = probeState(db, profile, now);
+  const { attempt, failure } = probeState(db, profile, now);
   if (attempt === null || attempt.claim === undefined || attempt.claim !== claim || !OUTCOMES.includes(outcome)) {
     return { status: "stale" };
   }
   if (attempt.result !== undefined) {
     return { status: "recorded" };
+  }
+  if (outcome === "pass" && failure !== null && failure.version === attempt.version && failure.at > attempt.at) {
+    return { status: "stale" };
   }
   if (outcome !== "no-verdict") {
     const record: ProbeRecord = {

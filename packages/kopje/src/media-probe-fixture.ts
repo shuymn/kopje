@@ -1,4 +1,4 @@
-// container/probe.mp4 as base64, the input of the smoke probe (src/media-processor.ts): a 2-second 192x144 H.264/AAC
+// container/probe.mp4 as base64, the probes' clip (src/media-processor.ts): a 2-second 192x144 H.264/AAC
 // clip with a 90-degree rotation and seeded metadata (KOPJEMARK, a location), made by scripts/media-probe-fixture.sh,
 // which writes both files. test-node/container-image.test.ts holds the two equal.
 export const PROBE_FIXTURE_BASE64 =

@@ -26,7 +26,7 @@ ff -display_rotation:v:0 90 -i plain.mp4 -map 0 -c copy -movflags +faststart+use
 
 cp "$work/probe.mp4" "$pkg/container/probe.mp4"
 {
-  echo '// container/probe.mp4 as base64, the input of the smoke probe (src/media-processor.ts): a 2-second 192x144 H.264/AAC'
+  echo '// container/probe.mp4 as base64, the probes'"'"' clip (src/media-processor.ts): a 2-second 192x144 H.264/AAC'
   echo '// clip with a 90-degree rotation and seeded metadata (KOPJEMARK, a location), made by scripts/media-probe-fixture.sh,'
   echo '// which writes both files. test-node/container-image.test.ts holds the two equal.'
   echo 'export const PROBE_FIXTURE_BASE64 ='

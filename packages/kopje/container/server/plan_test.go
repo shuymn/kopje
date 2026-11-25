@@ -394,3 +394,19 @@ func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
 		t.Fatal("A8's stated decisions do not hold")
 	}
 }
+
+// The packaged probe clip (container/probe.mp4, as ffprobe reads it: 192x144 H.264 at 15/1 with 30 frames and AAC, each
+// 2.000000 s) fits an encode time of 2,284 ms and no less: the Worker's PROBE_ENVELOPE_MS
+// (src/mastodon/media-activation.ts; test-node/container-image.test.ts holds the two equal).
+func TestProbeClipEnvelope(t *testing.T) {
+	video := stream("video", "h264", 192, 144, "15/1", "2.000000")
+	video.NbFrames = "30"
+	clip := probeOf("2.000000", video, stream("audio", "aac", 0, 0, "0/0", "2.000000"))
+	const envelope = 2284.0
+	if _, refused := planNormalize(clip, envelope); refused != "" {
+		t.Fatalf("refused at %v ms: %s", envelope, refused)
+	}
+	if _, refused := planNormalize(clip, envelope-1); refused != refuseEnvelope {
+		t.Fatalf("got %q at %v ms", refused, envelope-1)
+	}
+}

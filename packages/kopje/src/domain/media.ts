@@ -92,6 +92,10 @@ export const TRANSFORMS_PER_UPLOAD = 3;
 // Images outputs a custom emoji's image starts (the full image and the preview; no blurhash), charged to the instance
 // budget (local-emojis.ts, and the media rebuild for an emoji's row).
 export const TRANSFORMS_PER_EMOJI = 2;
+// Images outputs a video upload's still starts (the preview WebP and its RGBA), charged as an upload's to the instance
+// budget and the account's share, once, right before the preview (#1828 PR4 plan, decision "The upload still is charged
+// as an image upload is").
+export const TRANSFORMS_PER_POSTER = 2;
 
 // The attempt and transformation counters live in kopje_state, outside the dumped tables: each account's attempt times
 // in the window (at most UPLOAD_BUDGET.count), and the transformations spent per UTC month, for the instance and for
@@ -288,6 +292,41 @@ function budgetRefusal(
   return null;
 }
 
+// Removes the transformation counters of months before the previous one (at most ten local accounts, so this stays
+// small), as a charge to the month `now` is in does.
+function pruneTransformMonths(db: Db, now: number): void {
+  db.run(
+    `DELETE FROM kopje_state WHERE (substr(name, 1, ?1) = ?2 AND substr(name, ?1 + 1, 7) < ?5)
+			OR (substr(name, 1, ?3) = ?4 AND substr(name, ?3 + 1, 7) < ?5)`,
+    TRANSFORMS.length,
+    TRANSFORMS,
+    ACCOUNT_TRANSFORMS.length,
+    ACCOUNT_TRANSFORMS,
+    previousMonth(now),
+  );
+}
+
+// Charges TRANSFORMS_PER_POSTER to the instance budget and `accountId`'s share of the month `now` is in, as an
+// upload's transformations are (pruning months before the previous one); false, and nothing charged, when either has no
+// room.
+export function chargePosterTransforms(
+  db: Db,
+  accountId: string,
+  monthlyTransforms: MonthlyTransforms,
+  now: number,
+): boolean {
+  const names = budgetNames(accountId, now);
+  const fits = (name: string, limit: number) => Number(state(db, name) ?? "0") + TRANSFORMS_PER_POSTER <= limit;
+  if (!fits(names.account, monthlyTransforms.account) || !fits(names.instance, monthlyTransforms.instance)) {
+    return false;
+  }
+  pruneTransformMonths(db, now);
+  for (const name of [names.instance, names.account]) {
+    setState(db, name, String(Number(state(db, name) ?? "0") + TRANSFORMS_PER_POSTER));
+  }
+  return true;
+}
+
 // Charges `count` transformations that are not an upload's (the /setup Images check) to the instance budget of the
 // month `now` is in. False, and nothing charged, when they do not fit (RES-6).
 export function chargeInstanceTransforms(db: Db, count: number, limit: number, now: number): boolean {
@@ -377,16 +416,7 @@ export const startTransforms = userWriteOperation.atStoreTime("storeNow")<
   if (refused !== null) {
     return refused;
   }
-  // Counters of months before the previous one go (at most ten local accounts, so this stays small).
-  db.run(
-    `DELETE FROM kopje_state WHERE (substr(name, 1, ?1) = ?2 AND substr(name, ?1 + 1, 7) < ?5)
-			OR (substr(name, 1, ?3) = ?4 AND substr(name, ?3 + 1, 7) < ?5)`,
-    TRANSFORMS.length,
-    TRANSFORMS,
-    ACCOUNT_TRANSFORMS.length,
-    ACCOUNT_TRANSFORMS,
-    previousMonth(now),
-  );
+  pruneTransformMonths(db, now);
   const names = budgetNames(accountId, now);
   for (const name of [names.instance, names.account]) {
     setState(db, name, String(Number(state(db, name) ?? "0") + TRANSFORMS_PER_UPLOAD));

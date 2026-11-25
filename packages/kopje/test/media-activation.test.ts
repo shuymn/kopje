@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProbeOutcome, ProbeProfile } from "../src/domain/media-probes";
-import { probeName } from "../src/domain/media-probes";
+import { PROBE_CLAIM_MS, probeName } from "../src/domain/media-probes";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
+import { avFixture } from "./av-helpers";
 import { BUILD, rejectionOf } from "./helpers";
-import { ACTIVE, avWorld, clock, gate, HOUR, SECOND, staged, T0, TEXT } from "./media-processing-helpers";
+import { mediaForm } from "./media-helpers";
+import { ACTIVE, avWorld, clock, gate, HOUR, passProbe, SECOND, staged, T0, TEXT } from "./media-processing-helpers";
+import { community } from "./status-helpers";
 
 // The probe records and activation, the Store's side (#1828 design 4.15, plan P4): one record per profile and build,
 // one claim shared by the CLI and the probe round, its result recorded only under it, a pass kept over a probe that
@@ -125,13 +128,35 @@ describe("admission per profile and build", () => {
 });
 
 describe("one claim", () => {
+  // A claim's result, no-verdict, recorded under it.
+  const settle = async (store: StoreStub, claimed: Awaited<ReturnType<typeof claim>>) => {
+    if (claimed.status !== "claimed") {
+      throw new Error(claimed.status);
+    }
+    await store.recordMediaProbeResult(BUILD, {
+      profile: NORMALIZE,
+      claim: claimed.claim,
+      outcome: "no-verdict",
+      imagesVerified: false,
+      imageTag: null,
+    });
+  };
+
   it("is shared by the CLI and the round: the second within PROBE_RETRY_MS is refused, unless the build changed", async () => {
     const w = await avWorld();
     clock(T0 + HOUR);
     const cli = await claim(w.store, NORMALIZE, BUILD, false);
     expect(cli).toMatchObject({ status: "claimed" });
+    // r7: a claim with no result holds the profile for PROBE_CLAIM_MS; once it records one, for PROBE_RETRY_MS.
+    expect(await claim(w.store, NORMALIZE, BUILD, false)).toEqual({
+      status: "cooldown",
+      retryAt: T0 + HOUR + PROBE_CLAIM_MS,
+    });
+    await settle(w.store, cli);
     expect(await claim(w.store, NORMALIZE, BUILD, false)).toEqual({ status: "cooldown", retryAt: T0 + 2 * HOUR });
-    expect(await claim(w.store, NORMALIZE, "build-2", false)).toMatchObject({ status: "claimed" });
+    const other = await claim(w.store, NORMALIZE, "build-2", false);
+    expect(other).toMatchObject({ status: "claimed" });
+    await settle(w.store, other);
     clock(T0 + 2 * HOUR - 1);
     expect(await claim(w.store, NORMALIZE, "build-2", false)).toMatchObject({ status: "cooldown" });
     expect(await claim(w.store, NORMALIZE, BUILD, false)).toMatchObject({ status: "claimed" });
@@ -252,5 +277,34 @@ describe("the verdict", () => {
     });
     clock(T0 + 7 * HOUR);
     expect(await claim(w.store, NORMALIZE, BUILD, true)).toEqual({ status: "not_due" });
+  });
+});
+
+// G1: in this release a passed activation probe enables nothing; video and audio still take the image path's answer on
+// both upload routes, and no upload reaches the processor.
+describe("uploads after a passing activation probe (G1)", () => {
+  it("answers an MP4 and an MP3 on /api/v1/media and /api/v2/media as the image path does, with no media_processing row", async () => {
+    const h = await community(["alice"], "read write", {}, { MEDIA_UPLOAD_MONTHLY_JOBS: "10", MEDIA_PROCESSOR: {} });
+    await passProbe(h.store);
+    expect((await h.store.mediaProbeRecords(BUILD, { profile: NORMALIZE })).record).toMatchObject({
+      ok: true,
+      version: BUILD,
+    });
+    const files = [
+      [await avFixture("r1-silent.mp4"), "v.mp4", "video/mp4"],
+      [await avFixture("mp3.mp3"), "a.mp3", "audio/mpeg"],
+    ] as const;
+    for (const route of ["/api/v1/media", "/api/v2/media"]) {
+      for (const [bytes, name, type] of files) {
+        const response = await h.request(route, {
+          method: "POST",
+          headers: { authorization: `Bearer ${h.users.alice.token}` },
+          body: mediaForm(bytes, {}, name, type),
+        });
+        expect(response.status, `${route} ${name}`).toBe(422);
+        expect(await response.json()).toEqual({ error: "Validation failed: File content type is invalid" });
+      }
+    }
+    expect(await sql(h.store, "SELECT count(*) AS n FROM media_processing")).toEqual([{ n: 0 }]);
   });
 });

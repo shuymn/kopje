@@ -62,11 +62,15 @@ Commands
                                 (stopped "retry", the row kept as it was), or the Store is not readonly (run it again
                                 later: made files are skipped)
   media-processor probe [<profile>...]
-                                start the media processor's container for each profile (default: all of
-                                normalize@standard-4 and still@standard-1), run its operation on
-                                the packaged fixture and destroy it; prints each report. A smoke check of the deploy
-                                path: the output is not verified. Exits 1 when a probe failed, 3 when the instance has
-                                no MediaProcessor binding (deploy/README.md, "Video and audio")
+                                probe the media processor for each profile (default: all of
+                                normalize@standard-4 and still@standard-1). normalize@standard-4 runs the activation
+                                probe and records its verdict for the deployed version, not again within an hour of
+                                the last (docs/media-processor.md); still@standard-1 checks the profile (a still of the
+                                packaged clip, its PNG and Images) and records nothing: the media rebuild records its
+                                own probe of it. Both are refused in maintenance and while the Store is read-only.
+                                Prints each result. Exits 1 when a probe did not pass or its verdict was not recorded
+                                (another probe replaced it), 3 when the instance has no
+                                MediaProcessor binding (deploy/README.md, "Video and audio")
   emoji [--after <id>]          list the local custom emoji, enabled and disabled, oldest first
   emoji add <shortcode> <file> [--category <name>] [--unlisted] [--replace]
                                 add a custom emoji: a PNG, GIF or WebP below 256 KiB, at most 1024x1024 pixels, and
@@ -1034,8 +1038,11 @@ export async function run({
             }
             throw error;
           }
-          print(result.report);
-          failed ||= !result.report.ok;
+          // normalize@standard-4: its activation probe's verdict, recorded for the build ("recorded"; a probe claimed
+          // within the cooldown is not run again and has none). still@standard-1: its check's verdict, recorded nowhere
+          // ("checked"). The exit status follows a committed verdict: a claim another replaced ("stale") recorded none.
+          print(result.probe);
+          failed ||= !["recorded", "checked"].includes(result.probe.status) || result.probe.verdict?.outcome !== "pass";
         }
         return failed ? 1 : 0;
       }

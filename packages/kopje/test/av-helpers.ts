@@ -22,6 +22,20 @@ export async function avFixture(name: string): Promise<Uint8Array> {
   return new Uint8Array(await res.arrayBuffer());
 }
 
+// A committed output, fresh bytes each call, with its duration as the verifier reads it, in whole milliseconds (what a
+// container declares in Kopje-Duration-Ms).
+export async function timedFixture(
+  name: string,
+  type: AvType = "video/mp4",
+): Promise<{ bytes: Uint8Array; durationMs: number }> {
+  const bytes = await avFixture(name);
+  const verdict = await verifyBytes(type, bytes);
+  if (!verdict.ok) {
+    throw new Error("fixture refused");
+  }
+  return { bytes, durationMs: Math.round(verdict.facts.duration * 1000) };
+}
+
 // A stream of `bytes` in pieces of `size`.
 export function chunked(bytes: Uint8Array, size: number): ReadableStream<Uint8Array> {
   let at = 0;

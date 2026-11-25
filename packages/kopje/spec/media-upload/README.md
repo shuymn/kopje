@@ -48,6 +48,8 @@ step without each action raising them: `MaintInert` compares the Store with its 
   `T_MIN_ENCODE` so that S4 can fail a job S3 queued (the early timeout, v1 500), and `DLW` lengthens `V2_PROCESS_MS`
   past `AV_WRITE_WINDOW_MS`, so that the write window caps a v2 deadline. Only durations cross a clock boundary, so the
   route's and the processor's constant offsets (`skr`, `skd`) cancel; drift is not modelled.
+- An R2 delete succeeds when it is taken: the code retries D8's and W9's delete of `incoming/<id>` until R2 answers,
+  keeping the record and its alarm meanwhile, which the model takes as one successful step.
 - An R2 write may land at any time after it starts, or never. `LAND` stands for `ORPHAN_GRACE_MS`. Main's rule for an
   image (`src/domain/media.ts`, `purgeMedia`, `dueOrphans`) keeps the authority to delete an unfinished upload's keys
   until a successful reconciliation after the tombstone's `delete_after`, max(purge, write deadline) +

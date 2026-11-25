@@ -1,14 +1,18 @@
 // Command mediasrv is the media processor's HTTP server, run in Kopje's container image (#1828). It offers fixed
 // operations on one input at a time, never a command line:
 //
-//	POST /normalize?probe_ms=<ms>&encode_ms=<ms>  input -> H.264/AAC MP4 or MP3, by its streams
-//	GET  /normalize/still                         the PNG still the last video normalize made
-//	POST /still                                   input video -> one PNG still, long edge <= 640
-//	GET  /healthz                                 readiness
+//	POST /normalize?work_ms=<ms>&still_ms=<ms>  input -> H.264/AAC MP4 or MP3, by its streams
+//	GET  /normalize/still                       the PNG still the last video normalize made
+//	POST /still                                 input video -> one PNG still, long edge <= 640
+//	GET  /healthz                               readiness
 //
 // The input is the request body, written to the container's disk (an MP4 whose moov is at the end needs the whole
-// file) up to AV_UPLOAD_LIMIT. The output is the response body with its Content-Length. The probe and encode stages
-// are killed at the times the Worker passes (ffmpeg's process group SIGKILLed); /still at stillTimeout. ffmpeg reads
+// file) up to AV_UPLOAD_LIMIT. The output is the response body with its Content-Length. A normalize has one work
+// deadline, work_ms from the request's arrival, by which its response starts, and holds still_ms of it for a video's
+// still. Each stage's cut is computed when the stage begins, from the time then left (#1828 PR4 plan, P8): the probe's
+// at the end of the input, the encode's after the probe (the envelope check uses that time), both before the still's
+// reserve, and the still in its own context within its reserve. A stage past its cut is killed (ffmpeg's process group
+// SIGKILLed) and answers timeout; /still ends at stillTimeout. ffmpeg reads
 // only local files of the allowed demuxers. A failure answers a code (an "error" field and the Kopje-Error header),
 // never ffmpeg's output. The container has no network: Kopje starts it with Internet access disabled.
 //
@@ -49,9 +53,10 @@ const (
 	// AV_OUTPUT_LIMIT and STILL_OUTPUT_LIMIT: Kopje's readers refuse more; the server refuses first.
 	avOutputLimit    = 63 << 20
 	stillOutputLimit = 2 << 20
-	// Bounds on the stage times a request may pass.
-	minStageMs = 100
-	maxStageMs = 60 * 60 * 1000
+	// Bounds on the work deadline and the still's reserve a request may pass.
+	minWorkMs  = 100
+	maxWorkMs  = 60 * 60 * 1000
+	maxStillMs = 60 * 1000
 )
 
 var (
@@ -102,12 +107,17 @@ func main() {
 	}
 }
 
+// The version of the protocol this server speaks, which /healthz answers and the Worker requires
+// (src/media-processor.ts NORMALIZE_PROTOCOL): 2 is /normalize's one work deadline (work_ms, still_ms). The image before
+// it, which took probe_ms and encode_ms, answers no version.
+const normalizeProtocol = 2
+
 // The server's routes. A request for any other path or method answers a code, as every failure does.
 func newMux(threads threading) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "bootId": bootID})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "bootId": bootID, "protocol": normalizeProtocol})
 	})
 	mux.HandleFunc("POST /normalize", exclusive(func(w http.ResponseWriter, r *http.Request) {
 		handleNormalize(w, r, threads)
@@ -139,9 +149,13 @@ func deadlines(w http.ResponseWriter, read time.Time, write func() time.Time) (s
 	return func() { _ = rc.SetWriteDeadline(write()) }
 }
 
-// normalizeDeadlines: the body by inputTimeout from now, the response by outputTimeout from its start.
-func normalizeDeadlines(w http.ResponseWriter) (setWrite func()) {
-	return deadlines(w, time.Now().Add(inputTimeout), func() time.Time { return time.Now().Add(outputTimeout) })
+// normalizeDeadlines: the body by inputTimeout from now and by `by`, the response by outputTimeout from its start.
+func normalizeDeadlines(w http.ResponseWriter, by time.Time) (setWrite func()) {
+	read := time.Now().Add(inputTimeout)
+	if by.Before(read) {
+		read = by
+	}
+	return deadlines(w, read, func() time.Time { return time.Now().Add(outputTimeout) })
 }
 
 // A failure: the status and the code answered.
@@ -175,13 +189,15 @@ func exclusive(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// stageMs reads a stage time in milliseconds, within minStageMs..maxStageMs.
-func stageMs(r *http.Request, name string) (time.Duration, bool) {
-	v, err := strconv.Atoi(r.URL.Query().Get(name))
-	if err != nil || v < minStageMs || v > maxStageMs {
-		return 0, false
+// workTimes reads a normalize's work deadline and its still's reserve, in milliseconds: work_ms within
+// minWorkMs..maxWorkMs, still_ms within 0..maxStillMs and shorter than work_ms.
+func workTimes(r *http.Request) (work, still time.Duration, ok bool) {
+	w, errWork := strconv.Atoi(r.URL.Query().Get("work_ms"))
+	s, errStill := strconv.Atoi(r.URL.Query().Get("still_ms"))
+	if errWork != nil || errStill != nil || w < minWorkMs || w > maxWorkMs || s < 0 || s > maxStillMs || s >= w {
+		return 0, 0, false
 	}
-	return time.Duration(v) * time.Millisecond, true
+	return time.Duration(w) * time.Millisecond, time.Duration(s) * time.Millisecond, true
 }
 
 // Stage times reported to the Worker in headers, for its measurements.
@@ -194,15 +210,19 @@ func (t timings) set(name string, start time.Time) {
 }
 
 func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) {
+	arrival := time.Now()
 	// The still of an earlier normalize is never answered after this one, refused or not.
 	_ = os.Remove(stillPath)
-	setWrite := normalizeDeadlines(w)
-	probeTime, okProbe := stageMs(r, "probe_ms")
-	encodeTime, okEncode := stageMs(r, "encode_ms")
-	if !okProbe || !okEncode {
+	work, stillReserve, ok := workTimes(r)
+	if !ok {
+		normalizeDeadlines(w, arrival.Add(inputTimeout))
 		writeFailure(w, fail(http.StatusBadRequest, "bad_request"))
 		return
 	}
+	end := arrival.Add(work)
+	// The probe and the encode end before the still's reserve.
+	workEnd := end.Add(-stillReserve)
+	setWrite := normalizeDeadlines(w, end)
 	dir, err := os.MkdirTemp(workRoot, "job-")
 	if err != nil {
 		writeFailure(w, fail(http.StatusInternalServerError, "internal"))
@@ -221,9 +241,10 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 		return
 	}
 
-	// One probe_ms for every probe call: the header probe and, once the limits passed, the frame probe.
+	// The probe's cut, at the end of the input: one for every probe call, the header probe and, once the limits passed,
+	// the frame probe.
 	start = time.Now()
-	probeCtx, cancelProbe := context.WithTimeout(r.Context(), probeTime)
+	probeCtx, cancelProbe := context.WithDeadline(r.Context(), workEnd)
 	defer cancelProbe()
 	p, f := probe(probeCtx, in)
 	if f != nil {
@@ -231,7 +252,14 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 		writeFailure(w, f)
 		return
 	}
-	pl, refused := planNormalize(p, float64(encodeTime.Milliseconds()))
+	// The encode's cut, after the probe: the time left before the still's reserve, which a video holds and audio does
+	// not. The estimate must fit it.
+	encodeEnd := workEnd
+	video, audio := selectStreams(p)
+	if video == nil {
+		encodeEnd = end
+	}
+	pl, refused := planStreams(p, video, audio, float64(time.Until(encodeEnd).Milliseconds()))
 	if refused != "" {
 		t.set("Probe", start)
 		writeFailure(w, refuse(refused))
@@ -245,7 +273,7 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 	}
 	t.set("Probe", start)
 
-	encodeCtx, cancel := context.WithTimeout(r.Context(), encodeTime)
+	encodeCtx, cancel := context.WithDeadline(r.Context(), encodeEnd)
 	defer cancel()
 	start = time.Now()
 	var out, contentType string
@@ -294,10 +322,22 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 		return
 	}
 	if pl.kind == "video" {
-		// The still is best effort within the encode time left: a video without one is still an output.
+		// The still is best effort in its own context, within its reserve and the work deadline: a video without one is
+		// still an output.
 		start = time.Now()
-		w.Header().Set("Kopje-Still", strconv.FormatBool(makeStill(encodeCtx, pl, in)))
+		stillEnd := start.Add(stillReserve)
+		if end.Before(stillEnd) {
+			stillEnd = end
+		}
+		stillCtx, cancelStill := context.WithDeadline(r.Context(), stillEnd)
+		w.Header().Set("Kopje-Still", strconv.FormatBool(makeStill(stillCtx, pl, in)))
+		cancelStill()
 		t.set("Still", start)
+	}
+	// The response starts by the work deadline, or not at all.
+	if !time.Now().Before(end) {
+		writeFailure(w, fail(http.StatusGatewayTimeout, "timeout"))
+		return
 	}
 	setWrite()
 	serveFile(w, out, contentType, avOutputLimit, pl.kind)
@@ -308,7 +348,7 @@ func handleNormalizeStill(w http.ResponseWriter, _ *http.Request) {
 		writeFailure(w, fail(http.StatusNotFound, "no_still"))
 		return
 	}
-	normalizeDeadlines(w)()
+	normalizeDeadlines(w, time.Now().Add(inputTimeout))()
 	serveFile(w, stillPath, "image/png", stillOutputLimit, "")
 }
 

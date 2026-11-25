@@ -12,6 +12,7 @@ import { readState, writeState } from "./kopje-state";
 import {
   AV_CANDIDATE_TYPE,
   AV_WRITE_WINDOW_MS,
+  chargePosterTransforms,
   chargeUploadJob,
   deleteOwnMedia,
   DETACHED_GRACE_MS,
@@ -20,6 +21,7 @@ import {
   type MediaChanges,
   type MediaDeleted,
   liveMediaSql,
+  type MonthlyTransforms,
   setUp,
   uploadJobFits,
   ownerUri,
@@ -74,11 +76,30 @@ const INPUT_BYTES_PER_SECOND = 25 * 1024 * 1024;
 const T_INPUT_MIN = SECOND;
 const T_PROBE = SECOND;
 // The container's still, which /normalize holds out of the encode's cut.
-const T_STILL = SECOND;
+export const T_STILL = SECOND;
 // The Workers-side preview: Images' WebP and the RGBA_MIN_CALL_MS stillPreview keeps for the blurhash.
 const T_PREVIEW = 3 * SECOND;
 // The output into R2, the confirmed stop, three S5 calls and writes, and S6.
 const T_COMMIT = 6 * SECOND;
+// Of T_COMMIT, what the steps after the preview keep: the confirmed stop, the S5 grants and final writes, and S6. The
+// plan's T_COMMIT less the measured 4.5 s output into R2; a starting value the den-test edge runs measure (PR4-4). If
+// they grow it, T_COMMIT grows by the same amount, so a 4.5 s transfer near the edge keeps the preview's T_PREVIEW.
+const T_FINISH = 1500;
+// The least time the optional preview is begun with: its WebP's share of T_PREVIEW (Images' 0.33 s p95 rounded up),
+// the rest of T_PREVIEW being the RGBA_MIN_CALL_MS stillPreview needs for a blurhash (below which it skips that).
+export const T_PREVIEW_MIN = T_PREVIEW - 2 * SECOND;
+
+// The processor's cuts after the container's reply, allocated backwards from the deadline (#1828 PR4-2 fix r3): the
+// transfer is mandatory and ends only at the deadline less T_FINISH, so it may use what the encode left; the still
+// and its preview are optional, begun after the transfer at `start`, and end T_PREVIEW from it but never past the
+// transfer's cut.
+export function transferCut(allocation: Pick<Allocation, "deadline">): number {
+  return allocation.deadline - T_FINISH;
+}
+
+export function previewCut(allocation: Pick<Allocation, "deadline">, start: number): number {
+  return Math.min(start + T_PREVIEW, transferCut(allocation));
+}
 // Sending S10 and its answer (v1).
 export const T_REPLY = 2 * SECOND;
 export const T_MIN_ENCODE = 5 * SECOND;
@@ -744,6 +765,23 @@ export const confirmAvWrite = writeOperation.atStoreTime("now")<
     return { status: "grant", ms: Math.min(AV_GRANT_MS, row.deadline_at - now) };
   }
   return { status: "refused" };
+});
+
+// ---- The poster's Images charge (not a step of the specification: a budget read and write under the start)
+
+// TRANSFORMS_PER_POSTER charged to the instance budget and the uploader's share, once, right before the video's
+// preview, while the job runs under that start_id: `charged`, `spent` (no room: the upload completes with the
+// poster), or `refused` (the job is not running under it, so nothing it writes would publish).
+export const chargeAvPoster = writeOperation.atStoreTime("now")<
+  { id: string; startId: string; monthlyTransforms: MonthlyTransforms } & Fence,
+  { status: "charged" | "spent" | "refused" }
+>((db, { id, startId, monthlyTransforms, now, restoredAt }) => {
+  checkId(id);
+  const { att, row } = normalize(db, id, now, restoredAt);
+  if (row?.state !== "running" || row.start_id !== startId || att === null) {
+    return { status: "refused" };
+  }
+  return { status: chargePosterTransforms(db, att.account_id, monthlyTransforms, now) ? "charged" : "spent" };
 });
 
 // ---- S6 completeAvUpload

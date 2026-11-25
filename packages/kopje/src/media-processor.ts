@@ -21,43 +21,99 @@
 // or the alarm destroying one, answers "busy" (setting the alarm for now in the first case); a constructor that finds
 // one sets the alarm for now and does nothing else. The object stores nothing but its alarm.
 //
-// The smoke probe (probeNow) runs the packaged fixture through the operation, with no verifier. stillNow runs /still on
-// standard-1 for the media rebuild (design 4.16, mastodon/media-rebuild-av.ts): its one input key is read from the
-// media bucket once and streamed as the request body, and the PNG comes back to the caller, which checks it. On a
-// probe object it is the rebuild's `still@standard-1` probe and follows the same single-owner rule as probeNow; on a
-// fresh object (rb:<nonce>) it is one rebuild still. Both answer only once the container is destroyed, and a still
+// probeNormalize is the activation probe of normalize@standard-4 (mastodon/media-activation.ts probeWork) on a copy of
+// the packaged clip. stillNow runs /still on standard-1 for the media rebuild (design 4.16, mastodon/media-rebuild-av.ts)
+// and the still check of `kopje-admin media-processor probe`: its one input key is read from the media bucket once and
+// streamed as the request body, and the PNG comes back to the caller, which checks it. On a probe object it is the
+// still@standard-1 probe and follows the same single-owner rule as probeNormalize; on a fresh object (rb:<nonce>) it is
+// one rebuild still. Both answer only once the container is destroyed, and a still
 // only by its deadline: its destroy ends STILL_CLEANUP_MS before it, the removal of the object's storage and alarm is
 // awaited until it, and one that has not finished by then is left to the alarm, which repeats it until it is done.
 import { DurableObject } from "cloudflare:workers";
 
+import type { MonthlyTransforms } from "./domain/media";
+import { HARD_HOLD_MS, V2_PROCESS_MS } from "./domain/media-processing";
+import { R2_CALL_MS, runUpload } from "./jobs/media-jobs";
+import { type ContainerControl, probeFinish, probeWork } from "./mastodon/media-activation";
 import { PROBE_FIXTURE_BASE64 } from "./media-probe-fixture";
+import { AV_OUTPUT_LIMIT, plannedDuration, STILL_OUTPUT_LIMIT } from "./platform/av-bytes";
+import { readBoundedBody } from "./platform/body";
+import { accountMonthlyTransforms, envInMaintenance, readConfig } from "./platform/config";
 import { errorFields } from "./platform/error-message";
+import { type ImageCodec, imagesCodec } from "./platform/images";
+import { incomingKey } from "./platform/media-files";
 import {
+  type BuildEvidence,
   type MediaProcessorClient,
+  NORMALIZE_INPUT_FAILURES,
+  NORMALIZE_REFUSALS,
+  type NormalizeJob,
+  type NormalizeResult,
   type ProbeProfile,
-  type ProbeReport,
+  type ProbeVerdict,
   STILL_INPUT_REFUSALS,
   type StillInputRefusal,
   type StillOutcome,
+  TranscoderUnavailable,
 } from "./platform/media-transcoder";
+import { defaultStore, type StoreStub } from "./platform/store-client";
+import { buildOf } from "./version";
 
 // The port container/server listens on.
 const PORT = 8080;
+// The protocol version the server's /healthz must answer (container/server/main.go normalizeProtocol): 2 is
+// /normalize's one work deadline. An image that answers another, or none (the probe_ms/encode_ms image), does not speak
+// it, which a probe takes as the build's.
+export const NORMALIZE_PROTOCOL = 2;
+
+// The most of a /healthz body read: the server's is a few dozen bytes.
+const HEALTHZ_BODY_LIMIT = 1024;
+
+// What a /healthz answer says to `operation`: ready, `route` (404: a build without the server), `method` (405: an image
+// that does not speak the protocol), `protocol` (for normalize, a complete reply naming another version or none), or
+// null (not yet: any other status, a lost connection, a body whose read failed), which is polled again. The still's
+// /still contract predates the version, so for it any 200 is ready: a Worker that activates before its image keeps its
+// still rebuild. The status decides before the body is read: cancelling a body the connection broke is best effort.
+async function healthAnswer(
+  response: Response,
+  operation: "normalize" | "still",
+): Promise<"ready" | "route" | "method" | "protocol" | null> {
+  if (response.status !== 200 || operation === "still") {
+    response.body?.cancel().catch(() => {});
+    return response.status === 200
+      ? "ready"
+      : response.status === 404
+        ? "route"
+        : response.status === 405
+          ? "method"
+          : null;
+  }
+  const body = await readBoundedBody(response, HEALTHZ_BODY_LIMIT).catch(() => null);
+  if (body === null) {
+    return null;
+  }
+  let version: unknown;
+  try {
+    const parsed: unknown = body === "too-large" ? null : JSON.parse(new TextDecoder().decode(body));
+    version = typeof parsed === "object" && parsed !== null ? (parsed as { protocol?: unknown }).protocol : undefined;
+  } catch {
+    version = undefined;
+  }
+  return version === NORMALIZE_PROTOCOL ? "ready" : "protocol";
+}
 // The first start on a host pulls the image (the experiment's first pulls took 3.2 and 7.9 s); a probe waits longer.
-export const READY_MS = 90_000;
+const READY_MS = 90_000;
 const READY_POLL_MS = 250;
-// The stage times the probe gives normalize, and the bound on the whole operation.
-const PROBE_STAGE_MS = 10_000;
-const PROBE_ENCODE_MS = 60_000;
-const OPERATION_MS = 120_000;
-// AV_OUTPUT_LIMIT and STILL_OUTPUT_LIMIT: the most read of a response body (container/server/main.go refuses first).
-export const AV_OUTPUT_LIMIT = 63 * 1024 * 1024;
-const STILL_OUTPUT_LIMIT = 2 * 1024 * 1024;
+// The work deadline the activation probe gives normalize (container/server/main.go).
+const PROBE_WORK_MS = 70_000;
+// AV_OUTPUT_LIMIT and STILL_OUTPUT_LIMIT (platform/av-bytes.ts) bound what is read of a response body
+// (container/server/main.go refuses first).
+export { AV_OUTPUT_LIMIT };
 export const CLEANUP_RETRY_MS = 60_000;
 // The most a destroy is awaited; one that has not settled by then counts as failed.
 export const DESTROY_MS = 30_000;
-// The probe's one deadline, from before the start: readiness, then the operation.
-export const PROBE_MS = READY_MS + OPERATION_MS;
+// The probe's one deadline, from before the start: readiness (READY_MS, 90 s), then the operation (120 s).
+export const PROBE_MS = 210_000;
 // The most a stillNow call is given, readiness included: the rebuild's still stage (mastodon/media-rebuild-av.ts).
 export const STILL_CALL_MS = 75_000;
 // Of a stillNow call's time, what is kept for the destroy after the operation, and of that, what is kept after the
@@ -65,11 +121,6 @@ export const STILL_CALL_MS = 75_000;
 export const STILL_TEARDOWN_MS = 10_000;
 const STILL_CLEANUP_MS = 2_000;
 const STILL_PROFILE = "still@standard-1" satisfies ProbeProfile;
-
-const OPERATIONS = {
-  normalize: { path: `/normalize?probe_ms=${PROBE_STAGE_MS}&encode_ms=${PROBE_ENCODE_MS}`, type: "video/mp4" },
-  still: { path: "/still", type: "image/png" },
-} as const;
 
 type ProcessorEnv = Env & { MEDIA_PROCESSOR?: DurableObjectNamespace<MediaProcessor> };
 
@@ -115,63 +166,42 @@ class ProbeFailure extends Error {
     readonly failure: string,
     // The container refused the input itself (readStill).
     readonly input?: StillInputRefusal,
+    // What in the answer shows the image does not speak the protocol.
+    readonly evidence?: BuildEvidence,
   ) {
     super(failure);
   }
 }
 
-// A refusal of a still's input, from the response's status and code together: 422 with one of the plan's input
+// A refusal of the input, from the response's status and code together: 422 with one of the route's `known` input
 // refusals, or 413 too_large. A code under any other status is not one.
-function inputRefusal(status: number, code: string | null): StillInputRefusal | undefined {
-  const refusal = STILL_INPUT_REFUSALS.find((known) => known === code);
+function inputRefusal<C extends string>(known: readonly C[], status: number, code: string | null): C | undefined {
+  const refusal = known.find((refusing) => refusing === code);
   if (refusal === undefined) {
     return undefined;
   }
   return (refusal === "too_large" ? status === 413 : status === 422) ? refusal : undefined;
 }
 
-// Reads a response body of the declared length, at most `limit` bytes, counting as it reads: a body longer than its
-// Content-Length or the limit is cancelled at the first byte past it.
-async function readBounded(response: Response, limit: number, stage: string): Promise<number> {
-  const declared = Number(response.headers.get("content-length"));
-  if (!Number.isSafeInteger(declared) || declared <= 0 || declared > limit || response.body === null) {
-    await response.body?.cancel();
-    throw new ProbeFailure(`${stage}-length`);
-  }
-  const reader = (response.body as ReadableStream<Uint8Array>).getReader();
-  let read = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    read += value.byteLength;
-    if (read > declared) {
-      await reader.cancel();
-      throw new ProbeFailure(`${stage}-length`);
-    }
-  }
-  if (read !== declared) {
-    throw new ProbeFailure(`${stage}-length`);
-  }
-  return read;
-}
-
 // The body of a 200 image/png response, read within STILL_OUTPUT_LIMIT and its declared length, as bytes.
 async function readStill(response: Response): Promise<Uint8Array> {
   if (response.status !== 200 || response.headers.get("content-type") !== "image/png") {
     await response.body?.cancel();
-    const code = response.headers.get("kopje-error");
+    const code = errorCode(response);
+    const evidence = response.status === 200 ? "contract" : replyEvidence(response.status, code);
     throw new ProbeFailure(
-      code !== null && /^[a-z_]{1,32}$/.test(code) ? `still:${code}` : "still-status",
-      inputRefusal(response.status, code),
+      response.status !== 200 ? `still:${reasonCode(response.status, code)}` : "still-status",
+      inputRefusal(STILL_INPUT_REFUSALS, response.status, code),
+      evidence ?? undefined,
     );
   }
   const declared = Number(response.headers.get("content-length"));
   if (!Number.isSafeInteger(declared) || declared <= 0 || declared > STILL_OUTPUT_LIMIT || response.body === null) {
     await response.body?.cancel();
-    throw new ProbeFailure("still-length");
+    throw new ProbeFailure("still-length", undefined, "contract");
   }
+  // From here the headers kept the contract: a body that ends short is the connection's (still-truncated); one longer
+  // than declared is not (still-length).
   const out = new Uint8Array(declared);
   const reader = (response.body as ReadableStream<Uint8Array>).getReader();
   let read = 0;
@@ -182,27 +212,18 @@ async function readStill(response: Response): Promise<Uint8Array> {
     }
     if (read + value.byteLength > declared) {
       await reader.cancel();
-      throw new ProbeFailure("still-length");
+      throw new ProbeFailure("still-length", undefined, "contract");
     }
     out.set(value, read);
     read += value.byteLength;
   }
   if (read !== declared) {
-    throw new ProbeFailure("still-length");
+    throw new ProbeFailure("still-truncated");
   }
   return out;
 }
 
-// A response of the operation: 200 with the expected type, or the server's error code.
-async function expectOutput(response: Response, type: string, limit: number, stage: string): Promise<number> {
-  if (response.status !== 200 || response.headers.get("content-type") !== type) {
-    await response.body?.cancel();
-    const code = response.headers.get("kopje-error");
-    throw new ProbeFailure(code !== null && /^[a-z_]{1,32}$/.test(code) ? `${stage}:${code}` : `${stage}-status`);
-  }
-  return readBounded(response, limit, stage);
-}
-
+// The server's stage times (its Kopje-*-Ms headers), each a whole number of milliseconds.
 function stageTimes(headers: Headers): Record<string, number> {
   const stages: Record<string, number> = {};
   for (const name of ["input", "probe", "encode", "still", "encode-cpu", "estimate"]) {
@@ -215,134 +236,185 @@ function stageTimes(headers: Headers): Record<string, number> {
   return stages;
 }
 
-// The smoke probe of one profile on a container that is not running: start, readiness, the operation on the fixture,
-// and destroy, every stage ending at `deadline`. It never throws; destroy() is attempted whatever happened before it,
-// and its failure is reported as `destroyed: false` for the caller to clean up.
-export async function smokeProbe(
-  container: Container,
-  profile: ProbeProfile,
-  deps: ProbeDeps = defaultDeps,
-  deadline: number = deps.now() + PROBE_MS,
-): Promise<ProbeReport> {
-  const started = deps.now();
-  const [operation, instance] = profile.split("@") as [
-    "normalize" | "still",
-    "standard-1" | "standard-3" | "standard-4",
-  ];
-  const report: ProbeReport = {
-    ok: false,
-    profile,
-    failure: null,
-    image: { configured: container.images.media ?? null, running: null },
-    startToReadyMs: null,
-    operationMs: null,
-    wallMs: 0,
-    stages: {},
-    outputBytes: null,
-    stillBytes: null,
-    destroyed: false,
-  };
-  try {
-    if (report.image.configured === null) {
-      throw new ProbeFailure("no-image");
-    }
-    const ready = await startReady(container, report.image.configured, operation, instance, deps, started, deadline);
-    report.startToReadyMs = ready.readyMs;
-    report.image.running = ready.running;
-    const port = ready.port;
-
-    const fixture = decodeFixture();
-    const begun = deps.now();
-    const spec = OPERATIONS[operation];
-    const aborted = new AbortController();
-    const run = async () => {
-      const response = await port.fetch(`http://container${spec.path}`, {
-        method: "POST",
-        body: fixture,
-        headers: { "content-type": "application/octet-stream", "content-length": String(fixture.byteLength) },
-        signal: aborted.signal,
-      });
-      report.stages = stageTimes(response.headers);
-      report.outputBytes = await expectOutput(
-        response,
-        spec.type,
-        operation === "normalize" ? AV_OUTPUT_LIMIT : STILL_OUTPUT_LIMIT,
-        operation,
-      );
-      if (operation === "normalize") {
-        if (response.headers.get("kopje-kind") !== "video" || response.headers.get("kopje-still") !== "true") {
-          throw new ProbeFailure("normalize-kind");
-        }
-        const still = await port.fetch("http://container/normalize/still", { signal: aborted.signal });
-        report.stillBytes = await expectOutput(still, "image/png", STILL_OUTPUT_LIMIT, "normalize-still");
-      }
-    };
-    if ((await before(run(), deadline, deps, aborted)) === TIMED_OUT) {
-      throw new ProbeFailure("operation-deadline");
-    }
-    report.operationMs = deps.now() - begun;
-    report.ok = true;
-  } catch (error) {
-    report.failure = error instanceof ProbeFailure ? error.failure : "operation";
-    if (!(error instanceof ProbeFailure)) {
-      console.warn({ event: "kopje.media.probe.failed", profile, ...errorFields(error) });
-    }
-  } finally {
-    report.destroyed = await destroyContainer(container, deps);
-    report.ok &&= report.destroyed;
-    report.wallMs = deps.now() - started;
-  }
-  return report;
+// The server's error code of a response, when it is one.
+function errorCode(response: Response): string | null {
+  const code = response.headers.get("kopje-error");
+  return code !== null && /^[a-z_]{1,32}$/.test(code) ? code : null;
 }
 
-// Starts the container with Internet access disabled on `instance`, polls /healthz until it answers (within READY_MS
-// of `started` and `deadline`), and reads the image it runs.
+// The replies other than a 200 that are evidence of the build, on every route of the protocol alike, by their status:
+// a 404 (not_found, or no code) on a route the protocol names, which a server that serves it never answers, and a 405
+// on the method it names. Every other status and code (busy, a slow or short input, the server's own failure, a
+// gateway's reply, a code R9's container chooses, a 500 naming not_found among them) may be the moment's or the
+// input's, and says nothing of the build.
+function replyEvidence(status: number, code: string | null): BuildEvidence | null {
+  if (status === 404 && (code === null || code === "not_found")) {
+    return "route";
+  }
+  return status === 405 ? "method" : null;
+}
+
+// The Kopje-Error codes the server answers (container/server/main.go, plan.go). Any other value, which R9's container
+// chooses, is logged as its status instead.
+const KNOWN_CODES = new Set<string>([
+  ...NORMALIZE_REFUSALS,
+  ...NORMALIZE_INPUT_FAILURES,
+  ...STILL_INPUT_REFUSALS,
+  "envelope",
+  "timeout",
+  "busy",
+  "internal",
+  "input_timeout",
+  "bad_request",
+  "not_found",
+  "method_not_allowed",
+  "no_still",
+  "empty",
+]);
+function reasonCode(status: number, code: string | null): string {
+  return code !== null && KNOWN_CODES.has(code) ? code : String(status);
+}
+
+// The normalize adapter (design 4.2; #1828 PR4 plan, section 3 "PR4-2"): one POST /normalize on a ready container with
+// the job's input as its body and its work deadline, its answer read against the server's contract
+// (container/server/main.go). An input refused, outside the envelope, failed as A5 states or past a stage's cut is the
+// input's outcome; anything else throws TranscoderUnavailable. The output is not read here: `file` streams it, for the
+// caller to read through the verifier within AV_OUTPUT_LIMIT.
+export async function normalize(port: Fetcher, job: NormalizeJob): Promise<NormalizeResult> {
+  let response: Response;
+  try {
+    response = await port.fetch(`http://container/normalize?work_ms=${job.workMs}&still_ms=${job.stillMs}`, {
+      method: "POST",
+      body: job.input.body.pipeThrough(new FixedLengthStream(job.input.size)),
+      headers: { "content-type": "application/octet-stream", "content-length": String(job.input.size) },
+      ...(job.signal === undefined ? {} : { signal: job.signal }),
+    });
+  } catch {
+    throw new TranscoderUnavailable("normalize-fetch");
+  }
+  const stages = stageTimes(response.headers);
+  const code = errorCode(response);
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    if (code === "envelope" && response.status === 422) {
+      return { ok: false, outcome: "envelope", code, stages };
+    }
+    const refused = inputRefusal(NORMALIZE_REFUSALS, response.status, code);
+    if (refused !== undefined) {
+      return { ok: false, outcome: "refused", code: refused, stages };
+    }
+    const failed = response.status === 500 ? NORMALIZE_INPUT_FAILURES.find((known) => known === code) : undefined;
+    if (failed !== undefined) {
+      return { ok: false, outcome: "refused", code: failed, stages };
+    }
+    if (response.status === 504 && code === "timeout") {
+      return { ok: false, outcome: "timeout", code, stages };
+    }
+    throw new TranscoderUnavailable(
+      `normalize:${reasonCode(response.status, code)}`,
+      replyEvidence(response.status, code),
+    );
+  }
+  const type = response.headers.get("content-type");
+  const kind = response.headers.get("kopje-kind");
+  const length = Number(response.headers.get("content-length"));
+  const duration = plannedDuration(response.headers.get("kopje-duration-ms"));
+  const still = response.headers.get("kopje-still");
+  const typed =
+    (type === "video/mp4" && kind === "video" && (still === "true" || still === "false")) ||
+    (type === "audio/mpeg" && kind === "audio" && still === null);
+  if (
+    !typed ||
+    !Number.isSafeInteger(length) ||
+    length <= 0 ||
+    length > AV_OUTPUT_LIMIT ||
+    duration === undefined ||
+    response.body === null
+  ) {
+    await response.body?.cancel();
+    throw new TranscoderUnavailable("normalize-contract", "contract");
+  }
+  return {
+    ok: true,
+    kind,
+    type,
+    file: response.body as ReadableStream<Uint8Array>,
+    length,
+    duration,
+    stages,
+    still: async () => (still === "true" ? normalizeStill(port, job.signal) : null),
+  };
+}
+
+// The still a video's normalize kept (GET /normalize/still), read within STILL_OUTPUT_LIMIT and its declared length;
+// null when the server has none. Any other failure throws TranscoderUnavailable.
+async function normalizeStill(port: Fetcher, signal: AbortSignal | undefined): Promise<Uint8Array | null> {
+  let response: Response;
+  try {
+    response = await port.fetch("http://container/normalize/still", signal === undefined ? {} : { signal });
+  } catch {
+    throw new TranscoderUnavailable("still-fetch");
+  }
+  const code = errorCode(response);
+  if (response.status === 404 && code === "no_still") {
+    await response.body?.cancel();
+    return null;
+  }
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    throw new TranscoderUnavailable(`still:${reasonCode(response.status, code)}`, replyEvidence(response.status, code));
+  }
+  try {
+    return await readStill(response);
+  } catch (error) {
+    // A 200 whose type or length the server never answers for the still is the build's; a body cut short, or a read
+    // that fails, may be the connection's.
+    throw error instanceof ProbeFailure
+      ? new TranscoderUnavailable(error.failure, error.evidence ?? null)
+      : new TranscoderUnavailable("still-read");
+  }
+}
+
+// Starts the container with Internet access disabled on `instance`, polls /healthz until it is ready or `by`, and reads
+// the image it runs: the port and that image (null when the inspection did not answer by `by`), what the /healthz
+// answer shows of a build that does not speak the protocol (healthAnswer), or null when it was not ready by `by`.
 async function startReady(
   container: Container,
   image: string,
   operation: "normalize" | "still",
-  instance: "standard-1" | "standard-3" | "standard-4",
+  instance: "standard-1" | "standard-4",
   deps: ProbeDeps,
-  started: number,
-  deadline: number,
-): Promise<{ port: Fetcher; readyMs: number; running: string | null }> {
-  container.start({
-    image: image,
-    instance,
-    enableInternet: false,
-    labels: { app: "kopje-media", operation, instance },
-  });
+  by: number,
+): Promise<{ port: Fetcher; running: string | null } | "route" | "method" | "protocol" | null> {
+  container.start({ image, instance, enableInternet: false, labels: { app: "kopje-media", operation, instance } });
   const port = container.getTcpPort(PORT);
-  const readyBy = Math.min(started + READY_MS, deadline);
   for (;;) {
     const poll = new AbortController();
-    const ready = await before(
+    const status = await before(
       port.fetch("http://container/healthz", { signal: poll.signal }).then(
-        async (response) => {
-          await response.body?.cancel();
-          return response.ok;
-        },
-        () => false,
+        (response) => healthAnswer(response, operation),
+        () => null,
       ),
-      readyBy,
+      by,
       deps,
       poll,
     );
-    if (ready === true) {
-      break;
+    if (status === "ready") {
+      const info = await before(
+        container.inspect().catch(() => null),
+        by,
+        deps,
+      );
+      return { port, running: info === TIMED_OUT ? null : (info?.image ?? null) };
     }
-    if (ready === TIMED_OUT || deps.now() >= readyBy) {
-      throw new ProbeFailure("ready");
+    if (status === "route" || status === "method" || status === "protocol") {
+      return status;
     }
-    await deps.wait(Math.min(READY_POLL_MS, readyBy - deps.now()));
+    if (status === TIMED_OUT || deps.now() >= by) {
+      return null;
+    }
+    await deps.wait(Math.min(READY_POLL_MS, by - deps.now()));
   }
-  const readyMs = deps.now() - started;
-  const info = await before(
-    container.inspect().catch(() => null),
-    readyBy,
-    deps,
-  );
-  return { port, readyMs, running: info === TIMED_OUT ? null : (info?.image ?? null) };
 }
 
 // The still of the object at `key` on a container that is not running: start on standard-1, readiness, one read of the
@@ -365,7 +437,20 @@ async function runStill(
     if (image === null) {
       throw new ProbeFailure("no-image");
     }
-    const ready = await startReady(container, image, "still", "standard-1", deps, started, operationEnd);
+    const ready = await startReady(
+      container,
+      image,
+      "still",
+      "standard-1",
+      deps,
+      Math.min(started + READY_MS, operationEnd),
+    );
+    if (ready === null) {
+      throw new ProbeFailure("ready");
+    }
+    if (typeof ready === "string") {
+      throw new ProbeFailure("healthz", undefined, ready);
+    }
     image = ready.running ?? image;
     const aborted = new AbortController();
     const run = async () => {
@@ -398,6 +483,7 @@ async function runStill(
         failure: error.failure,
         image,
         ...(error.input === undefined ? {} : { input: error.input }),
+        ...(error.evidence === undefined ? {} : { evidence: error.evidence }),
       };
     } else {
       result = { ok: false, failure: "operation", image };
@@ -431,34 +517,20 @@ async function destroyContainer(container: Container, deps: ProbeDeps, by?: numb
   }
 }
 
-// The report of a probe that started no container.
-function unstarted(profile: ProbeProfile, failure: string): ProbeReport {
-  return {
-    ok: false,
-    profile,
-    failure,
-    image: { configured: null, running: null },
-    startToReadyMs: null,
-    operationMs: null,
-    wallMs: 0,
-    stages: {},
-    outputBytes: null,
-    stillBytes: null,
-    destroyed: true,
-  };
-}
-
 // The parts of a Durable Object's state a unit of work uses.
 export type UnitState = {
   readonly container?: Container | undefined;
   // The media bucket, which stillNow reads its input from.
   readonly bucket?: Pick<R2Bucket, "get">;
+  // Images, which the activation probe's still goes through.
+  readonly images?: ImageCodec;
   readonly storage: Pick<DurableObjectStorage, "setAlarm" | "deleteAll" | "sync">;
 };
 
 // What MediaProcessor does, over the parts of its state it uses.
 export class ProcessorUnit {
   // The deadline of the probe call in flight in this instance, or null. Set at the call's entry, before any await.
+  // While a call is in flight, its fallback alarm's time: an alarm that comes sooner sets itself for then.
   #inFlight: number | null = null;
   // The alarm is destroying an orphan: a probe call answers busy meanwhile (the container may stop before the
   // destroy's reply).
@@ -476,17 +548,6 @@ export class ProcessorUnit {
     }
   }
 
-  async probeNow(profile: ProbeProfile): Promise<ProbeReport> {
-    const owned = await this.#owned(
-      PROBE_MS,
-      (deadline, container) => smokeProbe(container, profile, this.deps, deadline),
-      // smokeProbe's destroy may take DESTROY_MS past its deadline.
-      (deadline) => deadline + DESTROY_MS,
-      (report) => report,
-    );
-    return "refused" in owned ? { ...unstarted(profile, owned.refused), destroyed: owned.destroyed } : owned;
-  }
-
   // A still of the object at `key` (the rebuild's still or its still probe), within `ms` of now and at most
   // STILL_CALL_MS.
   async stillNow(key: string, ms: number): Promise<StillOutcome> {
@@ -497,7 +558,8 @@ export class ProcessorUnit {
         bucket === undefined
           ? { ok: false as const, failure: "no-bucket", image: null, destroyed: true }
           : runStill(container, bucket, key, this.deps, deadline),
-      (deadline) => deadline,
+      // The still's stop is attempted by its deadline (runStill), so nothing follows it.
+      0,
       // A still whose cleanup ran past the call's deadline is not used: the caller has given up on it.
       (outcome) =>
         outcome.ok ? { ok: false, failure: "late", image: outcome.image, destroyed: outcome.destroyed } : outcome,
@@ -509,37 +571,88 @@ export class ProcessorUnit {
     return outcome;
   }
 
+  // The activation probe of normalize@standard-4 on the copy of the clip at `key` (mastodon/media-activation.ts
+  // probeWork), on this object's one container under the single-owner rule (#owned), every stage ending at its one
+  // deadline (PROBE_MS): one that has not answered by then reaches no verdict, its requests aborted. The container's
+  // stop is this call's alone, after the work settled or was given up, so a late answer of a given-up probe touches no
+  // later probe's container; Images sees the verified still only after the stop is confirmed (probeFinish). A probe
+  // that cannot run here (busy, no container, storage) reaches no verdict.
+  async probeNormalize(key: string): Promise<ProbeVerdict & { image: string | null }> {
+    const { bucket, images } = this.state;
+    const owned = await this.#owned<ProbeVerdict & { image: string | null; destroyed: boolean }>(
+      PROBE_MS,
+      async (deadline, container) => {
+        if (bucket === undefined || images === undefined) {
+          return { outcome: "no-verdict", reason: "no-bucket", image: null, destroyed: true };
+        }
+        const control = containerControl(container, this.deps, "normalize", "standard-4");
+        const aborted = new AbortController();
+        const settled = await before(
+          probeWork(
+            { ready: control.ready, normalize: control.normalize, bucket, now: this.deps.now },
+            key,
+            deadline,
+            PROBE_WORK_MS,
+            aborted.signal,
+          ),
+          deadline,
+          this.deps,
+          aborted,
+        );
+        const destroyed = await destroyContainer(container, this.deps);
+        const verdict = await probeFinish(
+          settled === TIMED_OUT ? { outcome: "no-verdict", reason: "operation-deadline" } : settled,
+          destroyed,
+          images,
+          deadline,
+          this.deps.now,
+        );
+        return { ...verdict, image: control.image(), destroyed };
+      },
+      DESTROY_MS,
+      (verdict) => verdict,
+    );
+    if ("refused" in owned) {
+      return { outcome: "no-verdict", reason: owned.refused, image: null };
+    }
+    const { destroyed: _destroyed, ...verdict } = owned;
+    return verdict;
+  }
+
   // Runs one operation that owns this object's container (design 4.5): refused as busy while another runs here or an
   // orphan still runs; the alarm set past its bound and confirmed durable before anything starts; then, once the
-  // container is destroyed, its storage and alarm removed, or the alarm brought forward to retry the destroy. That
-  // cleanup is awaited only until `replyBy(deadline)`: one that has not finished by then leaves the alarm, which removes
-  // the storage itself (alarm), and the result goes through `late`.
+  // container is destroyed, its storage and alarm removed, or the alarm brought forward to retry the destroy. The call's
+  // bound is its deadline plus `teardown`, the time its stop's attempt may take after it: the alarm armed before the
+  // start is set for that bound (for a call whose invocation ends before its own stop), and the cleanup is awaited only
+  // until it: one that has not finished by then leaves the alarm, which removes the storage itself (alarm), and the
+  // result goes through `late`.
   async #owned<R extends { destroyed: boolean }>(
     ms: number,
     run: (deadline: number, container: Container) => Promise<R>,
-    replyBy: (deadline: number) => number,
+    teardown: number,
     late: (report: R) => R,
-  ): Promise<R | { refused: string; destroyed: boolean }> {
+  ): Promise<R | { refused: string }> {
     const container = this.state.container;
     if (container === undefined) {
-      return { refused: "no-container", destroyed: true };
+      return { refused: "no-container" };
     }
     if (this.#inFlight !== null || this.#cleaning) {
-      return { refused: "busy", destroyed: true };
+      return { refused: "busy" };
     }
     const deadline = this.deps.now() + ms;
+    const bound = deadline + teardown;
     if (container.running) {
       // An orphan; the alarm owns it. Setting it for now is awaited only until the call's deadline.
       await before(this.alarmNow(), deadline, this.deps);
-      return { refused: "busy", destroyed: false };
+      return { refused: "busy" };
     }
     // No await since the checks above: two calls cannot both pass.
-    this.#inFlight = deadline;
+    this.#inFlight = bound;
     try {
       // The alarm's write and its commit are awaited within the call's deadline too.
       const stored = await before(
         (async () => {
-          await this.state.storage.setAlarm(deadline + DESTROY_MS);
+          await this.state.storage.setAlarm(bound);
           await this.state.storage.sync();
           return true;
         })().catch((error: unknown) => {
@@ -550,11 +663,11 @@ export class ProcessorUnit {
         this.deps,
       );
       if (stored === false) {
-        return { refused: "storage", destroyed: true };
+        return { refused: "storage" };
       }
       // A commit that settled past the deadline leaves no time: nothing is started.
       if (stored === TIMED_OUT || this.deps.now() >= deadline) {
-        return { refused: "storage-late", destroyed: true };
+        return { refused: "storage-late" };
       }
       const report = await run(deadline, container);
       // Nothing to clean up once the container is gone (the object's storage goes too, so a fresh object leaves
@@ -568,7 +681,7 @@ export class ProcessorUnit {
             return true;
           },
         ),
-        replyBy(deadline),
+        bound,
         this.deps,
       );
       return cleaned === TIMED_OUT ? late(report) : report;
@@ -589,7 +702,7 @@ export class ProcessorUnit {
   // storage is removed. A removal that fails sets the alarm again.
   async alarm(): Promise<void> {
     if (this.#inFlight !== null) {
-      await this.state.storage.setAlarm(Math.max(this.#inFlight + DESTROY_MS, this.deps.now() + 1_000));
+      await this.state.storage.setAlarm(Math.max(this.#inFlight, this.deps.now() + 1_000));
       return;
     }
     const container = this.state.container;
@@ -618,24 +731,280 @@ export class ProcessorUnit {
   }
 }
 
+// The container of one unit of work as jobs/media-jobs.ts drives it: started on `instance` with Internet access
+// disabled and polled at /healthz until `by` (a 404 there, which the server never answers, is `wrong`: a build without
+// the server, and so is a 405; a complete reply naming a version other than NORMALIZE_PROTOCOL, or none, is
+// `incompatible`), the normalize adapter, and the
+// confirmed stop (destroyContainer).
+function containerControl(
+  container: Container,
+  deps: ProbeDeps,
+  operation: "normalize",
+  instance: "standard-4",
+): ContainerControl & { image: () => string | null } {
+  let image: string | null = container.images.media ?? null;
+  return {
+    image: () => image,
+    async ready(by) {
+      if (image === null || deps.now() >= by) {
+        return null;
+      }
+      const ready = await startReady(container, image, operation, instance, deps, by);
+      if (ready === null) {
+        return null;
+      }
+      if (ready === "route" || ready === "method") {
+        return "wrong";
+      }
+      if (ready === "protocol") {
+        return "incompatible";
+      }
+      image = ready.running ?? image;
+      return ready.port;
+    },
+    normalize,
+    stop: () => destroyContainer(container, deps),
+  };
+}
+
+// ---- Uploads (#1828 PR4 plan, section 1.3)
+//
+// An upload's object, u:<id>:<token>, runs its work in alarm(), which the platform runs one at a time; its record
+// (`upload`: the id, the file token, the teardown_id and when run first stored it, on this object's clock) is the only
+// thing it stores besides its alarm. The steps, each set and confirmed after the one alarm D1 arms:
+//   D0 run         the record and an alarm for now in one storage transaction; a record without an alarm gets one;
+//                  otherwise nothing, so a repeated run, or one during alarm(), starts no second invocation
+//   D1 entry       the record-age stop: a record V2_PROCESS_MS + HARD_HOLD_MS old with no container running re-arms,
+//                  deletes the input (bounded), then the storage (W9; a delete not answered keeps the record for the
+//                  alarm's repeat); else an invocation id drawn in memory and the alarm set for CLEANUP_RETRY_MS later
+//                  and confirmed (sync), which every later step relies on
+//   D2 S4          a container still running here (an earlier invocation's) is stopped first, and an unconfirmed
+//                  stop ends the invocation with no Store write; started: runUpload (D3-D7, jobs/media-jobs.ts);
+//                  settled or gone: the cleanup replay; maintenance (or no answer): a running container is stopped,
+//                  and the invocation ends with the record and alarm kept, so the alarm repeats it
+//   D4             the confirmed stop; an unconfirmed one ends the invocation (S7 awaited at most STORE_CALL_MS), its
+//                  granted slot counting, and the alarm repeats it
+//   D8 input       incoming/<id> deleted, awaited at most R2_CALL_MS; D9 follows whatever it did, so the slot is
+//                  released on its own
+//   D9 S8          the stop confirmation with the record's teardown_id, only after a confirmed stop: `released`, with
+//                  the input deleted, deletes the storage (its alarm too); anything else ends the invocation and the
+//                  alarm repeats D8, D9 (MEDIA-3: an attached upload's input is held from the orphan pass)
+// The cleanup replay (S4 not `started`): the stop under D4's rule, then D8 and D9.
+const UPLOAD_KEY = "upload";
+
+type UploadRecord = { id: string; token: string; teardownId: string; at: number };
+
+export type UploadState = {
+  readonly container?: Container | undefined;
+  readonly bucket: R2Bucket;
+  readonly storage: Pick<
+    DurableObjectStorage,
+    "get" | "put" | "transaction" | "getAlarm" | "setAlarm" | "deleteAll" | "sync"
+  >;
+};
+
+export type UploadUnitDeps = ProbeDeps & {
+  build: string;
+  store: () => StoreStub;
+  images: ImageCodec;
+  monthlyTransforms: () => MonthlyTransforms;
+  // The Worker's env holds it in maintenance (MAINTENANCE not off): no job starts.
+  maintenance: () => boolean;
+};
+
+export class UploadUnit {
+  constructor(
+    private readonly state: UploadState,
+    private readonly deps: UploadUnitDeps,
+  ) {}
+
+  // D0.
+  async run(id: string, token: string, teardownId: string): Promise<void> {
+    const at = this.deps.now();
+    await this.state.storage.transaction(async (txn) => {
+      if ((await txn.get<UploadRecord>(UPLOAD_KEY)) === undefined) {
+        await txn.put(UPLOAD_KEY, { id, token, teardownId, at } satisfies UploadRecord);
+        await txn.setAlarm(at);
+      } else if ((await txn.getAlarm()) === null) {
+        await txn.setAlarm(at);
+      }
+    });
+  }
+
+  async holds(): Promise<boolean> {
+    return (await this.state.storage.get<UploadRecord>(UPLOAD_KEY)) !== undefined;
+  }
+
+  // D1-D9. A failure is logged and leaves the alarm D1 set, which repeats the cleanup.
+  async alarm(): Promise<void> {
+    const record = await this.state.storage.get<UploadRecord>(UPLOAD_KEY);
+    if (record === undefined) {
+      return;
+    }
+    const { storage, container } = this.state;
+    const now = this.deps.now();
+    if (now - record.at >= V2_PROCESS_MS + HARD_HOLD_MS && container?.running !== true) {
+      console.warn({ event: "kopje.media.job.record_aged", id: record.id });
+      // The record goes only with the input (MEDIA-3): the retry is armed first, so a delete that fails or never
+      // answers is repeated by the alarm.
+      await storage.setAlarm(now + CLEANUP_RETRY_MS);
+      if (await this.#dropInput(record)) {
+        await storage.deleteAll();
+      }
+      return;
+    }
+    const invocation = crypto.randomUUID();
+    await storage.setAlarm(now + CLEANUP_RETRY_MS);
+    await storage.sync();
+    try {
+      // The Worker's maintenance gates the start as the Store's does: the record and D1's alarm stay, so it repeats.
+      if (this.deps.maintenance()) {
+        await this.#stop();
+        return;
+      }
+      // A container already running here is an earlier invocation's (this one starts its own only after S4): it is
+      // stopped before S4, so no Store call waits with it running; an unconfirmed stop ends the invocation, the record
+      // and D1's alarm kept, the slot counting.
+      if (container?.running === true && !(await this.#stop())) {
+        return;
+      }
+      const asked = this.deps.now();
+      const started = await this.deps
+        .store()
+        .startNormalize(this.deps.build, { id: record.id, token: record.token, invocation });
+      if (started.status === "maintenance") {
+        await this.#stop();
+        return;
+      }
+      if (started.status !== "started") {
+        await this.#cleanup(record);
+        return;
+      }
+      const control = containerControlOf(container, this.deps);
+      const end = await runUpload(
+        {
+          ...control,
+          build: this.deps.build,
+          store: this.deps.store(),
+          bucket: this.state.bucket,
+          images: this.deps.images,
+          monthlyTransforms: this.deps.monthlyTransforms(),
+          now: this.deps.now,
+          wait: this.deps.wait,
+        },
+        {
+          id: record.id,
+          token: record.token,
+          startId: started.startId,
+          endpoint: started.endpoint,
+          inputBytes: started.inputBytes,
+          deadline: asked + started.msLeft,
+        },
+      );
+      if (end.stopped) {
+        await this.#release(record);
+      }
+    } catch (error) {
+      console.warn({ event: "kopje.media.job.alarm_failed", id: record.id, ...errorFields(error) });
+      await this.#stop();
+    }
+  }
+
+  // The cleanup replay: the stop under D4's rule, then D8 and D9.
+  async #cleanup(record: UploadRecord): Promise<void> {
+    if (await this.#stop()) {
+      await this.#release(record);
+    }
+  }
+
+  // Whether no container runs here: destroyed and confirmed, or none was running.
+  async #stop(): Promise<boolean> {
+    const container = this.state.container;
+    return container === undefined || !container.running || destroyContainer(container, this.deps);
+  }
+
+  // D8: true once incoming/<id> is deleted (R2's delete answers for a key that is already gone too); false when the
+  // delete fails or has not answered within R2_CALL_MS.
+  async #dropInput(record: UploadRecord): Promise<boolean> {
+    try {
+      const deleting = this.state.bucket.delete(incomingKey(record.id));
+      if ((await before(deleting, this.deps.now() + R2_CALL_MS, this.deps)) === TIMED_OUT) {
+        console.warn({ event: "kopje.media.job.input_delete_failed", id: record.id, reason: "timeout" });
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.warn({ event: "kopje.media.job.input_delete_failed", id: record.id, ...errorFields(error) });
+      return false;
+    }
+  }
+
+  // D8, then D9 whatever D8 did, so the slot is released on its own: the storage goes only once S8 answers `released`
+  // and the input is deleted. A failed delete leaves the record and D1's alarm, whose replay repeats D8 and D9 (S8 again
+  // answers `released`): a completed upload's input is no sweep's, and the orphan pass holds an attached one (MEDIA-3).
+  async #release(record: UploadRecord): Promise<void> {
+    const dropped = await this.#dropInput(record);
+    const released = await this.deps
+      .store()
+      .releaseAvSlot(this.deps.build, { id: record.id, teardownId: record.teardownId });
+    if (released.status === "released" && dropped) {
+      await this.state.storage.deleteAll();
+    }
+  }
+}
+
+// An upload's container control, or one that never becomes ready when the object has no container.
+function containerControlOf(container: Container | undefined, deps: ProbeDeps): ContainerControl {
+  if (container === undefined) {
+    return { ready: () => Promise.resolve(null), normalize, stop: () => Promise.resolve(true) };
+  }
+  return containerControl(container, deps, "normalize", "standard-4");
+}
+
 export class MediaProcessor extends DurableObject<Env> {
   readonly #unit: ProcessorUnit;
+  readonly #upload: UploadUnit;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.#unit = new ProcessorUnit({ container: ctx.container, storage: ctx.storage, bucket: env.MEDIA });
+    const images = imagesCodec(env.IMAGES);
+    this.#unit = new ProcessorUnit({ container: ctx.container, storage: ctx.storage, bucket: env.MEDIA, images });
+    this.#upload = new UploadUnit(
+      { container: ctx.container, storage: ctx.storage, bucket: env.MEDIA },
+      {
+        ...defaultDeps,
+        build: buildOf(env),
+        store: () => defaultStore(env),
+        images,
+        monthlyTransforms: () => {
+          const config = readConfig(env);
+          return config.ok
+            ? { instance: config.config.IMAGES_MONTHLY_TRANSFORMS, account: accountMonthlyTransforms(config.config) }
+            : { instance: 0, account: 0 };
+        },
+        maintenance: () => envInMaintenance(env),
+      },
+    );
     this.#unit.start();
   }
 
-  probeNow(profile: ProbeProfile): Promise<ProbeReport> {
-    return this.#unit.probeNow(profile);
+  run(id: string, token: string, teardownId: string): Promise<void> {
+    return this.#upload.run(id, token, teardownId);
+  }
+
+  probeNormalize(key: string): Promise<ProbeVerdict & { image: string | null }> {
+    return this.#unit.probeNormalize(key);
   }
 
   stillNow(key: string, ms: number): Promise<StillOutcome> {
     return this.#unit.stillNow(key, ms);
   }
 
-  override alarm(): Promise<void> {
+  // An upload's object holds its record; any other object's alarm is the probe and still cleanup.
+  override async alarm(): Promise<void> {
+    if (await this.#upload.holds()) {
+      return this.#upload.alarm();
+    }
     return this.#unit.alarm();
   }
 }
@@ -656,12 +1025,14 @@ export function processorClient(env: Env, build: string) {
         return { ok: false, failure: "unavailable", image: null };
       });
   return {
-    probeNow(profile: ProbeProfile): Promise<ProbeReport> {
-      return namespace.getByName(`p:${build}:${profile}`).probeNow(profile);
-    },
     stills: {
       still: (key, ms) => still(`rb:${crypto.randomUUID()}`, key, ms),
       probe: (key, ms) => still(`p:${build}:${STILL_PROFILE}`, key, ms),
+      probeInput: decodeFixture(),
+    },
+    uploads: {
+      run: (id, token, teardownId) => namespace.getByName(`u:${id}:${token}`).run(id, token, teardownId),
+      probeNormalize: (key) => namespace.getByName(`p:${build}:normalize@standard-4`).probeNormalize(key),
       probeInput: decodeFixture(),
     },
   } satisfies MediaProcessorClient;

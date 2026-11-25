@@ -15,10 +15,12 @@
 #   FIXTURES="..."   the files of <fixtures dir> to run (default: every file fixtures.sh makes there)
 #   SKIP_UPLOAD=1    the fixtures are in the bucket already
 #   MATRIX=1         the boundary matrix instead (#1828 PR2, A3; fixtures.sh --matrix): on standard-4 with all:4 only,
-#                    each matrix.json fixture normalized at each endpoint it lists, with the encode time that endpoint
-#                    leaves passed as encode_ms (the endpoint's seconds less the assumed ingress, the input streaming,
-#                    design 4.7's starting stage times and v1's reply), and the verdict expected there (admitted, or
-#                    refused at the probe for the envelope). No stills, dispatch or holds.
+#                    each matrix.json fixture normalized at each endpoint it lists, with the work deadline that
+#                    endpoint leaves passed as work_ms (the endpoint's seconds less the assumed ingress, the stages
+#                    before the container's request and after its response, and v1's reply) and the still's stage as
+#                    still_ms, and the verdict expected there (admitted, or refused at the probe for the envelope) for
+#                    the encode time that leaves at the assumed input streaming and probe. No stills, dispatch or
+#                    holds.
 #   MATRIX_EXTRA="clip.mp4 ..."   files of <fixtures dir> run at every endpoint too, with no verdict expected (the
 #                    real camera clips)
 #
@@ -39,13 +41,16 @@ STILL_RUNS="${STILL_RUNS:-9}"
 DISPATCH_RUNS="${DISPATCH_RUNS:-20}"
 HOLD="${HOLD:-90 110 130}"
 matrix_file="$(dirname "$0")/matrix.json"
-# The matrix's rows: fixture, endpoint, encode_ms, expected verdict.
+# The matrix's rows: fixture, endpoint, encode time, expected verdict, work_ms, still_ms.
 matrix_rows() {
   jq -r --arg extra "${MATRIX_EXTRA:-}" '
     (.stages | .dispatch + .start + .probe + .still + .commit) as $fixed | .stages.input as $input | .endpoints as $e
+    | (.stages | .dispatch + .start + .commit) as $outside | (.stages.still * 1000 | round) as $still
     | def encode($n): (($e[$n].seconds - $e[$n].ingress - $input - $fixed - $e[$n].reply) * 1000 | round);
-      (.fixtures[] | .name as $f | .expect | to_entries[] | [$f, .key, encode(.key), .value]),
-      ($extra | split(" ")[] | select(. != "") as $f | $e | keys[] | [$f, ., encode(.), "measured"])
+      def work($n): (($e[$n].seconds - $e[$n].ingress - $outside - $e[$n].reply) * 1000 | round);
+      (.fixtures[] | .name as $f | .expect | to_entries[] | [$f, .key, encode(.key), .value, work(.key), $still]),
+      ($extra | split(" ")[] | select(. != "") as $f | $e | keys[]
+        | [$f, ., encode(.), "measured", work(.), $still])
     | @tsv' "$matrix_file"
 }
 if [ -n "${MATRIX:-}" ]; then
@@ -79,11 +84,11 @@ fi
 # A fixture's kind, which the bench checks the server's answer against (never the answer's own Kopje-Kind).
 expect_of() { case $1 in *.m4a | *.flac | *.ogg | *.mp3 | *.wav | *.opus) echo audio ;; *) echo video ;; esac; }
 
-run() { # <op> <fixture> <instance> <threads> [<encode ms> <endpoint> <expected verdict>]
+run() { # <op> <fixture> <instance> <threads> [<encode ms> <endpoint> <expected verdict> <work ms> <still ms>]
   local r expect query
   expect="$(expect_of "$2")"
   query="op=$1&key=fixtures/$2&expect=$expect&instance=$3&threads=$4"
-  [ -z "${5:-}" ] || query="$query&encode_ms=$5"
+  [ -z "${5:-}" ] || query="$query&work_ms=$8&still_ms=$9"
   r="$(api -X POST "$BENCH_URL/run?$query" || true)"
   jq -e 'type == "object"' <<<"$r" >/dev/null 2>&1 || r='{"error":"request failed"}'
   # The driver's own fields: a run that failed before the bench answered still counts in its group, as a failure.
@@ -95,8 +100,10 @@ run() { # <op> <fixture> <instance> <threads> [<encode ms> <endpoint> <expected 
 }
 
 if [ -n "${MATRIX:-}" ]; then
-  while IFS=$'\t' read -r f endpoint encode verdict; do
-    for _ in $(seq 1 "$RUNS"); do run normalize "$f" standard-4 all:4 "$encode" "$endpoint" "$verdict"; done
+  while IFS=$'\t' read -r f endpoint encode verdict work still; do
+    for _ in $(seq 1 "$RUNS"); do
+      run normalize "$f" standard-4 all:4 "$encode" "$endpoint" "$verdict" "$work" "$still"
+    done
   done < <(matrix_rows)
   DISPATCH_RUNS=0 HOLD=""
 else

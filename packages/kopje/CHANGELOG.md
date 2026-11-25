@@ -23,12 +23,23 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 - The first part of video and audio support: the package ships the media processor's container (`container/`, a
   pinned ffmpeg build and a small server with fixed operations), the `MediaProcessor` Durable Object that runs it, and
-  `kopje-admin media-processor probe`, which starts the container on each instance type and runs one operation on a
-  packaged clip. The instance template gains a commented, optional block that adds it (`deploy/README.md`, "Video and
-  audio"); without the block nothing changes. Uploads stay image-only in this release. An instance that adds it must
-  also export `MediaProcessor` from `src/index.ts` (`export { default, MediaProcessor, Store } from "kopje"`), or
-  `wrangler deploy` fails; the template's file does. Its `v2-media-processor` migration is permanent: to turn the
-  processor off, remove only the `"containers"` entry.
+  `kopje-admin media-processor probe`: for `normalize@standard-4` it runs the activation probe and records its
+  verdict, and for `still@standard-1` it checks a still of the packaged clip (its PNG and Images) and records
+  nothing, the media rebuild recording its own probe of that profile. The instance template gains a
+  commented, optional block that adds it (`deploy/README.md`, "Video and audio"); without the block nothing changes.
+  Uploads stay image-only in this release. An instance that adds it must also export `MediaProcessor` from
+  `src/index.ts` (`export { default, MediaProcessor, Store } from "kopje"`), or `wrangler deploy` fails; the
+  template's file does. Its `v2-media-processor` migration is permanent: to turn the processor off, remove only the
+  `"containers"` entry.
+- The media processor's side of video and audio uploads, run before any route accepts one
+  ([docs/media-processor.md](docs/media-processor.md)): with the binding and `MEDIA_UPLOAD_MONTHLY_JOBS` above 0, the
+  cron runs the activation probe of `normalize@standard-4` for the deployed version, redispatches uploads whose start
+  was lost, and once an hour removes inputs under `incoming/` more than a day old that no upload holds. An upload's
+  work runs in its own Durable Object with a cleanup alarm armed before it starts; its output is written only after
+  Kopje's verifier passes it and the container's stop is confirmed, and a video's still costs
+  `TRANSFORMS_PER_POSTER` (2) Images transformations. The detailed health report (`/admin/health`) gains a
+  `mediaProcessor` check (`disabled`, `provisioned`, `ready` or `degraded`), read from the Store without starting a
+  container. `kopje-admin media-processor probe` is refused in maintenance and while the Store is read-only.
 - Local media URLs serve the processor's video (`full.mp4`) and audio (`full.mp3`) as cached remote media is served:
   HEAD, one byte range with 206, an unsatisfiable one with 416, several with the whole file, and 304 to a matching
   `If-None-Match`, so players can seek. Nothing writes such files yet; image URLs answer as before.

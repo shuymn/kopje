@@ -11,19 +11,25 @@ import {
   AvRefusal,
   type AvType,
   avVerifier,
-  STILL_LONG_EDGE,
   STILL_OUTPUT_LIMIT,
   verifyStill,
 } from "../platform/av-bytes";
 import { DeadlinePassed, within } from "../platform/deadline";
 import { toHex } from "../platform/hex";
-import { isAnimated, retainedMetadata, webpSize } from "../platform/image-bytes";
-import { type ImageCodec, type Size, stillBlurhash, stillEncodes, stillPreview } from "../platform/images";
+import {
+  type ImageCodec,
+  type Size,
+  stillBlurhash,
+  stillEncodes,
+  stillPreview,
+  stillWebpSize,
+} from "../platform/images";
 import { fileKey, originalKey, probeInputKey } from "../platform/media-files";
 import type { StillMaker, StillOutcome } from "../platform/media-transcoder";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreStub } from "../platform/store-client";
 import { storedBlurhash } from "../platform/stored-bounds";
+import { pngSize } from "./media-activation";
 
 // The media rebuild of a video or audio row (#1828 design 4.16; mastodon/media-rebuild.ts runs the call, its lease and
 // its fences). Its served `full` is the verified output the original already is (D11), and a video's `small` is the
@@ -343,7 +349,7 @@ async function adopt(
     return { kind: "problem", outcome: "failed", detail: "small-invalid" };
   }
   const bytes = new Uint8Array(await call.bounded(() => object.arrayBuffer(), end));
-  const size = smallSize(bytes);
+  const size = stillWebpSize(bytes);
   if (size === null) {
     return { kind: "problem", outcome: "failed", detail: "small-invalid" };
   }
@@ -394,24 +400,7 @@ async function adopt(
   return facts;
 }
 
-// The geometry of a `small` as Kopje serves one, whether adopted or just made: at most STILL_OUTPUT_LIMIT bytes, a
-// still WebP that walks, with no retained metadata and edges of 1 to STILL_LONG_EDGE. null when it is not one.
-function smallSize(bytes: Uint8Array): Size | null {
-  // webpSize walks every chunk and answers only edges of at least 1.
-  const size = bytes.byteLength <= STILL_OUTPUT_LIMIT ? webpSize(bytes) : null;
-  return size === null ||
-    retainedMetadata(bytes, "image/webp") !== null ||
-    isAnimated(bytes, "image/webp") ||
-    Math.max(size.width, size.height) > STILL_LONG_EDGE
-    ? null
-    : size;
-}
-
 // The PNG's dimensions from its IHDR, which verifyStill has walked.
-function pngSize(png: Uint8Array): Size {
-  const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
-  return { width: view.getUint32(16), height: view.getUint32(20) };
-}
 
 // A new small, or the fallback.
 async function make(
@@ -456,7 +445,7 @@ async function make(
   // Images' output is read within STILL_OUTPUT_LIMIT and every call of it given up at the row's end.
   const preview = await call.bounded(
     () =>
-      stillPreview(call.images, made.png, pngSize(made.png), { end, now: call.now }, STILL_OUTPUT_LIMIT, (work) =>
+      stillPreview(call.images, made.png, pngSize(made.png), { end, now: call.now }, (work) =>
         within(work, end, call.now),
       ),
     end,
@@ -476,7 +465,7 @@ async function make(
     return RETRY;
   }
   // Held to what an adopted small is held to, so a later call can adopt what this one writes.
-  const size = smallSize(preview.small.bytes);
+  const size = stillWebpSize(preview.small.bytes);
   if (size === null || size.width !== preview.small.width || size.height !== preview.small.height) {
     return RETRY;
   }
@@ -541,7 +530,8 @@ async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => nu
         () => stillEncodes(call.images, png, pngSize(png), (work) => within(work, until, call.now)),
         until,
       );
-      outcome = encoded === "quota" ? QUOTA : encoded === "retry" ? RETRY : encoded;
+      // Images refusing the PNG, or its output failing the still's checks, is the still's failure here.
+      outcome = encoded === "quota" ? QUOTA : encoded === "retry" ? RETRY : encoded === "passed" ? "passed" : "failed";
     }
   } finally {
     await call.settled(() => call.bucket.delete(key));

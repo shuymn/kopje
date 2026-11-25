@@ -6,12 +6,21 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { AnnouncementChanges } from "../domain/announcements";
 import type { LoaderDeps } from "../federation/loader";
 import { uploadEmoji } from "../mastodon/emoji-upload";
+import {
+  activationProbe,
+  OVER,
+  PROBE_BODY_MS,
+  PROBE_ROUTE_MS,
+  PROBE_STORE_MS,
+  probeSteps,
+  stillCheck,
+} from "../mastodon/media-activation";
 import { rebuildMedia } from "../mastodon/media-rebuild";
 import { parseScheduledAt } from "../mastodon/statuses";
 import { type AccessSettings, adminRefusal, adminUsable, normalizeTeamDomain } from "../platform/access-settings";
 import { readBackupConfig } from "../platform/backup-config";
 import { readBoundedBody } from "../platform/body";
-import { previousUserKek, readConfig, userKek } from "../platform/config";
+import { envInMaintenance, previousUserKek, readConfig, userKek } from "../platform/config";
 import { serverDomain } from "../platform/domain-name";
 import { errorFields, errorMessage } from "../platform/error-message";
 import type { ImageCodec } from "../platform/images";
@@ -20,7 +29,7 @@ import { isProbeProfile, type MediaProcessorClient, PROBE_PROFILES } from "../pl
 import { readQueueBacklog } from "../platform/queue-backlog";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreResolver, StoreStub } from "../platform/store-client";
-import { toStoreUnavailable } from "../platform/store-errors";
+import { type MaintenanceReason, StoreUnavailableError, toStoreUnavailable } from "../platform/store-errors";
 import { storedAnnouncementText, storedEmojiCategory, withinDeliveryHostBound } from "../platform/stored-bounds";
 import { type AccessDeps, type AccessIdentity, verifyAccessClaims } from "../security/access-jwt";
 import { constantTimeEqual, randomToken } from "../security/tokens";
@@ -68,7 +77,7 @@ export type AdminDeps = AccessDeps & {
   mediaProcessor: (env: Env) => MediaProcessorClient | null;
 };
 
-type AdminVariables = { auth: ImportAuthority };
+type AdminVariables = { auth: ImportAuthority; probeEnd: number };
 type AdminEnv = { Bindings: Env; Variables: AdminVariables };
 
 type Refusal = { ok: false; code: string; message: string };
@@ -236,6 +245,15 @@ function adminAllowed(identity: AccessIdentity, access: AccessSettings): string 
 
 export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, images, mediaProcessor }: AdminDeps) {
   const admin = new Hono<AdminEnv>();
+  // A probe request's one deadline starts on its arrival, before its credential is checked (adminGate and the Access
+  // token, a step of it below), so it bounds the whole request (mastodon/media-activation.ts PROBE_ROUTE_MS).
+  admin.use(
+    "/media-processor/probe",
+    createMiddleware<AdminEnv>(async (c, next) => {
+      c.set("probeEnd", now() + PROBE_ROUTE_MS);
+      await next();
+    }),
+  );
   const stub = (c: Context<AdminEnv>): StoreStub => store(c.env);
 
   admin.use(
@@ -281,15 +299,29 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
         c.set("auth", { kind: "import-token" });
         return next();
       }
-      const { access } = await stub(c).adminGate(build(c.env));
-      if (access.teamDomain === null || access.adminAud === null) {
+      const check = async () => {
+        const { access } = await stub(c).adminGate(build(c.env));
+        if (access.teamDomain === null || access.adminAud === null) {
+          return { access, verified: null };
+        }
+        const verified = await verifyAccessClaims(
+          assertion,
+          { teamDomain: access.teamDomain, aud: access.adminAud },
+          { fetch, now },
+        );
+        return { access, verified };
+      };
+      // On a probe request the check is a step of its one deadline (the middleware above): it ends by it and by
+      // PROBE_STORE_MS.
+      const probeEnd = c.get("probeEnd") as number | undefined;
+      const checked = probeEnd === undefined ? await check() : await probeSteps(probeEnd, now)(check, PROBE_STORE_MS);
+      if (checked === OVER) {
+        return c.json({ error: "the credential check did not answer in time", code: "probe-timeout" }, 504);
+      }
+      const { access, verified } = checked;
+      if (verified === null || access.teamDomain === null || access.adminAud === null) {
         return c.json({ error: "Access is not configured for /admin" }, 401);
       }
-      const verified = await verifyAccessClaims(
-        assertion,
-        { teamDomain: access.teamDomain, aud: access.adminAud },
-        { fetch, now },
-      );
       if (!verified.ok) {
         return c.json({ error: `invalid Access token (${verified.reason})` }, 401);
       }
@@ -317,8 +349,13 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
       health: () => (health ??= stub(c).health(b)),
       localKeys: (caller: string) => stub(c).localKeys(caller),
       backupState: (caller: string) => stub(c).backupState(caller),
+      avActivation: (caller: string, input: Parameters<StoreStub["avActivation"]>[1]) =>
+        stub(c).avActivation(caller, input),
     };
-    const report = await healthReport(b, config, () => once, { backup: readBackupConfig(c.env) });
+    const report = await healthReport(b, config, () => once, {
+      backup: readBackupConfig(c.env),
+      mediaProcessor: { binding: mediaProcessor(c.env) !== null },
+    });
     let detail: unknown;
     try {
       detail = await once.health();
@@ -585,12 +622,31 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
 
   // ---- media processor (src/media-processor.ts)
 
-  // The smoke probe of one execution profile: a container started on its instance type runs its operation on the
-  // packaged fixture. It reads and writes nothing of the instance; it answers once the container is destroyed.
+  // A probe of one execution profile. normalize@standard-4's is its activation probe (mastodon/media-activation.ts
+  // activationProbe): one claim shared with the probe round, the packaged clip copied to incoming/probe-<nonce> and run
+  // through the container, the verifier and Images, and the verdict recorded for this build. still@standard-1's is a
+  // check (stillCheck) that records nothing: the media rebuild records that profile's probe under its own lease. Both
+  // start a container and write R2, so maintenance and a read-only Store refuse them (503) before anything starts. The
+  // request has one deadline, PROBE_ROUTE_MS from its arrival (the middleware above), which every step ends by
+  // (probeSteps): its credential check, its body, the still check's health, and each step of the probe or check, Images
+  // included; a credential check, body or health that does not answer by its step answers 504. Work it does not wait
+  // for (a late copy's delete, and the probe's work with its copy's delete once the copy is put) is kept alive by
+  // waitUntil.
   admin.post("/media-processor/probe", async (c) => {
-    const { profile } = await jsonBody(c);
+    const end = c.get("probeEnd");
+    const retain = (work: Promise<unknown>) => c.executionCtx.waitUntil(work.catch(() => {}));
+    const step = probeSteps(end, now, undefined, retain);
+    const body = await step(() => jsonBody(c), PROBE_BODY_MS);
+    if (body === OVER) {
+      return c.json({ error: "the request body did not arrive in time", code: "probe-timeout" }, 504);
+    }
+    const { profile } = body;
     if (!isProbeProfile(profile)) {
       return c.json({ error: `expected {"profile": ${PROBE_PROFILES.map((p) => `"${p}"`).join(" | ")}}` }, 400);
+    }
+    // The Worker's maintenance refuses it as the Store's does: /admin passes the app's env gate.
+    if (envInMaintenance(c.env)) {
+      throw new StoreUnavailableError("maintenance");
     }
     const processor = mediaProcessor(c.env);
     if (processor === null) {
@@ -602,7 +658,33 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
         409,
       );
     }
-    return c.json({ report: await processor.probeNow(profile) });
+    if (profile === "normalize@standard-4") {
+      const probed = await activationProbe(
+        { build: build(c.env), store: stub(c), bucket: c.env.MEDIA, processor: processor.uploads, now, end, retain },
+        false,
+      );
+      return c.json({ probe: probed });
+    }
+    const health = await step(() => stub(c).health(build(c.env)), PROBE_STORE_MS);
+    if (health === OVER) {
+      return c.json({ error: "the Store did not answer in time", code: "probe-timeout" }, 504);
+    }
+    if (health.readonly) {
+      throw new StoreUnavailableError(readonlyReason(health));
+    }
+    return c.json({
+      probe: {
+        status: "checked",
+        verdict: await stillCheck({
+          bucket: c.env.MEDIA,
+          stills: processor.stills,
+          images: images(c.env),
+          now,
+          end,
+          retain,
+        }),
+      },
+    });
   });
 
   // ---- local emoji administration (domain/local-emojis.ts; AUTH-5, MEDIA-5)
@@ -1114,4 +1196,15 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
 
 export function isAdminPath(path: string): boolean {
   return path === ADMIN_PREFIX || path.startsWith(`${ADMIN_PREFIX}/`);
+}
+
+// Why a read-only Store refuses a write, from its health: maintenance, a dump's freeze, an import, or an upgrade.
+function readonlyReason(health: Awaited<ReturnType<StoreStub["health"]>>): MaintenanceReason {
+  if (health.maintenance) {
+    return "maintenance";
+  }
+  if (health.dump !== null) {
+    return "dump-in-progress";
+  }
+  return health.import !== null ? "import-in-progress" : "upgrade-in-progress";
 }

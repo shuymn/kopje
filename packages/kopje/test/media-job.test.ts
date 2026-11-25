@@ -1,0 +1,700 @@
+import { env } from "cloudflare:workers";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { TRANSFORMS_PER_POSTER } from "../src/domain/media";
+import { allocate, previewCut, transferCut } from "../src/domain/media-processing";
+import { incomingOrphans, runUpload } from "../src/jobs/media-jobs";
+import { fileKey, incomingKey, originalKey, probeInputKey } from "../src/platform/media-files";
+import { sql } from "./api-helpers";
+import { avFixture, syntheticMp4, timedFixture } from "./av-helpers";
+import { BUILD } from "./helpers";
+import { TestCodec } from "./media-helpers";
+import { fakeControl, jobOf, multipartLog, putInput, stillPng, uploadDeps } from "./media-job-helpers";
+import { avWorld, clock, held, HOUR, started } from "./media-processing-helpers";
+import { encodeWebp } from "./webp-fixtures";
+
+// The work deadline, the transfer's start, cut and end, and the preview's cut (transferCut, previewCut), for one job.
+type Cuts = { still: number; reply: number; transfer: number; transferEnd: number; preview: number };
+
+// runUpload (jobs/media-jobs.ts, the PR4 plan's 1.3 D3-D7) through the production Store and the media bucket, the
+// container answering as container/server/main.go does.
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+async function objects(id: string, token: string) {
+  const [original, full, small] = await Promise.all([
+    env.MEDIA.head(originalKey(id)),
+    env.MEDIA.head(fileKey(token, "full")),
+    env.MEDIA.head(fileKey(token, "small")),
+  ]);
+  return { original: original !== null, full: full !== null, small };
+}
+
+async function durationMs(name: string): Promise<number> {
+  return (await timedFixture(name)).durationMs;
+}
+
+async function transformsUsed(w: Awaited<ReturnType<typeof avWorld>>): Promise<number> {
+  const rows = await sql<{ value: string }>(
+    w.store,
+    "SELECT value FROM kopje_state WHERE name LIKE 'images_transforms:%' OR name LIKE 'images_account_transforms:%'",
+  );
+  return rows.reduce((sum, row) => sum + Number(row.value), 0);
+}
+
+describe("runUpload (P12)", () => {
+  it("publishes a genuine output with the verifier's facts, its still as the preview, the container stopped first", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const output = await avFixture("r1-av.mp4");
+    const fake = fakeControl({ output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() });
+    const end = await runUpload(uploadDeps(w, fake.control), await jobOf(w, up));
+    expect(end).toEqual({ stopped: true });
+    const after = await held(w.store, up.id);
+    expect(after.row).toBeNull();
+    expect(after.att).toMatchObject({ processed: 1, type: "video" });
+    const files = await objects(up.id, up.token);
+    expect(files).toMatchObject({ original: true, full: true });
+    expect(files.small?.customMetadata).toMatchObject({ width: "320", height: "180" });
+    // The stop comes after the still was read and before any write.
+    expect(fake.calls.indexOf("stop")).toBeGreaterThan(fake.calls.indexOf("GET /normalize/still"));
+    expect(new Uint8Array(await (await env.MEDIA.get(fileKey(up.token, "full")))!.arrayBuffer())).toEqual(output);
+  });
+
+  it("reads the declared duration in seconds through the adapter: declared as long it passes, 4 s longer it is refused (M9)", async () => {
+    const w = await avWorld();
+    const output = await avFixture("r1-silent.mp4");
+    const ms = await durationMs("r1-silent.mp4");
+    const ok = await started(w);
+    await putInput(ok.id);
+    await runUpload(uploadDeps(w, fakeControl({ output, durationMs: String(ms) }).control), await jobOf(w, ok));
+    expect((await held(w.store, ok.id)).att?.processed).toBe(1);
+    const long = await started(w);
+    await putInput(long.id);
+    const fake = fakeControl({ output, durationMs: String(ms + 4000) });
+    const { bucket, log } = multipartLog();
+    const end = await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, long));
+    expect(end).toEqual({ stopped: true });
+    expect((await held(w.store, long.id)).row).toMatchObject({ state: "failed", failure: "verifier" });
+    expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
+    expect(log.filter((entry) => entry.startsWith("complete:"))).toEqual([]);
+    // Both multipart uploads stay uncompleted.
+    expect(await objects(long.id, long.token)).toMatchObject({ original: false, full: false, small: null });
+  });
+
+  it.each([
+    ["an early end of the output", { truncateAt: 1000 }],
+    ["an output that is not a verified MP4", { output: new Uint8Array(5000).fill(3) }],
+  ])("refuses %s as the verifier's, completing neither upload", async (_name, answer) => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const output = await avFixture("r1-silent.mp4");
+    const fake = fakeControl({ output, durationMs: String(await durationMs("r1-silent.mp4")), ...answer });
+    await runUpload(uploadDeps(w, fake.control), await jobOf(w, up));
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "verifier" });
+    expect(await objects(up.id, up.token)).toMatchObject({ original: false, full: false });
+  });
+
+  async function refusedMp3(): Promise<{ output: Uint8Array; durationMs: string }> {
+    // The last byte of the last frame's audio changed: frame data is not parsed, so only the Xing frame's music CRC,
+    // checked once the stream has ended, refuses it (PR3's case).
+    const { bytes: output, durationMs } = await timedFixture("mp3.mp3", "audio/mpeg");
+    output[output.length - 1]! ^= 0xff;
+    return { output, durationMs: String(durationMs) };
+  }
+
+  it.each([
+    [
+      "an MP3 whose music CRC refuses it at its end",
+      async () => ({ ...(await refusedMp3()), type: "audio/mpeg" as const }),
+    ],
+    [
+      "the same MP3, its body ending in an empty chunk",
+      async () => ({ ...(await refusedMp3()), type: "audio/mpeg" as const, emptyTail: true }),
+    ],
+    [
+      "an output 100 bytes longer than its declared length",
+      async () => ({
+        output: await avFixture("r1-silent.mp4"),
+        durationMs: String(await durationMs("r1-silent.mp4")),
+        lengthOff: -100,
+      }),
+    ],
+    [
+      "an output that ends early",
+      async () => ({
+        output: await avFixture("r1-silent.mp4"),
+        durationMs: String(await durationMs("r1-silent.mp4")),
+        truncateAt: 1000,
+      }),
+    ],
+  ])("aborts both multipart uploads, completing neither, for %s (P12)", async (_name, answer) => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const { bucket, log } = multipartLog();
+    await runUpload(uploadDeps(w, fakeControl(await answer()).control, { bucket }), await jobOf(w, up));
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "verifier" });
+    expect(log.filter((entry) => entry.startsWith("complete:"))).toEqual([]);
+    expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
+    expect(await objects(up.id, up.token)).toMatchObject({ original: false, full: false });
+  });
+
+  it("fails a reply that rejects at its cut timeout, not unavailable", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const job = await jobOf(w, up);
+    const { cuts } = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const output = await avFixture("r1-silent.mp4");
+    const fake = fakeControl(
+      { output, durationMs: String(await durationMs("r1-silent.mp4")) },
+      {
+        onReply: () => {
+          clock(cuts.still);
+          throw new Error("connection lost");
+        },
+      },
+    );
+    await runUpload(uploadDeps(w, fake.control), job);
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
+  });
+
+  it("fails an output whose part upload R2 rejects unavailable, and cancels the container's body without waiting on it", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    // 300 samples of 40,000 bytes at 30 fps: 10 s and 12 MB, past one 8 MiB part.
+    const made = syntheticMp4(await avFixture("r1-silent.mp4"), { samples: 300, size: 40_000, delta: 512 });
+    const output = await new Response(made.stream()).bytes();
+    const { bucket, log } = multipartLog({ failPart: true });
+    const fake = fakeControl({ output, durationMs: "10000" }, { open: true });
+    // The reader's own cancel() is passed on to the body but never settles: the runner does not wait on it.
+    const cancel = Object.getOwnPropertyDescriptor(ReadableStreamDefaultReader.prototype, "cancel")!.value as (
+      this: ReadableStreamDefaultReader,
+      reason?: unknown,
+    ) => Promise<void>;
+    const holding = vi.spyOn(ReadableStreamDefaultReader.prototype, "cancel").mockImplementation(function (
+      this: ReadableStreamDefaultReader,
+      reason?: unknown,
+    ) {
+      cancel.call(this, reason).catch(() => {});
+      return new Promise<void>(() => {});
+    });
+    try {
+      await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, up));
+    } finally {
+      holding.mockRestore();
+    }
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "unavailable" });
+    expect(fake.cancels()).toBe(1);
+    expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
+  });
+
+  // r4 LOW: the container's body is the job's until the verifier reads it; an exit before then cancels it, and a
+  // successful reply that arrives at its cut is cancelled when it does.
+  it("cancels the container's body when the first multipart creation rejects", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const { bucket } = multipartLog({ failCreate: true });
+    const fake = fakeControl({ output: await avFixture("r1-av.mp4"), durationMs: "2000" }, { open: true });
+    await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, up));
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "unavailable" });
+    expect(fake.cancels()).toBe(1);
+  });
+
+  it("cancels the body of a successful reply that arrives at the work deadline", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const job = await jobOf(w, up);
+    const allocation = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const fake = fakeControl(
+      { output: await avFixture("r1-av.mp4"), durationMs: "2000" },
+      { open: true, onReply: () => clock(allocation.cuts.still) },
+    );
+    await runUpload(uploadDeps(w, fake.control), job);
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
+    await vi.waitFor(() => expect(fake.cancels()).toBe(1));
+  });
+
+  it("logs a rejected abort by its upload and variant and still stops the container and records the cause (M2)", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const logged: { event?: string; variant?: string }[] = [];
+    vi.spyOn(console, "warn").mockImplementation((entry: { event?: string }) => void logged.push(entry));
+    const { bucket, log } = multipartLog({ failAbort: true });
+    const output = await avFixture("r1-silent.mp4");
+    const fake = fakeControl({ output, durationMs: String(await durationMs("r1-silent.mp4")), truncateAt: 1000 });
+    await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, up));
+    expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
+    // DATA-5: by the upload's id and a fixed variant, never by the key (full's holds the file token).
+    const aborted = logged.filter((entry) => entry.event === "kopje.media.job.abort_failed");
+    expect(aborted.map((entry) => entry.variant)).toEqual(expect.arrayContaining(["full", "original"]));
+    expect(aborted).toHaveLength(2);
+    expect(JSON.stringify(logged)).not.toContain(up.token);
+    expect(fake.stops()).toBe(1);
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "verifier" });
+  });
+
+  it.each([
+    [{ status: 422, code: "envelope" }, "envelope"],
+    [{ status: 422, code: "pixels" }, "refused"],
+    [{ status: 500, code: "encode_failed" }, "refused"],
+    [{ status: 504, code: "timeout" }, "timeout"],
+    [{ status: 500, code: "internal" }, "unavailable"],
+    [{ status: 429, code: "busy" }, "unavailable"],
+  ])("records %o as %s after the confirmed stop", async (failure, cause) => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const fake = fakeControl({ failure });
+    expect(await runUpload(uploadDeps(w, fake.control), await jobOf(w, up))).toEqual({ stopped: true });
+    expect(fake.stops()).toBe(1);
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: cause });
+  });
+
+  it("records unavailable and reports the stop unconfirmed when the container does not stop", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const fake = fakeControl({ failure: { status: 422, code: "envelope" } }, { stop: () => Promise.resolve(false) });
+    expect(await runUpload(uploadDeps(w, fake.control), await jobOf(w, up))).toEqual({ stopped: false });
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "unavailable" });
+  });
+
+  it("keeps a container's or R2's body out of the log and the recorded failure (DATA-5)", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const logged: unknown[] = [];
+    vi.spyOn(console, "warn").mockImplementation((entry: unknown) => void logged.push(entry));
+    const body = "SECRET-CONTAINER-BODY";
+    await runUpload(
+      uploadDeps(w, fakeControl({ failure: { status: 500, code: "internal", body } }).control),
+      await jobOf(w, up),
+    );
+    const failing = { ...env.MEDIA, get: () => Promise.reject(new Error("SECRET-R2-BODY")) } as unknown as R2Bucket;
+    const other = await started(w);
+    await runUpload(uploadDeps(w, fakeControl({}).control, { bucket: failing }), await jobOf(w, other));
+    const text =
+      JSON.stringify(logged) +
+      JSON.stringify(await held(w.store, up.id)) +
+      JSON.stringify(await held(w.store, other.id));
+    expect(logged.length).toBeGreaterThan(0);
+    expect(text).not.toContain(body);
+    expect(text).not.toContain("SECRET-R2-BODY");
+    expect((await held(w.store, other.id)).row).toMatchObject({ failure: "unavailable" });
+  });
+});
+
+describe("the upload's still (G2-3, C2-M4)", () => {
+  async function run(codec: TestCodec, monthly = { instance: 4000, account: 400 }) {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const output = await avFixture("r1-av.mp4");
+    const fake = fakeControl({ output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() });
+    const before = await transformsUsed(w);
+    await runUpload(uploadDeps(w, fake.control, { images: codec, monthlyTransforms: monthly }), await jobOf(w, up));
+    const records = await w.store.mediaProbeRecords(BUILD, { profile: "normalize@standard-4" });
+    return {
+      after: await held(w.store, up.id),
+      files: await objects(up.id, up.token),
+      failure: records.failure,
+      charged: (await transformsUsed(w)) - before,
+    };
+  }
+
+  // r4 M4 (Codex): the still is optional, so an early error of it (a gateway's reply, a body cut short, a still
+  // breaking its contract) is as one held to its cut: the verified video completes with the default poster.
+  it.each([
+    ["a still answered 502", { stillFailure: { status: 502 } }],
+    ["a still cut short of its Content-Length", { stillLength: "short" as const }],
+    ["a still with no Content-Length", { stillLength: "none" as const }],
+  ])("completes the video with its poster on %s", async (_name, extra) => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const output = await avFixture("r1-av.mp4");
+    const fake = fakeControl({
+      output,
+      durationMs: String(await durationMs("r1-av.mp4")),
+      still: await stillPng(),
+      ...extra,
+    });
+    await runUpload(uploadDeps(w, fake.control), await jobOf(w, up));
+    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1, type: "video" });
+    expect(await objects(up.id, up.token)).toMatchObject({ original: true, full: true, small: null });
+    expect(fake.calls).toContain("GET /normalize/still");
+  });
+
+  it("completes with the poster and records an infrastructure failure when Images refuses a still verifyStill passed (9412)", async () => {
+    const codec = new TestCodec();
+    codec.failEncode = 9412;
+    const { after, files, failure } = await run(codec);
+    expect(after.att?.processed).toBe(1);
+    expect(files.small).toBeNull();
+    expect(failure).toMatchObject({ version: BUILD });
+  });
+
+  it("completes with the poster and records nothing on Images' 9422", async () => {
+    const codec = new TestCodec();
+    codec.failEncode = 9422;
+    const { after, files, failure } = await run(codec);
+    expect(after.att?.processed).toBe(1);
+    expect(files.small).toBeNull();
+    expect(failure).toBeNull();
+  });
+
+  it("charges TRANSFORMS_PER_POSTER once for a video's still, and nothing when the budgets have no room (P15)", async () => {
+    expect((await run(new TestCodec())).charged).toBe(2 * TRANSFORMS_PER_POSTER);
+    const spent = await run(new TestCodec(), { instance: 0, account: 0 });
+    expect(spent.charged).toBe(0);
+    expect(spent.files.small).toBeNull();
+    expect(spent.after.att?.processed).toBe(1);
+  });
+
+  it("prunes the transformation counters of months before the previous one, as the image path's charge does", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const old = ["images_transforms:2000-01", "images_account_transforms:2000-01:1"];
+    for (const name of old) {
+      await sql(w.store, "INSERT INTO kopje_state (name, value) VALUES (?, '5')", name);
+    }
+    const output = await avFixture("r1-av.mp4");
+    const fake = fakeControl({ output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() });
+    await runUpload(uploadDeps(w, fake.control), await jobOf(w, up));
+    expect((await objects(up.id, up.token)).small).not.toBeNull();
+    const left = await sql<{ name: string }>(w.store, "SELECT name FROM kopje_state WHERE name LIKE '%2000-01%'");
+    expect(left).toEqual([]);
+  });
+
+  it("writes no small Images made past STILL_LONG_EDGE, as the rebuild refuses it, and completes with the poster (M5)", async () => {
+    const codec = new TestCodec();
+    const wide = await encodeWebp(700, 100, { fill: "flat" });
+    codec.encodeResponder = (options) => (options.format === "image/webp" ? wide : null);
+    const { after, files } = await run(codec);
+    expect(after.att?.processed).toBe(1);
+    expect(files.small).toBeNull();
+  });
+
+  it("charges no Images transformation for audio, which has no still (P15)", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const { bytes: output, durationMs: ms } = await timedFixture("mp3.mp3", "audio/mpeg");
+    const durationMs = String(ms);
+    const before = await transformsUsed(w);
+    const fake = fakeControl({ output, type: "audio/mpeg", durationMs });
+    await runUpload(uploadDeps(w, fake.control), await jobOf(w, up));
+    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1, type: "audio" });
+    expect((await transformsUsed(w)) - before).toBe(0);
+    expect(fake.calls).not.toContain("GET /normalize/still");
+  });
+
+  // In execution order: the output's transfer from the reply's headers, until the deadline less what the final writes
+  // keep; then the still and its preview from the transfer's end, T_PREVIEW from it but never past the transfer's cut.
+  async function blurhashWith(options: {
+    replyAt?: (cut: { still: number }) => number;
+    transferMs?: number;
+    stillAt?: (cut: Cuts) => number;
+  }) {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const job = await jobOf(w, up);
+    const allocation = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const reply = options.replyAt?.({ still: allocation.cuts.still }) ?? Date.now();
+    const transferEnd = reply + (options.transferMs ?? 0);
+    const at: Cuts = {
+      still: allocation.cuts.still,
+      reply,
+      transfer: transferCut(allocation),
+      transferEnd,
+      preview: previewCut(allocation, transferEnd),
+    };
+    const output = await avFixture("r1-av.mp4");
+    const fake = fakeControl(
+      { output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() },
+      {
+        ...(options.replyAt === undefined ? {} : { onReply: () => clock(at.reply) }),
+        ...(options.transferMs === undefined ? {} : { transferMs: options.transferMs }),
+        ...(options.stillAt === undefined ? {} : { onStill: () => clock(options.stillAt!(at)) }),
+      },
+    );
+    await runUpload(uploadDeps(w, fake.control), job);
+    return {
+      held: await held(w.store, up.id),
+      blurhash: (await objects(up.id, up.token)).small?.customMetadata?.blurhash,
+    };
+  }
+
+  it("gives a preview begun as the transfer ends a blurhash, and none with 2 s left before its cut", async () => {
+    expect((await blurhashWith({ stillAt: (at) => at.transferEnd })).blurhash).toMatch(/^.{6,}$/);
+    expect((await blurhashWith({ stillAt: (at) => at.preview - 2000 })).blurhash).toBe("");
+  });
+
+  // One job through the runner with controlled I/O: the reply's headers at `replyAt` (from the work deadline S and the
+  // job's deadline D), the body taking `transferMs`, Images healthy or held to its guard's cut, and R2's completes
+  // taking `completeMs`.
+  async function timed(options: {
+    replyAt: (at: { still: number; deadline: number }) => number;
+    transferMs: number;
+    images: "healthy" | "held" | "late" | "late-rgba";
+    completeMs?: { original?: number; full?: number };
+  }) {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const job = await jobOf(w, up);
+    const allocation = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const reply = options.replyAt({ still: allocation.cuts.still, deadline: allocation.deadline });
+    const codec = new TestCodec();
+    if (options.images === "held") {
+      // Images answers nothing until its guard's cut on the faked clock.
+      codec.encode = async (_bytes, encode) => {
+        for (;;) {
+          await encode.guard!(() => Promise.resolve());
+          clock(Date.now() + 10);
+        }
+      };
+    }
+    if (options.images === "late") {
+      // The output's info() answers once the faked clock is past the preview's cut, before the guard's timer fires.
+      const info = codec.info.bind(codec);
+      codec.info = async (bytes) => {
+        const answer = await info(bytes);
+        clock(previewCut(allocation, reply + options.transferMs) + 1);
+        return answer;
+      };
+    }
+    if (options.images === "late-rgba") {
+      // The RGBA output answers once the faked clock is past the preview's cut, before its guard's timer fires.
+      const encode = codec.encode.bind(codec);
+      codec.encode = (bytes, encoding) =>
+        encoding.format !== "rgba"
+          ? encode(bytes, encoding)
+          : encode(bytes, {
+              ...encoding,
+              guard: (work) =>
+                encoding.guard!(async () => {
+                  const answer = await work();
+                  clock(previewCut(allocation, reply + options.transferMs) + 1);
+                  return answer;
+                }),
+            });
+    }
+    const { bucket, log } = multipartLog(options.completeMs === undefined ? {} : { completeMs: options.completeMs });
+    const output = await avFixture("r1-av.mp4");
+    const fake = fakeControl(
+      { output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() },
+      { onReply: () => clock(reply), transferMs: options.transferMs },
+    );
+    await runUpload(uploadDeps(w, fake.control, { bucket, images: codec }), job);
+    const after = await held(w.store, up.id);
+    return {
+      completed: after.att?.processed === 1,
+      failure: after.row?.failure ?? null,
+      completes: log.filter((entry) => entry.startsWith("complete:")),
+      blurhash: (await objects(up.id, up.token)).small?.customMetadata?.blurhash ?? null,
+      stillAsked: fake.calls.includes("GET /normalize/still"),
+      previewed: (await objects(up.id, up.token)).small !== null,
+      left: allocation.deadline - Date.now(),
+    };
+  }
+
+  // The budget's rule (r3 M1): backwards from the deadline, the transfer cut at D − T_FINISH, the preview optional.
+  it.each([
+    {
+      name: "fast transfer, Images held to its cut, original's complete 1.5 s (r2): S6 with the poster",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 0,
+      images: "held" as const,
+      completeMs: { original: 1500 },
+      expected: { completed: true, blurhash: null },
+    },
+    {
+      name: "4.2 s transfer from 50 ms before the work deadline (r1): S6",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 4200,
+      images: "healthy" as const,
+      expected: { completed: true },
+    },
+    {
+      name: "1.2 s transfer, healthy Images (r1): S6 with a blurhash",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 1200,
+      images: "healthy" as const,
+      expected: { completed: true, blurhash: expect.stringMatching(/^.{6,}$/) },
+    },
+    {
+      name: "headers 20 s before the deadline, 4.8 s transfer (r3): S6",
+      replyAt: (at: { deadline: number }) => at.deadline - 20_000,
+      transferMs: 4800,
+      images: "healthy" as const,
+      expected: { completed: true },
+    },
+    {
+      // The edge the den-test runs measure: the preview has its 3 s (not skipped), leaving 1.65 s, and final writes of
+      // 1.5 s + 0.2 s exceed T_FINISH: both files land, S6 comes 50 ms past the deadline, and K4 records `deadline`.
+      name: "4.4 s transfer at the edge, Images held, final writes 1.5 s + 0.2 s (r3 edge): deadline",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 4400,
+      images: "held" as const,
+      completeMs: { original: 1500, full: 200 },
+      expected: { completed: false, failure: "deadline" },
+    },
+    {
+      // The transfer ends 2.05 s before the deadline: 0.55 s is left for the preview, under T_PREVIEW_MIN, so it is
+      // skipped (no still asked for, no charge) and the upload completes with its poster.
+      name: "7 s transfer from 50 ms before the work deadline (r3 skip): S6 with the poster, no still asked for",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 7000,
+      images: "healthy" as const,
+      expected: { completed: true, blurhash: null, stillAsked: false },
+    },
+    {
+      // LOW (r3): Images' answer settling past the preview's cut is not used, as race() does with the Store's.
+      name: "Images' info() answering after the preview's cut (r3 LOW): S6 with the poster, no preview",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 0,
+      images: "late" as const,
+      expected: { completed: true, previewed: false },
+    },
+    {
+      // LOW (r4): the RGBA output settling past the preview's cut leaves the checked WebP without a blurhash.
+      name: "Images' RGBA answering after the preview's cut (r4 LOW): S6 with the WebP, no blurhash",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 0,
+      images: "late-rgba" as const,
+      expected: { completed: true, previewed: true, blurhash: "" },
+    },
+  ])("$name", async (row) => {
+    const result = await timed(row);
+    expect(result).toMatchObject(row.expected);
+    expect(result.completes).toEqual(["complete:original", "complete:full"]);
+  });
+});
+
+// The Store's clock (and this isolate's Date) set `ms` past the real time, which R2 stamps an object's upload with.
+function pastRealTime(ms: number): void {
+  vi.useRealTimers();
+  const real = Date.now();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  clock(real + ms);
+}
+
+describe("incomingOrphans (G14, W3)", () => {
+  it("a round that dies between its delete and its checkpoint is repeated harmlessly, and the cursor wraps", async () => {
+    const w = await avWorld();
+    const orphan = incomingKey("300000000000009997");
+    await env.MEDIA.put(orphan, "x");
+    pastRealTime(25 * HOUR);
+    const dying = new Proxy(w.store, {
+      get(target, method: string) {
+        if (method === "incomingSwept") {
+          return () => Promise.reject(new Error("died"));
+        }
+        return (...args: unknown[]) =>
+          (target as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[method]!(...args);
+      },
+    });
+    await expect(incomingOrphans({ build: BUILD, store: dying, bucket: env.MEDIA })).rejects.toThrow("died");
+    expect(await env.MEDIA.head(orphan)).toBeNull();
+    pastRealTime(27 * HOUR);
+    await incomingOrphans({ build: BUILD, store: w.store, bucket: env.MEDIA });
+    const [state] = await sql<{ value: string }>(
+      w.store,
+      "SELECT value FROM kopje_state WHERE name = 'media_incoming_sweep'",
+    );
+    // One page held every key: the checkpoint wraps to the start.
+    expect(JSON.parse(state?.value ?? "{}")).toMatchObject({ cursor: "" });
+  });
+
+  it("removes an unheld incoming/ key older than a day and a probe copy, keeps a held one, and checkpoints", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const orphan = incomingKey("300000000000009999");
+    const probe = probeInputKey("0".repeat(32));
+    await env.MEDIA.put(orphan, "x");
+    await env.MEDIA.put(probe, "x");
+    pastRealTime(25 * HOUR);
+    await incomingOrphans({ build: BUILD, store: w.store, bucket: env.MEDIA });
+    expect(await env.MEDIA.head(orphan)).toBeNull();
+    expect(await env.MEDIA.head(probe)).toBeNull();
+    expect(await env.MEDIA.head(incomingKey(up.id))).not.toBeNull();
+  });
+
+  it("lists 1,000 keys a page from the checkpoint, advances it on success and keeps a non-empty one on failure", async () => {
+    const w = await avWorld();
+    const orphan = incomingKey("300000000000009996");
+    await env.MEDIA.put(orphan, "x");
+    const asked: R2ListOptions[] = [];
+    // R2 answers each page as truncated at "page-2" until `last`.
+    let last = false;
+    let failDelete = false;
+    const bucket = {
+      list: async (options: R2ListOptions) => {
+        asked.push(options);
+        const page = await env.MEDIA.list({ prefix: options.prefix! });
+        return last ? { ...page, truncated: false } : { ...page, truncated: true, cursor: "page-2" };
+      },
+      delete: (keys: string[]) => (failDelete ? Promise.reject(new Error("r2")) : env.MEDIA.delete(keys)),
+    } as unknown as R2Bucket;
+    const cursor = async () => {
+      const [state] = await sql<{ value: string }>(
+        w.store,
+        "SELECT value FROM kopje_state WHERE name = 'media_incoming_sweep'",
+      );
+      return (JSON.parse(state?.value ?? "{}") as { cursor?: string }).cursor;
+    };
+    pastRealTime(25 * HOUR);
+    await incomingOrphans({ build: BUILD, store: w.store, bucket });
+    expect(asked[0]).toEqual({ prefix: "incoming/", limit: 1000 });
+    expect(await cursor()).toBe("page-2");
+    await env.MEDIA.put(orphan, "x");
+    pastRealTime(50 * HOUR);
+    failDelete = true;
+    await expect(incomingOrphans({ build: BUILD, store: w.store, bucket })).rejects.toThrow("r2");
+    expect(asked[1]).toEqual({ prefix: "incoming/", limit: 1000, cursor: "page-2" });
+    expect(await cursor()).toBe("page-2");
+    pastRealTime(53 * HOUR);
+    failDelete = false;
+    last = true;
+    await incomingOrphans({ build: BUILD, store: w.store, bucket });
+    expect(asked[2]).toEqual({ prefix: "incoming/", limit: 1000, cursor: "page-2" });
+    expect(await cursor()).toBe("");
+  });
+
+  it("keeps the cursor when the delete fails, and repeats the page harmlessly on the next claim", async () => {
+    const w = await avWorld();
+    const orphan = incomingKey("300000000000009998");
+    await env.MEDIA.put(orphan, "x");
+    pastRealTime(25 * HOUR);
+    const failing = {
+      ...env.MEDIA,
+      list: env.MEDIA.list.bind(env.MEDIA),
+      delete: () => Promise.reject(new Error("r2")),
+    };
+    await expect(incomingOrphans({ build: BUILD, store: w.store, bucket: failing })).rejects.toThrow("r2");
+    const [state] = await sql<{ value: string }>(
+      w.store,
+      "SELECT value FROM kopje_state WHERE name = 'media_incoming_sweep'",
+    );
+    expect(JSON.parse(state?.value ?? "{}")).toMatchObject({ cursor: "" });
+    expect((JSON.parse(state?.value ?? "{}") as { claim: unknown }).claim).not.toBeNull();
+    pastRealTime(27 * HOUR);
+    await incomingOrphans({ build: BUILD, store: w.store, bucket: env.MEDIA });
+    expect(await env.MEDIA.head(orphan)).toBeNull();
+  });
+});

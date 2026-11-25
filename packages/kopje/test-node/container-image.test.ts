@@ -71,4 +71,26 @@ describe("the media processor's image in the kopje package", () => {
     expect(file.includes("KOPJEMARK_TITLE")).toBe(true);
     expect(file.subarray(4, 8).toString("latin1")).toBe("ftyp");
   });
+
+  // The probe's floor (src/mastodon/media-activation.ts PROBE_ENVELOPE_MS) is the encode time the server's plan admits
+  // the fixture in, which container/server/plan_test.go TestProbeClipEnvelope pins.
+  it("holds the probe's envelope to the one the server's plan test pins for the fixture", () => {
+    const worker = readFileSync(new URL("../src/mastodon/media-activation.ts", import.meta.url), "utf8");
+    const plan = readFileSync(new URL("server/plan_test.go", container), "utf8");
+    const ts = /export const PROBE_ENVELOPE_MS = ([\d_]+);/.exec(worker)?.[1]?.replaceAll("_", "");
+    const go = /func TestProbeClipEnvelope[\s\S]*?const envelope = (\d+)\.0/.exec(plan)?.[1];
+    expect(ts).toBeDefined();
+    expect(ts).toBe(go);
+  });
+
+  // The protocol version the Worker requires of /healthz (src/media-processor.ts NORMALIZE_PROTOCOL) is the one the
+  // server answers (container/server/main.go normalizeProtocol).
+  it("holds the Worker's protocol version to the server's", () => {
+    const worker = readFileSync(new URL("../src/media-processor.ts", import.meta.url), "utf8");
+    const server = readFileSync(new URL("server/main.go", container), "utf8");
+    const ts = /export const NORMALIZE_PROTOCOL = (\d+);/.exec(worker)?.[1];
+    const go = /const normalizeProtocol = (\d+)/.exec(server)?.[1];
+    expect(ts).toBeDefined();
+    expect(ts).toBe(go);
+  });
 });

@@ -1,7 +1,15 @@
+import { STILL_LONG_EDGE, STILL_OUTPUT_LIMIT } from "./av-bytes";
 import { imageBlurhash, type Rgba } from "./blurhash";
 import { readBodyPrefix } from "./body";
-import { DeadlinePassed, within } from "./deadline";
-import { IMAGE_MATRIX_LIMIT, type ImageType, isAnimated, retainedMetadata, sniffImageType } from "./image-bytes";
+import { DeadlinePassed, inTime } from "./deadline";
+import {
+  IMAGE_MATRIX_LIMIT,
+  type ImageType,
+  isAnimated,
+  retainedMetadata,
+  sniffImageType,
+  webpSize,
+} from "./image-bytes";
 import { stripImageOutput } from "./remote-media-bytes";
 
 // Re-encoding of uploaded images (MEDIA-3). The Images binding is reached only through ImageCodec, a narrow
@@ -373,7 +381,8 @@ async function previewBlurhash(
   }
   const until = Math.min(end, now() + RGBA_CALL_MS);
   try {
-    const guard: CallGuard = (work) => within(work, until, now);
+    // An answer settling at or past `until` is not used either (inTime), even before the guard's timer fires.
+    const guard: CallGuard = (work) => inTime(work, until, now);
     const rgba = await encodeRgba(codec, input, transform, small, PREVIEW_RGBA_LIMIT, guard);
     return { blurhash: imageBlurhash(rgba), stop: null };
   } catch (error) {
@@ -434,9 +443,34 @@ export async function processImage(
   }
 }
 
+// The geometry of a still `small` as Kopje serves one, whether adopted or just made: at most STILL_OUTPUT_LIMIT bytes,
+// a still WebP that walks, with no retained metadata and edges of 1 to STILL_LONG_EDGE. null when it is not one.
+export function stillWebpSize(bytes: Uint8Array): Size | null {
+  // webpSize walks every chunk and answers only edges of at least 1.
+  const size = bytes.byteLength <= STILL_OUTPUT_LIMIT ? webpSize(bytes) : null;
+  return size === null ||
+    retainedMetadata(bytes, "image/webp") !== null ||
+    isAnimated(bytes, "image/webp") ||
+    Math.max(size.width, size.height) > STILL_LONG_EDGE
+    ? null
+    : size;
+}
+
+// Whether Images' still WebP is one Kopje serves, its parsed geometry the one Images reported (info()).
+function servedStill(small: EncodedImage): boolean {
+  const size = stillWebpSize(small.bytes);
+  return size !== null && size.width === small.width && size.height === small.height;
+}
+
+// The media processor's PNG still re-encoded as a still WebP of `preview` (within SMALL_EDGE): encodeBounded, read
+// within STILL_OUTPUT_LIMIT, every call under `guard`, stripped, no metadata left, one frame, its real dimensions. The
+// upload's preview, the probes and the rebuild all encode it so.
+function encodeStill(codec: ImageCodec, png: Uint8Array, preview: Size, guard: CallGuard): Promise<EncodedImage> {
+  return encodeBounded(codec, png, { ...preview, format: "image/webp", still: true }, STILL_OUTPUT_LIMIT, guard);
+}
+
 // The preview of a video from the media processor's PNG still (#1828 design 4.10, 4.16), which verifyStill has passed
-// (platform/av-bytes.ts): re-encoded as a still WebP within SMALL_EDGE (encodeBounded: read within `limit`, every call
-// under `guard`, stripped, no metadata left, one frame, its real dimensions), and its blurhash from Images' RGBA output of the same input and transformation, given
+// (platform/av-bytes.ts): re-encoded as a still WebP within SMALL_EDGE (encodeStill), and its blurhash from Images' RGBA output of the same input and transformation, given
 // up as an upload's is (`blurhash`, ProcessOptions). A failure of the WebP is classified as processImage classifies
 // it; any failure of the RGBA output only leaves the blurhash null.
 export async function stillPreview(
@@ -444,7 +478,6 @@ export async function stillPreview(
   png: Uint8Array,
   size: Size,
   blurhash: { end: number; now: () => number },
-  limit: number,
   guard: CallGuard,
 ): Promise<
   | { ok: true; small: EncodedImage; blurhash: string | null; blurhashStop: BlurhashStop }
@@ -452,7 +485,11 @@ export async function stillPreview(
 > {
   const preview = fit(size, SMALL_EDGE);
   try {
-    const small = await encodeBounded(codec, png, { ...preview, format: "image/webp", still: true }, limit, guard);
+    const small = await encodeStill(codec, png, preview, guard);
+    // The upload, the probes and the rebuild hold it to the same checks (stillWebpSize).
+    if (!servedStill(small)) {
+      return { ok: false, reason: "failed", detail: "small" };
+    }
     const hashed = await previewBlurhash(codec, png, preview, small, blurhash);
     return { ok: true, small, blurhash: hashed.blurhash, blurhashStop: hashed.stop };
   } catch (error) {
@@ -475,20 +512,25 @@ export async function stillBlurhash(
 }
 
 // Whether Images re-encodes the media processor's PNG `png` of `size` into a checked still WebP within SMALL_EDGE (the
-// `still@standard-1` probe's last step, design 4.15). "failed" only when the PNG is refused as input (INPUT_ERRORS) or
-// the output fails its checks, which say the profile's still is not usable; "quota" for 9422 and "retry" for any other
-// failure of the service, which say nothing of the profile.
+// `still@standard-1` probe's last step, design 4.15): "refused" when the PNG is refused as input (INPUT_ERRORS), which
+// says the container's still is not usable; "bad-output" when Images' own output fails the still's checks; "quota" for
+// 9422 and "retry" for any other failure of the service. The probes take only "refused" as the build's; the media
+// rebuild takes both "refused" and "bad-output" as its still's failure.
 export async function stillEncodes(
   codec: ImageCodec,
   png: Uint8Array,
   size: Size,
   guard: CallGuard,
-): Promise<"passed" | "failed" | "quota" | "retry"> {
+): Promise<"passed" | "refused" | "bad-output" | "quota" | "retry"> {
   try {
-    await encodeChecked(codec, png, { ...fit(size, SMALL_EDGE), format: "image/webp", still: true, guard });
-    return "passed";
+    // The body is read under the guard and within STILL_OUTPUT_LIMIT, as the upload's preview reads it.
+    const small = await encodeStill(codec, png, fit(size, SMALL_EDGE), guard);
+    return servedStill(small) ? "passed" : "bad-output";
   } catch (error) {
     const reason = codecFailure(error);
-    return reason === "output" || reason === "unsupported" ? "failed" : reason === "quota" ? "quota" : "retry";
+    if (reason === "unsupported") {
+      return "refused";
+    }
+    return reason === "output" ? "bad-output" : reason === "quota" ? "quota" : "retry";
   }
 }

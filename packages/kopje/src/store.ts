@@ -543,6 +543,10 @@ export class Store extends DurableObject<Env> {
     return this.#avWrite(callerBuild, mediaProcessing.confirmAvWrite, input);
   }
 
+  chargeAvPoster(callerBuild: string, input: MarkedInput<typeof mediaProcessing.chargeAvPoster>) {
+    return this.#avWrite(callerBuild, mediaProcessing.chargeAvPoster, input);
+  }
+
   completeAvUpload(callerBuild: string, input: MarkedInput<typeof mediaProcessing.completeAvUpload>) {
     return this.#avWrite(callerBuild, mediaProcessing.completeAvUpload, input);
   }

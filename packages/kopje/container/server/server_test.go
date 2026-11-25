@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -26,7 +25,7 @@ import (
 // $FAKE_FRAME_SLEEP) seconds first, or killing itself when $FAKE_PROBE_KILL is set. The fake ffmpeg appends its arguments to $FAKE_LOG, fails when they contain
 // $FAKE_FAIL_ON (printing the pixel limit's refusal first when $FAKE_OVERSIZE is set), succeeds writing nothing when they contain $FAKE_EMPTY_ON, copies the file $FAKE_OUT (for a PNG
 // still, $FAKE_PNG) to its last argument (file:<path>), prints a marker on stderr, and exits $FAKE_EXIT (sleeping
-// $FAKE_SLEEP seconds first).
+// $FAKE_SLEEP seconds first, and a still $FAKE_STILL_SLEEP more).
 const fakeProbe = `#!/bin/sh
 echo "SECRET-PROBE-STDERR" >&2
 [ -n "$FAKE_PROBE_LOG" ] && echo "$*" >> "$FAKE_PROBE_LOG"
@@ -50,6 +49,7 @@ esac
 [ -n "$FAKE_FAIL_ON" ] && case "$*" in *"$FAKE_FAIL_ON"*) exit 1 ;; esac
 [ -n "$FAKE_EMPTY_ON" ] && case "$*" in *"$FAKE_EMPTY_ON"*) exit 0 ;; esac
 [ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
+[ -n "$FAKE_STILL_SLEEP" ] && case "$*" in *"-c:v png"*) sleep "$FAKE_STILL_SLEEP" ;; esac
 for last; do :; done
 case "$*" in *"-c:v png"*) src="$FAKE_PNG" ;; *) src="$FAKE_OUT" ;; esac
 cat "$src" > "${last#file:}"
@@ -88,6 +88,7 @@ func fakeTools(t *testing.T, probe *probeResult) {
 	t.Setenv("FAKE_DISCOVERY_FAIL", "")
 	t.Setenv("FAKE_PROBE_KILL", "")
 	t.Setenv("FAKE_FFMPEG_KILL", "")
+	t.Setenv("FAKE_STILL_SLEEP", "")
 	oldProbe, oldFF, oldWork, oldStill := probeBin, ffmpegBin, workRoot, stillPath
 	probeBin, ffmpegBin = write("ffprobe", fakeProbe), write("ffmpeg", fakeFFmpeg)
 	workRoot = filepath.Join(dir, "work")
@@ -120,7 +121,7 @@ func videoProbe() *probeResult {
 	return probeOf("2", stream("video", "h264", 320, 240, "15/1", "2"), stream("audio", "aac", 0, 0, "0/0", "2"))
 }
 
-const normalizeURL = "/normalize?probe_ms=5000&encode_ms=60000"
+const normalizeURL = "/normalize?work_ms=60000&still_ms=5000"
 
 func TestNormalizeAnswersTheOutputAndKeepsTheStill(t *testing.T) {
 	fakeTools(t, videoProbe())
@@ -169,10 +170,14 @@ func TestFailuresAnswerCodesOnly(t *testing.T) {
 		status int
 		code   string
 	}{
-		{"stage times missing", func(t *testing.T) { fakeTools(t, videoProbe()) }, "/normalize", []byte("x"), 400,
+		{"work times missing", func(t *testing.T) { fakeTools(t, videoProbe()) }, "/normalize", []byte("x"), 400,
 			"bad_request"},
-		{"stage time out of range", func(t *testing.T) { fakeTools(t, videoProbe()) },
-			"/normalize?probe_ms=99&encode_ms=60000", []byte("x"), 400, "bad_request"},
+		{"work deadline out of range", func(t *testing.T) { fakeTools(t, videoProbe()) },
+			"/normalize?work_ms=99&still_ms=0", []byte("x"), 400, "bad_request"},
+		{"still reserve not within the work deadline", func(t *testing.T) { fakeTools(t, videoProbe()) },
+			"/normalize?work_ms=5000&still_ms=5000", []byte("x"), 400, "bad_request"},
+		{"the old stage times", func(t *testing.T) { fakeTools(t, videoProbe()) },
+			"/normalize?probe_ms=5000&encode_ms=60000", []byte("x"), 400, "bad_request"},
 		{"empty input", func(t *testing.T) { fakeTools(t, videoProbe()) }, normalizeURL, nil, 400, "empty"},
 		{"format not allowed", func(t *testing.T) {
 			p := videoProbe()
@@ -183,16 +188,18 @@ func TestFailuresAnswerCodesOnly(t *testing.T) {
 			fakeTools(t, videoProbe())
 			t.Setenv("FAKE_PROBE", "/nonexistent")
 		}, normalizeURL, []byte("x"), 422, "unreadable"},
+		// 2 s before the still's reserve: under the 2,142 ms that fixedEstimateMs alone needs, with room for the probe.
 		{"outside the envelope", func(t *testing.T) { fakeTools(t, videoProbe()) },
-			"/normalize?probe_ms=5000&encode_ms=100", []byte("x"), 422, "envelope"},
+			"/normalize?work_ms=7000&still_ms=5000", []byte("x"), 422, "envelope"},
 		{"encoder fails", func(t *testing.T) {
 			fakeTools(t, videoProbe())
 			t.Setenv("FAKE_EXIT", "1")
 		}, normalizeURL, []byte("x"), 500, "encode_failed"},
+		// work_ms leaves the 1,580 ms audio estimate its 0.7 share (2,258 ms) after a probe of up to 1.2 s.
 		{"encode passes its time", func(t *testing.T) {
 			fakeTools(t, probeOf("2", stream("audio", "aac", 0, 0, "0/0", "2")))
-			t.Setenv("FAKE_SLEEP", "3")
-		}, "/normalize?probe_ms=5000&encode_ms=2500", []byte("x"), 504, "timeout"},
+			t.Setenv("FAKE_SLEEP", "5")
+		}, "/normalize?work_ms=3500&still_ms=0", []byte("x"), 504, "timeout"},
 		{"still without video", func(t *testing.T) { fakeTools(t, probeOf("2", stream("audio", "aac", 0, 0, "0/0", "2"))) },
 			"/still", []byte("x"), 422, "no_video"},
 		// Not the input's: ffprobe that does not start, or that the host kills, is the container's failure.
@@ -391,7 +398,7 @@ func TestARefusedNormalizeRemovesTheEarlierStill(t *testing.T) {
 	if rec := do(t, mux, "POST", normalizeURL, []byte("input")); rec.Code != 200 {
 		t.Fatalf("normalize %d", rec.Code)
 	}
-	if rec := do(t, mux, "POST", "/normalize?probe_ms=99&encode_ms=60000", []byte("input")); rec.Code != 400 {
+	if rec := do(t, mux, "POST", "/normalize?work_ms=99&still_ms=0", []byte("input")); rec.Code != 400 {
 		t.Fatalf("refused normalize %d", rec.Code)
 	}
 	if rec := do(t, mux, "GET", "/normalize/still", nil); rec.Code != 404 {
@@ -723,16 +730,75 @@ func TestUnknownVideoHeadersAreDiscoveredThenLimited(t *testing.T) {
 	}
 }
 
-// probe_ms bounds the header and frame probes together, and Kopje-Probe-Ms reports both.
-func TestOneProbeBudgetForBothProbes(t *testing.T) {
+// The encode's cut is computed after the probe, from the time then left before the still's reserve, and the envelope
+// check uses it (#1828 PR4 plan, P8): the same input and work deadline fit after a quick probe and are refused after a
+// slow one. The estimate of videoProbe is about 1.6 s, which needs about 2.3 s of encode time.
+func TestTheEnvelopeUsesTheTimeLeftAfterTheProbe(t *testing.T) {
+	for _, c := range []struct {
+		sleep string
+		code  int
+		error string
+	}{{"", 200, ""}, {"1", 422, "envelope"}} {
+		fakeTools(t, videoProbe())
+		t.Setenv("FAKE_OUT", fakeMP4(t))
+		t.Setenv("FAKE_PROBE_SLEEP", c.sleep)
+		rec := do(t, newMux(threadsDefault), "POST", "/normalize?work_ms=3500&still_ms=500", []byte("input"))
+		if rec.Code != c.code || rec.Header().Get("Kopje-Error") != c.error {
+			t.Fatalf("probe sleeping %q: %d %q", c.sleep, rec.Code, rec.Header().Get("Kopje-Error"))
+		}
+	}
+}
+
+// A slow body: it arrives over sleep seconds, then EOF.
+type slowBody struct {
+	sleep time.Duration
+	done  bool
+}
+
+func (b *slowBody) Read(p []byte) (int, error) {
+	if b.done {
+		return 0, io.EOF
+	}
+	time.Sleep(b.sleep)
+	b.done = true
+	return copy(p, "input"), nil
+}
+
+// The work deadline counts from the request's arrival, the input's time included: an input delivered slowly leaves
+// the encode less time, and an encode that overruns is cut at the work deadline rather than at a fixed time after the
+// input (P8).
+func TestASlowInputAnswersWithinTheWorkDeadline(t *testing.T) {
+	fakeTools(t, probeOf("2", stream("audio", "aac", 0, 0, "0/0", "2")))
+	t.Setenv("FAKE_SLEEP", "5")
+	log := filepath.Join(t.TempDir(), "ffmpeg.log")
+	t.Setenv("FAKE_LOG", log)
+	// work_ms leaves the 1,580 ms audio estimate its 0.7 share (2,258 ms) after a slow input of up to 2.7 s.
+	req := httptest.NewRequest("POST", "/normalize?work_ms=5000&still_ms=0", &slowBody{sleep: time.Second})
+	req.ContentLength = -1
+	rec := httptest.NewRecorder()
+	arrival := time.Now()
+	newMux(threadsDefault).ServeHTTP(rec, req)
+	elapsed := time.Since(arrival)
+	if rec.Code != 504 || rec.Header().Get("Kopje-Error") != "timeout" || elapsed > 5300*time.Millisecond {
+		t.Fatalf("%d %q after %v", rec.Code, rec.Header().Get("Kopje-Error"), elapsed)
+	}
+	// The encode started, and the deadline cut it: an early timeout (of the input or the probe) is not this.
+	if started, _ := os.ReadFile(log); len(started) == 0 {
+		t.Fatal("the encoder never started")
+	}
+}
+
+// The still is made in its own context within its reserve: a still that overruns it leaves a video without one,
+// answered before the work deadline, and the encode never takes the reserve.
+func TestTheStillRunsWithinItsReserve(t *testing.T) {
 	fakeTools(t, videoProbe())
 	t.Setenv("FAKE_OUT", fakeMP4(t))
-	t.Setenv("FAKE_PROBE_SLEEP", "0.45")
-	t.Setenv("FAKE_FRAME_SLEEP", "0.45")
-	rec := do(t, newMux(threadsDefault), "POST", "/normalize?probe_ms=600&encode_ms=60000", []byte("input"))
-	ms, _ := strconv.Atoi(rec.Header().Get("Kopje-Probe-Ms"))
-	if rec.Code != 200 || ms < 550 || ms > 800 {
-		t.Fatalf("normalize %d, probe %d ms", rec.Code, ms)
+	t.Setenv("FAKE_STILL_SLEEP", "3")
+	arrival := time.Now()
+	rec := do(t, newMux(threadsDefault), "POST", "/normalize?work_ms=60000&still_ms=500", []byte("input"))
+	elapsed := time.Since(arrival)
+	if rec.Code != 200 || rec.Header().Get("Kopje-Still") != "false" || elapsed > 2*time.Second {
+		t.Fatalf("%d still %q after %v", rec.Code, rec.Header().Get("Kopje-Still"), elapsed)
 	}
 }
 
@@ -886,7 +952,8 @@ func TestTheSizeMarkerComesFirst(t *testing.T) {
 		{"libdav1d's diagnostic, the output whole", "dav1d", "", "", normalizeURL, 422, "pixels"},
 		{"an output the rewrite cannot read", "1", "libx264", "", normalizeURL, 422, "pixels"},
 		{"the same without the marker", "", "libx264", "", normalizeURL, 500, "strip_failed"},
-		{"the deadline expired", "1", "", "3", "/normalize?probe_ms=5000&encode_ms=2500", 504, "timeout"},
+		// The ~1,650 ms estimate's 0.7 share (2,353 ms) within the encode time, with room for the probe.
+		{"the deadline expired", "1", "", "5", "/normalize?work_ms=4000&still_ms=100", 504, "timeout"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			// A short AV1 video, its estimate within every case's encode time.
@@ -927,5 +994,18 @@ func TestMarkerWriterFindsTheMarkerAcrossWrites(t *testing.T) {
 		if other.found {
 			t.Fatalf("found in %q", line)
 		}
+	}
+}
+
+// /healthz names the protocol the server speaks, which the Worker requires before it sends work (the image before the
+// one work deadline answers none).
+func TestHealthzAnswersTheProtocol(t *testing.T) {
+	rec := do(t, newMux(threadsDefault), "GET", "/healthz", nil)
+	var health struct {
+		OK       bool `json:"ok"`
+		Protocol int  `json:"protocol"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &health); err != nil || rec.Code != 200 || !health.OK || health.Protocol != 2 {
+		t.Fatalf("%d %q", rec.Code, rec.Body.String())
 	}
 }

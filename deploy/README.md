@@ -86,7 +86,11 @@ Dockerfile ships in the `kopje` package (`node_modules/kopje/container`), so the
 version, and every deploy builds it: Workers Builds (the button's) needs no Docker on your machine, while
 `npx wrangler deploy` from your own machine needs Docker running there (GitHub's runners have it).
 
-In this release the processor can be added and checked, but nothing uses it yet: uploads stay image-only. To add it:
+In this release uploads stay image-only. The processor already serves the media rebuild, which makes the stills of
+video rows with it (`kopje-admin media-rebuild`, activated by its own probe of `still@standard-1`), and once it is
+bound and `MEDIA_UPLOAD_MONTHLY_JOBS` is positive the cron probes the profile uploads will use, `normalize@standard-4`
+([media-processor.md](https://github.com/shuymn/kopje/blob/main/packages/kopje/docs/media-processor.md)). The two
+activations are separate. To add it:
 
 1. Export `MediaProcessor` from `src/index.ts`. The template's file already does; an instance made from an earlier
    template has `export { default, Store } from "kopje";`, and `wrangler deploy` then fails with "Your Worker depends
@@ -133,7 +137,9 @@ In this release the processor can be added and checked, but nothing uses it yet:
 
 It starts the container on each instance type Kopje uses (normalize on standard-4 with ffmpeg's threads at 4, the
 choice measured for #1828; stills on standard-1), runs one operation on a 2-second clip that ships in the package,
-destroys the container, and prints what it saw. Each image Kopje builds is about 300 MB in your account's
+destroys the container, and prints what it saw. For `normalize@standard-4` that is its activation probe, whose verdict
+it records for the deployed version; it writes the Store, so it is refused while the instance is in maintenance or
+read-only. Each image Kopje builds is about 300 MB in your account's
 container registry; delete the images of versions you no longer deploy (`npx wrangler containers images list`).
 
 The `v2-media-processor` migration is permanent: once deployed, it is never edited or removed. To turn the processor
