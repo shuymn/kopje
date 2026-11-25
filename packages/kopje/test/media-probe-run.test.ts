@@ -4,8 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { healthReport } from "../src/app/health";
 import { PROBE_RETRY_MS } from "../src/domain/media-probes";
 import { runUpload } from "../src/jobs/media-jobs";
-import { activationProbe, stillCheck } from "../src/mastodon/media-activation";
+import { activationProbe, probeWork, stillCheck } from "../src/mastodon/media-activation";
 import { readConfig } from "../src/platform/config";
+import { probeInputKey } from "../src/platform/media-files";
 import type { StillOutcome } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
 import { avFixture, verifyBytes } from "./av-helpers";
@@ -111,6 +112,8 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     // M10: a healthy /healthz with no /normalize is the build's, deterministically.
     ["a /normalize answered 404", { failure: { status: 404, code: "not_found" } }, undefined, "normalize:not_found"],
     ["a still with no Content-Length", { stillLength: "none" as const }, undefined, "still-length"],
+    ["a still route answered 404", { stillFailure: { status: 404, code: "not_found" } }, undefined, "still:not_found"],
+    ["a planned-output refusal", { failure: { status: 422, code: "truncated" } }, undefined, "normalize:truncated"],
   ])("fails on %s, and health is degraded", async (_name, extra, ready, reason) => {
     const store = await freshStore();
     const { run } = await probeOnce(store, await genuine(extra), { ready });
@@ -126,6 +129,12 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     ["502", { failure: { status: 502 } }],
     ["503", { failure: { status: 503 } }],
     ["a still cut short of its Content-Length", { stillLength: "short" as const }],
+    // r3 M3: the still endpoint as the POST, and Go's own transient failures.
+    ["a still answered 502", { stillFailure: { status: 502 } }],
+    ["a still answered 500 no_output", { stillFailure: { status: 500, code: "no_output" } }],
+    ["a still answered 500 internal", { stillFailure: { status: 500, code: "internal" } }],
+    ["400 truncated (the input copy cut short)", { failure: { status: 400, code: "truncated" } }],
+    ["500 no_output", { failure: { status: 500, code: "no_output" } }],
   ])("keeps an existing pass on %s: no verdict, health ready", async (_name, extra) => {
     const store = await freshStore();
     expect((await probeOnce(store, await genuine())).run).toMatchObject({ verdict: { outcome: "pass" } });
@@ -135,6 +144,34 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     const { run } = await probeOnce(store, await genuine(extra), { due: true });
     expect(run).toMatchObject({ status: "recorded", verdict: { outcome: "no-verdict" } });
     expect(await health(store)).toMatchObject({ ok: true, state: "ready" });
+  });
+
+  it("reaches no verdict, sending nothing, when the time left cannot form a valid work budget", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock(T0);
+    const fake = fakeControl(await genuine());
+    const deadline = Date.now() + 70_000;
+    const bucket = {
+      // The copy answers when 500 ms are left: less than T_STILL, so no work_ms above still_ms.
+      get: async (key: string) => {
+        clock(deadline - 500);
+        return env.MEDIA.get(key);
+      },
+    };
+    const key = probeInputKey("1".repeat(32));
+    await env.MEDIA.put(key, await avFixture("r1-av.mp4"));
+    try {
+      const verdict = await probeWork(
+        { ...fake.control, bucket, images: new TestCodec(), now: () => Date.now() },
+        key,
+        deadline,
+        70_000,
+      );
+      expect(verdict).toMatchObject({ outcome: "no-verdict" });
+      expect(fake.calls.filter((call) => call.startsWith("POST /normalize"))).toEqual([]);
+    } finally {
+      await env.MEDIA.delete(key);
+    }
   });
 
   it("revokes an existing pass on a /normalize answered 404 by a healthy container", async () => {

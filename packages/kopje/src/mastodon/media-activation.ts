@@ -44,6 +44,9 @@ export function pngSize(png: Uint8Array): Size {
 // false when every earlier check passed and Images answered 9422; `fail` when the build answered deterministically
 // wrong (readiness 404, a reply outside the /normalize contract), refused the clip, or its output or still was refused;
 // `no-verdict` for a start never ready, a timeout, any other failure of the processor or of Images.
+// The container's least work_ms (container/server/main.go minWorkMs).
+const MIN_WORK_MS = 100;
+
 export async function probeWork(
   deps: ContainerControl & { bucket: Pick<R2Bucket, "get">; images: ImageCodec; now: () => number },
   key: string,
@@ -63,15 +66,26 @@ export async function probeWork(
     if (object === null) {
       return { outcome: "no-verdict", reason: "input-missing" };
     }
+    // The work deadline the container is given must exceed the still's reserve (and its 100 ms floor): with less
+    // time left, nothing is sent, and the probe says nothing of the build.
+    const left = Math.min(workMs, deadline - deps.now());
+    if (left <= Math.max(T_STILL, MIN_WORK_MS)) {
+      await object.body.cancel();
+      return { outcome: "no-verdict", reason: "timeout" };
+    }
     const result = await deps.normalize(port, {
       input: { body: object.body as ReadableStream<Uint8Array>, size: object.size },
-      workMs: Math.min(workMs, deadline - deps.now()),
+      workMs: left,
       stillMs: T_STILL,
       ...(signal === undefined ? {} : { signal }),
     });
     if (!result.ok) {
-      return result.outcome === "timeout"
-        ? { outcome: "no-verdict", reason: "timeout" }
+      // A timeout, and a 500 no_output (the server could not open its own file), say nothing of the build.
+      if (result.outcome === "timeout") {
+        return { outcome: "no-verdict", reason: "timeout" };
+      }
+      return result.code === "no_output"
+        ? { outcome: "no-verdict", reason: "normalize:no_output" }
         : { outcome: "fail", reason: `normalize:${result.code}` };
     }
     const { stream, verdict, abort } = avVerifier(result.type, result.length, { expectedDuration: result.duration });

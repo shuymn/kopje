@@ -23,6 +23,8 @@ export type ServerAnswer = {
   still?: Uint8Array | null;
   // A status and code in place of the output (no code: no Kopje-Error, as a platform's reply has none).
   failure?: { status: number; code?: string; body?: string };
+  // GET /normalize/still answered with this status and code (no code: no Kopje-Error).
+  stillFailure?: { status: number; code?: string };
   // The still's Content-Length: none, or 100 bytes more than its body (a body cut short).
   stillLength?: "none" | "short";
   // The response's body ends after this many bytes, whatever its Content-Length says.
@@ -55,6 +57,12 @@ export function fakeControl(
       calls.push(`${request.method} ${url.pathname}${url.search}`);
       if (url.pathname === "/normalize/still") {
         options.onStill?.();
+        if (answer.stillFailure !== undefined) {
+          const { status, code } = answer.stillFailure;
+          return code === undefined
+            ? new Response("Bad Gateway", { status })
+            : new Response(`{"error":"${code}"}`, { status, headers: { "kopje-error": code } });
+        }
         const png = answer.still ?? null;
         if (png === null) {
           return new Response(null, { status: 404, headers: { "kopje-error": "no_still" } });

@@ -293,6 +293,12 @@ describe("normalize adapter", () => {
     expect((thrown as TranscoderUnavailable).protocol).toBe(![408, 429, 500].includes(status));
   });
 
+  it("logs an unknown Kopje-Error by its status, as R9's container chooses its bytes (r3)", async () => {
+    const fake = fakeContainer(server({ "/normalize": () => failure(500, "chosen_by_container") }));
+    const thrown = await normalize(fake.container.getTcpPort(8080), job()).catch((error: unknown) => error);
+    expect((thrown as TranscoderUnavailable).reason).toBe("normalize:500");
+  });
+
   it.each([
     ["no declared duration", video({ "kopje-duration-ms": "" })],
     ["a duration that is not whole milliseconds", video({ "kopje-duration-ms": "2.5" })],

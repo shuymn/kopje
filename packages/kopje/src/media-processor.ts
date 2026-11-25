@@ -145,9 +145,9 @@ function inputRefusal(status: number, code: string | null): StillInputRefusal | 
 async function readStill(response: Response): Promise<Uint8Array> {
   if (response.status !== 200 || response.headers.get("content-type") !== "image/png") {
     await response.body?.cancel();
-    const code = response.headers.get("kopje-error");
+    const code = errorCode(response);
     throw new ProbeFailure(
-      code !== null && /^[a-z_]{1,32}$/.test(code) ? `still:${code}` : "still-status",
+      code !== null ? `still:${reasonCode(response.status, code)}` : "still-status",
       inputRefusal(response.status, code),
     );
   }
@@ -198,9 +198,35 @@ function errorCode(response: Response): string | null {
   return code !== null && /^[a-z_]{1,32}$/.test(code) ? code : null;
 }
 
-// Replies outside the input's outcomes that say nothing of the build: 408 input_timeout (the input arrived too slowly),
-// 429 busy, 500 internal (the server could not set up its work: a directory, ffprobe), and a gateway's 502, 503 or 504.
+// Replies that say nothing of the build, on /normalize and /normalize/still alike: 408 input_timeout (the input
+// arrived too slowly), 429 busy, a 500 (internal: the server could not set up its work, a directory or ffprobe;
+// no_output: its file could not be opened), a gateway's 502, 503 or 504, and 400 truncated (the input copy cut short,
+// or its io.Copy failed). A 500 an upload's input explains (A5) is answered before this, as the input's outcome.
 const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+function transientReply(status: number, code: string | null): boolean {
+  return TRANSIENT_STATUSES.has(status) || (status === 400 && code === "truncated");
+}
+
+// The Kopje-Error codes the server answers (container/server/main.go, plan.go). Any other value, which R9's container
+// chooses, is logged as its status instead.
+const KNOWN_CODES = new Set<string>([
+  ...NORMALIZE_REFUSALS,
+  ...NORMALIZE_INPUT_FAILURES,
+  ...STILL_INPUT_REFUSALS,
+  "envelope",
+  "timeout",
+  "busy",
+  "internal",
+  "input_timeout",
+  "bad_request",
+  "not_found",
+  "method_not_allowed",
+  "no_still",
+  "empty",
+]);
+function reasonCode(status: number, code: string | null): string {
+  return code !== null && KNOWN_CODES.has(code) ? code : String(status);
+}
 
 // The normalize adapter (design 4.2; #1828 PR4 plan, section 3 "PR4-2"): one POST /normalize on a ready container with
 // the job's input as its body and its work deadline, its answer read against the server's contract
@@ -238,7 +264,10 @@ export async function normalize(port: Fetcher, job: NormalizeJob): Promise<Norma
     }
     // Busy, a slow input, the server's own internal failure and a gateway's reply are the moment's (TRANSIENT_STATUSES);
     // any other reply here is outside the server's contract, the build's.
-    throw new TranscoderUnavailable(`normalize:${code ?? response.status}`, !TRANSIENT_STATUSES.has(response.status));
+    throw new TranscoderUnavailable(
+      `normalize:${reasonCode(response.status, code)}`,
+      !transientReply(response.status, code),
+    );
   }
   const type = response.headers.get("content-type");
   const kind = response.headers.get("kopje-kind");
@@ -280,9 +309,14 @@ async function normalizeStill(port: Fetcher, signal: AbortSignal | undefined): P
   } catch {
     throw new TranscoderUnavailable("still-fetch");
   }
-  if (response.status === 404 && errorCode(response) === "no_still") {
+  const code = errorCode(response);
+  if (response.status === 404 && code === "no_still") {
     await response.body?.cancel();
     return null;
+  }
+  if (response.status !== 200 && transientReply(response.status, code)) {
+    await response.body?.cancel();
+    throw new TranscoderUnavailable(`still:${reasonCode(response.status, code)}`);
   }
   try {
     return await readStill(response);
