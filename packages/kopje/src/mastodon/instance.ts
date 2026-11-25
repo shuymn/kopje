@@ -153,6 +153,7 @@ export const instanceV2: ApiHandler = async (c, deps) => {
       s.instanceUsage(b, { now: deps.now(), present: present(c), activation: avUploadActivation(c.env, deps) }),
     ),
   );
+  const shared = configuration(info.avUploads);
   return c.json({
     domain,
     title: info.title ?? domain,
@@ -175,7 +176,7 @@ export const instanceV2: ApiHandler = async (c, deps) => {
         terms_of_service: info.termsOfService ? `https://${domain}/terms-of-service` : null,
       },
       vapid: { public_key: vapidKey(c.env) },
-      ...configuration(info.avUploads),
+      ...shared,
       // REST::InstanceSerializer's account limits, in its order, from the constants that enforce them: the profile's
       // in code points (accountChanges in mastodon/accounts.ts, as Mastodon's `length`; the note as
       // NoteLengthValidator counts it), the featured hashtags' and the pins' in rows. Mastodon's v1 serializer has none
@@ -192,7 +193,7 @@ export const instanceV2: ApiHandler = async (c, deps) => {
         profile_field_value_limit: MAX_FIELD_VALUE,
       },
       media_attachments: {
-        ...configuration(info.avUploads).media_attachments,
+        ...shared.media_attachments,
         description_limit: MAX_MEDIA_DESCRIPTION_LENGTH,
       },
       translation: { enabled: false },
