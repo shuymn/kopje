@@ -1667,20 +1667,24 @@ Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, a
 
 Media (the `MediaAttachment` entity):
 
-- A local upload is an image, or, while the media processor accepts uploads
-  ([media-processor.md](media-processor.md)), a video or audio file, which is always re-encoded (Mastodon passes an
-  H.264 and AAC MP4 through): video to an H.264 and AAC MP4 of at most 1080p at 60 fps, 720p at 30 fps past 120 s and
-  480p at 30 fps past 300 s, audio to MP3. The file is at most 90 MiB (`video_size_limit` 94,371,840; Mastodon takes 99
-  MiB) and refused past it with 422 `Validation failed: File file size must be less than 90 MB`; video over 600 s,
-  audio over 20 minutes and a file past the processing envelope its endpoint publishes are refused with 422
-  `Validation failed: File is too long or too large to process` (v1 at once, v2 on the GET that finds it failed). v1
-  waits for the result up to a time set per instance (`V1_TIME_MS`, [media-processor.md](media-processor.md)) and
-  then answers 503 `Media processing took too long. Try a shorter file.`, the upload cancelled; Mastodon's v1 waits as
-  long as the processing takes. Both answer 503 `Media processing is busy. Try again in a moment.` while two video or
-  audio uploads are already processing, and a failed processing is not tried again by the server (Mastodon retries
-  the job). An audio file has no artwork (`preview_url` null), where Mastodon extracts the cover. While the processor
-  is not accepting uploads, video and audio are refused as before (422 `Validation failed: File content type is
-  invalid`).
+- A local upload is an image, or, while the media processor accepts uploads ([media-processor.md](media-processor.md)),
+  a video or audio file, which is always re-encoded (Mastodon passes an H.264 and AAC MP4 through): video to an H.264
+  and AAC MP4 of at most 1080p at 60 fps, 720p at 30 fps past 120 s and 480p at 30 fps past 300 s, audio to MP3. The
+  file is at most 90 MiB (`video_size_limit` 94,371,840; Mastodon takes 99 MiB) and refused past it with 422 `Validation
+  failed: File file size must be less than 90 MB`; video over 600 s, audio over 20 minutes and a file past the
+  processing envelope its endpoint publishes are refused with 422 `Validation failed: File is too long or too large to
+  process` (v1 at once, v2 on the GET that finds it failed). v1 waits for the result up to `V1_TIME_MS` from the
+  request's arrival (a constant of the release, provisionally 90 s, [media-processor.md](media-processor.md)) and then
+  answers 503 `Media processing took too long. Try a shorter file.`, the upload cancelled unless it had already finished
+  (it then stays unattached until the day's sweep); Mastodon's v1 waits as long as the processing takes. Both answer 503
+  `Media processing is busy. Try again in a moment.` while two video or audio uploads are already processing, and a
+  failed processing is not tried again by the server (Mastodon retries the job). An audio file has no artwork
+  (`preview_url` null), where Mastodon extracts the cover. While the processor is not accepting uploads, video and audio
+  are refused as before (422 `Validation failed: File content type is invalid`).
+- A video or audio upload whose form has several errors may report another of them than Mastodon: a `thumbnail` sent
+  before the `file` part is refused (422 `Validation failed: Thumbnail must be blank`) before any part after the file is
+  read, so a description too long after the file is not the error reported, where Mastodon reports the description
+  first. A `thumbnail` after the file, a malformed query and the other orders answer as for an image.
 - A local upload's `blurhash` (avatars and headers included; 4 × 4 components, alpha dropped) is computed, as
   Mastodon's BlurhashTranscoder computes one from the `small` style, from Images' raw RGBA output of Kopje's preview (at
   most 640 pixels an edge, where Mastodon's small style is 230,400 pixels), fitted within 100 pixels by area averaging

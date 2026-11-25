@@ -105,14 +105,16 @@ Each state carries the month's spent jobs (`spent`), the budget and the capacity
 
 An upload's file is staged into R2 while the request is read (at most 90 MiB, `AV_UPLOAD_LIMIT`), then queued, which
 charges one job of `MEDIA_UPLOAD_MONTHLY_JOBS`; a refused or abandoned upload charges nothing. `/api/v2/media` answers
-202 at once and the client polls `GET /api/v1/media/:id`. `/api/v1/media` waits for the result, at most `V1_TIME_MS`
-from the request's arrival: it asks for the outcome every 2 seconds, takes its decision `T_REPLY` (2 s) before that
-time, and answers 503 `Media processing took too long. Try a shorter file.` once it passes, the upload cancelled.
-`V1_TIME_MS` is 90 s in this release, a provisional value: it is to be set from a measurement on a staging instance,
-from the shortest time a measured browser client waits for an upload's answer, since one value serves every client. The
-edges of what each endpoint admits (the longest video of a given size, codec and ingress that still finishes in time)
-are estimated admission limits, not measured wall times, and are published here once runs at the edges on a staging
-instance measure them.
+202 at once and the client polls `GET /api/v1/media/:id`. `/api/v1/media` answers within `V1_TIME_MS` of the request's
+arrival, its reservation and reading included: it asks for the outcome every 2 seconds, takes its decision `T_REPLY`
+(two seconds) before that time, and answers 503 `Media processing took too long. Try a shorter file.` once it passes.
+That decision cancels an upload still processing. One decided just before the 503, whose answer the request no longer
+sends, keeps the decision: a completed upload stays, unattached, until the sweep deletes unattached media a day later,
+and a failed one stays failed. `V1_TIME_MS` is a constant of the release, not a setting: 90 s in this release, a
+provisional value to be set from a measurement on a staging instance, from the shortest time a measured browser client
+waits for an upload's answer, since one value serves every client. The edges of what each endpoint admits (the longest
+video of a given size, codec and ingress that still finishes in time) are estimated admission limits, not measured wall
+times, and are published here once runs at the edges on a staging instance measure them.
 
 A video is re-encoded to an H.264 and AAC MP4 (at most 1080p at 60 fps up to 120 s, 720p at 30 fps up to 300 s, 480p
 at 30 fps up to 600 s), audio to MP3; a longer file, or one past the processing envelope, is refused with 422. Two
