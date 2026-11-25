@@ -15,7 +15,7 @@ import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { sql } from "./api-helpers";
-import { BUILD, deferred, rejectionOf } from "./helpers";
+import { BUILD, deferred, migratedStore, rejectionOf } from "./helpers";
 import { bucketWith, GIF, mediaWorld, type MediaWorld, settle } from "./remote-media-helpers";
 
 // The cache's maintenance through the production round (federation/remote-media.ts): the Store's calls, the media
@@ -450,6 +450,19 @@ describe("PITR validation through the round", () => {
       expect(toStoreUnavailable(refused)?.reason).toBe("transient");
     } finally {
       await clearRestore(w);
+    }
+  });
+
+  it("answers a Store without its domain unset while the marker holds no restore time (code review r4)", async () => {
+    const store = await migratedStore();
+    const key = restoreMarkerKey(store.id.toString());
+    await env.MEDIA.put(key, "{}");
+    try {
+      expect(await store.maintainRemoteMedia(BUILD, { cap: 1_000, retentionDays: 30 })).toMatchObject({
+        status: "unset",
+      });
+    } finally {
+      await env.MEDIA.delete(key);
     }
   });
 

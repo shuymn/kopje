@@ -3283,8 +3283,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   it is deleted with its slot and a queued one fails `restored`, and the dispatch round applies K3 to a row before it
   dispatches it again, so a restored Store starts no processing a restore forgot. The marker is read in three states,
   none, a time or unknown (a failed read, or a marker without a non-negative safe-integer time:
-  `src/platform/restore-marker.ts`), and an unknown one refuses, as transient (503), every operation whose answer or
-  write K3 decides and no other (`restoreTime`), so a restore whose time is lost is never taken for none. The
+  `src/platform/restore-marker.ts`), and only where K3's answer would change an operation's reply or committed state
+  (`restoreTime`, in `withMarker`'s two passes): what every K3 outcome answers alike is decided without it, so a held
+  read holds no other operation, and an unknown marker refuses, as transient (503), just those, so a restore whose
+  time is lost is never taken for none. The
   `teardown_id` frees only its own processing slot (`releaseAvSlot`) and authorizes nothing else. The `incoming/`
   orphan pass's Store steps run only in a set-up Store and checkpoint only under the live claim taken after
   the latest restore (`incomingSweepClaim`, `incomingClassify`, `incomingSwept`), and classify as orphans only

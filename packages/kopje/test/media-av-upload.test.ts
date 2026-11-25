@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DOOMED_AT } from "../src/domain/media";
 import {
   deleteOwnerMedia,
   ownerMedia,
@@ -11,12 +12,13 @@ import {
 } from "../src/domain/media-processing";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
 import { fileKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
+import { readRestore } from "../src/platform/restore-marker";
 import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { ownerRun } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
 import { imageUpload } from "./av-posting-helpers";
-import { BUILD, deferred, rejectionOf, testKernel } from "./helpers";
+import { BUILD, deferred, holdingMarker, rejectionOf, testKernel } from "./helpers";
 import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS } from "./media-helpers";
 import {
   ACTIVE,
@@ -288,6 +290,7 @@ describe("another account's upload is never normalized or read past its owner ch
 });
 
 describe("a restore marker that cannot be read (code review r1 M2)", () => {
+  const MONTHLY = { instance: 1_000_000, account: 1_000_000 };
   async function unreadable<T>(w: AvWorld, run: () => Promise<T>, body = "{"): Promise<T> {
     const key = restoreMarkerKey(w.store.id.toString());
     await env.MEDIA.put(key, body);
@@ -308,44 +311,200 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
     ["a negative time", '{"at":-1}'],
     ["a fractional time", '{"at":0.5}'],
     ["a time past the safe integers", '{"at":9007199254740992}'],
-  ])(
-    "refuses GET, PUT and DELETE of an upload K3 could act on with a 503, and writes nothing: %s",
-    async (_name, body) => {
-      for (const make of [staged, queued, started]) {
+  ])("refuses with a 503 the owner's operations K3 decides, and writes nothing: %s", async (_name, body) => {
+    // GET and PUT of a pending or running upload (K3 fails it `restored`), DELETE of a staging one (K3 deletes it).
+    const cases: [typeof staged, ("get" | "put" | "del")[]][] = [
+      [queued, ["get", "put"]],
+      [started, ["get", "put"]],
+      [staged, ["del"]],
+    ];
+    for (const [make, ops] of cases) {
+      const w = await avWorld();
+      const up = await make(w);
+      const taken = await bookmark(w.store);
+      await restore(w.store, taken, T0 + 6 * SECOND);
+      clock(T0 + 7 * SECOND);
+      const before = await held(w.store, up.id);
+      const described = await description(w, up.id);
+      const call = {
+        get: () => get(w, up.id),
+        put: () => put(w, up.id, { description: "lost" }),
+        del: () => del(w, up.id),
+      };
+      const statuses = await unreadable(
+        w,
+        async () => {
+          const answered: number[] = [];
+          for (const op of ops) {
+            answered.push((await call[op]()).status);
+          }
+          return answered;
+        },
+        body,
+      );
+      expect(statuses).toEqual(ops.map(() => 503));
+      expect(await held(w.store, up.id)).toEqual(before);
+      expect(await description(w, up.id)).toBe(described);
+    }
+  });
+
+  it("reads an R2 failure, of the get or of the body, as an unknown marker", async () => {
+    const failing = (reason: string) => Promise.reject(new Error(reason));
+    const buckets = [
+      { get: () => failing("get") },
+      { get: () => Promise.resolve({ text: () => failing("body") }) },
+      { get: () => Promise.resolve({ text: () => Promise.resolve('{"at":5}') }) },
+      { get: () => Promise.resolve(null) },
+    ];
+    const read = await Promise.all(buckets.map((bucket) => readRestore(bucket as unknown as R2Bucket, "k")));
+    expect(read).toEqual(["unknown", "unknown", 5, null]);
+  });
+
+  // The rule (code review r4): an operation asks for the marker only where K3's answer would change its reply or its
+  // committed state; what every K3 outcome answers alike is decided without it.
+  describe("what every K3 outcome answers alike, under an unknown marker (code review r4)", () => {
+    it("answers a staging reservation's GET and PUT 404 and a v2 upload's at its deadline_at 422, writing nothing", async () => {
+      const w = await avWorld();
+      const stagedUp = await staged(w);
+      const w2 = await avWorld();
+      const overdue = await queued(w2);
+      clock(T0 + 5 * SECOND);
+      const before = await held(w.store, stagedUp.id);
+      const described = await description(w, stagedUp.id);
+      const statuses = await unreadable(
+        w,
+        async () => [(await get(w, stagedUp.id)).status, (await put(w, stagedUp.id, { description: "lost" })).status],
+        "{}",
+      );
+      expect(statuses).toEqual([404, 404]);
+      expect(await held(w.store, stagedUp.id)).toEqual(before);
+      expect(await description(w, stagedUp.id)).toBe(described);
+      const late = await held(w2.store, overdue.id);
+      clock(late.row!.deadline_at!);
+      const failedStatuses = await unreadable(
+        w2,
+        async () => [(await get(w2, overdue.id)).status, (await put(w2, overdue.id, { description: "lost" })).status],
+        "{}",
+      );
+      expect(failedStatuses).toEqual([422, 422]);
+      expect(await held(w2.store, overdue.id)).toEqual(late);
+    });
+
+    it("dooms a running v1 upload on S10 and an unattached pending v2 upload on S11, the marker unknown or its read held", async () => {
+      for (const mode of ["{}", "held"] as const) {
         const w = await avWorld();
-        const up = await make(w);
-        const taken = await bookmark(w.store);
-        await restore(w.store, taken, T0 + 6 * SECOND);
-        clock(T0 + 7 * SECOND);
-        const before = await held(w.store, up.id);
-        const described = await description(w, up.id);
-        const statuses = await unreadable(
-          w,
-          async () => [
-            (await get(w, up.id)).status,
-            (await put(w, up.id, { description: "lost" })).status,
-            (await del(w, up.id)).status,
-          ],
-          body,
+        const running = await started(w, { v1: true });
+        const w2 = await avWorld();
+        const pending = await queued(w2);
+        clock(T0 + 5 * SECOND);
+        const before = [await held(w.store, running.id), await held(w2.store, pending.id)];
+        const calls: (() => Promise<unknown>)[] = [
+          () => w.store.v1Final(BUILD, { id: running.id, token: running.token }),
+          () => w2.store.deleteAvUpload(BUILD, { credential: w2.alice, id: pending.id }),
+        ];
+        const answers: unknown[] = [];
+        for (const [i, call] of calls.entries()) {
+          const world = i === 0 ? w : w2;
+          if (mode === "{}") {
+            answers.push(await unreadable(world, call, "{}"));
+          } else {
+            answers.push(await holdingMarker(world.store, call));
+          }
+        }
+        expect(answers, mode).toEqual(
+          mode === "{}"
+            ? [{ status: 503 }, { status: "ok", value: "deleted" }]
+            : [
+                { answer: { status: 503 }, reads: 0 },
+                { answer: { status: "ok", value: "deleted" }, reads: 0 },
+              ],
         );
-        expect(statuses).toEqual([503, 503, 503]);
-        expect(await held(w.store, up.id)).toEqual(before);
-        expect(await description(w, up.id)).toBe(described);
+        const after = [await held(w.store, running.id), await held(w2.store, pending.id)];
+        for (const [i, record] of after.entries()) {
+          // Doomed: the processing row deleted, gc_at DOOMED_AT, the slot kept.
+          expect(record, mode).toEqual({
+            row: null,
+            slot: before[i]!.slot,
+            att: { ...before[i]!.att, gc_at: DOOMED_AT },
+          });
+        }
       }
-    },
-  );
+    });
+
+    it("answers S9's ended, a late S1's gone and a stale sweep claim's stale without the marker", async () => {
+      const w = await avWorld();
+      const running = await started(w, { v1: true });
+      const w2 = await avWorld();
+      const image = await reserve(w2);
+      clock(T0 + SECOND);
+      const took = await w2.store.startTransforms(BUILD, {
+        credential: w2.alice,
+        id: image.id,
+        monthlyTransforms: MONTHLY,
+        now: Date.now(),
+      });
+      expect(took).toEqual({ status: "ok", value: { status: "ok" } });
+      const w3 = await avWorld();
+      const claimed = (await w3.store.incomingSweepClaim(BUILD)) as { claim: number };
+      expect(await w3.store.incomingSwept(BUILD, { claim: claimed.claim, cursor: "next" })).toEqual({
+        status: "swept",
+      });
+      clock(T0 + 5 * SECOND);
+      const deadline = (await held(w.store, running.id)).row!.deadline_at!;
+      const answers = [
+        await unreadable<unknown>(w, () => w.store.v1Outcome(BUILD, { id: running.id, token: "another" }), "{}"),
+        await unreadable<unknown>(
+          w2,
+          () =>
+            w2.store.takeAvSlot(BUILD, {
+              id: image.id,
+              token: image.token,
+              kind: "video",
+              v1Left: null,
+              activation: ACTIVE,
+            }),
+          "{}",
+        ),
+        await unreadable<unknown>(
+          w3,
+          async () => [
+            await w3.store.incomingClassify(BUILD, { claim: claimed.claim + 1, keys: [] }),
+            await w3.store.incomingSwept(BUILD, { claim: claimed.claim, cursor: "again" }),
+          ],
+          "{}",
+        ),
+      ];
+      clock(deadline);
+      answers.push(
+        await unreadable<unknown>(w, () => w.store.v1Outcome(BUILD, { id: running.id, token: running.token }), "{}"),
+      );
+      expect(answers).toEqual([
+        { status: "ended" },
+        { status: "gone" },
+        [{ status: "stale" }, { status: "stale" }],
+        { status: "ended" },
+      ]);
+    });
+
+    it("commits the sweep's claim while the marker read is held", async () => {
+      const w = await avWorld();
+      const claimed = await holdingMarker<unknown>(w.store, () => w.store.incomingSweepClaim(BUILD));
+      expect(claimed).toMatchObject({ answer: { status: "claimed" }, reads: 0 });
+      expect(await w.store.incomingSweepClaim(BUILD)).toEqual({ status: "not_due" });
+    });
+  });
 
   // One rule for every reader of the marker (code review r3): an unknown marker ({} here, on a writable Store) refuses
   // only an answer or a write K3 could change, with the transient refusal (503); one K3 cannot change answers as before.
   describe("an unknown marker on a writable Store (code review r3)", () => {
     const transient = async (call: Promise<unknown>) => toStoreUnavailable(await rejectionOf(call))?.reason;
-    const MONTHLY = { instance: 1_000_000, account: 1_000_000 };
 
     it("answers what K3 cannot change: S10's and S9's completed upload, a completed S6 replay, S8 after completion, the sweep's claim", async () => {
       const w = await avWorld();
       const up = await completed(w, { v1: true });
       clock(T0 + 5 * SECOND);
       const queuedUp = await held(w.store, up.id);
+      expect(queuedUp.slot).toMatchObject({ phase: "processing", teardown_id: up.teardownId });
       const answers = await unreadable<unknown>(
         w,
         async () => [
@@ -360,6 +519,9 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
       );
       expect(answers).toEqual([200, "done", "done", "released", "claimed"]);
       expect(queuedUp.row).toBeNull();
+      // S8 deleted the slot, and the claim is recorded: the next one is not due.
+      expect((await held(w.store, up.id)).slot).toBeNull();
+      expect(await w.store.incomingSweepClaim(BUILD)).toEqual({ status: "not_due" });
     });
 
     it("refuses what K3 could change, for an unfinished upload, with the transient refusal", async () => {
@@ -369,13 +531,21 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
       const pending = await queued(w2);
       const w3 = await avWorld();
       const candidate = await reserve(w3);
+      const w4 = await avWorld();
+      const stagedUp = await staged(w4);
+      const w5 = await avWorld();
+      const overdue = await started(w5, { v1: true });
       clock(T0 + 5 * SECOND);
-      const before = [await held(w.store, running.id), await held(w2.store, pending.id)];
+      const before = [
+        await held(w.store, running.id),
+        await held(w2.store, pending.id),
+        await held(w4.store, stagedUp.id),
+        await held(w5.store, overdue.id),
+      ];
       const refusals = [
         ...(await unreadable(
           w,
           async () => [
-            await transient(w.store.v1Final(BUILD, { id: running.id, token: running.token })),
             await transient(w.store.v1Outcome(BUILD, { id: running.id, token: running.token })),
             await transient(
               w.store.completeAvUpload(BUILD, {
@@ -393,9 +563,14 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
           w2,
           async () => [
             await transient(w2.store.releaseAvSlot(BUILD, { id: pending.id, teardownId: pending.teardownId })),
-            // The owner's own S11 as a Store call: the same refusal the route answers 503 with.
-            await transient(w2.store.deleteAvUpload(BUILD, { credential: w2.alice, id: pending.id })),
           ],
+          "{}",
+        )),
+        // The owner's own S11 as a Store call, the refusal the route answers 503 with: of a staging reservation (K3
+        // deletes it, so S11 dooms it) and of a v1 upload at its deadline_at (K4 dooms it: 404; K3 fails it: 200).
+        ...(await unreadable(
+          w4,
+          async () => [await transient(w4.store.deleteAvUpload(BUILD, { credential: w4.alice, id: stagedUp.id }))],
           "{}",
         )),
         ...(await unreadable(
@@ -413,8 +588,21 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
           "{}",
         )),
       ];
+      clock(before[3]!.row!.deadline_at!);
+      refusals.push(
+        ...(await unreadable(
+          w5,
+          async () => [await transient(w5.store.deleteAvUpload(BUILD, { credential: w5.alice, id: overdue.id }))],
+          "{}",
+        )),
+      );
       expect(refusals).toEqual(Array.from({ length: 7 }, () => "transient"));
-      expect([await held(w.store, running.id), await held(w2.store, pending.id)]).toEqual(before);
+      expect([
+        await held(w.store, running.id),
+        await held(w2.store, pending.id),
+        await held(w4.store, stagedUp.id),
+        await held(w5.store, overdue.id),
+      ]).toEqual(before);
     });
 
     it("refuses the processor's fence-dependent writes S1-S5 and S7 and the sweep's checkpoint, writing nothing", async () => {

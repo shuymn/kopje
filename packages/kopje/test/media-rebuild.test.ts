@@ -19,7 +19,7 @@ import { type AccessTeam, adminClaims, adminHarness, adminTeam, serviceClaims, s
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { ANIMATED_WEBP, JPEG_ORIENTATION_6, PNG_PLAIN, WIDE_PNG } from "./fixtures/images";
-import { BUILD, completeSetup, deferred, migratedStore, rejectionOf } from "./helpers";
+import { BUILD, completeSetup, deferred, holdingMarker, migratedStore, rejectionOf } from "./helpers";
 import { pngOf, pngOfBytes } from "./local-emoji-helpers";
 import { atStoreTime, bytes, framesKeepingCodec, recordRgba, TestCodec } from "./media-helpers";
 import {
@@ -539,6 +539,33 @@ describe("media rebuild authorization", () => {
     expect(await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "next" })).toMatchObject({
       status: "ok",
     });
+  });
+
+  it("releases a lease while the marker read is held, and answers an active restore without the marker (code review r4)", async () => {
+    const h = await setup();
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    expect(await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h" })).toMatchObject({ status: "ok" });
+    expect(
+      await holdingMarker<unknown>(h.store, () =>
+        h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h", generation: 1, release: true }),
+      ),
+    ).toEqual({ answer: { status: "released" }, reads: 0 });
+    expect(await leaseRow(h.store)).toEqual([expect.objectContaining({ holder: "h", until: 0 })]);
+    await runInDurableObject(h.store, (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO kopje_state (name, value) VALUES ('pitr_restoring', ?)",
+        JSON.stringify({ at: Date.now() }),
+      );
+    });
+    const key = restoreMarkerKey(h.store.id.toString());
+    await env.MEDIA.put(key, "{}");
+    try {
+      expect(await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "next" })).toEqual({
+        status: "restoring",
+      });
+    } finally {
+      await env.MEDIA.delete(key);
+    }
   });
 
   it("has the Store check the admin again where it writes", async () => {
