@@ -16,7 +16,7 @@ import {
 } from "../domain/media-processing";
 import { activationProbe, type ContainerControl, pngSize } from "../mastodon/media-activation";
 import { avVerifier, STILL_OUTPUT_LIMIT, verifyStill } from "../platform/av-bytes";
-import { within } from "../platform/deadline";
+import { inTime } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { type ImageCodec, type Size, stillPreview } from "../platform/images";
 import { fileKey, incomingKey, originalKey } from "../platform/media-files";
@@ -443,7 +443,8 @@ async function verifyInto(
 // A video's preview from its still: charged right before stillPreview, or none (the poster) when the budgets have no
 // room or Images does not make it. Images refusing a PNG verifyStill passed (9412, 9413, 9520) says the profile's
 // stills are not usable: recorded as an infrastructure failure, which has the probe round probe again; 9422 is not.
-// Every Store call is raced against the preview's cut `end`: past it the poster stands, and a late answer is ignored.
+// Every Store and Images call is raced against the preview's cut `end`: past it the poster stands, and an answer
+// settling at or past it is ignored, even before the timer fires.
 async function poster(deps: UploadDeps, job: UploadJob, end: number, png: Uint8Array): Promise<Preview | null> {
   const charging: Promise<{ status: string }> = deps.store.chargeAvPoster(deps.build, {
     id: job.id,
@@ -461,7 +462,7 @@ async function poster(deps: UploadDeps, job: UploadJob, end: number, png: Uint8A
       pngSize(png),
       { end, now: deps.now },
       STILL_OUTPUT_LIMIT,
-      (work) => within(work, end, deps.now),
+      (work) => inTime(work, end, deps.now),
     );
     if (made.ok) {
       return { bytes: made.small.bytes, width: made.small.width, height: made.small.height, blurhash: made.blurhash };

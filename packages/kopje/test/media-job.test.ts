@@ -394,7 +394,7 @@ describe("the upload's still (G2-3, C2-M4)", () => {
   async function timed(options: {
     replyAt: (at: { still: number; deadline: number }) => number;
     transferMs: number;
-    images: "healthy" | "held";
+    images: "healthy" | "held" | "late";
     completeMs?: { original?: number; full?: number };
   }) {
     const w = await avWorld();
@@ -413,6 +413,15 @@ describe("the upload's still (G2-3, C2-M4)", () => {
         }
       };
     }
+    if (options.images === "late") {
+      // The output's info() answers once the faked clock is past the preview's cut, before the guard's timer fires.
+      const info = codec.info.bind(codec);
+      codec.info = async (bytes) => {
+        const answer = await info(bytes);
+        clock(outputCut(allocation, "preview", reply + options.transferMs) + 1);
+        return answer;
+      };
+    }
     const { bucket, log } = multipartLog(options.completeMs === undefined ? {} : { completeMs: options.completeMs });
     const output = await avFixture("r1-av.mp4");
     const fake = fakeControl(
@@ -427,6 +436,7 @@ describe("the upload's still (G2-3, C2-M4)", () => {
       completes: log.filter((entry) => entry.startsWith("complete:")),
       blurhash: (await objects(up.id, up.token)).small?.customMetadata?.blurhash ?? null,
       stillAsked: fake.calls.includes("GET /normalize/still"),
+      previewed: (await objects(up.id, up.token)).small !== null,
       left: allocation.deadline - Date.now(),
     };
   }
@@ -480,6 +490,14 @@ describe("the upload's still (G2-3, C2-M4)", () => {
       transferMs: 7000,
       images: "healthy" as const,
       expected: { completed: true, blurhash: null, stillAsked: false },
+    },
+    {
+      // LOW (r3): Images' answer settling past the preview's cut is not used, as race() does with the Store's.
+      name: "Images' info() answering after the preview's cut (r3 LOW): S6 with the poster, no preview",
+      replyAt: (at: { still: number }) => at.still - 50,
+      transferMs: 0,
+      images: "late" as const,
+      expected: { completed: true, previewed: false },
     },
   ])("$name", async (row) => {
     const result = await timed(row);
