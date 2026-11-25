@@ -103,6 +103,27 @@ describe("an edit's media (P10)", () => {
     expect(await edit(w, status.id, { status: "x", media_ids: [status.media[1]] })).toMatchObject({ status: 200 });
   });
 
+  it("refuses a redraft of a converted set as any new set, its media still the owner's (code review r1 M4)", async () => {
+    const w = await avWorld();
+    clock(T0 + SECOND);
+    const status = await convertedStatus(w);
+    const deleted = await w.h.request(
+      `/api/v1/statuses/${status.id}`,
+      bearer(w.h.users.alice.token, { method: "DELETE" }),
+    );
+    expect(deleted.status).toBe(200);
+    expect(await postAs(w, { status: "redrafted", media_ids: status.media })).toEqual({
+      status: 422,
+      body: IMAGES_AND_VIDEO,
+    });
+    // The media the deletion detached is still served to its owner, to post again as a set Mastodon takes.
+    for (const id of status.media) {
+      const shown = await w.h.request(`/api/v1/media/${id}`, bearer(w.h.users.alice.token));
+      expect(shown.status).toBe(200);
+    }
+    expect((await postAs(w, { status: "the clip", media_ids: [status.media[1]] })).status).toBe(200);
+  });
+
   it("refuses an upload still processing with not_ready, and finds neither an old image reservation nor bob's", async () => {
     const w = await avWorld();
     const pending = await queued(w);
