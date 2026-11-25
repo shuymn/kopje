@@ -6,6 +6,7 @@ import {
   type AvWrite,
   encodeLeft,
   type Endpoint,
+  outputCuts,
   type ProcessorFailure,
   remainingOf,
   T_MIN_ENCODE,
@@ -35,8 +36,9 @@ import type { StoreStub } from "../platform/store-client";
 // input, or failed it as A5 states), `envelope`, `verifier` (the output refused: no upload is completed), `timeout` (a
 // stage cut passed before the job's deadline), `unavailable` (any other failure: the processor, R2, or an unconfirmed
 // stop). Nothing is retried. Every wait on the container ends at a cut on the processor's clock, whatever the
-// container does (R9 chooses its timing): its reply by the work deadline (the still's cut), the output's body and the
-// still by the preview stage's cut, which leaves T_COMMIT for the stop and the writes. Past a cut the container's
+// container does (R9 chooses its timing): its reply by the work deadline (the still's cut), the output's body by
+// T_TRANSFER after it, and the still and its preview by the cut that leaves the rest of T_COMMIT for the stop and the
+// writes (outputCuts). Past a cut the container's
 // requests are aborted and the job ends as `timeout` (the Store records `deadline` instead once deadline_at has passed,
 // K4).
 //
@@ -113,6 +115,7 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     job.deadline + (job.endpoint === "v1" ? T_REPLY : 0),
     job.inputBytes,
   );
+  const output = outputCuts(allocation);
   const uploads: R2MultipartUpload[] = [];
   const stage = { name: "start", at: deps.now() };
   // Where the job is, for its log events: the stage and the time since it began.
@@ -189,7 +192,7 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     const verified = await bounded(
       deps,
       verifyInto(result, uploads as [R2MultipartUpload, R2MultipartUpload]),
-      allocation.cuts.preview,
+      output.transfer,
       cut,
     );
     if ("rule" in verified) {
@@ -199,9 +202,8 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     // A video's still; the adapter answers null for audio, which has none (Kopje-Still is a video's header).
     stage.name = "still";
     stage.at = deps.now();
-    const png = await bounded(deps, result.still(), allocation.cuts.preview, cut);
-    const preview =
-      png !== null && verifyStill(png) === null ? await poster(deps, job, allocation.cuts.preview, png) : null;
+    const png = await bounded(deps, result.still(), output.preview, cut);
+    const preview = png !== null && verifyStill(png) === null ? await poster(deps, job, output.preview, png) : null;
     // D4: the container stops before any final write.
     stage.name = "commit";
     stage.at = deps.now();

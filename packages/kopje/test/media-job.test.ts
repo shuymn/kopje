@@ -11,6 +11,11 @@ import { BUILD } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { fakeControl, jobOf, multipartLog, putInput, stillPng, uploadDeps } from "./media-job-helpers";
 import { avWorld, clock, held, HOUR, started } from "./media-processing-helpers";
+
+// The plan's T_COMMIT and the output transfer's share of it (domain/media-processing.ts).
+const T_COMMIT_MS = 6000;
+const T_TRANSFER_MS = 5000;
+type Cuts = { still: number; transfer: number; preview: number };
 import { encodeWebp } from "./webp-fixtures";
 
 // runUpload (jobs/media-jobs.ts, the PR4 plan's 1.3 D3-D7) through the production Store and the media bucket, the
@@ -265,24 +270,52 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     expect(fake.calls).not.toContain("GET /normalize/still");
   });
 
-  it("gives a preview stage begun at its planned start a blurhash, and none with 2 s left before its cut", async () => {
-    async function blurhashWith(begin: (cuts: Record<string, number>) => number) {
-      const w = await avWorld();
-      const up = await started(w);
-      await putInput(up.id);
-      const job = await jobOf(w, up);
-      const { cuts } = allocate("v2", Date.now(), job.deadline, job.inputBytes);
-      const output = await avFixture("r1-av.mp4");
-      const fake = fakeControl(
-        { output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() },
-        { onStill: () => clock(begin(cuts)) },
-      );
-      await runUpload(uploadDeps(w, fake.control), job);
-      return (await objects(up.id, up.token)).small?.customMetadata?.blurhash;
-    }
-    // The still's cut is the preview stage's planned start.
-    expect(await blurhashWith((cuts) => cuts.still!)).toMatch(/^.{6,}$/);
-    expect(await blurhashWith((cuts) => cuts.preview! - 2000)).toBe("");
+  // In execution order (M3): the output's transfer has T_TRANSFER from the still's cut, then the still and its preview
+  // until T_COMMIT less T_TRANSFER before the deadline, which is left for the stop and the writes.
+  async function blurhashWith(options: {
+    replyAt?: (cut: Cuts) => number;
+    transferMs?: number;
+    stillAt?: (cut: Cuts) => number;
+  }) {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const job = await jobOf(w, up);
+    const { cuts, deadline } = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const at: Cuts = {
+      still: cuts.still,
+      transfer: cuts.still + T_TRANSFER_MS,
+      preview: deadline - (T_COMMIT_MS - T_TRANSFER_MS),
+    };
+    const output = await avFixture("r1-av.mp4");
+    const fake = fakeControl(
+      { output, durationMs: String(await durationMs("r1-av.mp4")), still: await stillPng() },
+      {
+        ...(options.replyAt === undefined ? {} : { onReply: () => clock(options.replyAt!(at)) }),
+        ...(options.transferMs === undefined ? {} : { transferMs: options.transferMs }),
+        ...(options.stillAt === undefined ? {} : { onStill: () => clock(options.stillAt!(at)) }),
+      },
+    );
+    await runUpload(uploadDeps(w, fake.control), job);
+    return {
+      held: await held(w.store, up.id),
+      blurhash: (await objects(up.id, up.token)).small?.customMetadata?.blurhash,
+    };
+  }
+
+  it("gives a preview begun after the whole transfer a blurhash, and none with 2 s left before its cut", async () => {
+    expect((await blurhashWith({ stillAt: (at) => at.transfer })).blurhash).toMatch(/^.{6,}$/);
+    expect((await blurhashWith({ stillAt: (at) => at.preview - 2000 })).blurhash).toBe("");
+  });
+
+  it("completes an output whose headers come 50 ms before the still's cut and whose body takes 4.2 s (M3)", async () => {
+    const { held: after } = await blurhashWith({ replyAt: (at) => at.still - 50, transferMs: 4200 });
+    expect(after.att).toMatchObject({ processed: 1 });
+  });
+
+  it("keeps a healthy blurhash after a 1.2 s transfer that began at the still's cut (M3)", async () => {
+    const { blurhash } = await blurhashWith({ replyAt: (at) => at.still - 50, transferMs: 1200 });
+    expect(blurhash).toMatch(/^.{6,}$/);
   });
 });
 

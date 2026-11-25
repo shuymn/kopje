@@ -11,7 +11,7 @@ import { sql } from "./api-helpers";
 import { BUILD } from "./helpers";
 import { pngOf } from "./local-emoji-helpers";
 import { TestCodec } from "./media-helpers";
-import type { AvWorld, Started } from "./media-processing-helpers";
+import { type AvWorld, clock, type Started } from "./media-processing-helpers";
 
 // The processor's side of an upload for jobs/media-jobs.ts runUpload, with a container answering as
 // container/server/main.go does and recording what was asked of it.
@@ -38,6 +38,9 @@ export function fakeControl(
     ready?: Fetcher | "wrong" | null | undefined;
     // Run as the still is asked for.
     onStill?: () => void;
+    // Run as /normalize answers (its headers), and the time its body takes after them on the faked clock.
+    onReply?: () => void;
+    transferMs?: number;
   } = {},
 ) {
   const calls: string[] = [];
@@ -61,9 +64,21 @@ export function fakeControl(
       const output = answer.output ?? new Uint8Array();
       const type = answer.type ?? "video/mp4";
       const sent = answer.truncateAt === undefined ? output : output.subarray(0, answer.truncateAt);
+      options.onReply?.();
+      const half = sent.byteLength >> 1;
+      let pulled = 0;
       const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(sent);
+        pull(controller) {
+          pulled++;
+          if (pulled === 1) {
+            controller.enqueue(options.transferMs === undefined ? sent : sent.subarray(0, half));
+            return;
+          }
+          if (options.transferMs !== undefined && pulled === 2) {
+            clock(Date.now() + options.transferMs);
+            controller.enqueue(sent.subarray(half));
+            return;
+          }
           if (answer.emptyTail === true) {
             controller.enqueue(new Uint8Array(0));
           }

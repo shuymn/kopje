@@ -76,6 +76,15 @@ export const T_STILL = SECOND;
 const T_PREVIEW = 3 * SECOND;
 // The output into R2, the confirmed stop, three S5 calls and writes, and S6.
 const T_COMMIT = 6 * SECOND;
+// Of T_COMMIT, the output's transfer into R2 (its 4.5 s p95 rounded up), which the processor makes right after the
+// container's reply, before the still and the preview; the rest is the stop, the S5 calls, the writes and S6.
+export const T_TRANSFER = 5 * SECOND;
+
+// The processor's own cuts after the container's reply, in the order it runs them (#1828 fix r1 M3): the transfer has
+// T_TRANSFER from the still's cut, then the still and its preview until T_COMMIT less T_TRANSFER before the deadline.
+export function outputCuts(allocation: Pick<Allocation, "cuts" | "deadline">): { transfer: number; preview: number } {
+  return { transfer: allocation.cuts.still + T_TRANSFER, preview: allocation.deadline - (T_COMMIT - T_TRANSFER) };
+}
 // Sending S10 and its answer (v1).
 export const T_REPLY = 2 * SECOND;
 export const T_MIN_ENCODE = 5 * SECOND;

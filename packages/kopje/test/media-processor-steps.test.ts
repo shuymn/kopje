@@ -1,7 +1,13 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { allocate, HARD_HOLD_MS, INCOMING_ORPHAN_AGE_MS, V2_PROCESS_MS } from "../src/domain/media-processing";
+import {
+  allocate,
+  HARD_HOLD_MS,
+  INCOMING_ORPHAN_AGE_MS,
+  outputCuts,
+  V2_PROCESS_MS,
+} from "../src/domain/media-processing";
 import { incomingOrphans } from "../src/jobs/media-jobs";
 import { incomingKey } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
@@ -262,9 +268,9 @@ describe("table 1.3 D3: every wait on the container ends at its cut", () => {
   it.each([
     // The container takes the input and never answers: the reply's cut is the work deadline (the still's cut).
     { hang: "reply" as const, cut: "still" as const, uploads: [] as string[] },
-    // The container answers and stalls mid-body: the body's cut is the preview stage's, and both uploads are aborted.
-    { hang: "body" as const, cut: "preview" as const, uploads: ["full", "original"] },
-    // The still is never answered: its cut is the preview stage's too.
+    // The container answers and stalls mid-body: the body's cut is the transfer's, and both uploads are aborted.
+    { hang: "body" as const, cut: "transfer" as const, uploads: ["full", "original"] },
+    // The still is never answered: its cut is the preview's, which leaves the stop and the writes their time.
     { hang: "still" as const, cut: "preview" as const, uploads: ["full", "original"] },
   ])("a container that hangs at its $hang ends at the $cut cut as timeout, stopped, its slot released", async (c) => {
     const w = await avWorld();
@@ -279,7 +285,8 @@ describe("table 1.3 D3: every wait on the container ends at its cut", () => {
       "SELECT input_bytes FROM media_processing WHERE media_id = ?",
       up.id,
     );
-    const cut = allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes).cuts[c.cut];
+    const allocation = allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes);
+    const cut = c.cut === "still" ? allocation.cuts.still : outputCuts(allocation)[c.cut];
     // The wait the hang is raced against ends at the cut.
     expect(p.lastWait()).toBe(cut);
     expect(cut).toBeLessThan(row.deadline_at!);
