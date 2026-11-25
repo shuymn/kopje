@@ -6,13 +6,14 @@ import {
   type AvWrite,
   encodeLeft,
   type Endpoint,
-  outputCut,
   T_PREVIEW_MIN,
+  previewCut,
   type ProcessorFailure,
   remainingOf,
   T_MIN_ENCODE,
   T_REPLY,
   T_STILL,
+  transferCut,
 } from "../domain/media-processing";
 import { activationProbe, type ContainerControl, pngSize } from "../mastodon/media-activation";
 import { avVerifier, STILL_OUTPUT_LIMIT, verifyStill } from "../platform/av-bytes";
@@ -39,7 +40,7 @@ import type { StoreStub } from "../platform/store-client";
 // stop). Nothing is retried. Every wait from the container's start to D4 (R2, the Store, the container: R9 chooses its
 // timing) goes through one race against the current stage's cut on the processor's clock (`race`): the input and the
 // reply by the work deadline (the still's cut), the multipart creations, the body and its parts by the transfer's cut,
-// and the still, the poster's charge and its preview by the preview's cut (outputCut, allocated backwards from the
+// and the still, the poster's charge and its preview by the preview's cut (transferCut, previewCut, allocated backwards from the
 // deadline: the transfer until T_FINISH before it, the optional preview T_PREVIEW from its start within the same
 // bound, skipped with less than T_PREVIEW_MIN left). A result that arrives at or after its cut is cleaned up when it
 // does (an upload aborted, a body cancelled, a Store answer ignored). Past a required wait's cut the container's requests
@@ -261,7 +262,7 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     unread = { file: result.file, cut };
     stage.name = "output";
     stage.at = deps.now();
-    const transferEnd = outputCut(allocation, "transfer", stage.at);
+    const transferEnd = transferCut(allocation);
     const type = { httpMetadata: { contentType: result.type } };
     await begin("original", originalKey(job.id), type, transferEnd, cut);
     await begin("full", fileKey(job.token, "full"), type, transferEnd, cut);
@@ -280,7 +281,7 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     // A video's still; the adapter answers null for audio, which has none (Kopje-Still is a video's header).
     stage.name = "still";
     stage.at = deps.now();
-    const previewEnd = outputCut(allocation, "preview", stage.at);
+    const previewEnd = previewCut(allocation, stage.at);
     // The still and its preview are optional: begun only with T_PREVIEW_MIN left; past their cut the upload goes on with
     // its poster, the container's still request aborted, and so it does when the still fails before it (a reply, a
     // body or a read outside the still's contract). The activation probe holds the still to its contract instead.

@@ -91,12 +91,14 @@ export const T_PREVIEW_MIN = T_PREVIEW - 2 * SECOND;
 
 // The processor's cuts after the container's reply, allocated backwards from the deadline (#1828 PR4-2 fix r3): the
 // transfer is mandatory and ends only at the deadline less T_FINISH, so it may use what the encode left; the still
-// and its preview are optional, begun after the transfer, and end T_PREVIEW from their start but never past the
-// deadline less T_FINISH (`start` is the stage's start; the transfer's cut does not depend on it).
-export function outputCut(allocation: Pick<Allocation, "deadline">, stage: "transfer" | "preview", start: number) {
-  return stage === "transfer"
-    ? allocation.deadline - T_FINISH
-    : Math.min(start + T_PREVIEW, allocation.deadline - T_FINISH);
+// and its preview are optional, begun after the transfer at `start`, and end T_PREVIEW from it but never past the
+// transfer's cut.
+export function transferCut(allocation: Pick<Allocation, "deadline">): number {
+  return allocation.deadline - T_FINISH;
+}
+
+export function previewCut(allocation: Pick<Allocation, "deadline">, start: number): number {
+  return Math.min(start + T_PREVIEW, transferCut(allocation));
 }
 // Sending S10 and its answer (v1).
 export const T_REPLY = 2 * SECOND;

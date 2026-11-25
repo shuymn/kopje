@@ -5,7 +5,8 @@ import {
   allocate,
   HARD_HOLD_MS,
   INCOMING_ORPHAN_AGE_MS,
-  outputCut,
+  previewCut,
+  transferCut,
   V2_PROCESS_MS,
 } from "../src/domain/media-processing";
 import { incomingOrphans, R2_CALL_MS, STORE_CALL_MS } from "../src/jobs/media-jobs";
@@ -511,7 +512,12 @@ describe("table 1.3 D3: every wait on the container ends at its cut", () => {
     );
     const allocation = allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes);
     // The hang is reached at its stage's start, and the fake's clock stands still from there.
-    const cut = c.cut === "still" ? allocation.cuts.still : outputCut(allocation, c.cut, p.hungAt());
+    const cut =
+      c.cut === "still"
+        ? allocation.cuts.still
+        : c.cut === "transfer"
+          ? transferCut(allocation)
+          : previewCut(allocation, p.hungAt());
     // The wait the hang is raced against ends at the cut.
     expect(p.lastWait()).toBe(cut);
     expect(cut).toBeLessThan(row.deadline_at!);
@@ -541,7 +547,7 @@ describe("the optional preview (r3 M1)", () => {
       "SELECT input_bytes FROM media_processing WHERE media_id = ?",
       up.id,
     );
-    const cut = outputCut(allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes), "preview", p.hungAt());
+    const cut = previewCut(allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes), p.hungAt());
     expect(p.lastWait()).toBe(cut);
     p.expire(cut);
     expect(await fired).toBe("returned");
@@ -566,7 +572,11 @@ describe("the stop and the R2 waits around a cut (M2)", () => {
     const allocation = allocate("v2", Date.now(), row.deadline_at!, input!.input_bytes);
     // A stage's cut, read once the run has reached that stage (its start is now: the fake's clock stands still).
     const cutOf = (stage: "still" | "transfer" | "preview") =>
-      stage === "still" ? allocation.cuts.still : outputCut(allocation, stage, Date.now());
+      stage === "still"
+        ? allocation.cuts.still
+        : stage === "transfer"
+          ? transferCut(allocation)
+          : previewCut(allocation, Date.now());
     return { w, p, up, cutOf };
   }
 

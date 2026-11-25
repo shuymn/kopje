@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TRANSFORMS_PER_POSTER } from "../src/domain/media";
-import { allocate, outputCut } from "../src/domain/media-processing";
+import { allocate, previewCut, transferCut } from "../src/domain/media-processing";
 import { incomingOrphans, runUpload } from "../src/jobs/media-jobs";
 import { fileKey, incomingKey, originalKey, probeInputKey } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
@@ -13,7 +13,7 @@ import { fakeControl, jobOf, multipartLog, putInput, stillPng, uploadDeps } from
 import { avWorld, clock, held, HOUR, started } from "./media-processing-helpers";
 import { encodeWebp } from "./webp-fixtures";
 
-// The work deadline, the transfer's start, cut and end, and the preview's cut (outputCut), for one job.
+// The work deadline, the transfer's start, cut and end, and the preview's cut (transferCut, previewCut), for one job.
 type Cuts = { still: number; reply: number; transfer: number; transferEnd: number; preview: number };
 
 // runUpload (jobs/media-jobs.ts, the PR4 plan's 1.3 D3-D7) through the production Store and the media bucket, the
@@ -413,8 +413,8 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     expect(fake.calls).not.toContain("GET /normalize/still");
   });
 
-  // In execution order: the output's transfer from the reply's headers, then the still and its preview from the
-  // transfer's end, each stage's cut its allowance from its start but never past what the later stages keep.
+  // In execution order: the output's transfer from the reply's headers, until the deadline less what the final writes
+  // keep; then the still and its preview from the transfer's end, T_PREVIEW from it but never past the transfer's cut.
   async function blurhashWith(options: {
     replyAt?: (cut: { still: number }) => number;
     transferMs?: number;
@@ -430,9 +430,9 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     const at: Cuts = {
       still: allocation.cuts.still,
       reply,
-      transfer: outputCut(allocation, "transfer", reply),
+      transfer: transferCut(allocation),
       transferEnd,
-      preview: outputCut(allocation, "preview", transferEnd),
+      preview: previewCut(allocation, transferEnd),
     };
     const output = await avFixture("r1-av.mp4");
     const fake = fakeControl(
@@ -485,7 +485,7 @@ describe("the upload's still (G2-3, C2-M4)", () => {
       const info = codec.info.bind(codec);
       codec.info = async (bytes) => {
         const answer = await info(bytes);
-        clock(outputCut(allocation, "preview", reply + options.transferMs) + 1);
+        clock(previewCut(allocation, reply + options.transferMs) + 1);
         return answer;
       };
     }
@@ -500,7 +500,7 @@ describe("the upload's still (G2-3, C2-M4)", () => {
               guard: (work) =>
                 encoding.guard!(async () => {
                   const answer = await work();
-                  clock(outputCut(allocation, "preview", reply + options.transferMs) + 1);
+                  clock(previewCut(allocation, reply + options.transferMs) + 1);
                   return answer;
                 }),
             });
