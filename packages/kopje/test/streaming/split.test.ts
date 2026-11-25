@@ -863,7 +863,7 @@ describe("the turn's payload budget", () => {
   // A turn nearly spent by plain events still starts a unit while UNIT_WORST.bytes is left; the event whose payload
   // passes STREAM_LIMITS.payloadBytes (a quote whose eight descriptions are control characters) is presented, charged
   // whole and skipped, which ends the turn; a small status written after it waits for the next turn. The turn's charge
-  // stays within its hard bound (18,726,512 bytes: test/status-bounds.test.ts, "the most a turn presents").
+  // stays within its hard bound (18,726,544 bytes: test/status-bounds.test.ts, "the most a turn presents").
   it("charges a skipped unit whole and starts no unit after it, within the turn's hard bound", async () => {
     const h = await community(["alice"]);
     const [viewer] = await accounts(h, 1, "4");
@@ -951,7 +951,7 @@ describe("the turn's payload budget", () => {
       expect(leftAfterSent).toBeLessThan(skippedPayload);
       const charged = TURN_BUDGET.bytes - leftAfterSent + skippedPayload;
       expect(charged).toBeGreaterThan(TURN_BUDGET.bytes);
-      expect(charged).toBeLessThanOrEqual(18_726_512);
+      expect(charged).toBeLessThanOrEqual(18_726_544);
       await takeAll(inbox);
       await turn(h);
       await echo(inbox);

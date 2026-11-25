@@ -454,6 +454,7 @@ type Parts = {
   source?: string | null;
   media: {
     type?: string;
+    contentType?: string | null;
     url: string;
     preview: string | null;
     description: string;
@@ -493,14 +494,15 @@ async function storedStatus(t: Setup, author: string, parts: Parts): Promise<str
   for (const [position, m] of parts.media.entries()) {
     await sql(
       t.store,
-      `INSERT INTO media_attachments (id, account_id, status_id, position, type, url, preview_url, description, meta,
-				focus_x, focus_y, blurhash)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, -1, -1, ?)`,
+      `INSERT INTO media_attachments (id, account_id, status_id, position, type, content_type, url, preview_url,
+				description, meta, focus_x, focus_y, blurhash)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, -1, ?)`,
       nextId(),
       author,
       id,
       position,
       m.type ?? "image",
+      m.contentType ?? null,
       m.url,
       m.preview,
       m.description,
@@ -545,7 +547,9 @@ const padded = (base: Record<string, unknown>) =>
 // The longest dimensions presentMedia shows (an image's: any positive finite numbers, status-presenter.ts isSize), as
 // their size and aspect too: a width of 24 characters (17 significant digits below 1e-5), a height of 23 (with an
 // exponent) and so an aspect of 23 (code review r2 M2). A playable file's are whole pixels within 65,535 (isEdgeSize),
-// shorter, and its facts add less than these take, so the REST maxima's media are images.
+// shorter, and its facts add less than these take, so the REST maxima's media have an image's geometry: of type
+// 'unknown' (an import keeps it; its name is two bytes past 'image', the most JSON), but images in the raw fill, whose
+// cached files read the most from SQLite (their tokens).
 const LONGEST_SIZE = { width: 0.0000012345678901234567, height: 1.2345678901234567e100 };
 const MAX_META = padded({ original: LONGEST_SIZE, small: LONGEST_SIZE });
 
@@ -609,11 +613,13 @@ async function maximalParts(t: Setup, fill: Fill = "escaped", kind: "rest" | "no
     content,
     source: content,
     spoiler: fill === "raw" ? "x".repeat(SPOILER_BYTES - 2) : C.repeat(Math.floor((SPOILER_BYTES - 2) / 6)),
-    // Images at the longest presented meta (MAX_META), or for a Note videos with their facts (MAX_AV_META: the cutover
-    // may keep four in one status), URLs at their byte bound, of ASCII (raw) or of backslashes JSON escapes (the
-    // others); a 5x5 blurhash.
+    // Files of an image's geometry at the longest presented meta (MAX_META: 'unknown', or images in the raw fill), or
+    // for a Note MP4 videos with their facts (MAX_AV_META: the cutover may keep four in one status, and the Document
+    // writes its mediaType), URLs at their byte bound, of ASCII (raw) or of backslashes JSON escapes (the others); a
+    // 5x5 blurhash.
     media: Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => ({
-      type: kind === "note" ? "video" : "image",
+      type: kind === "note" ? "video" : fill === "raw" ? "image" : "unknown",
+      contentType: kind === "note" ? "video/mp4" : null,
       url:
         fill === "raw" ? atLimit(`https://${HOST}/m/${i}/`, MEDIA_URL_LIMIT) : escapingUrl(`https://m.example/${i}/?`),
       preview:
@@ -3180,7 +3186,7 @@ describe("the table of maxima (RES-3)", () => {
     // The conversation's spare under the ceiling (one card in that shape): at least SPARE_FLOOR (#1142), and
     // SHAPE_CEILING_PERCENT is the least whole percent that keeps it.
     const spare = LIMIT - conservative.conversation!;
-    expect(spare).toBe(69_710);
+    expect(spare).toBe(69_694);
     expect(spare).toBeGreaterThanOrEqual(SPARE_FLOOR);
     expect(ceiling(SHAPE_CEILING_PERCENT - 1) - conservative.conversation!).toBeLessThan(SPARE_FLOOR);
     expect(conservative).toEqual(CONSERVATIVE_JSON);
@@ -3254,15 +3260,15 @@ describe("the table of maxima (RES-3)", () => {
     const kinds = await streamedKinds();
     const most = Math.max(...Object.values(kinds));
     expect({ ...kinds, most }).toEqual({
-      status: 6_059_206,
-      conversation: 7_396_151,
-      notification: 6_868_523,
+      status: 6_059_222,
+      conversation: 7_396_167,
+      notification: 6_868_539,
       announcement: ANNOUNCEMENT_JSON,
-      most: 7_396_151,
+      most: 7_396_167,
     });
-    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_726_512);
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_726_544);
     const { streamed } = await measureFill("escaped");
-    expect(streamed).toEqual({ conversation: 7_313_804, conversationPayload: 8_162_316, notification: 6_156_393 });
+    expect(streamed).toEqual({ conversation: 7_313_820, conversationPayload: 8_162_332, notification: 6_156_409 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);
     expect(streamed!.conversationPayload).toBeLessThanOrEqual(2 * most + 2);
     expect(streamed!.notification).toBeLessThanOrEqual(kinds.notification);
@@ -3571,7 +3577,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
       expect({ ...measuredNote, featured: featuredBytes, whole }).toEqual({
         ...NOTE_FILLS.escaped,
         ...NOTE_COUNTS,
-        featured: 4_490_188,
+        featured: 4_490_224,
         whole: 1,
       });
     },
