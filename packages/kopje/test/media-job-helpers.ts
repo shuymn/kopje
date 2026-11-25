@@ -41,6 +41,8 @@ export function fakeControl(
     // Run as /normalize answers (its headers), and the time its body takes after them on the faked clock.
     onReply?: () => void;
     transferMs?: number;
+    // The body stays open after the output (a container still sending), until it is cancelled.
+    open?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -68,21 +70,28 @@ export function fakeControl(
       const half = sent.byteLength >> 1;
       let pulled = 0;
       const body = new ReadableStream<Uint8Array>({
-        pull(controller) {
+        pull(controller): Promise<void> | undefined {
           pulled++;
           if (pulled === 1) {
             controller.enqueue(options.transferMs === undefined ? sent : sent.subarray(0, half));
-            return;
+            return undefined;
           }
           if (options.transferMs !== undefined && pulled === 2) {
             clock(Date.now() + options.transferMs);
             controller.enqueue(sent.subarray(half));
-            return;
+            return undefined;
+          }
+          if (options.open === true) {
+            return new Promise<void>(() => {});
           }
           if (answer.emptyTail === true) {
             controller.enqueue(new Uint8Array(0));
           }
           controller.close();
+          return undefined;
+        },
+        cancel() {
+          cancels++;
         },
       });
       return new Response(body, {
@@ -97,6 +106,7 @@ export function fakeControl(
     },
   } as unknown as Fetcher;
   let stops = 0;
+  let cancels = 0;
   const control: ContainerControl = {
     ready: () => {
       calls.push("ready");
@@ -109,7 +119,7 @@ export function fakeControl(
       return options.stop?.() ?? Promise.resolve(true);
     },
   };
-  return { control, calls, stops: () => stops };
+  return { control, calls, stops: () => stops, cancels: () => cancels };
 }
 
 export async function stillPng(): Promise<Uint8Array> {
@@ -203,7 +213,10 @@ export async function truncatedStill(): Promise<Uint8Array> {
 }
 
 // The media bucket, logging each multipart upload's creation, completion and abort by its kind ("original", "full").
-export function multipartLog(fault: { failAbort?: boolean } = {}): { bucket: R2Bucket; log: string[] } {
+export function multipartLog(fault: { failAbort?: boolean; failPart?: boolean } = {}): {
+  bucket: R2Bucket;
+  log: string[];
+} {
   const log: string[] = [];
   const kind = (key: string) => (key.startsWith("originals/") ? "original" : "full");
   const bucket = new Proxy(env.MEDIA, {
@@ -218,7 +231,12 @@ export function multipartLog(fault: { failAbort?: boolean } = {}): { bucket: R2B
         return {
           key: upload.key,
           uploadId: upload.uploadId,
-          uploadPart: upload.uploadPart.bind(upload),
+          uploadPart: async (number: number, part: Uint8Array) => {
+            if (fault.failPart === true) {
+              throw new Error("r2 part failed");
+            }
+            return upload.uploadPart(number, part);
+          },
           abort: async () => {
             log.push(`abort:${kind(key)}`);
             if (fault.failAbort === true) {

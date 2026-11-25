@@ -6,7 +6,7 @@ import { allocate } from "../src/domain/media-processing";
 import { incomingOrphans, runUpload } from "../src/jobs/media-jobs";
 import { fileKey, incomingKey, originalKey, probeInputKey } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
-import { avFixture, verifyBytes } from "./av-helpers";
+import { avFixture, syntheticMp4, verifyBytes } from "./av-helpers";
 import { BUILD } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { fakeControl, jobOf, multipartLog, putInput, stillPng, uploadDeps } from "./media-job-helpers";
@@ -150,6 +150,41 @@ describe("runUpload (P12)", () => {
     expect(log.filter((entry) => entry.startsWith("complete:"))).toEqual([]);
     expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
     expect(await objects(up.id, up.token)).toMatchObject({ original: false, full: false });
+  });
+
+  it("fails a reply that rejects at its cut timeout, not unavailable", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const job = await jobOf(w, up);
+    const { cuts } = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const output = await avFixture("r1-silent.mp4");
+    const fake = fakeControl(
+      { output, durationMs: String(await durationMs("r1-silent.mp4")) },
+      {
+        onReply: () => {
+          clock(cuts.still);
+          throw new Error("connection lost");
+        },
+      },
+    );
+    await runUpload(uploadDeps(w, fake.control), job);
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
+  });
+
+  it("fails an output whose part upload R2 rejects unavailable, and cancels the container's body", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    // 300 samples of 40,000 bytes at 30 fps: 10 s and 12 MB, past one 8 MiB part.
+    const made = syntheticMp4(await avFixture("r1-silent.mp4"), { samples: 300, size: 40_000, delta: 512 });
+    const output = await new Response(made.stream()).bytes();
+    const { bucket, log } = multipartLog({ failPart: true });
+    const fake = fakeControl({ output, durationMs: "10000" }, { open: true });
+    await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, up));
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "unavailable" });
+    expect(fake.cancels()).toBe(1);
+    expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
   });
 
   it("logs a rejected abort with its key and still stops the container and records the cause (M2)", async () => {

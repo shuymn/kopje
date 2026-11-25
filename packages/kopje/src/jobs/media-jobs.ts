@@ -81,8 +81,8 @@ async function settles<T>(deps: Pick<UploadDeps, "wait">, work: Promise<T>, ms: 
   return Promise.race([work, deps.wait(ms).then((): typeof CUT => CUT)]);
 }
 
-// `work` until `end` on the processor's clock: past it (or when it settles at or after `end`), `cut` is aborted, which
-// ends the container's requests and the bodies they stream, and StageCut is thrown.
+// `work` until `end` on the processor's clock: past it (or when it settles, or rejects, at or after `end`), `cut` is
+// aborted, which ends the container's requests and the bodies they stream, and StageCut is thrown.
 async function bounded<T>(
   deps: Pick<UploadDeps, "now" | "wait">,
   work: Promise<T>,
@@ -91,7 +91,15 @@ async function bounded<T>(
 ): Promise<T> {
   work.catch(() => {});
   const left = end - deps.now();
-  const settled = left <= 0 ? CUT : await Promise.race([work, deps.wait(left).then((): typeof CUT => CUT)]);
+  let settled: T | typeof CUT;
+  try {
+    settled = left <= 0 ? CUT : await Promise.race([work, deps.wait(left).then((): typeof CUT => CUT)]);
+  } catch (error) {
+    if (deps.now() < end) {
+      throw error;
+    }
+    settled = CUT;
+  }
   if (settled === CUT || deps.now() >= end) {
     cut.abort();
     throw new StageCut();
@@ -325,10 +333,17 @@ async function verifyInto(
   const parts: [R2UploadedPart[], R2UploadedPart[]] = [[], []];
   let buffer = new Uint8Array(PART_BYTES);
   let filled = 0;
+  // An R2 part upload's rejection: R2's failure (unavailable), not the verifier's.
+  let writeFailed: { error: unknown } | null = null;
   const flush = async () => {
     const part = buffer.subarray(0, filled);
     const number = parts[0].length + 1;
-    const [a, b] = await Promise.all([original.uploadPart(number, part), full.uploadPart(number, part)]);
+    const [a, b] = await Promise.all([original.uploadPart(number, part), full.uploadPart(number, part)]).catch(
+      (error: unknown) => {
+        writeFailed = { error };
+        throw error;
+      },
+    );
     parts[0].push(a);
     parts[1].push(b);
     buffer = new Uint8Array(PART_BYTES);
@@ -354,6 +369,10 @@ async function verifyInto(
     }
   } catch {
     abort();
+    if (writeFailed !== null) {
+      await reader.cancel().catch(() => {});
+      throw (writeFailed as { error: unknown }).error;
+    }
   }
   const settled = await verdict;
   if (!settled.ok) {
