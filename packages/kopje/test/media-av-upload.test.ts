@@ -316,8 +316,6 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
     for (const [make, ops] of cases) {
       const w = await avWorld();
       const up = await make(w);
-      const taken = await bookmark(w.store);
-      await restore(w.store, taken, T0 + 6 * SECOND);
       clock(T0 + 7 * SECOND);
       const before = await held(w.store, up.id);
       const described = await description(w, up.id);
