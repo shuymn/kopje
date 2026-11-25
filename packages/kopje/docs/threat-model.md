@@ -3300,11 +3300,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the write cut lands after it, one write per grant, started at most `AV_GRANT_MS` (2 s) after the grant's Store time,
   and is served until the sweep and reconciliation remove it. Ground: such a file is reachable only through its
   unguessable file token, which only the uploader who issued the DELETE knows, and the upload is attached to nothing.
-  The object deletes the input after its terminal step, and the `incoming/` orphan pass (`incomingOrphans`, hourly from
-  the cron) lists one page of at most 1,000 `incoming/` keys a round under the Store's claim and deletes the keys the
-  Store classifies as orphans, probe copies included, checkpointing only after the delete.
-  `test/media-job-concurrency.test.ts` ("W1 and the per-write reauthorization", "a restored live run (K3) writes
-  nothing, and no third upload takes a slot before its S8"), `test/media-job.test.ts` ("incomingOrphans (G14, W3)").
+  The object deletes the input after its terminal step and keeps its record and alarm until that delete succeeds (the
+  slot released on its own), and the `incoming/` orphan pass (`incomingOrphans`, hourly from the cron) lists one page
+  of at most 1,000 `incoming/` keys a round under the Store's claim and deletes the keys the Store classifies as
+  orphans, probe copies included, checkpointing only after the delete. `test/media-job-concurrency.test.ts` ("W1 and
+  the per-write reauthorization", "a restored live run (K3) writes nothing, and no third upload takes a slot before
+  its S8"), `test/media-job.test.ts` ("incomingOrphans (G14, W3)"), `test/media-processor-steps.test.ts` ("D8: the
+  input is deleted before the record goes (M1, MEDIA-3)").
   A custom emoji upload (`kopje-admin emoji add`, `src/mastodon/emoji-upload.ts`) builds its keys as every upload's,
   from a reservation the Store records before any write (`reserveEmoji` in `src/domain/local-emojis.ts`); completion
   and promotion are one transaction (`completeEmoji`: the row is kept, gc_at NULL, with its emoji row), and a failure

@@ -684,16 +684,17 @@ function containerControl(
 //   D0 run         the record and an alarm for now in one storage transaction; a record without an alarm gets one;
 //                  otherwise nothing, so a repeated run, or one during alarm(), starts no second invocation
 //   D1 entry       the record-age stop: a record V2_PROCESS_MS + HARD_HOLD_MS old with no container running deletes
-//                  the input and the storage (W9); else an invocation id drawn in memory and the alarm set for
+//                  the input, then the storage (W9; a failed delete keeps the record for the alarm's repeat); else an invocation id drawn in memory and the alarm set for
 //                  CLEANUP_RETRY_MS later and confirmed (sync), which every later step relies on
 //   D2 S4          started: runUpload (D3-D7, jobs/media-jobs.ts); settled or gone: the cleanup replay; maintenance
 //                  (or no answer): a running container is stopped, and the invocation ends with the record and alarm
 //                  kept, so the alarm repeats it
 //   D4             the confirmed stop; an unconfirmed one ends the invocation with no Store write, its granted slot
 //                  counting, and the alarm repeats it
-//   D8 input       incoming/<id> deleted, best effort, whatever S8 answers
-//   D9 S8          the stop confirmation with the record's teardown_id, only after a confirmed stop: `released`
-//                  deletes the storage (its alarm too); anything else ends the invocation and the alarm repeats D8, D9
+//   D8 input       incoming/<id> deleted; D9 follows whatever it did, so the slot is released on its own
+//   D9 S8          the stop confirmation with the record's teardown_id, only after a confirmed stop: `released`, with
+//                  the input deleted, deletes the storage (its alarm too); anything else ends the invocation and the
+//                  alarm repeats D8, D9 (MEDIA-3: an attached upload's input is held from the orphan pass)
 // The cleanup replay (S4 not `started`): the stop under D4's rule, then D8 and D9.
 const UPLOAD_KEY = "upload";
 
@@ -750,8 +751,12 @@ export class UploadUnit {
     const now = this.deps.now();
     if (now - record.at >= V2_PROCESS_MS + HARD_HOLD_MS && container?.running !== true) {
       console.warn({ event: "kopje.media.job.record_aged", id: record.id });
-      await this.#dropInput(record);
-      await storage.deleteAll();
+      // The record goes only with the input (MEDIA-3): a failed delete is repeated by the alarm.
+      if (await this.#dropInput(record)) {
+        await storage.deleteAll();
+      } else {
+        await storage.setAlarm(now + CLEANUP_RETRY_MS);
+      }
       return;
     }
     const invocation = crypto.randomUUID();
@@ -818,19 +823,26 @@ export class UploadUnit {
     return container === undefined || !container.running || destroyContainer(container, this.deps);
   }
 
-  async #dropInput(record: UploadRecord): Promise<void> {
-    await this.state.bucket.delete(incomingKey(record.id)).catch((error: unknown) => {
+  // D8: true once incoming/<id> is deleted (R2's delete answers for a key that is already gone too).
+  async #dropInput(record: UploadRecord): Promise<boolean> {
+    try {
+      await this.state.bucket.delete(incomingKey(record.id));
+      return true;
+    } catch (error) {
       console.warn({ event: "kopje.media.job.input_delete_failed", id: record.id, ...errorFields(error) });
-    });
+      return false;
+    }
   }
 
-  // D8, then D9: the storage goes only once S8 answers `released`.
+  // D8, then D9 whatever D8 did, so the slot is released on its own: the storage goes only once S8 answers `released`
+  // and the input is deleted. A failed delete leaves the record and D1's alarm, whose replay repeats D8 and D9 (S8 again
+  // answers `released`): a completed upload's input is no sweep's, and the orphan pass holds an attached one (MEDIA-3).
   async #release(record: UploadRecord): Promise<void> {
-    await this.#dropInput(record);
+    const dropped = await this.#dropInput(record);
     const released = await this.deps
       .store()
       .releaseAvSlot(this.deps.build, { id: record.id, teardownId: record.teardownId });
-    if (released.status === "released") {
+    if (released.status === "released" && dropped) {
       await this.state.storage.deleteAll();
     }
   }

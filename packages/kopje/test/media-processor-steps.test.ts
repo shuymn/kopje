@@ -1,12 +1,15 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { allocate, HARD_HOLD_MS, V2_PROCESS_MS } from "../src/domain/media-processing";
+import { allocate, HARD_HOLD_MS, INCOMING_ORPHAN_AGE_MS, V2_PROCESS_MS } from "../src/domain/media-processing";
+import { incomingOrphans } from "../src/jobs/media-jobs";
 import { incomingKey } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
+import { BUILD } from "./helpers";
 import { putInput } from "./media-job-helpers";
-import { avWorld, clock, gate, held, queued } from "./media-processing-helpers";
+import { avWorld, clock, gate, held, HOUR, queued } from "./media-processing-helpers";
 import { cleared, platformFor, upload } from "./media-unit-helpers";
+import { post } from "./status-helpers";
 
 // The PR4 plan's table 1.3 as data, on an upload's object driven by the test's platform (media-unit-helpers.ts).
 // Recovery after a kill runs only through the alarm the platform fires on a new instance; the Store is the production
@@ -208,6 +211,48 @@ describe("table 1.3: the stop and its confirmation", () => {
     await p.fire();
     expect(p.storage.map.size).toBe(0);
     expect(p.storage.alarm).toBeNull();
+    expect(await env.MEDIA.head(incomingKey(up.id))).toBeNull();
+    await gate(w.store, "maintenance", false);
+  });
+});
+
+describe("D8: the input is deleted before the record goes (M1, MEDIA-3)", () => {
+  it("a failed delete keeps the record and the alarm with the slot released, and the repeat deletes the input even once the upload is attached", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.failDeletes(1);
+    expect(await p.fire()).toBe("returned");
+    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1 });
+    // S8 answered: the slot is free; the record and its alarm stay for the input.
+    expect((await held(w.store, up.id)).slot).toBeNull();
+    expect(p.storage.map.size).toBe(1);
+    expect(p.storage.alarm).not.toBeNull();
+    expect(await env.MEDIA.head(incomingKey(up.id))).not.toBeNull();
+    // Attached before its detached grace runs out: no sweep will take its keys, and the orphan pass holds it.
+    await post(w.h, w.h.users.alice, { status: "with a video", media_ids: [up.id] });
+    await p.settle();
+    clock(Date.now() + INCOMING_ORPHAN_AGE_MS + HOUR);
+    await incomingOrphans({ build: BUILD, store: w.store, bucket: env.MEDIA }).catch(() => {});
+    expect(await env.MEDIA.head(incomingKey(up.id))).toBeNull();
+    expect(p.storage.map.size).toBe(0);
+    expect(p.storage.alarm).toBeNull();
+    expect(p.deletes().filter((key) => key === incomingKey(up.id))).toHaveLength(2);
+  });
+
+  it("the record-age stop keeps the record while its delete fails, and drops it once the delete succeeds (W9)", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    await gate(w.store, "maintenance", true);
+    await p.fire();
+    clock(Date.now() + V2_PROCESS_MS + HARD_HOLD_MS);
+    p.failDeletes(1);
+    await p.fire();
+    expect(p.storage.map.size).toBe(1);
+    expect(p.storage.alarm).not.toBeNull();
+    await p.fire();
+    expect(p.storage.map.size).toBe(0);
     expect(await env.MEDIA.head(incomingKey(up.id))).toBeNull();
     await gate(w.store, "maintenance", false);
   });

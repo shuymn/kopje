@@ -177,6 +177,9 @@ export async function platformFor(w: AvWorld) {
   // The multipart uploads aborted, by kind.
   const aborts: string[] = [];
   let maintenance = false;
+  // The keys the bucket was asked to delete, and how many of the next deletes fail.
+  const deletes: string[] = [];
+  let failingDeletes = 0;
   let hang: "reply" | "body" | "still" | null = null;
   let hung = false;
   let requestAborted = false;
@@ -229,6 +232,11 @@ export async function platformFor(w: AvWorld) {
       return async (...args: unknown[]) => {
         if (method === "delete") {
           await (kill("delete") ?? Promise.resolve());
+          deletes.push(String(args[0]));
+          if (failingDeletes > 0) {
+            failingDeletes--;
+            throw new Error("r2 delete failed");
+          }
         }
         if (method === "put" && String(args[0]).endsWith("/small")) {
           await writing("small");
@@ -297,6 +305,8 @@ export async function platformFor(w: AvWorld) {
     beforeWrite: (name: "original" | "full" | "small", work: () => Promise<void>) => void beforeWrite.set(name, work),
     writes: () => writes,
     aborts: () => aborts,
+    deletes: () => deletes,
+    failDeletes: (count: number) => void (failingDeletes = count),
     envMaintenance: (on: boolean) => void (maintenance = on),
     hangNormalize: (how: "reply" | "body" | "still") => void (hang = how),
     hung: () => hung,
