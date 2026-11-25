@@ -112,16 +112,21 @@ describe("an edit's media (P10)", () => {
       bearer(w.h.users.alice.token, { method: "DELETE" }),
     );
     expect(deleted.status).toBe(200);
-    expect(await postAs(w, { status: "redrafted", media_ids: status.media })).toEqual({
-      status: 422,
-      body: IMAGES_AND_VIDEO,
-    });
-    // The media the deletion detached is still served to its owner, to post again as a set Mastodon takes.
-    for (const id of status.media) {
+    // A client redrafts from the answer: its source text and the ids of the media it showed.
+    const answer = await deleted.json<{ text: string; media_attachments: { id: string; type: string }[] }>();
+    expect(answer.text).toBe("converted");
+    const ids = answer.media_attachments.map((m) => m.id);
+    expect(ids).toEqual(status.media);
+    expect(await postAs(w, { status: answer.text, media_ids: ids })).toEqual({ status: 422, body: IMAGES_AND_VIDEO });
+    // Within the grace period the detached media is still its owner's, to post again in sets Mastodon takes.
+    for (const id of ids) {
       const shown = await w.h.request(`/api/v1/media/${id}`, bearer(w.h.users.alice.token));
       expect(shown.status).toBe(200);
     }
-    expect((await postAs(w, { status: "the clip", media_ids: [status.media[1]] })).status).toBe(200);
+    const video = answer.media_attachments.find((m) => m.type === "video")!.id;
+    const images = ids.filter((id) => id !== video);
+    expect((await postAs(w, { status: answer.text, media_ids: [video] })).status).toBe(200);
+    expect((await postAs(w, { status: answer.text, media_ids: images })).status).toBe(200);
   });
 
   it("refuses an upload still processing with not_ready, and finds neither an old image reservation nor bob's", async () => {
