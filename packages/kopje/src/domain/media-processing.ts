@@ -928,17 +928,9 @@ function httpOf(cause: Failure): 422 | 500 | 503 {
   return cause === "verifier" || cause === "unavailable" || cause === "timeout" ? 500 : 503;
 }
 
-// The attachment `id` as its owner is shown it, by the presenter every owner's answer uses (GET, PUT, S10's 200): on
-// the instance origin, which a video without a still needs for VIDEO_POSTER (status-presenter.ts playablePreview), read
+// The attachment as its owner is shown it, by the presenter every owner's answer uses (GET, PUT, S10's 200): on the
+// instance origin, which a video without a still needs for VIDEO_POSTER (status-presenter.ts playablePreview), read
 // only for a playable one.
-function presentOwn(db: Db, id: string): MediaAttachment | null {
-  const row = db.first<MediaRow>(
-    `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} WHERE m.id = ?`,
-    id,
-  );
-  return row === undefined ? null : presentRow(db, row);
-}
-
 function presentRow(db: Db, row: MediaRow): MediaAttachment {
   return presentMedia(row, isPlayable(row.type) ? instanceOrigin(db) : null);
 }
@@ -948,7 +940,11 @@ function liveDone(db: Db, att: Attachment | null, token: string, now: number): M
   if (att === null || attachmentState(att, token) !== "done" || (att.gc_at !== null && att.gc_at <= iso(now))) {
     return null;
   }
-  return presentOwn(db, att.id);
+  const row = db.first<MediaRow>(
+    `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} WHERE m.id = ?`,
+    att.id,
+  );
+  return row === undefined ? null : presentRow(db, row);
 }
 
 // S10, the v1 decision, made at the route's own cut or once S9 shows an outcome: 200 for a completed upload before
@@ -993,10 +989,10 @@ export const v1Final = writeOperation.atStoreTime("now")<{ id: string; token: st
 // S10 while the Store refuses writes: a read. A completed upload before its gc_at answers 200; anything else
 // `maintenance`, with nothing doomed (K4 dooms it at its deadline once maintenance ends).
 // It reads no marker: K3 and K4 act only on an upload with a processing row, which is never a completed one.
-export const v1FinalRead = readOperation.atStoreTime("now")<{ id: string; token: string; now: number }, V1Final>((
-  db,
-  { id, token, now },
-) => {
+export const v1FinalRead = readOperation.atStoreTime("now")<
+  { id: string; token: string; now: number },
+  { status: 200; media: MediaAttachment } | { status: "maintenance" }
+>((db, { id, token, now }) => {
   checkId(id);
   const { att } = load(db, id);
   const media = liveDone(db, avAttachment(att), token, now);
