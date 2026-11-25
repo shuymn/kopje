@@ -37,7 +37,7 @@ import { runUpload } from "./jobs/media-jobs";
 import { type ContainerControl, probeWork } from "./mastodon/media-activation";
 import { PROBE_FIXTURE_BASE64 } from "./media-probe-fixture";
 import { AV_OUTPUT_LIMIT, plannedDuration, STILL_OUTPUT_LIMIT } from "./platform/av-bytes";
-import { accountMonthlyTransforms, readConfig } from "./platform/config";
+import { accountMonthlyTransforms, envInMaintenance, readConfig } from "./platform/config";
 import { errorFields } from "./platform/error-message";
 import { type ImageCodec, imagesCodec } from "./platform/images";
 import { incomingKey } from "./platform/media-files";
@@ -713,6 +713,8 @@ export type UploadUnitDeps = ProbeDeps & {
   store: () => StoreStub;
   images: ImageCodec;
   monthlyTransforms: () => MonthlyTransforms;
+  // The Worker's env holds it in maintenance (MAINTENANCE not off): no job starts.
+  maintenance: () => boolean;
 };
 
 export class UploadUnit {
@@ -756,6 +758,11 @@ export class UploadUnit {
     await storage.setAlarm(now + CLEANUP_RETRY_MS);
     await storage.sync();
     try {
+      // The Worker's maintenance gates the start as the Store's does: the record and D1's alarm stay, so it repeats.
+      if (this.deps.maintenance()) {
+        await this.#stop();
+        return;
+      }
       const asked = this.deps.now();
       const started = await this.deps
         .store()
@@ -858,6 +865,7 @@ export class MediaProcessor extends DurableObject<Env> {
             ? { instance: config.config.IMAGES_MONTHLY_TRANSFORMS, account: accountMonthlyTransforms(config.config) }
             : { instance: 0, account: 0 };
         },
+        maintenance: () => envInMaintenance(env),
       },
     );
     this.#unit.start();

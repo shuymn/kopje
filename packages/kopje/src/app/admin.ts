@@ -12,7 +12,7 @@ import { parseScheduledAt } from "../mastodon/statuses";
 import { type AccessSettings, adminRefusal, adminUsable, normalizeTeamDomain } from "../platform/access-settings";
 import { readBackupConfig } from "../platform/backup-config";
 import { readBoundedBody } from "../platform/body";
-import { previousUserKek, readConfig, userKek } from "../platform/config";
+import { envInMaintenance, previousUserKek, readConfig, userKek } from "../platform/config";
 import { serverDomain } from "../platform/domain-name";
 import { errorFields, errorMessage } from "../platform/error-message";
 import type { ImageCodec } from "../platform/images";
@@ -600,6 +600,10 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
     const { profile } = await jsonBody(c);
     if (!isProbeProfile(profile)) {
       return c.json({ error: `expected {"profile": ${PROBE_PROFILES.map((p) => `"${p}"`).join(" | ")}}` }, 400);
+    }
+    // The Worker's maintenance refuses it as the Store's does: /admin passes the app's env gate.
+    if (envInMaintenance(c.env)) {
+      throw new StoreUnavailableError("maintenance");
     }
     const processor = mediaProcessor(c.env);
     if (processor === null) {

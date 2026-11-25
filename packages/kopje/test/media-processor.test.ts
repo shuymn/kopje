@@ -1049,6 +1049,8 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
   async function harness(
     passes: ((profile: ProbeProfile) => Promise<boolean>) | null,
     gated: keyof typeof GATES | null = null,
+    // The Worker's env MAINTENANCE, with the Store writable.
+    mode: "off" | "full" | "readonly" = "off",
   ) {
     const team = await adminTeam();
     const store = await migratedStore();
@@ -1082,7 +1084,8 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
       images: () => new TestCodec(),
       mediaProcessor: () => (passes === null ? null : { stills, uploads }),
     });
-    const call = (request: Request) => app.fetch(request, env, createExecutionContext());
+    const call = (request: Request) =>
+      app.fetch(request, mode === "off" ? env : { ...env, MAINTENANCE: mode }, createExecutionContext());
     const post = async (profile: unknown) =>
       call(
         new Request("https://admin.kopje.test/admin/media-processor/probe", {
@@ -1174,6 +1177,26 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     expect(unbound.code).toBe(3);
     expect(unbound.err).toContain("not bound");
   });
+
+  it.each([
+    ["full", "normalize@standard-4"],
+    ["readonly", "normalize@standard-4"],
+    ["full", "still@standard-1"],
+    ["readonly", "still@standard-1"],
+  ] as const)(
+    "refuses a probe while the Worker's env is in maintenance (%s, %s), the Store writable",
+    async (mode, profile) => {
+      const passes = vi.fn(() => Promise.resolve(true));
+      const copies = async () => (await env.MEDIA.list({ prefix: "incoming/probe-" })).objects.map((o) => o.key);
+      const before = await copies();
+      const refused = await harness(passes, null, mode);
+      const answer = await refused.post(profile);
+      expect(answer.status).toBe(503);
+      expect(await answer.json()).toMatchObject({ code: "maintenance" });
+      expect(passes).not.toHaveBeenCalled();
+      expect(await copies()).toEqual(before);
+    },
+  );
 
   it.each([
     ["maintenance", "normalize@standard-4"],

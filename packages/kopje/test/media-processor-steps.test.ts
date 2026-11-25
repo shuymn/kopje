@@ -157,6 +157,24 @@ describe("table 1.3: the stop and its confirmation", () => {
     expect((await held(w.store, up.id)).att?.processed).toBe(1);
   });
 
+  it("under the Worker's env maintenance starts nothing, sends no S4, and keeps the record and the alarm (M4)", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.envMaintenance(true);
+    p.clearCalls();
+    expect(await p.fire()).toBe("returned");
+    expect(p.storeCalls()).toEqual([]);
+    expect(p.starts()).toBe(0);
+    expect(p.storage.map.size).toBe(1);
+    expect(p.storage.alarm).not.toBeNull();
+    // Once it ends, the alarm's repeat completes the upload.
+    p.envMaintenance(false);
+    await p.settle();
+    await cleared(w, p, up.id);
+    expect((await held(w.store, up.id)).att?.processed).toBe(1);
+  });
+
   it("keeps the record and the alarm when S8 answers maintenance after a completed job, and releases once it ends", async () => {
     const w = await avWorld();
     const p = await platformFor(w);

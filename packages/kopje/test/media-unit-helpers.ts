@@ -176,6 +176,7 @@ export async function platformFor(w: AvWorld) {
   const writes: string[] = [];
   // The multipart uploads aborted, by kind.
   const aborts: string[] = [];
+  let maintenance = false;
   let hang: "reply" | "body" | "still" | null = null;
   let hung = false;
   let requestAborted = false;
@@ -279,6 +280,7 @@ export async function platformFor(w: AvWorld) {
       store: () => store,
       images: new TestCodec(),
       monthlyTransforms: () => ({ instance: 4000, account: 400 }),
+      maintenance: () => maintenance,
     });
   return {
     storage,
@@ -295,6 +297,7 @@ export async function platformFor(w: AvWorld) {
     beforeWrite: (name: "original" | "full" | "small", work: () => Promise<void>) => void beforeWrite.set(name, work),
     writes: () => writes,
     aborts: () => aborts,
+    envMaintenance: (on: boolean) => void (maintenance = on),
     hangNormalize: (how: "reply" | "body" | "still") => void (hang = how),
     hung: () => hung,
     requestAborted: () => requestAborted,
