@@ -113,6 +113,11 @@ export class MultipartStream {
     this.guard = guard;
   }
 
+  // The bytes held unconsumed.
+  get buffered(): number {
+    return this.#buf.byteLength;
+  }
+
   // The bytes pulled from the body so far.
   get pulled(): number {
     return this.#pulled;
@@ -188,12 +193,14 @@ export class MultipartStream {
     // (RFC 2046; workerd ignores the rest); CRLF or LF begins a part, as workerd reads it; anything else is refused.
     const first = await this.#byteAt(0);
     if (first === DASH && (await this.#byteAt(1)) === DASH) {
-      let i = 2;
-      for (let byte = await this.#byteAt(i); byte === 0x20 || byte === 0x09; byte = await this.#byteAt(++i)) {
-        // transport padding
+      // Each padding byte is dropped as it is read, so padding of any length holds no memory.
+      this.#buf = this.#buf.subarray(2);
+      let end = await this.#byteAt(0);
+      while (end === 0x20 || end === 0x09) {
+        this.#buf = this.#buf.subarray(1);
+        end = await this.#byteAt(0);
       }
-      const end = await this.#byteAt(i);
-      if (end !== undefined && end !== LF && !(end === CR && (await this.#byteAt(i + 1)) === LF)) {
+      if (end !== undefined && end !== LF && !(end === CR && (await this.#byteAt(1)) === LF)) {
         throw new MultipartRefused("malformed");
       }
       this.#at = "end";

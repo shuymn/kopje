@@ -117,3 +117,30 @@ describe("MultipartStream frames as workerd's formData() (code review r1 M6)", (
     }
   });
 });
+
+describe("the closing line's padding", () => {
+  // Padding after `--B--` is dropped as it is read: the buffer never holds it (commit security review).
+  it("reads a megabyte of padding after the close in chunks, holding none of it", async () => {
+    const head = enc.encode(`--B\r\n${HEAD_A}\r\n\r\nx\r\n--B--`);
+    const chunk = new Uint8Array(64 * 1024).fill(0x20);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent === 0) {
+          controller.enqueue(head);
+        } else if (sent <= 16) {
+          controller.enqueue(chunk);
+        } else {
+          controller.enqueue(enc.encode("\r\n"));
+          controller.close();
+        }
+        sent++;
+      },
+    });
+    const reader = new MultipartStream(stream, "B", Number.MAX_SAFE_INTEGER);
+    expect(await reader.next()).toMatchObject({ name: "a" });
+    await reader.body(() => {});
+    expect(await reader.next()).toBeNull();
+    expect(reader.buffered).toBeLessThanOrEqual(chunk.byteLength);
+  });
+});
