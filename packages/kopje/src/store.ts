@@ -124,13 +124,20 @@ export async function ownerRun<O>(
   return second as Authorized<Exclude<O, { status: "needs_marker" }>>;
 }
 
+// The time of the last restore (null when none was recorded), as the restore writes it: { at } in epoch milliseconds. A
+// marker that exists but is not JSON, or holds no such time, throws: it records a restore whose time is lost, which no
+// caller may take for none (each reader treats it as unreadable).
 async function lastRestore(bucket: R2Bucket, key: string): Promise<number | null> {
   const marker = await bucket.get(key);
   if (marker === null) {
     return null;
   }
-  const at = (JSON.parse(await marker.text()) as { at?: unknown }).at;
-  return typeof at === "number" ? at : null;
+  const parsed = JSON.parse(await marker.text()) as unknown;
+  const at = typeof parsed === "object" && parsed !== null ? (parsed as { at?: unknown }).at : undefined;
+  if (typeof at !== "number" || !Number.isSafeInteger(at) || at < 0) {
+    throw new Error("the restore marker holds no restore time");
+  }
+  return at;
 }
 
 // The refusals a media processing write answers as `maintenance` (K1): the Store refuses writes, and the caller
@@ -655,8 +662,25 @@ export class Store extends DurableObject<Env> {
     return this.#avRun(callerBuild, mediaProcessing.v1FinalRead, input, restoredAt);
   }
 
-  deleteAvUpload(callerBuild: string, input: AvInput<typeof mediaProcessing.deleteAvUpload>) {
-    return this.#avWrite(callerBuild, mediaProcessing.deleteAvUpload, input);
+  // S11 as a Store call: a first pass without the marker (ownerRun's), so another account's upload, or one K3 cannot
+  // act on, is answered without reading it; then as any media processing write.
+  async deleteAvUpload(callerBuild: string, input: OwnerInput<typeof mediaProcessing.deleteAvUpload>) {
+    const first = await avRefusal(() =>
+      this.#kernel.executeQuiet(
+        callerBuild,
+        mediaProcessing.deleteAvUpload,
+        { ...input, restoredAt: "unread" },
+        asksMarker,
+      ),
+    );
+    if (first.status === "ok" && asksMarker(first)) {
+      const second = await this.#avWrite(callerBuild, mediaProcessing.deleteAvUpload, input);
+      if (second.status === "ok" && typeof second.value !== "string") {
+        throw new Error("S11 asked for the marker it was given");
+      }
+      return second;
+    }
+    return first;
   }
 
   // The owner's GET, PUT and DELETE /api/v1/media/:id (ownerRun): a refusal of the Store's (maintenance, a dump, an

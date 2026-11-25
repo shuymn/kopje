@@ -285,9 +285,9 @@ describe("another account's upload is never normalized or read past its owner ch
 });
 
 describe("a restore marker that cannot be read (code review r1 M2)", () => {
-  async function unreadable<T>(w: AvWorld, run: () => Promise<T>): Promise<T> {
+  async function unreadable<T>(w: AvWorld, run: () => Promise<T>, body = "{"): Promise<T> {
     const key = restoreMarkerKey(w.store.id.toString());
-    await env.MEDIA.put(key, "{");
+    await env.MEDIA.put(key, body);
     try {
       return await run();
     } finally {
@@ -295,24 +295,51 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
     }
   }
 
-  it("refuses GET, PUT and DELETE of an upload K3 could act on with a 503, and writes nothing", async () => {
-    for (const make of [staged, queued, started]) {
-      const w = await avWorld();
-      const up = await make(w);
-      const taken = await bookmark(w.store);
-      await restore(w.store, taken, T0 + 6 * SECOND);
-      clock(T0 + 7 * SECOND);
-      const before = await held(w.store, up.id);
-      const described = await description(w, up.id);
-      const statuses = await unreadable(w, async () => [
-        (await get(w, up.id)).status,
-        (await put(w, up.id, { description: "lost" })).status,
-        (await del(w, up.id)).status,
-      ]);
-      expect(statuses).toEqual([503, 503, 503]);
-      expect(await held(w.store, up.id)).toEqual(before);
-      expect(await description(w, up.id)).toBe(described);
-    }
+  // A marker that exists but holds no time a restore records (code review r2 M1) is as unreadable as one that is
+  // not JSON: it is never taken for no restore.
+  it.each([
+    ["not JSON", "{"],
+    ["no time", "{}"],
+    ["a time as a string", '{"at":"1760000000000"}'],
+    ["an infinite time", '{"at":1e309}'],
+    ["a negative time", '{"at":-1}'],
+  ])(
+    "refuses GET, PUT and DELETE of an upload K3 could act on with a 503, and writes nothing: %s",
+    async (_name, body) => {
+      for (const make of [staged, queued, started]) {
+        const w = await avWorld();
+        const up = await make(w);
+        const taken = await bookmark(w.store);
+        await restore(w.store, taken, T0 + 6 * SECOND);
+        clock(T0 + 7 * SECOND);
+        const before = await held(w.store, up.id);
+        const described = await description(w, up.id);
+        const statuses = await unreadable(
+          w,
+          async () => [
+            (await get(w, up.id)).status,
+            (await put(w, up.id, { description: "lost" })).status,
+            (await del(w, up.id)).status,
+          ],
+          body,
+        );
+        expect(statuses).toEqual([503, 503, 503]);
+        expect(await held(w.store, up.id)).toEqual(before);
+        expect(await description(w, up.id)).toBe(described);
+      }
+    },
+  );
+
+  it("answers another account's S11 not found without reading the marker (code review r2)", async () => {
+    const w = await avWorld();
+    const up = await queued(w);
+    clock(T0 + 5 * SECOND);
+    const before = await held(w.store, up.id);
+    const answered = await unreadable<unknown>(w, () =>
+      w.store.deleteAvUpload(BUILD, { credential: w.bob, id: up.id }),
+    );
+    expect(answered).toEqual({ status: "ok", value: "not_found" });
+    expect(await held(w.store, up.id)).toEqual(before);
   });
 
   it("answers an upload K3 cannot act on without reading the marker", async () => {

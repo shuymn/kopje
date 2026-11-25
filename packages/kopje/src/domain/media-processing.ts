@@ -990,13 +990,17 @@ export const v1FinalRead = readOperation.atStoreTime("now")<{ id: string; token:
 // has one and its slot kept; a staging one is not found (its request still holds it). Anything else is decided by
 // deleteMedia's rules (media.ts deleteOwnMedia): a completed upload is in use while attached or kept, not found from
 // its gc_at on, and a doomed or absent one is not found.
-export const deleteAvUpload = userMediaDeleteOperation.atStoreTime("now")<{ id: string } & Fence, MediaDeleted>((
-  db,
-  { id, now, restoredAt },
-  { accountId },
-) => {
+// Ownership is read first, as on the owner's DELETE (deleteOwnerMedia): the marker only where K3 could act.
+export const deleteAvUpload = userMediaDeleteOperation.atStoreTime("now")<
+  { id: string; now: number; restoredAt: OwnerMarker },
+  MediaDeleted | NeedsMarker
+>((db, { id, now, restoredAt }, { accountId }) => {
   checkId(id);
-  return deleteUpload(db, ownerRow(db, accountId, id, now), accountId, id, now, restoredAt);
+  const own = ownerRow(db, accountId, id, now);
+  if (needsMarker(own, restoredAt)) {
+    return { status: "needs_marker" };
+  }
+  return deleteUpload(db, own, accountId, id, now, restoredAt === "unread" ? null : restoredAt);
 });
 
 // S11 on the upload `own` names, read before K3 and K4 so another account's record is never normalized: one without a
