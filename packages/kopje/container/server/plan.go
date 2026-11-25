@@ -334,6 +334,11 @@ func fitWithin(w, h, long, short int) (int, int) {
 // limits or whose conservative estimate does not fit encodeMs.
 func planNormalize(p *probeResult, encodeMs float64) (*plan, refusal) {
 	video, audio := selectStreams(p)
+	return planStreams(p, video, audio, encodeMs)
+}
+
+// planStreams is planNormalize on the streams selectStreams chose from p.
+func planStreams(p *probeResult, video, audio *probeStream, encodeMs float64) (*plan, refusal) {
 	if video != nil {
 		return planVideo(p, video, audio, encodeMs)
 	}

@@ -255,10 +255,11 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 	// The encode's cut, after the probe: the time left before the still's reserve, which a video holds and audio does
 	// not. The estimate must fit it.
 	encodeEnd := workEnd
-	if selected, _ := selectStreams(p); selected == nil {
+	video, audio := selectStreams(p)
+	if video == nil {
 		encodeEnd = end
 	}
-	pl, refused := planNormalize(p, float64(time.Until(encodeEnd).Milliseconds()))
+	pl, refused := planStreams(p, video, audio, float64(time.Until(encodeEnd).Milliseconds()))
 	if refused != "" {
 		t.set("Probe", start)
 		writeFailure(w, refuse(refused))
