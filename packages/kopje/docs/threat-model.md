@@ -3323,25 +3323,31 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the per-write reauthorization", "a restored live run (K3) writes nothing, and no third upload takes a slot before
   its S8"), `test/media-job.test.ts` ("incomingOrphans (G14, W3)"), `test/media-processor-steps.test.ts` ("D8: the
   input is deleted before the record goes (M1, MEDIA-3)").
-  The upload route's side is _Enforced (main)_ for what its route tests cover (`AvUpload` in
+  The upload route's side is _Enforced (main)_ for the cases its route tests cover (`AvUpload` in
   `src/mastodon/media-av.ts`); the staging gates of #1828 PR4-4 (real files through both endpoints, and the runs at the
   envelope's edges) are pending. The route writes `incoming/<id>` only for its own reservation, only after S1
   (`takeAvSlot`) took that reservation's slot, and starts each R2 write (the multipart create, each part, the
-  completion) only before the staging deadline it was given (the v1 cut is earlier); a create answering after it is
-  aborted when it answers, and it writes no other key. A staging it ends itself (a refused part, a byte past the cap,
-  the deadline) aborts the R2 multipart upload and asks S2 (`releaseStaging`), and deletes the input only when S2
-  answers `released`: otherwise the reservation is no longer the route's, and the sweep, reconciliation or the orphan
-  pass owns its keys. S3 (`queueNormalize`) answering `refused_cleanup_yours` hands the input back, which the route
-  deletes before abandoning the reservation; once queued the input is the processor's. Each cleanup call is awaited at
-  most `R2_CALL_MS` (an abort, a delete) or `STORE_CALL_MS` (S2, the abandonment), and the body's cancel is not awaited,
-  so none holds up the next; one left unanswered falls to the sweep, the orphan pass or R2's lifecycle rule for
-  incomplete multipart uploads. A Store reply that is lost is asked once more for S1 and S3 (each answers the same to a
-  repeat, table 1.4); a second loss, a lost S10, or on v2 no reply within `STORE_CALL_MS`, answers 503 and deletes
-  nothing, leaving the dispatch round, the sweep or the processor to finish or remove it. The file part ends where the
-  image path's parser ends it (an LF or CRLF before the delimiter), so no delimiter is staged.
+  completion) only before the staging deadline it was given (on v1 the route's cut, when earlier); it writes no other
+  key. Its cleanup is one background task per request, registered with `waitUntil` before the reservation is asked
+  for, so it runs while the invocation lives and the answer never waits for it; each step is awaited at most
+  `R2_CALL_MS` (an abort, a delete) or `STORE_CALL_MS` (S2, the abandonment). A multipart create answering after the
+  staging deadline is aborted there when it answers within `R2_CALL_MS`; one answering later, or never reaching a live
+  Worker, is left to R2's lifecycle rule for incomplete multipart uploads (W8). A staging the route ends itself (a
+  refused part, a byte past the cap, the deadline) aborts the R2 multipart upload and asks S2 (`releaseStaging`), and
+  deletes the input only when S2 answers `released`: otherwise the reservation is no longer the route's, and the sweep,
+  reconciliation or the orphan pass owns its keys. S3 (`queueNormalize`) answering `refused_cleanup_yours` hands the
+  input back, which the cleanup deletes before abandoning the reservation; once queued the input is the processor's.
+  A completion that lands after the route's delete (an abort not yet in effect) goes with the doomed row's keys in the
+  sweep (`sweptKeys` names `incoming/<id>`), or in the `incoming/` orphan pass once the row is gone; a cleanup step left
+  unanswered falls to the same passes or R2's lifecycle rule. An S1 or S3 call that fails (thrown, or its reply lost
+  in the RPC) is asked once more (each answers the same to a repeat, table 1.4); one whose reply has not arrived by its
+  bound (v2: `STORE_CALL_MS`; v1: the route's cut) is not asked again. A second failure, such a late reply, or on v1 an
+  S10 reply not received by the give-up answers 503 and deletes nothing, leaving the dispatch round, the sweep or the
+  processor to finish or remove it. The file part ends where the image path's parser ends it (an LF or CRLF before the
+  delimiter), so no delimiter is staged.
   `test/media-av-upload.test.ts` ("the route's rows of 1.1 and 1.4", "the parts of a video or audio upload (P7, C2-M6)",
   "the staging of a video or audio upload (P6)", "the v1 wait (P8, H1, C2-M3, r4 H1, M5, W5)", "the route's bounded
-  waits (code review r1)"), `test/multipart-stream.test.ts`.
+  waits (code review r1)", "the route's answers and its cleanup (code review r2)"), `test/multipart-stream.test.ts`.
   A custom emoji upload (`kopje-admin emoji add`, `src/mastodon/emoji-upload.ts`) builds its keys as every upload's,
   from a reservation the Store records before any write (`reserveEmoji` in `src/domain/local-emojis.ts`); completion
   and promotion are one transaction (`completeEmoji`: the row is kept, gc_at NULL, with its emoji row), and a failure
@@ -3745,18 +3751,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   counting slots (SlotBound)", "S12 deletes a granted slot only at granted_at + HARD_HOLD_MS, whatever its
   held_until", "S12 deletes a slot never granted at its held_until", "W2: restored slots"),
   `test/media-processing-ownership.test.ts` ("table 1.1, the Store's side").
-  _Enforced (main)_ for the video and audio upload route (`src/mastodon/media-av.ts`), for what its route tests cover;
-  the staging gates of #1828 PR4-4 are pending: the token is authorized and the reservation made before any body byte is
-  read; the bytes read before the type is known stay within `MEDIA_BODY_LIMIT` and the reservation's deadline, and on v1
-  within `V1_TIME_MS` of the request's arrival, its reservation included; a request handed back to the image path is
-  read there as before; a video or audio file is streamed into R2 in parts of `PART_BYTES` (8 MiB), the route holding at
-  most one part and one read, and refused at `AV_UPLOAD_LIMIT` (90 MiB) + 1 bytes; the texts after it stay within
-  `API_BODY_LIMIT`; a part head within 16 KiB (`PART_HEAD_LIMIT` in `src/platform/multipart-stream.ts`), and the closing
-  line's padding is dropped as it is read; a staging ends by `STAGING_MS` and, on v1, by the cut. A staging past
-  `MAX_AV_INFLIGHT` answers 503 before its file is staged. Every wait of the route has a bound: v1's cut and give-up,
-  `STORE_CALL_MS` for a v2 Store call and for cleanup, `R2_CALL_MS` for an R2 cleanup call.
+  _Enforced (main)_ for the video and audio upload route (`src/mastodon/media-av.ts`), for the cases its route tests
+  cover; the staging gates of #1828 PR4-4 are pending. Reading: the token is authorized and the reservation made before
+  any body byte is read; the bytes read before the type is known stop within one chunk of `MEDIA_BODY_LIMIT`, at the
+  reservation's deadline, and on v1 at the route's cut (arrival + `V1_TIME_MS` − `T_REPLY`); a request handed back to
+  the image path is read there as before; a video or audio file is streamed into R2 in parts of `PART_BYTES` (8 MiB),
+  the route holding at most one part and one read, and refused at `AV_UPLOAD_LIMIT` (90 MiB) + 1 bytes; the parts after
+  it stay within `API_BODY_LIMIT`, a thumbnail file's bytes counted (its 413 comes before the description is judged); a
+  part head within 16 KiB (`PART_HEAD_LIMIT` in `src/platform/multipart-stream.ts`), and the closing line's padding is
+  dropped as it is read, one scan per chunk. Staging writes start only before `STAGING_MS` from the staging's start and,
+  on v1, before the route's cut; a staging past `MAX_AV_INFLIGHT` answers 503 before its file is staged. The response
+  is due on v1 by the give-up (arrival + `V1_TIME_MS`): every wait before S10 is cut at the route's cut, and S10 is
+  waited for until the give-up; on v2 the reservation waits as the image path's does, and S1, S3 and the settled
+  lookup are each awaited at most `STORE_CALL_MS`. Cleanup may finish after the response, in the request's background
+  task, each step within `R2_CALL_MS` or `STORE_CALL_MS`.
   `test/media-av-upload.test.ts` ("the staging of a video or audio upload (P6)", "a held ingress read answers 503 by
-  V1_TIME_MS from arrival: nothing charged, S2 released, no input", "the route's bounded waits (code review r1)"),
+  V1_TIME_MS from arrival: nothing charged, S2 released, no input", "the route's bounded waits (code review r1)", "the
+  route's answers and its cleanup (code review r2)"),
   `test/multipart-stream.test.ts` ("the closing line's padding").
 - **RES-2: parsing work is bounded.** Every regex, parser and normalization over input at the RES-1 cap has an
   adversarial fixture with a time bound. _Enforced (main)_ for status text:
@@ -4955,16 +4966,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Images budget that is spent rather than refusing (`imagesRefusal`), since an AV upload needs no Images output. The
   upload route passes the candidate only while video and audio uploads are active, and answers that 429 once the
   file's first bytes show an image, before staging anything; video and audio go on, and the queue charges them. The
-  v1 route's wait is bounded from the request's arrival on the route's clock: it polls S9 every `V1_POLL_MS` (2 s),
-  asks S10 at arrival + `V1_TIME_MS` − `T_REPLY`, every Store call and staging cut there, and answers 503 at
-  arrival + `V1_TIME_MS` unless an S10 answer was already received; the reservation and the read before the sniff
-  are bounded by the same give-up. S10's decision stands whether or not its answer is sent: one decided just before
-  the give-up (W5 is a reply not received; this is a reply not sent) leaves a completed upload unattached until the
-  sweep, as W11 lets a decided answer cross a restore. `V1_TIME_MS` is a compiled constant, 90 s until a staging
-  measurement sets it (`docs/media-processor.md`); these clauses are _Enforced (main)_ for what the route tests cover,
-  the staging gates of #1828 PR4-4 pending. `test/media-av-upload.test.ts` ("the v1 wait (P8, H1, C2-M3, r4
-  H1, M5, W5)", "Images and the active path (Q1, route side)"), `test/media.test.ts` ("the upload route with video and
-  audio active (P1, Q1, C2-M6)"), `test/media-av-budget.test.ts` ("the upload budget
+  v1 route's wait is on one clock from the request's arrival: every wait before S10 (the reservation, the read before
+  the sniff, S1, the staging, S3 and the S9 polls every `V1_POLL_MS`, 2 s) is cut at the route's cut, arrival +
+  `V1_TIME_MS` − `T_REPLY`, where S10 is asked; S10 is waited for until the give-up, arrival + `V1_TIME_MS`, and the
+  route answers 503 then unless an S10 answer was received. W5 is every v1 answer that is not S10's decision: the
+  give-up, and an S10 reply lost or failed, the job going on; a completion after that 503 is unattached and swept after
+  its grace. S10's decision stands whether or not its answer is sent: one decided just before the give-up leaves a
+  completed upload unattached until the sweep, as W11 lets a decided answer cross a restore. `V1_TIME_MS` is a compiled
+  constant, 90 s until a staging measurement sets it (`docs/media-processor.md`); these clauses are _Enforced (main)_
+  for the cases the route tests cover, the staging gates of #1828 PR4-4 pending. `test/media-av-upload.test.ts` ("the v1
+  wait (P8, H1, C2-M3, r4 H1, M5, W5)", "Images and the active path (Q1, route side)"), `test/media.test.ts` ("the
+  upload route with video and audio active (P1, Q1, C2-M6)"), `test/media-av-budget.test.ts` ("the upload budget
   (P15)"), `test/media-processing-precedence.test.ts` ("S3 charges one unit on the queue and none on its repeat
   (ChargeOnce)", "S4 with less than T_MIN_ENCODE left after the remaining fixed parts fails the job timeout"),
   `test/media-processing.test.ts` ("the allocation (P8)"), `test/media.test.ts` ("the active path's reservation

@@ -1675,8 +1675,12 @@ Media (the `MediaAttachment` entity):
   processing envelope its endpoint publishes are refused with 422 `Validation failed: File is too long or too large to
   process` (v1 at once, v2 on the GET that finds it failed). v1 waits for the result up to `V1_TIME_MS` from the
   request's arrival (a constant of the release, provisionally 90 s, [media-processor.md](media-processor.md)) and then
-  answers 503 `Media processing took too long. Try a shorter file.`, the upload cancelled unless it had already finished
-  (it then stays unattached until the day's sweep); Mastodon's v1 waits as long as the processing takes. Both answer 503
+  answers 503 `Media processing took too long. Try a shorter file.`, the upload cancelled unless it finished first or
+  the cancellation was not received (the give-up, or S10's reply lost or failed): a completion after the 503 stays
+  unattached and the sweep removes it after its grace; Mastodon's v1 waits as long as the processing takes. v2 answers
+  202 with the masked entity (`url` and `meta` null), as Mastodon does for a video; a repeated request that finds the
+  upload already queued answers 202 with what the owner's GET shows then, and the masked entity when that read fails or
+  takes longer than 30 s (`STORE_CALL_MS`), the owner's next GET showing the result. Both answer 503
   `Media processing is busy. Try again in a moment.` while two video or audio uploads are already processing, and a
   failed processing is not tried again by the server (Mastodon retries the job). An audio file has no artwork
   (`preview_url` null), where Mastodon extracts the cover. While the processor is not accepting uploads, video and audio
@@ -1684,7 +1688,9 @@ Media (the `MediaAttachment` entity):
 - A video or audio upload whose form has several errors may report another of them than Mastodon: a `thumbnail` sent
   before the `file` part is refused (422 `Validation failed: Thumbnail must be blank`) before any part after the file is
   read, so a description too long after the file is not the error reported, where Mastodon reports the description
-  first. A `thumbnail` after the file, a malformed query and the other orders answer as for an image.
+  first. A `thumbnail` file after the file past 1 MiB (with the text parts after the file, `API_BODY_LIMIT`) answers 413
+  `Request body is too large` before the description is judged. A `thumbnail` after the file, a malformed query and the
+  other orders answer as for an image.
 - A local upload's `blurhash` (avatars and headers included; 4 × 4 components, alpha dropped) is computed, as
   Mastodon's BlurhashTranscoder computes one from the `small` style, from Images' raw RGBA output of Kopje's preview (at
   most 640 pixels an edge, where Mastodon's small style is 230,400 pixels), fitted within 100 pixels by area averaging
