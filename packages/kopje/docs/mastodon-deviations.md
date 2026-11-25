@@ -1674,7 +1674,7 @@ Media (the `MediaAttachment` entity):
   failed: File file size must be less than 90 MB`; video over 600 s, audio over 20 minutes and a file past the
   processing envelope its endpoint publishes are refused with 422 `Validation failed: File is too long or too large to
   process` (v1 at once, v2 on the GET that finds it failed). v1 waits for the result up to `V1_TIME_MS` from the
-  request's arrival (a constant of the release, provisionally 90 s, [media-processor.md](media-processor.md)) and then
+  request's arrival (a constant of the release, 8 minutes, [media-processor.md](media-processor.md)) and then
   answers 503 `Media processing took too long. Try a shorter file.`, the upload cancelled unless it finished first or
   the cancellation was not received (the give-up, or S10's reply lost or failed): a completion after the 503 stays
   unattached and the sweep removes it after its grace; Mastodon's v1 waits as long as the processing takes. When the

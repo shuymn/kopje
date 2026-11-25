@@ -124,11 +124,31 @@ at the staging's deadline, and a queue call already sent may still accept the up
 other. When the slot's request finds the processor inactive (its probe failed after the reservation), a v1 request goes
 on as an image with the image path's waits: after the 503 it may still deduct three units from the account's and the
 instance's Images allowances, image or not, and an image completing then is unattached and swept the same way.
-`V1_TIME_MS` is a constant of the release, not a setting: 90 s in this release, a provisional value to be set from a
-measurement on a staging instance, from the shortest time a measured browser client waits for an upload's answer, since
-one value serves every client. The edges of what each endpoint admits (the longest video of a given size, codec and
-ingress that still finishes in time) are estimated admission limits, not measured wall times, and are published here
-once runs at the edges on a staging instance measure them.
+`V1_TIME_MS` is a constant of the release, not a setting: 480 s (8 minutes, `V2_PROCESS_MS`). It was set from a
+measurement on a staging instance: Elk's v1 upload in desktop Chrome, Firefox and Playwright's WebKit took an answer
+held 600 s and more, so the shortest measured wait less 10 % is past `V2_PROCESS_MS`, which caps it. Safari on iOS and
+the mobile apps were not measured; a client that stops waiting sooner shows the upload as failed while it completes,
+unattached, and is swept. `T_REPLY` (2 s) covers the decision's round trip, measured at 4–15 ms.
+
+Estimated admission limits. The container refuses a video (422 `Validation failed: File is too long or too large to
+process`) whose conservative encode estimate passes 0.7 of the encode time its endpoint leaves. The table gives what
+that estimate admits with this release's constants. It is computed from the estimate model (`container/server/plan.go`)
+and the time allocation (`allocate` in `src/domain/media-processing.ts`) for a 90 MiB input (the longest input time),
+each stage taking its planned time, and on v1 3 s from the request's arrival to the queue. These are estimates, not
+measured wall times: measured encodes took 0.38 to 1.08 of their estimate. Every file is also at most 90 MiB, which at
+b Mb/s is about 755 / b seconds, and at most 600 s of video or 1200 s of audio.
+
+| Source                                 | `/api/v1/media`                                | `/api/v2/media`            |
+| -------------------------------------- | ---------------------------------------------- | -------------------------- |
+| H.264 or HEVC, 1080p up to 30 fps, SDR | 600 s                                          | 600 s                      |
+| H.264, 1080p60, SDR                    | up to 111 s, and 120–600 s (encoded at 720p30) | up to 113 s, and 120–600 s |
+| HEVC, 2160p30, SDR                     | 463 s                                          | 468 s                      |
+| HEVC, 2160p30, HDR (tone mapped)       | 69 s                                           | 70 s                       |
+| HEVC, 2160p60, HDR (tone mapped)       | 35 s                                           | 35 s                       |
+| Audio (MP3 output)                     | 1200 s                                         | 1200 s                     |
+
+At the edges on a staging instance, a 64 s 2160p30 HLG clip (65.8 MB) completed on v2 and a 76 s one was refused, and a
+file of exactly 90 MiB completed.
 
 A video is re-encoded to an H.264 and AAC MP4 (at most 1080p at 60 fps up to 120 s, 720p at 30 fps up to 300 s, 480p
 at 30 fps up to 600 s), audio to MP3; a longer file, or one past the processing envelope, is refused with 422. Two
@@ -153,13 +173,14 @@ its slot is released and its input deleted; from `V2_PROCESS_MS` + `HARD_HOLD_MS
 container stopped, it drops the record as soon as the input is deleted (a delete that fails is retried every minute
 while R2 is down). A container or a call that stops answering does not hold an upload: Kopje waits for the input and the
 reply until the job's work deadline. After the reply its time is allocated backwards from the job's deadline. The last
-`T_FINISH` (1.5 s) is kept for the container's stop, the write grants, the final writes and the completion: a starting
-value, the plan's 6 s commit stage less the 4.5 s measured for the output's transfer into R2, which PR4-4's edge runs on
-den-test measure. The transfer, which every upload needs, may run until then, using whatever time the encode left. The
-still and its preview are optional: they begin after the transfer, get 3 s within the same bound, and are skipped when
-less than 1 s is left (the WebP's share of the 3 s; below 2 s left, the blurhash alone is skipped). Past the reply's or
-the transfer's cut Kopje aborts the requests, stops the container and fails the upload as `timeout`; past the preview's,
-or when it is skipped, the upload keeps its poster.
+`T_FINISH` (4 s) is kept for the container's stop, the write grants, the final writes and the completion, measured over
+50 completed jobs on a staging instance at p95 2.44 s and at most 3.65 s; the commit stage (`T_COMMIT`, 13 s) is
+`T_FINISH` and a 9 s share for the output's transfer into R2, measured at p95 5.72 s and at most 8.71 s. The input is
+allotted 16 MiB/s (a 68 MB input took at most 3.15 s). The transfer, which every upload needs, may run until `T_FINISH`
+before the deadline, using whatever time the encode left. The still and its preview are optional: they begin after the
+transfer, get 3 s within the same bound, and are skipped when less than 1 s is left (the WebP's share of the 3 s; below
+2 s left, the blurhash alone is skipped). Past the reply's or the transfer's cut Kopje aborts the requests, stops the
+container and fails the upload as `timeout`; past the preview's, or when it is skipped, the upload keeps its poster.
 
 The cron also redispatches an upload whose start was lost (after 2 minutes), fails jobs past their deadline, and once an
 hour removes inputs under `incoming/` that are more than a day old and held by no upload, probe copies included.

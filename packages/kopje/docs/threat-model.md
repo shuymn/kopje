@@ -5000,7 +5000,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   committed); a validation refusal is not W5, since it is decided before anything is queued; a completion after that 503
   is unattached and swept after its grace. S10's decision stands whether or not its answer is sent: one decided just
   before the give-up leaves a completed upload unattached until the sweep, as W11 lets a decided answer cross a restore.
-  `V1_TIME_MS` is a compiled constant, 90 s until a staging measurement sets it (`docs/media-processor.md`); these
+  `V1_TIME_MS` is a compiled constant, 480 s, set from measured browser waits (`docs/media-processor.md`); these
   clauses are _Enforced (main)_ for the cases the route tests cover, the staging gates of #1828 PR4-4 pending.
   `test/media-av-upload.test.ts` ("the v1
   wait (P8, H1, C2-M3, r4 H1, M5, W5)", "Images and the active path (Q1, route side)"), `test/media.test.ts` ("the

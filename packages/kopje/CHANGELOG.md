@@ -56,7 +56,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `normalize@standard-4` passed and `MEDIA_UPLOAD_MONTHLY_JOBS` is above 0
   ([docs/media-processor.md](docs/media-processor.md), "Uploads"). The file, at most 90 MiB, is streamed into R2 while
   the request is read and re-encoded to an MP4 or an MP3; each queued upload spends one job of the budget.
-  `/api/v2/media` answers 202 at once; `/api/v1/media` waits up to `V1_TIME_MS` (90 s, provisional) and then answers
+  `/api/v2/media` answers 202 at once; `/api/v1/media` waits up to `V1_TIME_MS` (8 minutes) and then answers
   with a 503. Two uploads processing at once make a third answer 503. A request whose first file is video or audio
   refuses a second file with 422 ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). Without the processor
   nothing changes.
