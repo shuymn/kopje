@@ -565,6 +565,9 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   },
   // A held Reject's Follow id judged against its stored bound: a predicate (deliveries.ts heldFollowUriSql).
   'src/domain/deliveries.ts interpolation heldFollowUriSql("uri")': { count: 2, reason: PREDICATE },
+  // Whether the owner's upload is live and unattached, as media.ts ownUpload selects it: a predicate
+  // (media-processing.ts ownerRow).
+  'src/domain/media-processing.ts interpolation liveMediaSql("m", "?3")': { count: 1, reason: PREDICATE },
   // A drain's cursor judged against the CHECK delivery_hosts_drain_cursor's rule (deliveries.ts drainStep).
   'src/domain/deliveries.ts interpolation drainCursorSql("host", "drain_lane")': { count: 1, reason: PREDICATE },
   "src/domain/delivery-hosts.ts interpolation FAILURE_DAYS": {
