@@ -239,7 +239,13 @@ export async function truncatedStill(): Promise<Uint8Array> {
 
 // The media bucket, logging each multipart upload's creation, completion and abort by its kind ("original", "full").
 export function multipartLog(
-  fault: { failAbort?: boolean; failPart?: boolean; completeMs?: { original?: number; full?: number } } = {},
+  fault: {
+    failAbort?: boolean;
+    failPart?: boolean;
+    // The first multipart creation (original's) rejects.
+    failCreate?: boolean;
+    completeMs?: { original?: number; full?: number };
+  } = {},
 ): {
   bucket: R2Bucket;
   log: string[];
@@ -253,6 +259,9 @@ export function multipartLog(
         return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
       }
       return async (key: string, options?: R2MultipartOptions) => {
+        if (fault.failCreate === true && kind(key) === "original") {
+          throw new Error("r2 create failed");
+        }
         const upload = await target.createMultipartUpload(key, options);
         log.push(`create:${kind(key)}`);
         return {

@@ -204,6 +204,34 @@ describe("runUpload (P12)", () => {
     expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
   });
 
+  // r4 LOW: the container's body is the job's until the verifier reads it; an exit before then cancels it, and a
+  // successful reply that arrives at its cut is cancelled when it does.
+  it("cancels the container's body when the first multipart creation rejects", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const { bucket } = multipartLog({ failCreate: true });
+    const fake = fakeControl({ output: await avFixture("r1-av.mp4"), durationMs: "2000" }, { open: true });
+    await runUpload(uploadDeps(w, fake.control, { bucket }), await jobOf(w, up));
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "unavailable" });
+    expect(fake.cancels()).toBe(1);
+  });
+
+  it("cancels the body of a successful reply that arrives at the work deadline", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const job = await jobOf(w, up);
+    const allocation = allocate("v2", Date.now(), job.deadline, job.inputBytes);
+    const fake = fakeControl(
+      { output: await avFixture("r1-av.mp4"), durationMs: "2000" },
+      { open: true, onReply: () => clock(allocation.cuts.still) },
+    );
+    await runUpload(uploadDeps(w, fake.control), job);
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "timeout" });
+    await vi.waitFor(() => expect(fake.cancels()).toBe(1));
+  });
+
   it("logs a rejected abort by its upload and variant and still stops the container and records the cause (M2)", async () => {
     const w = await avWorld();
     const up = await started(w);

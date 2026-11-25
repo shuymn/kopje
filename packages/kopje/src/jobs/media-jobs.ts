@@ -195,7 +195,14 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
   };
   // D4 and the aborts together, neither waiting on the other; then the cause: an unconfirmed stop records
   // `unavailable` whatever the cause was, and ends the invocation.
+  // The container's output body until the verifier reads it: an exit before that cancels it, and its request with it.
+  let unread: { file: ReadableStream<Uint8Array>; cut: AbortController } | null = null;
   const stopThen = async (cause: ProcessorFailure | null): Promise<UploadEnd> => {
+    if (unread !== null) {
+      unread.cut.abort();
+      unread.file.cancel().catch(() => {});
+      unread = null;
+    }
     const [stopped] = await Promise.all([deps.stop(), abortUploads()]);
     if (!stopped) {
       console.warn({ event: "kopje.media.job.stop_failed", ...at() });
@@ -244,11 +251,14 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
       }),
       allocation.cuts.still,
       cut,
+      // A successful reply at or past the cut: its body is cancelled when it arrives.
+      (late) => (late.ok ? late.file.cancel().catch(() => {}) : undefined),
     );
     if (!result.ok) {
       console.warn({ event: "kopje.media.job.output_refused", ...at(), code: result.code, stages: result.stages });
       return await stopThen(result.outcome);
     }
+    unread = { file: result.file, cut };
     stage.name = "output";
     stage.at = deps.now();
     const transferEnd = outputCut(allocation, "transfer", stage.at);
@@ -256,6 +266,7 @@ export async function runUpload(deps: UploadDeps, job: UploadJob): Promise<Uploa
     await begin("original", originalKey(job.id), type, transferEnd, cut);
     await begin("full", fileKey(job.token, "full"), type, transferEnd, cut);
     const [original, full] = uploads.map((entry) => entry.upload) as [R2MultipartUpload, R2MultipartUpload];
+    unread = null;
     const verified = await bounded(
       deps,
       verifyInto(result, [original, full], (write) => bounded(deps, write, transferEnd, cut)),
