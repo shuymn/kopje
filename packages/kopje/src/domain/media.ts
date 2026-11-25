@@ -3,6 +3,7 @@ import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
+import { type Marker, restoreTime } from "../platform/restore-marker";
 import {
   staticUrlPastBoundSql,
   storedBlurhash,
@@ -11,7 +12,7 @@ import {
 } from "../platform/stored-bounds";
 import { type CredentialAccount, credentialAccount, presentFor, type PresentInput } from "./accounts";
 import { actorSnapshot, recordActorUpdate } from "./actor-update";
-import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
+import { userMediaDeleteOperation, userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
 import { setState, state } from "./kopje-state";
 import { NORMALIZE_PROFILE, probePassed } from "./media-probes";
@@ -342,20 +343,17 @@ export type Started =
 // time (not completed, abandoned, doomed or past its deadline) and on the image path or none yet: a candidate becomes
 // an image here, and one S1 took (video or audio) is refused, so a reservation is written by one path only. The
 // transformations are charged to the budgets of the month `now` is in.
-// `restoredAt`: the restore marker, as the AV operations' (K3), which the Store's method reads only for a candidate
-// (store.ts): `unread` until then, so an ordinary image's start never depends on the marker, and `unreadable` when
-// the read failed. The transaction that would choose the path for a candidate it has not read the marker for answers
-// `needs_marker`, and the method runs it again with the marker, so the row is judged afresh where the path is chosen.
-// A candidate reserved at or before the last restore, or whose marker cannot be read, is refused, as S1 refuses it:
+// `restoredAt`: the restore marker, as the AV operations' (K3), asked for only for a candidate (platform/restore-marker.ts
+// restoreTime, withMarker): an ordinary image's start never reads it, and a candidate's start runs again with it, so
+// the row is judged afresh where the path is chosen. A candidate whose marker is unknown is refused as transient. A
+// candidate reserved at or before the last restore is refused, as S1 refuses it:
 // the restore may have rewound S1, and the AV path's late writes (W1) may still land on its keys. completeMedia needs
 // no fence of its own: a start the restore rewound left the row a candidate, which it refuses, and a start the restore
 // kept committed before the bookmark, so no S1 took the reservation in either history. A plain image reservation,
 // never a candidate, is not fenced.
-export type RestoreMarker = number | null | "unread" | "unreadable";
-
 export const startTransforms = userWriteOperation.atStoreTime("storeNow")<
-  { id: string; monthlyTransforms: MonthlyTransforms; now: number; storeNow: number; restoredAt: RestoreMarker },
-  Started | { status: "needs_marker" }
+  { id: string; monthlyTransforms: MonthlyTransforms; now: number; storeNow: number; restoredAt: Marker },
+  Started
 >((db, { id, monthlyTransforms, now, storeNow, restoredAt }, { accountId }) => {
   const open = db.first<{ type: string; created_at: string }>(
     `SELECT type, created_at FROM media_attachments WHERE id = ? AND account_id = ? AND processed = 0 AND gc_at <> ?
@@ -370,10 +368,8 @@ export const startTransforms = userWriteOperation.atStoreTime("storeNow")<
     return { status: "expired" };
   }
   if (open.type === AV_CANDIDATE_TYPE) {
-    if (restoredAt === "unread") {
-      return { status: "needs_marker" };
-    }
-    if (restoredAt === "unreadable" || (restoredAt !== null && Date.parse(open.created_at) <= restoredAt)) {
+    const restored = restoreTime(restoredAt);
+    if (restored !== null && Date.parse(open.created_at) <= restored) {
       return { status: "expired" };
     }
   }
@@ -512,15 +508,6 @@ export const abandonMedia = userMediaDeleteOperation.atStoreTime("now")<{ id: st
   return "abandoned";
 });
 
-export const getMedia = userReadOperation.atStoreTime("now")<{ id: string; now: number }, MediaAttachment | null>((
-  db,
-  { id, now },
-  { accountId },
-) => {
-  const row = ownUpload(db, accountId, id, now);
-  return row === undefined ? null : presentMedia(row);
-});
-
 export type ProfileImage = "avatar" | "header";
 
 // In the order a request applies them.
@@ -595,13 +582,9 @@ export const removeProfileImage = userMediaDeleteOperation<
 
 export type MediaChanges = { description?: string | undefined; focus?: { x: number; y: number } | undefined };
 
-export const updateMedia = userWriteOperation.atStoreTime("now")<
-  { id: string; changes: MediaChanges; now: number },
-  MediaAttachment | null
->((db, { id, changes, now }, { accountId }) => {
-  if (ownUpload(db, accountId, id, now) === undefined) {
-    return null;
-  }
+// The description and focus a PUT sends, written on the upload `id` (media-processing.ts updateOwnerMedia, the owner's
+// PUT /api/v1/media/:id, for a finished upload and one still processing alike).
+export function describeMedia(db: Db, id: string, changes: MediaChanges): void {
   db.run(
     `UPDATE media_attachments SET description = COALESCE(?, description), focus_x = COALESCE(?, focus_x),
 				focus_y = COALESCE(?, focus_y), focus_given = COALESCE(?, focus_given)
@@ -612,9 +595,7 @@ export const updateMedia = userWriteOperation.atStoreTime("now")<
     changes.focus === undefined ? null : 1,
     id,
   );
-  const row = ownUpload(db, accountId, id, now);
-  return row === undefined ? null : presentMedia(row);
-});
+}
 
 export type MediaDeleted = "deleted" | "in_use" | "not_found";
 
@@ -627,18 +608,24 @@ export type MediaDeleted = "deleted" | "in_use" | "not_found";
 // image is one the cutover kept for good (cli/lib/cutover/convert.js) and could not link to a status: an image legacy
 // kept unattached, or one that earlier versions of no single status name (migration 0015_media_shown links the
 // others). No Kopje write leaves such a row, so it is refused as in use too.
-export const deleteMedia = userMediaDeleteOperation.atStoreTime("now")<{ id: string; now: number }, MediaDeleted>(
-  (db, { id, now }, { accountId }) => deleteOwnMedia(db, accountId, id, now),
-);
-
-// deleteMedia's rules for one row of `accountId`, at `now` (also S11's for a finished upload, media-processing.ts).
-export function deleteOwnMedia(db: Db, accountId: string, id: string, now: number): MediaDeleted {
-  const row = db.first<{ used: number; kept: number }>(
-    `SELECT status_id IS NOT NULL OR scheduled_status_id IS NOT NULL AS used, gc_at IS NULL AS kept
+//
+// The rules for one row of `accountId`, at `now` (media-processing.ts deleteOwnerMedia, S11's for a finished upload,
+// passes the row's `used` and `kept` as it read them).
+export function deleteOwnMedia(
+  db: Db,
+  accountId: string,
+  id: string,
+  now: number,
+  read?: { used: number; kept: number },
+): MediaDeleted {
+  const row =
+    read ??
+    db.first<{ used: number; kept: number }>(
+      `SELECT status_id IS NOT NULL OR scheduled_status_id IS NOT NULL AS used, gc_at IS NULL AS kept
 			FROM media_attachments WHERE id = ? AND account_id = ?`,
-    id,
-    accountId,
-  );
+      id,
+      accountId,
+    );
   if (row === undefined) {
     return "not_found";
   }

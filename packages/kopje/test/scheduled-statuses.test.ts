@@ -36,8 +36,10 @@ import { BLURHASH_BYTES } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, json, login, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { convertToVideo, IMAGES_AND_VIDEO, imageUpload, NOT_READY, postAs } from "./av-posting-helpers";
 import { BUILD } from "./helpers";
 import { storeClock } from "./media-helpers";
+import { avWorld, type AvWorld, clock, completed, held, queued, SECOND, T0 } from "./media-processing-helpers";
 import { measuredStatements, observedSql } from "./read-helpers";
 import {
   community,
@@ -1909,5 +1911,92 @@ describe("parseScheduledAt", () => {
     ]) {
       expect(parseScheduledAt(invalid), invalid).toBeNull();
     }
+  });
+});
+
+describe("video and audio in a scheduled post (#1828 P10, decision C9)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const AT = new Date(T0 + 10 * MINUTE).toISOString();
+
+  function publishAt(w: AvWorld, now: number) {
+    clock(now);
+    return publishScheduled(w.h.env, {
+      build: () => BUILD,
+      now: () => now,
+      store: () => w.store,
+      doorbell: () => Promise.resolve(),
+    });
+  }
+
+  it("refuses to schedule an upload still processing, or a video beside an image, and holds nothing", async () => {
+    const w = await avWorld();
+    const pending = await queued(w);
+    const video = await completed(w);
+    const image = await imageUpload(w);
+    clock(T0 + 5 * SECOND);
+    expect(await postAs(w, { status: "x", media_ids: [pending.id], scheduled_at: AT })).toEqual({
+      status: 422,
+      body: NOT_READY,
+    });
+    expect(await postAs(w, { status: "x", media_ids: [video.id, image], scheduled_at: AT })).toEqual({
+      status: 422,
+      body: IMAGES_AND_VIDEO,
+    });
+    expect(await sql(w.store, "SELECT id FROM scheduled_statuses")).toEqual([]);
+    expect(
+      await sql(w.store, "SELECT count(*) AS n FROM media_attachments WHERE scheduled_status_id IS NOT NULL"),
+    ).toEqual([{ n: 0 }]);
+    // A completed video alone is scheduled, and shown with its facts.
+    expect(await postAs(w, { status: "x", media_ids: [video.id], scheduled_at: AT })).toMatchObject({
+      status: 200,
+      body: { media_attachments: [{ id: video.id, type: "video", meta: { original: { frame_rate: "30/1" } } }] },
+    });
+  });
+
+  it("drops a held status whose upload is unfinished, as before: the upload is not found at publication", async () => {
+    const w = await avWorld();
+    clock(T0 + SECOND);
+    const image = await imageUpload(w);
+    const scheduled = await postAs(w, { status: "held", media_ids: [image], scheduled_at: AT });
+    const id = (scheduled.body as { id: string }).id;
+    // Only a restore can leave a held upload unfinished: here, an upload still processing held in the image's place.
+    const pending = await queued(w);
+    await sql(w.store, "UPDATE media_attachments SET scheduled_status_id = NULL WHERE id = ?", image);
+    await sql(w.store, "UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?", id, pending.id);
+    await sql(
+      w.store,
+      "UPDATE scheduled_statuses SET params = replace(params, ?, ?) WHERE id = ?",
+      image,
+      pending.id,
+      id,
+    );
+    expect(await sql(w.store, "SELECT instr(params, ?) > 0 AS named FROM scheduled_statuses", pending.id)).toEqual([
+      { named: 1 },
+    ]);
+    clock(T0 + 11 * MINUTE);
+    expect(await publishDirectly(w.h, id, T0 + 11 * MINUTE)).toEqual({ status: "dropped", reason: "invalid" });
+    expect(await sql(w.store, "SELECT id FROM statuses")).toEqual([]);
+    expect((await held(w.store, pending.id)).att).toMatchObject({ processed: 0 });
+  });
+
+  it("publishes a held set that holds a video among images as it was scheduled", async () => {
+    const w = await avWorld();
+    clock(T0 + SECOND);
+    const media = [await imageUpload(w), await imageUpload(w)];
+    const scheduled = await postAs(w, { status: "held", media_ids: media, scheduled_at: AT });
+    expect(scheduled.status).toBe(200);
+    // Held before the rule, as a converted scheduled status: one of its media is a video.
+    await convertToVideo(w, media[0]!);
+    await publishAt(w, T0 + 11 * MINUTE);
+    expect(await sql(w.store, "SELECT id FROM scheduled_statuses")).toEqual([]);
+    expect(
+      await sql(
+        w.store,
+        "SELECT m.type FROM media_attachments m JOIN statuses s ON s.id = m.status_id ORDER BY m.position",
+      ),
+    ).toEqual([{ type: "video" }, { type: "image" }]);
   });
 });

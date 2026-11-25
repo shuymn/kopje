@@ -1,6 +1,7 @@
 import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX, POLLS_STATUS_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import { type Db, RowCapExceeded, RowMeter } from "../db/sql";
+import { AUDIO_DURATION_LIMIT, isEdge, isFrameRate } from "../platform/av-bytes";
 import { VIDEO_POSTER } from "../platform/brand-assets";
 import { boundedHref } from "../platform/http-url";
 import { FILE_TOKEN, mediaUrl } from "../platform/media-files";
@@ -100,7 +101,15 @@ import { TREND_LANGUAGES } from "./trend-languages";
 
 type MediaSize = { width: number; height: number; size: string; aspect: number };
 
-type MediaMeta = { original?: MediaSize; small?: MediaSize; focus?: { x: number; y: number } };
+// A playable file's own facts (Mastodon's video_metadata: ffprobe's, the verifier's for a Kopje upload): frame_rate as
+// Mastodon's string ("30/1"), duration in seconds, bitrate in bits per second.
+type PlayableFacts = { frame_rate?: string; duration?: number; bitrate?: number };
+
+type MediaMeta = {
+  original?: Partial<MediaSize> & PlayableFacts;
+  small?: MediaSize;
+  focus?: { x: number; y: number };
+};
 
 export type MediaAttachment = {
   id: string;
@@ -1114,13 +1123,16 @@ function statusUrl(row: StatusUrlRow): string {
 }
 
 // MediaAttachment as REST::MediaAttachmentSerializer shows it. URLs are emitted only when they are http(s) (HTML-3);
-// meta carries the stored dimensions (Mastodon's original and small) and the focal point. A remote attachment's file
+// meta carries the stored dimensions (Mastodon's original and small; a playable file's only as whole pixels within
+// av-bytes.ts isEdge, isEdgeSize), a playable file's own facts in its original
+// (playableFacts: a video's frame rate, duration and bitrate, an audio file's duration and bitrate; `small` only where a
+// still was stored) and the focal point. A remote attachment's file
 // and icon are shown from the cache on `origin` when cached (remote-media.ts cachedImageUrls, the one decision): url
 // its cached file, else its remote url; preview_url its cached icon, else, for an image, its cached file's still (or
 // the file itself), else its remote icon, else url for an image or an unknown file (a playable one's as playablePreview
 // judges it). Its remote_url and preview_remote_url are its stored url and icon (null without one), as Mastodon's; a
-// local one's are null, as Mastodon's local? media. Without an origin (an upload's own answers, a scheduled post, an
-// edit's snapshot) nothing is read from the cache. text_url is always null (MD-6). blurhash: what storedBlurhash keeps
+// local one's are null, as Mastodon's local? media. Without an origin (an edit's snapshot; an upload's own answers and a
+// scheduled post pass one only for a playable file, for its VIDEO_POSTER) nothing is read from the cache. text_url is always null (MD-6). blurhash: what storedBlurhash keeps
 // of the stored value (a local upload's is its preview's, platform/images.ts processImage, or null).
 export function presentMedia(row: MediaRow, origin: string | null = null): MediaAttachment {
   // URLs within MEDIA_URL_LIMIT as serialized, as stored (STORED_COLUMNS in platform/stored-bounds.ts).
@@ -1131,9 +1143,14 @@ export function presentMedia(row: MediaRow, origin: string | null = null): Media
   const url = file?.image ?? remoteUrl;
   const preview = icon?.image ?? (file !== null && row.type === "image" ? file.still : null) ?? remotePreview;
   const stored = storedMeta(row.meta);
+  const sized = isPlayable(row.type) ? isEdgeSize : isSize;
+  const original = {
+    ...(sized(stored.original) ? mediaSize(stored.original) : {}),
+    ...(isPlayable(row.type) ? playableFacts(stored.original) : {}),
+  };
   const meta: MediaMeta = {
-    ...(isSize(stored.original) ? { original: mediaSize(stored.original) } : {}),
-    ...(isSize(stored.small) ? { small: mediaSize(stored.small) } : {}),
+    ...(Object.keys(original).length === 0 ? {} : { original }),
+    ...(sized(stored.small) ? { small: mediaSize(stored.small) } : {}),
     ...(row.focus_x === null ? {} : { focus: { x: row.focus_x, y: row.focus_y } }),
   };
   const remote = row.remote === 1;
@@ -1233,8 +1250,67 @@ function isSize(value: unknown): value is Size {
   return positive(width) && positive(height);
 }
 
+// A playable file's dimensions as the verifier states them and the Store bounds them (av-bytes.ts isEdge). A converted
+// row holds a remote Document's, which Mastodon writes as whole pixels too.
+function isEdgeSize(value: unknown): value is Size {
+  return isSize(value) && isEdge(value.width) && isEdge(value.height);
+}
+
 function mediaSize({ width, height }: Size): MediaSize {
   return { width, height, size: `${width}x${height}`, aspect: width / height };
+}
+
+// The facts of a playable file's stored meta.original that may be shown, each only when it is of its kind: frame_rate a
+// rational as the verifier states it (av-bytes.ts isFrameRate), duration within the verifier's range (isDuration),
+// bitrate a positive safe integer. A stored value of another kind (an imported meta holds any JSON) is left out.
+function playableFacts(original: unknown): PlayableFacts {
+  if (typeof original !== "object" || original === null) {
+    return {};
+  }
+  const { frame_rate: frameRate, duration, bitrate } = original as Record<string, unknown>;
+  return {
+    ...(isFrameRate(frameRate) ? { frame_rate: frameRate } : {}),
+    ...(isDuration(duration) ? { duration } : {}),
+    ...(typeof bitrate === "number" && Number.isSafeInteger(bitrate) && bitrate > 0 ? { bitrate } : {}),
+  };
+}
+
+// The shortest duration the verifier states: one sample at 48 kHz, its highest sample rate (av-bytes.ts); the longest is
+// AUDIO_DURATION_LIMIT, past a video's.
+const SHORTEST_DURATION = 1 / 48_000;
+
+function isDuration(value: unknown): value is number {
+  return typeof value === "number" && value >= SHORTEST_DURATION && value <= AUDIO_DURATION_LIMIT;
+}
+
+// What a local video or audio Document carries of its stored meta (activities.ts), as ActivityPub::NoteSerializer's
+// MediaAttachmentSerializer writes it (Mastodon v4.7.5): the width and the height each where meta.original has it (a
+// video's; an audio file's verified facts have none), and the duration as ISO 8601 (ActiveSupport::Duration#iso8601 of
+// the stored seconds, a Float in Mastodon, so 8 is "PT8.0S"). Each only as the verifier states it (isEdge,
+// isDuration). JavaScript writes every such duration in decimal (String has no exponent from 1e-6 on); Ruby writes one
+// below 1e-4 with an exponent, which ISO 8601 has no form for, so there Kopje writes the decimal.
+export type PlayableDocument = { width?: number; height?: number; duration?: string };
+
+export function playableDocumentFacts(type: string, meta: string | null): PlayableDocument {
+  if (type !== "video" && type !== "audio") {
+    return {};
+  }
+  const original = storedMeta(meta).original;
+  const { width, height, duration } =
+    typeof original === "object" && original !== null ? (original as Record<string, unknown>) : {};
+  return {
+    ...(isEdge(width) ? { width } : {}),
+    ...(isEdge(height) ? { height } : {}),
+    ...(isDuration(duration)
+      ? { duration: `PT${Number.isInteger(duration) ? `${duration}.0` : String(duration)}S` }
+      : {}),
+  };
+}
+
+// An upload still processing, as its owner reads it (Mastodon's not_processed?, the serializer's url nil): url,
+// preview_url, meta and blurhash null (#1828 design 4.13), its type and description as stored.
+export function processingMedia(media: MediaAttachment): MediaAttachment {
+  return { ...media, url: null, preview_url: null, meta: null, blurhash: null };
 }
 
 type ViewerFlags = Record<"favourited" | "reblogged" | "bookmarked" | "pinned" | "muted", Set<string>>;

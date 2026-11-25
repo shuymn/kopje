@@ -172,6 +172,12 @@ export function isFrameRate(value: unknown): value is string {
   return terms !== null && Number.isSafeInteger(Number(terms[1])) && Number.isSafeInteger(Number(terms[2]));
 }
 
+// A video's width or height as the Store stores it (media-processing.ts avMeta: meta.original, meta.small) and shows it
+// (status-presenter.ts): whole pixels from 1 to 65,535.
+export function isEdge(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= 65_535;
+}
+
 export type AvVerdict<F = VideoFacts | AudioFacts> = { ok: true; facts: F } | { ok: false; rule: AvRule };
 
 export type AvVerifyOptions = {

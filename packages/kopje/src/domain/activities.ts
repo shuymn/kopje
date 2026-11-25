@@ -39,7 +39,12 @@ import {
   pollOptionsSql,
   tagNameSql,
 } from "./status-bounds";
-import { presentedMediaDescription, shownCardUrl } from "./status-presenter";
+import {
+  type PlayableDocument,
+  playableDocumentFacts,
+  presentedMediaDescription,
+  shownCardUrl,
+} from "./status-presenter";
 import { CARD_COLUMN_MAP } from "./status-rows";
 
 // Outbound intents. A local change that federates records the ActivityPub activity it means and the audience it is
@@ -171,8 +176,15 @@ export type StatusFacts = {
   quotePolicy: number;
   quote: NoteQuote | null;
   tags: { name: string; href: string }[];
-  // blurhash: as storedBlurhash keeps it.
-  media: { url: string | null; content_type: string | null; description: string; blurhash: string | null }[];
+  // blurhash: as storedBlurhash keeps it. playable: a video's or audio file's width, height and duration
+  // (status-presenter.ts playableDocumentFacts), {} for any other.
+  media: {
+    url: string | null;
+    content_type: string | null;
+    description: string;
+    blurhash: string | null;
+    playable: PlayableDocument;
+  }[];
   // The Mention tags (href, name) the Note shows.
   mentions: { href: string; name: string }[];
   // The Emoji tags of the status's local emoji snapshot (custom-emojis.ts localEmojiTags).
@@ -294,8 +306,10 @@ export function statusFacts(
     content_type: string | null;
     description: string;
     blurhash: SqlStorageValue;
+    type: string;
+    meta: string | null;
   }>(
-    `SELECT url, content_type, description, blurhash
+    `SELECT url, content_type, description, blurhash, type, meta
 		FROM media_attachments INDEXED BY media_attachments_status WHERE status_id = ?1 AND shown = 1
 		ORDER BY position, id LIMIT ${MAX_STATUS_MEDIA}`,
     statusId,
@@ -336,7 +350,11 @@ export function statusFacts(
     recipients: mentioned.map((m) => ({ accountId: m.account_id, uri: m.uri, silent: m.silent === 1 })),
     reached,
     tags: tags.map((t) => ({ name: t.name, href: `${origin}/tags/${encodeURIComponent(t.name)}` })),
-    media: media.map((m) => ({ ...m, blurhash: storedBlurhash(m.blurhash) })),
+    media: media.map(({ type, meta, ...m }) => ({
+      ...m,
+      blurhash: storedBlurhash(m.blurhash),
+      playable: playableDocumentFacts(type, meta),
+    })),
     mentions: mentionTags.map((m) => ({ href: m.uri, name: `@${m.username}@${m.domain ?? host}` })),
     emojis: localEmojiTags(db, row.emojis, origin, STATUS_EMOJIS_BYTES),
     poll: pollFacts(db, statusId),
@@ -366,7 +384,8 @@ function questionOf(poll: PollFacts): Record<string, unknown> {
 }
 
 // The Note's attachments: only http(s) URLs are published (HTML-3), and a blurhash only when there is one, where
-// Mastodon writes null (docs/mastodon-deviations.md, "Media"); then the card the status shows as a FEP-8967 Link
+// Mastodon writes null (docs/mastodon-deviations.md, "Media"); a video's width and height and a video's or audio
+// file's duration as Mastodon writes them (an image's are not written); then the card the status shows as a FEP-8967 Link
 // (ActivityPub::NoteSerializer#virtual_attachments, note_serializer.rb:137-139, :251-261).
 function attachmentsOf(facts: StatusFacts): Record<string, unknown>[] {
   const media = facts.media.flatMap((m) => {
@@ -380,6 +399,7 @@ function attachmentsOf(facts: StatusFacts): Record<string, unknown>[] {
             url: url.href,
             name: presentedMediaDescription(m.description),
             ...(m.blurhash === null ? {} : { blurhash: m.blurhash }),
+            ...m.playable,
           },
         ];
   });

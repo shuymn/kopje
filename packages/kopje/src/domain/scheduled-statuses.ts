@@ -15,11 +15,12 @@ import {
 } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
+import { instanceOrigin } from "./instance-domain";
 import { DETACHED_GRACE_MS } from "./media";
 import { writeOperation } from "./operation";
 import { checkPoll, isPollInput, type PollInput } from "./polls";
 import { MAX_STATUS_MEDIA } from "./status-bounds";
-import { type MediaAttachment, type MediaRow, presentMedia, type Status } from "./status-presenter";
+import { isPlayable, type MediaAttachment, type MediaRow, presentMedia, type Status } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
 import {
   convertedPost,
@@ -154,11 +155,14 @@ function presentScheduled(
 			ORDER BY m.position, m.id LIMIT ${MAX_STATUS_MEDIA}`,
     row.id,
   );
+  // A playable one on the instance origin, as the owner's GET shows it (a video without a still shows VIDEO_POSTER);
+  // the origin is read only for one, which nothing else of an attachment needs.
+  const origin = media.some((m) => isPlayable(m.type)) ? instanceOrigin(db) : null;
   return {
     id: row.id,
     scheduled_at: row.scheduled_at,
     params: params as ScheduledParams,
-    media_attachments: media.map((row) => presentMedia(row)),
+    media_attachments: media.map((row) => presentMedia(row, origin)),
   };
 }
 

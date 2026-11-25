@@ -10,8 +10,23 @@ import { APP_NAME_LIMIT, APP_WEBSITE_LIMIT, MAX_MEDIA_DESCRIPTION_LENGTH } from 
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, type App, bearer, form, json, login, setSetting, settle, sql } from "./api-helpers";
 import { countingStore, NOW } from "./app-helpers";
+import { IMAGES_AND_VIDEO, imageReservation, imageUpload, NOT_READY, postAs } from "./av-posting-helpers";
 import { BUILD } from "./helpers";
 import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS, storeClock } from "./media-helpers";
+import {
+  avWorld,
+  type AvWorld,
+  AUDIO,
+  clock,
+  completed,
+  failed,
+  queued,
+  reserve,
+  SECOND,
+  staged,
+  started,
+  T0,
+} from "./media-processing-helpers";
 import {
   plannedRun,
   type PlannedStatement,
@@ -2694,4 +2709,72 @@ describe("posting and batch reads with stale statistics (RES-7)", () => {
     expect(scansOf(plan, ["s"])).toEqual([]);
     expect(rows).toBe(before.plans[0]!.rows);
   }, 60_000);
+});
+
+describe("video and audio in a new post (#1828 P10, decision C9)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("refuses an upload still processing or failed with not_ready, and writes nothing", async () => {
+    for (const make of [queued, started, (w: AvWorld) => failed(w, "refused")]) {
+      const w = await avWorld();
+      const up = await make(w);
+      clock(T0 + 5 * SECOND);
+      expect(await postAs(w, { status: "x", media_ids: [up.id] })).toEqual({ status: 422, body: NOT_READY });
+      expect(await sql(w.store, "SELECT id FROM statuses")).toEqual([]);
+      expect(await sql(w.store, "SELECT status_id FROM media_attachments WHERE id = ?", up.id)).toEqual([
+        { status_id: null },
+      ]);
+    }
+  });
+
+  it("refuses a video or audio file beside other media, before not_ready, as Mastodon orders them", async () => {
+    const w = await avWorld();
+    const video = await completed(w);
+    const image = await imageUpload(w);
+    clock(T0 + 5 * SECOND);
+    expect(await postAs(w, { status: "x", media_ids: [image, video.id] })).toEqual({
+      status: 422,
+      body: IMAGES_AND_VIDEO,
+    });
+    const w2 = await avWorld();
+    const audio = await completed(w2, { facts: AUDIO });
+    const pending = await queued(w2);
+    clock(T0 + 5 * SECOND);
+    expect(await postAs(w2, { status: "x", media_ids: [audio.id, pending.id] })).toEqual({
+      status: 422,
+      body: IMAGES_AND_VIDEO,
+    });
+    // One file sent twice is one file.
+    expect(await postAs(w2, { status: "x", media_ids: [audio.id, audio.id] })).toMatchObject({
+      status: 200,
+      body: { media_attachments: [{ id: audio.id, type: "audio" }] },
+    });
+  });
+
+  it("posts a completed video alone, and images together, as before", async () => {
+    const w = await avWorld();
+    const video = await completed(w);
+    const images = [await imageUpload(w), await imageUpload(w)];
+    clock(T0 + 5 * SECOND);
+    expect(await postAs(w, { status: "x", media_ids: [video.id] })).toMatchObject({
+      status: 200,
+      body: { media_attachments: [{ id: video.id, type: "video" }] },
+    });
+    expect(await postAs(w, { status: "y", media_ids: images })).toMatchObject({ status: 200 });
+  });
+
+  it("finds neither a staging upload, an old image reservation nor another account's upload still processing", async () => {
+    const w = await avWorld();
+    const staging = await staged(w);
+    const reservation = await imageReservation(w);
+    const bobs = await queued(w, { up: await reserve(w, T0, "bob") });
+    clock(T0 + 5 * SECOND);
+    for (const id of [staging.id, reservation, bobs.id]) {
+      expect(await postAs(w, { status: "x", media_ids: [id] })).toEqual(mediaNotFound(id));
+    }
+    // bob's own post finds his upload still processing.
+    expect(await postAs(w, { status: "x", media_ids: [bobs.id] }, "bob")).toEqual({ status: 422, body: NOT_READY });
+  });
 });

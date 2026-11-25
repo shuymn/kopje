@@ -1,0 +1,18 @@
+{
+  "mastodon": "4.7.5",
+  "generated": false,
+  "method": "hand-written from Mastodon 4.7.5's MediaAttachment#populate_meta and #video_metadata (app/models/media_attachment.rb: META_KEYS focus, colors, original, small; original from VideoMetadataExtractor's width, height, frame_rate as a Rational, which JSON writes \"30/1\", duration and bitrate, compacted, so audio has no width, height or frame_rate; small from image_geometry of the thumbnail) and ActivityPub::NoteSerializer::MediaAttachmentSerializer (app/serializers/activitypub/note_serializer.rb: width and height from meta.original, duration as meta.original.duration.seconds.iso8601); the values are the documentation's MediaAttachment examples (docs.joinmastodon.org, entities/MediaAttachment); not run against Mastodon",
+  "video": {
+    "meta": {
+      "original": { "width": 640, "height": 480, "frame_rate": "30/1", "duration": 25.022, "bitrate": 481513 },
+      "small": { "width": 400, "height": 300, "size": "400x300", "aspect": 1.3333333333333333 }
+    },
+    "document": { "width": 640, "height": 480, "duration": "PT25.022S" }
+  },
+  "audio": {
+    "meta": {
+      "original": { "duration": 268.32, "bitrate": 320000 }
+    },
+    "document": { "duration": "PT268.32S" }
+  }
+}

@@ -10,6 +10,7 @@ import { hostDomain } from "../platform/domain-name";
 import { remoteMediaUrlRefusal } from "../platform/http-url";
 import { FILE_TOKEN, remoteFileKey } from "../platform/media-files";
 import { type RemoteCategory, type RemoteFileKind, remoteFileLimits } from "../platform/remote-media-bytes";
+import { type Marker, restoreTime } from "../platform/restore-marker";
 import {
   cardUrlPastSql,
   MAX_EMOJIS,
@@ -150,7 +151,6 @@ const STATE = {
 } as const;
 
 const isTime = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
-const isTimeOrNull = (n: unknown): n is number | null => n === null || isTime(n);
 
 // An array input as given over RPC (a caller may send anything), or none.
 function listOf<T>(value: readonly T[]): readonly T[] {
@@ -1473,12 +1473,13 @@ function validationBatch(db: Db, now: number, restoredAt: number): { batch: Remo
 // One round's maintenance (federation/remote-media.ts), in order: a restore younger than REMOTE_SETTLE_MS stops it
 // before any write ('settling'); a settled restore newer than the last validation starts validation (the batch to
 // head); then reservation expiry, the validity walk, the suspended accounts, the backfill, reclamation and the audit;
-// then the doomed objects due and whether an orphan sweep is due. `restoredAt`: the restore marker the Store read;
-// `cap`: REMOTE_MEDIA_CACHE_BYTES.
+// then the doomed objects due and whether an orphan sweep is due. `restore`: the restore marker, whose time every round
+// on a set-up Store needs (an unknown marker refuses the round: restoreTime), and a Store without its domain answers
+// `unset` without; `cap`: REMOTE_MEDIA_CACHE_BYTES.
 export const maintainRemoteMedia = writeOperation.atStoreTime("now")<
-  { now: number; restoredAt: number | null; cap: number; retentionDays?: number },
+  { now: number; restoredAt: Marker; cap: number; retentionDays?: number },
   RemoteMediaMaintenance
->((db, { now, restoredAt, cap, retentionDays: retention }) => {
+>((db, { now, restoredAt: restore, cap, retentionDays: retention }) => {
   const counts = { expired: 0, walked: 0, retired: 0, aged: 0, reclaimed: 0, backfilled: 0, restored: 0 };
   const empty = (status: RemoteMediaMaintenance["status"]): RemoteMediaMaintenance => ({
     status,
@@ -1489,9 +1490,11 @@ export const maintainRemoteMedia = writeOperation.atStoreTime("now")<
     drift: null,
     usage: usage(db),
   });
-  if (!isTime(now) || !isTimeOrNull(restoredAt) || !isTime(cap) || instanceDomain(db) === null) {
+  if (!isTime(now) || !isTime(cap) || instanceDomain(db) === null) {
     return empty("unset");
   }
+  // A time readRestore validated (a non-negative safe integer), or null.
+  const restoredAt = restoreTime(restore);
   if (restoredAt !== null && now - restoredAt < REMOTE_SETTLE_MS) {
     return empty("settling");
   }

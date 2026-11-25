@@ -4,6 +4,7 @@ import { env } from "cloudflare:workers";
 import { MIGRATIONS } from "../src/db/migrations";
 import type { Claim, ClaimedDelivery, DeliveryOutcome } from "../src/domain/deliveries";
 import { STORE_JOB_FAMILIES } from "../src/jobs/queue";
+import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
 import { type KernelOptions, type Migration, StoreKernel } from "../src/platform/store-kernel";
 
@@ -243,3 +244,74 @@ export const UNICODE_EMAIL_VARIANTS = [
   ` ${FOLDED_EMAIL} `,
 ] as const;
 export const ASCII_EMAIL_VARIANT = "KIM.straße.i̇ris@EXAMPLE.com";
+
+// Holds the Store's reads of its restore marker until `open`, counting them (`reads`); `close` opens the gate and puts
+// the Store's own bucket back. The wait runs in the Store's I/O context and polls a flag, since a promise of the test's
+// settled inside the Store crosses I/O contexts.
+export async function gateMarker(store: StoreStub) {
+  const key = restoreMarkerKey(store.id.toString());
+  let reads = 0;
+  let opened = false;
+  let real: Env | undefined;
+  await runInDurableObject(store, (instance) => {
+    const target = instance as unknown as { env: Env };
+    real = target.env;
+    const media = real.MEDIA;
+    const get = async (name: string, options?: R2GetOptions) => {
+      if (name === key) {
+        reads++;
+        while (!opened) {
+          await scheduler.wait(5);
+        }
+      }
+      return media.get(name, options);
+    };
+    const MEDIA = new Proxy(media, {
+      get: (bucket, name: keyof R2Bucket) => {
+        const value = name === "get" ? get : bucket[name];
+        return typeof value === "function" && name !== "get" ? value.bind(bucket) : value;
+      },
+    });
+    target.env = { ...real, MEDIA };
+  });
+  return {
+    reads: () => reads,
+    // Resolves once a read is held.
+    reached: async () => {
+      while (reads === 0) {
+        await scheduler.wait(5);
+      }
+    },
+    open: () => {
+      opened = true;
+    },
+    close: async () => {
+      opened = true;
+      await runInDurableObject(store, (instance) => {
+        (instance as unknown as { env: Env }).env = real!;
+      });
+    },
+  };
+}
+
+// Runs `run` while the Store's read of its restore marker is held: `answer` what the call answered, or `held` once it
+// reaches the read (the read is then let go, after the answer is taken), and `reads` the marker reads made.
+export async function holdingMarker<T>(
+  store: StoreStub,
+  run: () => Promise<T>,
+): Promise<{ answer: T | "held"; reads: number }> {
+  const gate = await gateMarker(store);
+  let polling = true;
+  const reached = async (): Promise<"held"> => {
+    while (polling && gate.reads() === 0) {
+      await scheduler.wait(5);
+    }
+    return "held";
+  };
+  try {
+    return { answer: await Promise.race([run(), reached()]), reads: gate.reads() };
+  } finally {
+    polling = false;
+    await gate.close();
+  }
+}

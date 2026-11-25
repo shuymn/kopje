@@ -565,6 +565,14 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   },
   // A held Reject's Follow id judged against its stored bound: a predicate (deliveries.ts heldFollowUriSql).
   'src/domain/deliveries.ts interpolation heldFollowUriSql("uri")': { count: 2, reason: PREDICATE },
+  // The owner lookup's shared parts (media-processing.ts OWNER_SQL, in ownerRow and ownerFacts): its processing state
+  // and whether the upload is live and unattached, as media.ts ownUpload selects it (a predicate), and its FROM and
+  // WHERE by id and account, which name no bounded column.
+  "src/domain/media-processing.ts interpolation OWNER_SQL.state": { count: 2, reason: PREDICATE },
+  "src/domain/media-processing.ts interpolation OWNER_SQL.from": {
+    count: 2,
+    reason: "the owner lookup's FROM and WHERE by id and account, naming no bounded column",
+  },
   // A drain's cursor judged against the CHECK delivery_hosts_drain_cursor's rule (deliveries.ts drainStep).
   'src/domain/deliveries.ts interpolation drainCursorSql("host", "drain_lane")': { count: 1, reason: PREDICATE },
   "src/domain/delivery-hosts.ts interpolation FAILURE_DAYS": {
