@@ -11,11 +11,12 @@ import {
 } from "../src/domain/media-processing";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
 import { fileKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
+import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { ownerRun } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
 import { imageUpload } from "./av-posting-helpers";
-import { BUILD, rejectionOf, testKernel } from "./helpers";
+import { BUILD, deferred, rejectionOf, testKernel } from "./helpers";
 import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS } from "./media-helpers";
 import {
   AUDIO,
@@ -467,6 +468,150 @@ describe("a DELETE across a restore (W13, Codex r7)", () => {
     // The owner's repair is to delete it.
     expect((await del(w, up.id)).status).toBe(200);
     await swept(w, up.id);
+  });
+});
+
+describe("the owner's text and masks while processing (code review r1)", () => {
+  it("keeps the description and focus a PUT wrote while pending through S6, shown by GET", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    clock(T0 + 3 * SECOND);
+    expect((await put(w, up.id, { description: "later", focus: "0.5,0.75" })).status).toBe(206);
+    clock(T0 + 4 * SECOND);
+    const done = await w.store.completeAvUpload(BUILD, {
+      id: up.id,
+      token: up.token,
+      startId: up.startId,
+      facts: VIDEO,
+    });
+    expect(done.status).toBe("done");
+    expect(await get(w, up.id)).toMatchObject({
+      status: 200,
+      body: { description: "later", meta: { focus: { x: 0.5, y: 0.75 } } },
+    });
+  });
+
+  it("writes nothing on a PUT of an upload a restore fenced, the marker read", async () => {
+    const w = await avWorld();
+    const up = await started(w);
+    const taken = await bookmark(w.store);
+    await restore(w.store, taken, T0 + 6 * SECOND);
+    clock(T0 + 7 * SECOND);
+    const before = await held(w.store, up.id);
+    expect(await put(w, up.id, { description: "later", focus: "0.5,0.5" })).toEqual({
+      status: 422,
+      body: PROCESSING_ERROR,
+    });
+    expect(await held(w.store, up.id)).toEqual(before);
+    expect(await description(w, up.id)).toBe("a clip");
+  });
+
+  it("masks a stored URL, preview and blurhash while processing", async () => {
+    const w = await avWorld();
+    const up = await queued(w);
+    await sql(
+      w.store,
+      `UPDATE media_attachments SET url = 'https://kopje.test/media/x/full.mp4',
+				preview_url = 'https://kopje.test/media/x/small.png', blurhash = 'LEHV6nWB2yk8pyo0adR*.7kCMdnj' WHERE id = ?`,
+      up.id,
+    );
+    clock(T0 + 5 * SECOND);
+    expect(await get(w, up.id)).toEqual({ status: 206, body: masked(up.id, "a clip") });
+  });
+});
+
+type Call = (...args: unknown[]) => Promise<unknown>;
+
+// The Store stub the app calls, with its method `name` wrapped by `wrap` (apiHarness's wrapStore).
+function around(name: string, wrap: (call: Call) => Call) {
+  return (store: StoreStub): StoreStub =>
+    new Proxy(store, {
+      get: (target, key) => {
+        const value = Reflect.get(target, key) as unknown;
+        if (typeof value !== "function") {
+          return value;
+        }
+        const call: Call = (...args) => (target as unknown as Record<string, Call>)[String(key)]!(...args);
+        return key === name ? wrap(call) : call;
+      },
+    });
+}
+
+// Holds the first call until `release` resolves, `reached` resolved when it is held: an explicit await point in a
+// route (docs/engineering.md, "Tests").
+function holdingFirst(reached: PromiseWithResolvers<void>, release: Promise<void>) {
+  let held = false;
+  return (call: Call): Call =>
+    async (...args) => {
+      if (!held) {
+        held = true;
+        reached.resolve();
+        await release;
+      }
+      return call(...args);
+    };
+}
+
+describe("a DELETE across a restore at the route (W13, Codex r7)", () => {
+  it("a DELETE held before its Store call while a restore fences the staging reservation dooms it once released", async () => {
+    const reached = deferred();
+    const release = deferred();
+    const w = await avWorld({ wrapStore: around("deleteMedia", holdingFirst(reached, release.promise)) });
+    const up = await staged(w);
+    const taken = await bookmark(w.store);
+    clock(T0 + 5 * SECOND);
+    const deleting = del(w, up.id);
+    await reached.promise;
+    await restore(w.store, taken, T0 + 6 * SECOND);
+    clock(T0 + 7 * SECOND);
+    release.resolve();
+    expect(await deleting).toEqual({ status: 200, body: {} });
+    await swept(w, up.id);
+  });
+
+  it("a restore while the DELETE's sweep is held before its selection: the sweep leaves the restored row and files", async () => {
+    const reached = deferred();
+    const release = deferred();
+    const w = await avWorld({ wrapStore: around("expiredMedia", holdingFirst(reached, release.promise)) });
+    const up = await completed(w);
+    const keys = [originalKey(up.id), fileKey(up.token, "full"), fileKey(up.token, "small")];
+    for (const key of keys) {
+      await env.MEDIA.put(key, new Uint8Array([1, 2, 3]), { httpMetadata: { contentType: "video/mp4" } });
+    }
+    const live = await held(w.store, up.id);
+    const taken = await bookmark(w.store);
+    clock(T0 + 5 * SECOND);
+    const deleting = del(w, up.id);
+    await reached.promise;
+    expect((await held(w.store, up.id)).att).toMatchObject({ gc_at: "1970-01-01T00:00:00.000Z" });
+    await restore(w.store, taken, T0 + 6 * SECOND);
+    release.resolve();
+    expect(await deleting).toEqual({ status: 200, body: {} });
+    expect(await held(w.store, up.id)).toEqual(live);
+    for (const key of keys) {
+      expect(await env.MEDIA.head(key), key).not.toBeNull();
+    }
+    clock(T0 + 7 * SECOND);
+    expect(await get(w, up.id)).toMatchObject({ status: 200, body: { id: up.id } });
+  });
+
+  it("a DELETE whose committed reply is lost before the route answers 503, and its repeat 404", async () => {
+    let lost = false;
+    const w = await avWorld({
+      wrapStore: around("deleteMedia", (call) => async (...args) => {
+        if (lost) {
+          return call(...args);
+        }
+        lost = true;
+        await call(...args);
+        throw Object.assign(new Error("Network connection lost."), { retryable: true });
+      }),
+    });
+    const up = await started(w);
+    clock(T0 + 5 * SECOND);
+    expect((await del(w, up.id)).status).toBe(503);
+    expect((await held(w.store, up.id)).att).toMatchObject({ gc_at: "1970-01-01T00:00:00.000Z" });
+    expect(await del(w, up.id)).toEqual({ status: 404, body: NOT_FOUND });
   });
 });
 

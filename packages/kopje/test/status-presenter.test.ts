@@ -37,7 +37,7 @@ function row(type: string, meta: unknown): MediaRow {
 }
 
 describe("a playable file's meta (P16)", () => {
-  it('shows Mastodon\'s video meta, its frame rate as the string "30/1", and its small', () => {
+  it('adds Mastodon\'s video facts to the original Kopje shows (its size and aspect as before): its frame rate as the string "30/1", duration, bitrate, and its small', () => {
     const { original, small } = avMeta.video.meta;
     const shown = presentMedia(row("video", avMeta.video.meta), ORIGIN);
     expect(shown.meta).toEqual({

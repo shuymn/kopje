@@ -28,8 +28,9 @@ export function clock(ms: number): void {
   vi.setSystemTime(ms);
 }
 
-export async function avWorld() {
-  const h = await community(["alice", "bob"], "read write");
+// deps wraps the Store stub the app calls (apiHarness), for a test that holds a route's call.
+export async function avWorld(deps: Parameters<typeof community>[2] = {}) {
+  const h = await community(["alice", "bob"], "read write", deps);
   vi.useFakeTimers({ toFake: ["Date"] });
   clock(T0);
   const credentialOf = async (name: "alice" | "bob") => ({
