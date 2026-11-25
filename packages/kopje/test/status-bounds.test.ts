@@ -542,7 +542,7 @@ async function storedStatus(t: Setup, author: string, parts: Parts): Promise<str
 
 // A meta padded to MEDIA_META_BYTES with a key presentMedia does not read.
 const padded = (base: Record<string, unknown>) =>
-  JSON.stringify({ ...base, x: "x".repeat(1024 - JSON.stringify({ ...base, x: "" }).length) });
+  JSON.stringify({ ...base, x: "x".repeat(MEDIA_META_BYTES - JSON.stringify({ ...base, x: "" }).length) });
 
 // The longest dimensions presentMedia shows (an image's: any positive finite numbers, status-presenter.ts isSize), as
 // their size and aspect too: a width of 24 characters (17 significant digits below 1e-5), a height of 23 (with an
@@ -553,19 +553,10 @@ const padded = (base: Record<string, unknown>) =>
 const LONGEST_SIZE = { width: 0.0000012345678901234567, height: 1.2345678901234567e100 };
 const MAX_META = padded({ original: LONGEST_SIZE, small: LONGEST_SIZE });
 
-// The most a video's Document carries (status-presenter.ts playableDocumentFacts): width and height at 65,535 and a
-// duration of 23 characters within the verifier's range (from one sample at 48 kHz), with the rest of a video's facts at
-// their longest (a frame rate of two safe integers, the largest safe bitrate). The Note's maxima's media are these.
-const EDGE = { width: 65_535, height: 65_535 };
-const MAX_AV_META = padded({
-  original: {
-    ...EDGE,
-    frame_rate: `${Number.MAX_SAFE_INTEGER}/${Number.MAX_SAFE_INTEGER}`,
-    duration: 0.000021234567890123456,
-    bitrate: Number.MAX_SAFE_INTEGER,
-  },
-  small: EDGE,
-});
+// The most a video's Document carries (status-presenter.ts playableDocumentFacts, which reads nothing else of the
+// meta): width and height at 65,535 and a duration of 23 characters within the verifier's range (from one sample at
+// 48 kHz). The Note's maxima's media are these.
+const MAX_AV_META = padded({ original: { width: 65_535, height: 65_535, duration: 0.000021234567890123456 } });
 
 // A media URL of MEDIA_URL_LIMIT bytes that JSON escapes the most: a query of backslashes, which URL parsing keeps as
 // they are (a query is not a path, and the query percent-encode set has no backslash), each two bytes in JSON.
@@ -602,7 +593,7 @@ const maxTag = (i: number) => `${String.fromCodePoint(0x20000 + i)}${"𠀀".repe
 // SPOILER_BYTES as JSON strings (each the largest value its stored-bound trigger accepts), MAX_STATUS_MEDIA
 // attachments at theirs, MAX_STATUS_MENTION_ROWS mentions of accounts at theirs, MAX_STATUS_TAGS tags and a poll of
 // MAX_REMOTE_OPTIONS choices of MAX_REMOTE_OPTION_LENGTH escaping characters.
-async function maximalParts(t: Setup, fill: Fill = "escaped", kind: "rest" | "note" = "rest"): Promise<Parts> {
+async function maximalParts(t: Setup, fill: Fill, kind: "rest" | "note" = "rest"): Promise<Parts> {
   const mentions: string[] = [];
   for (let i = 0; i < MAX_STATUS_MENTION_ROWS; i++) {
     mentions.push(await maximalAccount(t, true, fill));
