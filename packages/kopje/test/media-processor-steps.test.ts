@@ -392,6 +392,50 @@ describe("D8: the input is deleted before the record goes (M1, MEDIA-3)", () => 
   });
 });
 
+describe("D8's delete is bounded (r2 M4)", () => {
+  it("a delete that never answers ends at R2_CALL_MS: S8 releases the slot, and the record and alarm stay for the input", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.hold("delete");
+    const fired = p.fire();
+    await vi.waitFor(() => expect(p.held()).toContain("delete"));
+    p.expire(Date.now() + R2_CALL_MS);
+    expect(await fired).toBe("returned");
+    expect(p.storeCalls()).toContain("releaseAvSlot");
+    expect((await held(w.store, up.id)).slot).toBeNull();
+    expect(p.storage.map.size).toBe(1);
+    expect(p.storage.alarm).not.toBeNull();
+    p.release("delete");
+    await p.settle();
+    await cleared(w, p, up.id);
+  });
+
+  it("the record-age stop arms its retry before the delete, and a delete that never answers keeps the record (W9)", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    const { at } = p.storage.map.get("upload") as { at: number };
+    await gate(w.store, "maintenance", true);
+    await p.fire();
+    expect(p.running()).toBe(false);
+    p.storage.alarm = at + V2_PROCESS_MS + HARD_HOLD_MS;
+    p.hold("delete");
+    const fired = p.fire();
+    await vi.waitFor(() => expect(p.held()).toContain("delete"));
+    expect(p.storage.alarm).not.toBeNull();
+    p.expire(Date.now() + R2_CALL_MS);
+    expect(await fired).toBe("returned");
+    expect(p.storage.map.size).toBe(1);
+    expect(p.storage.alarm).not.toBeNull();
+    p.release("delete");
+    await p.fire();
+    expect(p.storage.map.size).toBe(0);
+    expect(await env.MEDIA.head(incomingKey(up.id))).toBeNull();
+    await gate(w.store, "maintenance", false);
+  });
+});
+
 describe("table 1.3 D3: every wait on the container ends at its cut", () => {
   it.each([
     // The container takes the input and never answers: the reply's cut is the work deadline (the still's cut).

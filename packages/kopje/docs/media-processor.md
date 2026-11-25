@@ -73,8 +73,10 @@ At most two uploads are processed at once (`MAX_AV_INFLIGHT`). An upload's conta
 which keeps a cleanup alarm before it starts anything: a job interrupted at any point is cleaned up by that alarm, and
 its capacity slot counts until the container's stop is confirmed, or for at most 24 hours after the job started
 (`HARD_HOLD_MS`). A container whose stop never succeeds is retried every minute; past those 24 hours Kopje admits
-another upload beside it, and Cloudflare bills that container until it stops. An upload's object drops its own record
-at most `V2_PROCESS_MS` + `HARD_HOLD_MS` after it was dispatched, with its container stopped. A container or a call that
+another upload beside it, and Cloudflare bills that container until it stops. An upload's object keeps its record
+until its slot is released and its input deleted; from `V2_PROCESS_MS` + `HARD_HOLD_MS` after it was dispatched, with
+its container stopped, it drops the record as soon as the input is deleted (a delete that fails is retried every
+minute while R2 is down). A container or a call that
 stops answering does not hold an upload: Kopje waits for the input and the reply until the job's work deadline, for the
 output's transfer into R2 4.5 s from the reply, and for the still and its preview 3 s from the transfer's end (each cut
 never past what the later stages keep: the last 1.5 s are the stop, the grants, the writes and the completion). Past a

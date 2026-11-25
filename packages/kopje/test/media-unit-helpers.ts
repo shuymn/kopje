@@ -188,7 +188,8 @@ export async function platformFor(w: AvWorld) {
   // The multipart uploads aborted, by kind.
   const aborts: string[] = [];
   let maintenance = false;
-  // Bucket calls held until released ("get" of the input, "create:<kind>", "abort:<kind>"), and those reached.
+  // Bucket calls held until released ("get" of the input, "delete", "create:<kind>", "abort:<kind>"), and those
+  // reached.
   const holds = new Map<string, Promise<void>>();
   const releases = new Map<string, () => void>();
   const held: string[] = [];
@@ -261,6 +262,10 @@ export async function platformFor(w: AvWorld) {
         }
         if (method === "delete") {
           await (kill("delete") ?? Promise.resolve());
+          if (holds.has("delete")) {
+            held.push("delete");
+            await holds.get("delete");
+          }
           deletes.push(String(args[0]));
           if (failingDeletes > 0) {
             failingDeletes--;
@@ -343,7 +348,7 @@ export async function platformFor(w: AvWorld) {
     writes: () => writes,
     aborts: () => aborts,
     deletes: () => deletes,
-    hold(call: "get" | "create:original" | "create:full" | "abort:original" | "abort:full"): void {
+    hold(call: "get" | "delete" | "create:original" | "create:full" | "abort:original" | "abort:full"): void {
       holds.set(call, new Promise<void>((resolve) => releases.set(call, resolve)));
     },
     release: (call: string) => releases.get(call)?.(),

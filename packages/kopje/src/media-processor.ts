@@ -33,7 +33,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import type { MonthlyTransforms } from "./domain/media";
 import { HARD_HOLD_MS, V2_PROCESS_MS } from "./domain/media-processing";
-import { runUpload } from "./jobs/media-jobs";
+import { R2_CALL_MS, runUpload } from "./jobs/media-jobs";
 import { type ContainerControl, probeWork } from "./mastodon/media-activation";
 import { PROBE_FIXTURE_BASE64 } from "./media-probe-fixture";
 import { AV_OUTPUT_LIMIT, plannedDuration, STILL_OUTPUT_LIMIT } from "./platform/av-bytes";
@@ -691,7 +691,8 @@ function containerControl(
 //                  kept, so the alarm repeats it
 //   D4             the confirmed stop; an unconfirmed one ends the invocation with no Store write, its granted slot
 //                  counting, and the alarm repeats it
-//   D8 input       incoming/<id> deleted; D9 follows whatever it did, so the slot is released on its own
+//   D8 input       incoming/<id> deleted, awaited at most R2_CALL_MS; D9 follows whatever it did, so the slot is
+//                  released on its own
 //   D9 S8          the stop confirmation with the record's teardown_id, only after a confirmed stop: `released`, with
 //                  the input deleted, deletes the storage (its alarm too); anything else ends the invocation and the
 //                  alarm repeats D8, D9 (MEDIA-3: an attached upload's input is held from the orphan pass)
@@ -751,11 +752,11 @@ export class UploadUnit {
     const now = this.deps.now();
     if (now - record.at >= V2_PROCESS_MS + HARD_HOLD_MS && container?.running !== true) {
       console.warn({ event: "kopje.media.job.record_aged", id: record.id });
-      // The record goes only with the input (MEDIA-3): a failed delete is repeated by the alarm.
+      // The record goes only with the input (MEDIA-3): the retry is armed first, so a delete that fails or never
+      // answers is repeated by the alarm.
+      await storage.setAlarm(now + CLEANUP_RETRY_MS);
       if (await this.#dropInput(record)) {
         await storage.deleteAll();
-      } else {
-        await storage.setAlarm(now + CLEANUP_RETRY_MS);
       }
       return;
     }
@@ -823,10 +824,15 @@ export class UploadUnit {
     return container === undefined || !container.running || destroyContainer(container, this.deps);
   }
 
-  // D8: true once incoming/<id> is deleted (R2's delete answers for a key that is already gone too).
+  // D8: true once incoming/<id> is deleted (R2's delete answers for a key that is already gone too); false when the
+  // delete fails or has not answered within R2_CALL_MS.
   async #dropInput(record: UploadRecord): Promise<boolean> {
     try {
-      await this.state.bucket.delete(incomingKey(record.id));
+      const deleting = this.state.bucket.delete(incomingKey(record.id));
+      if ((await before(deleting, this.deps.now() + R2_CALL_MS, this.deps)) === TIMED_OUT) {
+        console.warn({ event: "kopje.media.job.input_delete_failed", id: record.id, reason: "timeout" });
+        return false;
+      }
       return true;
     } catch (error) {
       console.warn({ event: "kopje.media.job.input_delete_failed", id: record.id, ...errorFields(error) });
