@@ -1,7 +1,7 @@
 import { selectSql } from "../db/columns";
 import { MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { type AudioFacts, isFrameRate, type VideoFacts } from "../platform/av-bytes";
+import { type AudioFacts, isEdge, isFrameRate, type VideoFacts } from "../platform/av-bytes";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import { type Marker, restoreTime } from "../platform/restore-marker";
@@ -758,10 +758,6 @@ export type AvFacts = (
   | ({ contentType: "audio/mpeg" } & Pick<AudioFacts, "kind" | "duration" | "bitrate" | "bytes">)
 ) & { preview: { width: number; height: number; blurhash: string | null } | null };
 
-function edge(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= 65_535;
-}
-
 // The meta a completed upload stores (design 4.13's keys), the verifier's values as it computed them: video original
 // {width, height, frame_rate, duration, bitrate} and small {width, height} with a preview; audio original {duration,
 // bitrate}. Throws on facts that are not the verifier's shape.
@@ -786,10 +782,10 @@ function avMeta(facts: AvFacts): string | null {
     return storedMediaMeta(JSON.stringify({ original: { duration, bitrate } }));
   }
   const { width, height, frameRate } = facts;
-  if (!edge(width) || !edge(height) || !isFrameRate(frameRate)) {
+  if (!isEdge(width) || !isEdge(height) || !isFrameRate(frameRate)) {
     throw new Error("not verified video facts");
   }
-  if (preview !== null && (!edge(preview.width) || !edge(preview.height))) {
+  if (preview !== null && (!isEdge(preview.width) || !isEdge(preview.height))) {
     throw new Error("not a preview's geometry");
   }
   const original = { width, height, frame_rate: frameRate, duration, bitrate };

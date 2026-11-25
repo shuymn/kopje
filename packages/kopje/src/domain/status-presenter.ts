@@ -1,7 +1,7 @@
 import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX, POLLS_STATUS_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import { type Db, RowCapExceeded, RowMeter } from "../db/sql";
-import { AUDIO_DURATION_LIMIT, isFrameRate } from "../platform/av-bytes";
+import { AUDIO_DURATION_LIMIT, isEdge, isFrameRate } from "../platform/av-bytes";
 import { VIDEO_POSTER } from "../platform/brand-assets";
 import { boundedHref } from "../platform/http-url";
 import { FILE_TOKEN, mediaUrl } from "../platform/media-files";
@@ -1124,15 +1124,15 @@ function statusUrl(row: StatusUrlRow): string {
 
 // MediaAttachment as REST::MediaAttachmentSerializer shows it. URLs are emitted only when they are http(s) (HTML-3);
 // meta carries the stored dimensions (Mastodon's original and small; a playable file's only as whole pixels within
-// MAX_EDGE, isEdgeSize), a playable file's own facts in its original
+// av-bytes.ts isEdge, isEdgeSize), a playable file's own facts in its original
 // (playableFacts: a video's frame rate, duration and bitrate, an audio file's duration and bitrate; `small` only where a
 // still was stored) and the focal point. A remote attachment's file
 // and icon are shown from the cache on `origin` when cached (remote-media.ts cachedImageUrls, the one decision): url
 // its cached file, else its remote url; preview_url its cached icon, else, for an image, its cached file's still (or
 // the file itself), else its remote icon, else url for an image or an unknown file (a playable one's as playablePreview
 // judges it). Its remote_url and preview_remote_url are its stored url and icon (null without one), as Mastodon's; a
-// local one's are null, as Mastodon's local? media. Without an origin (an upload's own answers, a scheduled post, an
-// edit's snapshot) nothing is read from the cache. text_url is always null (MD-6). blurhash: what storedBlurhash keeps
+// local one's are null, as Mastodon's local? media. Without an origin (an edit's snapshot; an upload's own answers and a
+// scheduled post pass one only for a playable file, for its VIDEO_POSTER) nothing is read from the cache. text_url is always null (MD-6). blurhash: what storedBlurhash keeps
 // of the stored value (a local upload's is its preview's, platform/images.ts processImage, or null).
 export function presentMedia(row: MediaRow, origin: string | null = null): MediaAttachment {
   // URLs within MEDIA_URL_LIMIT as serialized, as stored (STORED_COLUMNS in platform/stored-bounds.ts).
@@ -1250,14 +1250,8 @@ function isSize(value: unknown): value is Size {
   return positive(width) && positive(height);
 }
 
-// A playable file's dimensions as the verifier states them and the Store bounds them (media-processing.ts avMeta): whole
-// pixels from 1 to MAX_EDGE. A converted row holds a remote Document's, which Mastodon writes as whole pixels too.
-const MAX_EDGE = 65_535;
-
-function isEdge(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= MAX_EDGE;
-}
-
+// A playable file's dimensions as the verifier states them and the Store bounds them (av-bytes.ts isEdge). A converted
+// row holds a remote Document's, which Mastodon writes as whole pixels too.
 function isEdgeSize(value: unknown): value is Size {
   return isSize(value) && isEdge(value.width) && isEdge(value.height);
 }
@@ -1295,19 +1289,21 @@ function isDuration(value: unknown): value is number {
 // the stored seconds, a Float in Mastodon, so 8 is "PT8.0S"). Each only as the verifier states it (isEdge,
 // isDuration). JavaScript writes every such duration in decimal (String has no exponent from 1e-6 on); Ruby writes one
 // below 1e-4 with an exponent, which ISO 8601 has no form for, so there Kopje writes the decimal.
-export function playableDocumentFacts(type: string, meta: string | null): Record<string, string | number> {
+export type PlayableDocument = { width?: number; height?: number; duration?: string };
+
+export function playableDocumentFacts(type: string, meta: string | null): PlayableDocument {
   if (type !== "video" && type !== "audio") {
     return {};
   }
   const original = storedMeta(meta).original;
-  const { width, height } = typeof original === "object" && original !== null ? (original as Partial<Size>) : {};
-  const { duration } = playableFacts(original);
+  const { width, height, duration } =
+    typeof original === "object" && original !== null ? (original as Record<string, unknown>) : {};
   return {
     ...(isEdge(width) ? { width } : {}),
     ...(isEdge(height) ? { height } : {}),
-    ...(duration === undefined
-      ? {}
-      : { duration: `PT${Number.isInteger(duration) ? `${duration}.0` : String(duration)}S` }),
+    ...(isDuration(duration)
+      ? { duration: `PT${Number.isInteger(duration) ? `${duration}.0` : String(duration)}S` }
+      : {}),
   };
 }
 

@@ -39,7 +39,12 @@ import {
   pollOptionsSql,
   tagNameSql,
 } from "./status-bounds";
-import { playableDocumentFacts, presentedMediaDescription, shownCardUrl } from "./status-presenter";
+import {
+  type PlayableDocument,
+  playableDocumentFacts,
+  presentedMediaDescription,
+  shownCardUrl,
+} from "./status-presenter";
 import { CARD_COLUMN_MAP } from "./status-rows";
 
 // Outbound intents. A local change that federates records the ActivityPub activity it means and the audience it is
@@ -178,7 +183,7 @@ export type StatusFacts = {
     content_type: string | null;
     description: string;
     blurhash: string | null;
-    playable: Record<string, string | number>;
+    playable: PlayableDocument;
   }[];
   // The Mention tags (href, name) the Note shows.
   mentions: { href: string; name: string }[];
