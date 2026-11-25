@@ -104,18 +104,16 @@ async function healthAnswer(
 // The first start on a host pulls the image (the experiment's first pulls took 3.2 and 7.9 s); a probe waits longer.
 const READY_MS = 90_000;
 const READY_POLL_MS = 250;
-// The work deadline the activation probe gives normalize (container/server/main.go), and the bound on the whole
-// operation.
+// The work deadline the activation probe gives normalize (container/server/main.go).
 const PROBE_WORK_MS = 70_000;
-const OPERATION_MS = 120_000;
 // AV_OUTPUT_LIMIT and STILL_OUTPUT_LIMIT (platform/av-bytes.ts) bound what is read of a response body
 // (container/server/main.go refuses first).
 export { AV_OUTPUT_LIMIT };
 export const CLEANUP_RETRY_MS = 60_000;
 // The most a destroy is awaited; one that has not settled by then counts as failed.
 export const DESTROY_MS = 30_000;
-// The probe's one deadline, from before the start: readiness, then the operation.
-export const PROBE_MS = READY_MS + OPERATION_MS;
+// The probe's one deadline, from before the start: readiness (READY_MS, 90 s), then the operation (120 s).
+export const PROBE_MS = 210_000;
 // The most a stillNow call is given, readiness included: the rebuild's still stage (mastodon/media-rebuild-av.ts).
 export const STILL_CALL_MS = 75_000;
 // Of a stillNow call's time, what is kept for the destroy after the operation, and of that, what is kept after the
@@ -377,54 +375,46 @@ async function normalizeStill(port: Fetcher, signal: AbortSignal | undefined): P
   }
 }
 
-// Starts the container with Internet access disabled on `instance`, polls /healthz until it answers (within READY_MS
-// of `started` and `deadline`), and reads the image it runs.
+// Starts the container with Internet access disabled on `instance`, polls /healthz until it is ready or `by`, and reads
+// the image it runs: the port and that image (null when the inspection did not answer by `by`), what the /healthz
+// answer shows of a build that does not speak the protocol (healthAnswer), or null when it was not ready by `by`.
 async function startReady(
   container: Container,
   image: string,
   operation: "normalize" | "still",
-  instance: "standard-1" | "standard-3" | "standard-4",
+  instance: "standard-1" | "standard-4",
   deps: ProbeDeps,
-  started: number,
-  deadline: number,
-): Promise<{ port: Fetcher; readyMs: number; running: string | null }> {
-  container.start({
-    image: image,
-    instance,
-    enableInternet: false,
-    labels: { app: "kopje-media", operation, instance },
-  });
+  by: number,
+): Promise<{ port: Fetcher; running: string | null } | "route" | "method" | "protocol" | null> {
+  container.start({ image, instance, enableInternet: false, labels: { app: "kopje-media", operation, instance } });
   const port = container.getTcpPort(PORT);
-  const readyBy = Math.min(started + READY_MS, deadline);
   for (;;) {
     const poll = new AbortController();
-    const ready = await before(
+    const status = await before(
       port.fetch("http://container/healthz", { signal: poll.signal }).then(
         (response) => healthAnswer(response, operation),
         () => null,
       ),
-      readyBy,
+      by,
       deps,
       poll,
     );
-    if (ready === "ready") {
-      break;
+    if (status === "ready") {
+      const info = await before(
+        container.inspect().catch(() => null),
+        by,
+        deps,
+      );
+      return { port, running: info === TIMED_OUT ? null : (info?.image ?? null) };
     }
-    if (ready === "route" || ready === "method" || ready === "protocol") {
-      throw new ProbeFailure("healthz", undefined, ready);
+    if (status === "route" || status === "method" || status === "protocol") {
+      return status;
     }
-    if (ready === TIMED_OUT || deps.now() >= readyBy) {
-      throw new ProbeFailure("ready");
+    if (status === TIMED_OUT || deps.now() >= by) {
+      return null;
     }
-    await deps.wait(Math.min(READY_POLL_MS, readyBy - deps.now()));
+    await deps.wait(Math.min(READY_POLL_MS, by - deps.now()));
   }
-  const readyMs = deps.now() - started;
-  const info = await before(
-    container.inspect().catch(() => null),
-    readyBy,
-    deps,
-  );
-  return { port, readyMs, running: info === TIMED_OUT ? null : (info?.image ?? null) };
 }
 
 // The still of the object at `key` on a container that is not running: start on standard-1, readiness, one read of the
@@ -447,7 +437,20 @@ async function runStill(
     if (image === null) {
       throw new ProbeFailure("no-image");
     }
-    const ready = await startReady(container, image, "still", "standard-1", deps, started, operationEnd);
+    const ready = await startReady(
+      container,
+      image,
+      "still",
+      "standard-1",
+      deps,
+      Math.min(started + READY_MS, operationEnd),
+    );
+    if (ready === null) {
+      throw new ProbeFailure("ready");
+    }
+    if (typeof ready === "string") {
+      throw new ProbeFailure("healthz", undefined, ready);
+    }
     image = ready.running ?? image;
     const aborted = new AbortController();
     const run = async () => {
@@ -746,39 +749,18 @@ function containerControl(
       if (image === null || deps.now() >= by) {
         return null;
       }
-      container.start({ image, instance, enableInternet: false, labels: { app: "kopje-media", operation, instance } });
-      const port = container.getTcpPort(PORT);
-      for (;;) {
-        const poll = new AbortController();
-        const status = await before(
-          port.fetch("http://container/healthz", { signal: poll.signal }).then(
-            (response) => healthAnswer(response, "normalize"),
-            () => null,
-          ),
-          by,
-          deps,
-          poll,
-        );
-        if (status === "ready") {
-          const info = await before(
-            container.inspect().catch(() => null),
-            by,
-            deps,
-          );
-          image = info === TIMED_OUT ? image : (info?.image ?? image);
-          return port;
-        }
-        if (status === "route" || status === "method") {
-          return "wrong";
-        }
-        if (status === "protocol") {
-          return "incompatible";
-        }
-        if (status === TIMED_OUT || deps.now() >= by) {
-          return null;
-        }
-        await deps.wait(Math.min(READY_POLL_MS, by - deps.now()));
+      const ready = await startReady(container, image, operation, instance, deps, by);
+      if (ready === null) {
+        return null;
       }
+      if (ready === "route" || ready === "method") {
+        return "wrong";
+      }
+      if (ready === "protocol") {
+        return "incompatible";
+      }
+      image = ready.running ?? image;
+      return ready.port;
     },
     normalize,
     stop: () => destroyContainer(container, deps),
