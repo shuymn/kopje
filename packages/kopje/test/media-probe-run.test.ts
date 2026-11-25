@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { healthReport } from "../src/app/health";
 import { PROBE_RETRY_MS } from "../src/domain/media-probes";
 import { runUpload } from "../src/jobs/media-jobs";
-import { activationProbe, probeWork, stillCheck } from "../src/mastodon/media-activation";
+import { activationProbe, PROBE_CALL_MS, PROBE_COPY_MS, probeWork, stillCheck } from "../src/mastodon/media-activation";
 import { readConfig } from "../src/platform/config";
 import { probeInputKey } from "../src/platform/media-files";
 import type { StillOutcome } from "../src/platform/media-transcoder";
@@ -330,5 +330,100 @@ describe("the still check of still@standard-1 (kopje-admin media-processor probe
       outcome: "no-verdict",
       reason: "ready",
     });
+  });
+});
+
+// r3 M4: the probes' copy I/O and the call to the probe object run on an HTTP request, where no alarm or cron limit
+// applies: each is bounded, and a copy whose delete never answers is left to the orphan pass.
+describe("the probes' copy I/O, bounded on the request path", () => {
+  // A wait the test expires by its length, and the bucket calls it holds.
+  function harness(hold: "put" | "delete" | "none") {
+    const waits: { ms: number; resolve: () => void }[] = [];
+    const wait = (ms: number) => new Promise<void>((resolve) => void waits.push({ ms, resolve }));
+    const expire = (ms: number) => {
+      for (const pending of waits.filter((entry) => entry.ms === ms)) {
+        pending.resolve();
+      }
+    };
+    const bucket = {
+      put: (key: string, value: Uint8Array) =>
+        hold === "put" ? new Promise<never>(() => {}) : env.MEDIA.put(key, value),
+      delete: (key: string) => (hold === "delete" ? new Promise<never>(() => {}) : env.MEDIA.delete(key)),
+      get: (key: string) => env.MEDIA.get(key),
+    } as unknown as R2Bucket;
+    return { waits, wait, expire, bucket };
+  }
+
+  it("a normalize probe whose copy put never answers reaches no verdict at PROBE_COPY_MS, the object never called", async () => {
+    const store = await freshStore();
+    const h = harness("put");
+    const fake = fakeControl(await genuine());
+    const processor = probeProcessor(fake.control, new TestCodec(), await avFixture("r1-av.mp4"));
+    const running = activationProbe({ build: BUILD, store, bucket: h.bucket, processor, wait: h.wait }, false);
+    await vi.waitFor(() => expect(h.waits.map((entry) => entry.ms)).toContain(PROBE_COPY_MS));
+    h.expire(PROBE_COPY_MS);
+    await vi.waitFor(() => expect(h.waits.filter((entry) => entry.ms === PROBE_COPY_MS)).toHaveLength(2));
+    h.expire(PROBE_COPY_MS);
+    expect(await running).toMatchObject({ status: "recorded", verdict: { outcome: "no-verdict", reason: "copy" } });
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("a probe object that never answers reaches no verdict at PROBE_CALL_MS, and the copy is deleted", async () => {
+    const store = await freshStore();
+    const h = harness("none");
+    const processor = {
+      ...probeProcessor(fakeControl(await genuine()).control, new TestCodec(), await avFixture("r1-av.mp4")),
+      probeNormalize: () => new Promise<never>(() => {}),
+    };
+    const running = activationProbe({ build: BUILD, store, bucket: h.bucket, processor, wait: h.wait }, false);
+    await vi.waitFor(() => expect(h.waits.map((entry) => entry.ms)).toContain(PROBE_CALL_MS));
+    h.expire(PROBE_CALL_MS);
+    expect(await running).toMatchObject({ status: "recorded", verdict: { outcome: "no-verdict", reason: "timeout" } });
+    expect((await env.MEDIA.list({ prefix: "incoming/probe-" })).objects).toEqual([]);
+  });
+
+  it("a normalize probe whose copy delete never answers records its verdict at PROBE_COPY_MS", async () => {
+    const store = await freshStore();
+    const h = harness("delete");
+    const processor = probeProcessor(
+      fakeControl(await genuine()).control,
+      new TestCodec(),
+      await avFixture("r1-av.mp4"),
+    );
+    const running = activationProbe({ build: BUILD, store, bucket: h.bucket, processor, wait: h.wait }, false);
+    // The put's bound, then the delete's.
+    await vi.waitFor(() => expect(h.waits.filter((entry) => entry.ms === PROBE_COPY_MS)).toHaveLength(2), {
+      timeout: 5000,
+    });
+    h.expire(PROBE_COPY_MS);
+    expect(await running).toMatchObject({ status: "recorded", verdict: { outcome: "pass" } });
+    // The copy is the orphan pass's.
+    const copies = (await env.MEDIA.list({ prefix: "incoming/probe-" })).objects;
+    expect(copies).toHaveLength(1);
+    await env.MEDIA.delete(copies.map((object) => object.key));
+  });
+
+  it("a still check whose copy delete never answers gives its verdict at PROBE_COPY_MS", async () => {
+    await freshStore();
+    const h = harness("delete");
+    const checking = stillCheck({
+      bucket: h.bucket,
+      stills: {
+        still: () => Promise.reject(new Error("unused")),
+        probe: async () => ({ ok: true, png: await stillPng(), image: null }),
+        probeInput: new Uint8Array([1, 2, 3]),
+      },
+      images: new TestCodec(),
+      now: () => Date.now(),
+      wait: h.wait,
+    });
+    // The put's bound, then the delete's.
+    await vi.waitFor(() => expect(h.waits.filter((entry) => entry.ms === PROBE_COPY_MS)).toHaveLength(2), {
+      timeout: 5000,
+    });
+    h.expire(PROBE_COPY_MS);
+    expect(await checking).toMatchObject({ outcome: "pass" });
+    const copies = (await env.MEDIA.list({ prefix: "incoming/probe-" })).objects;
+    await env.MEDIA.delete(copies.map((object) => object.key));
   });
 });

@@ -118,6 +118,36 @@ export async function probeWork(
 
 type ProbeStore = Pick<StoreStub, "claimMediaProbe" | "recordMediaProbeResult">;
 
+// The probes run on an HTTP request (the CLI's) as well as in the cron, so each of their own calls is bounded here: the
+// clip's copy put or delete in R2 at most PROBE_COPY_MS (a copy whose delete never answers is the orphan pass's), and
+// the call to the probe object at most its own deadline and destroy (media-processor.ts PROBE_MS, 210 s, and
+// DESTROY_MS, 30 s) plus its way there and back.
+export const PROBE_COPY_MS = 10_000;
+export const PROBE_CALL_MS = 250_000;
+// The still check's call: STILL_CHECK_MS, which includes the object's destroy, plus its way there and back.
+const STILL_CHECK_CALL_MS = 85_000;
+
+type Wait = (ms: number) => Promise<void>;
+const timerWait: Wait = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const OVER: unique symbol = Symbol("over");
+
+// `work`'s value, or OVER when `ms` passes first (a late answer is ignored; a rejection passes on).
+async function bounded<T>(work: Promise<T>, ms: number, wait: Wait): Promise<T | typeof OVER> {
+  work.catch(() => {});
+  return Promise.race([work, wait(ms).then((): typeof OVER => OVER)]);
+}
+
+// The probe copy's delete, bounded; one that fails or does not answer is left to the orphan pass.
+async function dropCopy(bucket: Pick<R2Bucket, "delete">, key: string, wait: Wait): Promise<void> {
+  try {
+    if ((await bounded(bucket.delete(key), PROBE_COPY_MS, wait)) === OVER) {
+      console.warn({ event: "kopje.media.probe.copy_failed", step: "delete", reason: "timeout" });
+    }
+  } catch (error) {
+    console.warn({ event: "kopje.media.probe.copy_failed", step: "delete", ...errorFields(error) });
+  }
+}
+
 export type ProbeRun =
   | { status: "recorded"; verdict: ProbeVerdict }
   | { status: "cooldown"; retryAt: number }
@@ -129,9 +159,16 @@ export type ProbeRun =
 // verdict recorded under the claim. A probe that throws reaches no verdict; a copy a dead Worker left is the orphan
 // pass's.
 export async function activationProbe(
-  deps: { build: string; store: ProbeStore; bucket: Pick<R2Bucket, "put" | "delete">; processor: UploadProcessor },
+  deps: {
+    build: string;
+    store: ProbeStore;
+    bucket: Pick<R2Bucket, "put" | "delete">;
+    processor: UploadProcessor;
+    wait?: Wait;
+  },
   due: boolean,
 ): Promise<ProbeRun> {
+  const wait = deps.wait ?? timerWait;
   const claim = await deps.store.claimMediaProbe(deps.build, { profile: NORMALIZE_PROFILE, build: deps.build, due });
   if (claim.status !== "claimed") {
     return claim;
@@ -139,13 +176,17 @@ export async function activationProbe(
   const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
   let verdict: ProbeVerdict & { image?: string | null };
   try {
-    await deps.bucket.put(key, deps.processor.probeInput);
-    verdict = await deps.processor.probeNormalize(key);
+    if ((await bounded(deps.bucket.put(key, deps.processor.probeInput), PROBE_COPY_MS, wait)) === OVER) {
+      verdict = { outcome: "no-verdict", reason: "copy" };
+    } else {
+      const answered = await bounded(deps.processor.probeNormalize(key), PROBE_CALL_MS, wait);
+      verdict = answered === OVER ? { outcome: "no-verdict", reason: "timeout" } : answered;
+    }
   } catch (error) {
     console.warn({ event: "kopje.media.probe.failed", ...errorFields(error) });
     verdict = { outcome: "no-verdict", reason: "unavailable" };
   } finally {
-    await deps.bucket.delete(key).catch(() => {});
+    await dropCopy(deps.bucket, key, wait);
   }
   const { image = null, ...result } = verdict;
   const recorded = await deps.store.recordMediaProbeResult(deps.build, {
@@ -178,12 +219,19 @@ export async function stillCheck(deps: {
   stills: StillMaker;
   images: ImageCodec;
   now: () => number;
+  wait?: Wait;
 }): Promise<ProbeVerdict & { image: string | null }> {
+  const wait = deps.wait ?? timerWait;
   const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
   const deadline = deps.now() + STILL_CHECK_MS;
   try {
-    await deps.bucket.put(key, deps.stills.probeInput);
-    const out = await deps.stills.probe(key, STILL_CHECK_MS);
+    if ((await bounded(deps.bucket.put(key, deps.stills.probeInput), PROBE_COPY_MS, wait)) === OVER) {
+      return { outcome: "no-verdict", reason: "copy", image: null };
+    }
+    const out = await bounded(deps.stills.probe(key, STILL_CHECK_MS), STILL_CHECK_CALL_MS, wait);
+    if (out === OVER) {
+      return { outcome: "no-verdict", reason: "timeout", image: null };
+    }
     if (!out.ok) {
       return out.input === undefined
         ? { outcome: "no-verdict", reason: out.failure, image: out.image }
@@ -205,6 +253,6 @@ export async function stillCheck(deps: {
     console.warn({ event: "kopje.media.probe.failed", ...errorFields(error) });
     return { outcome: "no-verdict", reason: "unavailable", image: null };
   } finally {
-    await deps.bucket.delete(key).catch(() => {});
+    await dropCopy(deps.bucket, key, wait);
   }
 }
