@@ -28,78 +28,33 @@ export class MultipartRefused extends Error {
 // it is a file part (a filename that is not empty). `bytes`: the header lines as sent.
 export type PartHead = { name: string | null; file: boolean; bytes: Uint8Array };
 
-const HTTP_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-const HTTP_WHITESPACE = /^[\t\n\r ]+|[\t\n\r ]+$/g;
-const TRAILING_WHITESPACE = /[\t\n\r ]+$/;
-const QUOTED_VALUE = /^[\t -~\u0080-ÿ]*$/;
+// A Content-Type the AV streaming path takes: `multipart/form-data` (any case), then `;`-separated parameters, each
+// `token=token` or `token="..."` with neither `\` nor `"` inside the quotes, whitespace only around a `;` and at the
+// ends. Within this form workerd's MIME parser (the image path's) and this one read the same parameters, so the reader
+// splits the body at the boundary workerd would; any other header takes the whole-body path, which reads it as before.
+const TOKEN = "[!#$%&'*+.^_`|~0-9A-Za-z-]+";
+const QUOTED = '"[\\t\\x20\\x21\\x23-\\x5b\\x5d-\\x7e]*"';
+const PARAMETER = `(${TOKEN})=(${TOKEN}|${QUOTED})`;
+const CANONICAL = new RegExp(`^[\\t ]*multipart/form-data[\\t ]*((?:;[\\t ]*${PARAMETER}[\\t ]*)*)$`, "i");
+const PARAMETERS = new RegExp(`;[\\t ]*${PARAMETER}[\\t ]*`, "g");
+// RFC 2046's boundary: 1 to 70 bchars, the last not a space.
+const BOUNDARY = /^[0-9A-Za-z'()+_,\-./:=? ]{0,69}[0-9A-Za-z'()+_,\-./:=?]$/;
 
-// The boundary of a multipart/form-data Content-Type, or null for any other type, read as workerd's MIME parser
-// (MimeType::parse) reads it: a quoted value's `;` and `=` are its own, a name that is not a token is skipped to the
-// next `;` before its value is read, only trailing whitespace is trimmed from an unquoted value, and of a repeated
-// parameter the first counts. A header without one is null, and the whole-body path reads it.
-// platform/media-type.ts's parse refuses a repeated parameter, which this one must not.
-export function multipartBoundary(contentType: string): string | null {
-  const input = contentType.replace(HTTP_WHITESPACE, "");
-  const semicolon = input.indexOf(";");
-  const end = semicolon === -1 ? input.length : semicolon;
-  const slash = input.indexOf("/");
-  if (
-    slash === -1 ||
-    slash > end ||
-    `${input.slice(0, slash)}/${input.slice(slash + 1, end).replace(HTTP_WHITESPACE, "")}`.toLowerCase() !==
-      "multipart/form-data"
-  ) {
+// The boundary of a Content-Type in the form above with exactly one `boundary` parameter, and whether it was quoted
+// (the form's header is rebuilt as it was sent); null for any other header.
+export function multipartBoundary(contentType: string): { boundary: string; quoted: boolean } | null {
+  const parameters = CANONICAL.exec(contentType)?.[1];
+  if (parameters === undefined) {
     return null;
   }
-  let at = end;
-  while (at < input.length) {
-    at++; // the `;`
-    while (at < input.length && /[\t\n\r ]/.test(input[at] ?? "")) {
-      at++;
-    }
-    let nameEnd = at;
-    while (nameEnd < input.length && input[nameEnd] !== ";" && input[nameEnd] !== "=") {
-      nameEnd++;
-    }
-    const name = input.slice(at, nameEnd).toLowerCase();
-    at = nameEnd;
-    if (!HTTP_TOKEN.test(name)) {
-      const next = input.indexOf(";", at);
-      at = next === -1 ? input.length : next;
-      continue;
-    }
-    if (at >= input.length || input[at] === ";") {
-      continue;
-    }
-    at++; // the `=`
-    let value: string;
-    if (input[at] === '"') {
-      value = "";
-      at++;
-      while (at < input.length && input[at] !== '"') {
-        if (input[at] === "\\" && at + 1 < input.length) {
-          at++;
-        }
-        value += input[at];
-        at++;
-      }
-      while (at < input.length && input[at] !== ";") {
-        at++;
-      }
-    } else {
-      const valueEnd = input.indexOf(";", at);
-      value = input.slice(at, valueEnd === -1 ? input.length : valueEnd).replace(TRAILING_WHITESPACE, "");
-      at = valueEnd === -1 ? input.length : valueEnd;
-      if (value === "") {
-        continue;
-      }
-    }
-    if (name === "boundary" && QUOTED_VALUE.test(value)) {
-      // RFC 2046: 1 to 70 characters.
-      return value.length >= 1 && value.length <= 70 ? value : null;
-    }
+  const boundaries = [...parameters.matchAll(PARAMETERS)].filter(([, name]) => name?.toLowerCase() === "boundary");
+  const raw = boundaries.length === 1 ? boundaries[0]?.[2] : undefined;
+  if (raw === undefined) {
+    return null;
   }
-  return null;
+  const quoted = raw.startsWith('"');
+  const boundary = quoted ? raw.slice(1, -1) : raw;
+  return BOUNDARY.test(boundary) ? { boundary, quoted } : null;
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {

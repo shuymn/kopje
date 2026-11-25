@@ -2236,6 +2236,28 @@ describe("the route's answers and its cleanup (code review r2)", () => {
     expect((await w.h.request(`/api/v1/media/${id}`, bearer(w.h.users.alice.token))).status).toBe(200);
   });
 
+  // The AV path streams only a Content-Type in the canonical form (multipartBoundary); any other is read whole, as
+  // before #1828, where a video is refused by its type.
+  it("reads a video under a Content-Type outside the canonical form as the image path does, taking no slot", async () => {
+    const w = await routeWorld();
+    const { body, contentType } = multipartBody([videoPart()]);
+    const boundary = contentType.slice(contentType.indexOf("=") + 1);
+    const response = await postMedia(w, { body, contentType: `${contentType}; boundary=${boundary}` });
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: File content type is invalid" },
+    });
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+  });
+
+  it("streams a video under a quoted boundary, its form read under the same header", async () => {
+    const w = await routeWorld();
+    const { body, contentType } = multipartBody([videoPart(), { name: "description", data: "quoted" }]);
+    const boundary = contentType.slice(contentType.indexOf("=") + 1);
+    const response = await postMedia(w, { body, contentType: `multipart/form-data; boundary="${boundary}"` });
+    expect(await answerOf(response)).toMatchObject({ status: 202, body: { description: "quoted" } });
+  });
+
   it("M6: `file[]` after the streamed file answers 400, as the image path's form parser does", async () => {
     const w = await routeWorld();
     const response = await postMedia(w, multipartBody([videoPart(), { name: "file[]", data: "x" }]));

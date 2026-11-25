@@ -416,6 +416,7 @@ function replayed(request: Request, reader: MultipartStream): Request {
 async function receiveActive(c: ApiContext, deps: ApiDeps, a: Active): Promise<Response> {
   const request = c.req.raw;
   const today = async (from: Request) => answerOf(c, await receiveImageUpload(c, deps, a.upload, from));
+  // A Content-Type outside the canonical form takes the whole-body path, as before #1828 (multipartBoundary).
   const boundary = multipartBoundary(request.headers.get("content-type") ?? "");
   if (boundary === null || request.body === null) {
     return today(request);
@@ -425,7 +426,7 @@ async function receiveActive(c: ApiContext, deps: ApiDeps, a: Active): Promise<R
   const end = Math.min(a.upload.deadline, a.cut);
   const reader = new MultipartStream(
     request.body as ReadableStream<Uint8Array>,
-    boundary,
+    boundary.boundary,
     MEDIA_BODY_LIMIT,
     cutGuard(deps, end),
   );
@@ -511,8 +512,8 @@ class AvUpload {
   readonly #texts: Text[];
   // The streamed file's head and its place among #texts, for #params' zero-byte placeholder.
   readonly #file: { head: PartHead; at: number };
-  // The body's multipart boundary, as the reader read it.
-  readonly #boundary: string;
+  // The body's multipart boundary, as the reader read it, and whether the header quoted it.
+  readonly #boundary: { boundary: string; quoted: boolean };
   // The route's cut (v1: arrival + V1_TIME_MS - T_REPLY; v2: none) and its give-up (v1: arrival + V1_TIME_MS).
   readonly #cut: number;
   readonly #giveUp: number;
@@ -524,7 +525,7 @@ class AvUpload {
     a: Active,
     reader: MultipartStream,
     kind: AvKind,
-    found: { texts: Text[]; file: PartHead; boundary: string },
+    found: { texts: Text[]; file: PartHead; boundary: { boundary: string; quoted: boolean } },
   ) {
     this.#c = c;
     this.#deps = deps;
@@ -754,7 +755,7 @@ class AvUpload {
   // runtime's form parser, so the names' shapes (`file` then `file[]`: 400) and the description and thumbnail rules
   // (mediaProblem) are judged as on the image path.
   async #params(query: Params): Promise<Params | { error: string; status?: 400 | 413 }> {
-    const boundary = this.#boundary;
+    const { boundary, quoted } = this.#boundary;
     const encoder = new TextEncoder();
     const chunks: Uint8Array[] = [];
     const empty = new Uint8Array();
@@ -772,7 +773,8 @@ class AvUpload {
     }
     let form: Params;
     try {
-      form = await parseBody(`multipart/form-data; boundary="${boundary}"`, body, {
+      // The header as sent, rebuilt: the canonical form needs no escape inside the quotes.
+      form = await parseBody(`multipart/form-data; boundary=${quoted ? `"${boundary}"` : boundary}`, body, {
         names: ["file", "thumbnail"],
         maxBytes: 0,
       });

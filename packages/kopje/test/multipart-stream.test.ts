@@ -147,50 +147,92 @@ describe("the closing line's padding", () => {
   });
 });
 
-describe("the boundary parameter, as workerd's MIME parser reads it (code review r2 M4)", () => {
+// The AV path streams a body only when its Content-Type is in a strict canonical form that workerd's MIME parser and
+// multipartBoundary read alike; any other header takes the whole-body path.
+describe("the Content-Type the AV path streams", () => {
+  // Browsers' and common clients' headers, and the quoted forms: accepted, and workerd reads the same boundary.
   it.each([
-    ['multipart/form-data; note="a;boundary=inner;z"; boundary=B'],
-    ['multipart/form-data; boundary="B"'],
-    ["multipart/form-data;boundary=B"],
-    ["multipart/form-data; boundary=B; boundary=B"],
-    ["multipart/form-data; boundary=B; boundary=C"],
-    ['Multipart/Form-Data; BOUNDARY="B"; charset=utf-8'],
-  ])("reads %s as formData() does", async (contentType) => {
-    const body = enc.encode(`--B\r\n${HEAD_A}\r\n\r\nx\r\n--B--\r\n`);
+    [
+      "Chrome and Safari",
+      "multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW",
+      "----WebKitFormBoundary7MA4YWxkTrZu0gW",
+      false,
+    ],
+    [
+      "Firefox",
+      "multipart/form-data; boundary=----geckoformboundary9c1a2b3c4d5e6f708192a3b4c5d6e7f8",
+      "----geckoformboundary9c1a2b3c4d5e6f708192a3b4c5d6e7f8",
+      false,
+    ],
+    [
+      "Firefox, numeric",
+      "multipart/form-data; boundary=---------------------------735323031399963166993862150",
+      "---------------------------735323031399963166993862150",
+      false,
+    ],
+    [
+      "undici (Node fetch)",
+      "multipart/form-data; boundary=----formdata-undici-061826430529",
+      "----formdata-undici-061826430529",
+      false,
+    ],
+    [
+      "okhttp",
+      "multipart/form-data; boundary=3f2a6c4e-1b7d-4c2e-9f8a-0d1e2f3a4b5c",
+      "3f2a6c4e-1b7d-4c2e-9f8a-0d1e2f3a4b5c",
+      false,
+    ],
+    [
+      "Alamofire",
+      "multipart/form-data; boundary=alamofire.boundary.6f1a2b3c4d5e6f70",
+      "alamofire.boundary.6f1a2b3c4d5e6f70",
+      false,
+    ],
+    ["quoted", 'multipart/form-data; boundary="B"', "B", true],
+    ["quoted, with bchars a token lacks", 'multipart/form-data; boundary="a b:c?(d)"', "a b:c?(d)", true],
+    ["any case, another parameter", 'Multipart/Form-Data; BOUNDARY="B"; charset=utf-8', "B", true],
+    ["no space", "multipart/form-data;boundary=B", "B", false],
+    ["spaces around `;` and at the ends", " multipart/form-data ; boundary=B ", "B", false],
+    [
+      "a quoted `;` and `=` in another parameter",
+      'multipart/form-data; note="a;boundary=inner;z"; boundary=B',
+      "B",
+      false,
+    ],
+  ])("accepts %s", async (_, contentType, boundary, quoted) => {
+    const body = enc.encode(`--${boundary}\r\n${HEAD_A}\r\n\r\nx\r\n--${boundary}--\r\n`);
     const form = await new Response(body, { headers: { "content-type": contentType } }).formData();
     expect(form.get("a")).toBe("x");
-    expect(multipartBoundary(contentType)).toBe("B");
+    expect(multipartBoundary(contentType)).toEqual({ boundary, quoted });
   });
-});
 
-describe("a malformed parameter name, as workerd's MIME parser recovers (code review r4 M4)", () => {
-  // workerd refuses the name before reading its value and skips to the next `;`, so `boundary=C` inside the quotes is
-  // read, and as the first boundary it is the one: a body delimited by B is refused, as the reader takes C.
-  it('reads `bad name="x; boundary=C; y"; boundary=B` as formData() does', async () => {
-    const contentType = 'multipart/form-data; bad name="x; boundary=C; y"; boundary=B';
-    const body = enc.encode(`--B\r\n${HEAD_A}\r\n\r\nx\r\n--B--\r\n`);
-    const refused = await new Response(body, { headers: { "content-type": contentType } }).formData().then(
-      () => false,
-      () => true,
-    );
-    expect(refused).toBe(true);
-    expect(multipartBoundary(contentType)).toBe("C");
-  });
-});
-
-describe("an unquoted value's leading whitespace, as workerd's MIME parser keeps it (code review r5 M4)", () => {
-  const contentType = 'multipart/form-data; bad name="x; boundary= B; y"; boundary=C';
+  // Every header earlier parity checks found read differently, and the other forms outside the rule: null.
   it.each([
-    ["--B", false],
-    ["-- B", true],
-  ])("reads the boundary as formData() does for a body delimited by %s", async (delimiter, parsed) => {
-    const body = enc.encode(`${delimiter}\r\n${HEAD_A}\r\n\r\nx\r\n${delimiter}--\r\n`);
-    const form = await new Response(body, { headers: { "content-type": contentType } }).formData().then(
-      (f) => f.get("a"),
-      () => null,
-    );
-    expect(form).toBe(parsed ? "x" : null);
-    expect(multipartBoundary(contentType)).toBe(" B");
+    ["a repeated boundary", "multipart/form-data; boundary=B; boundary=B"],
+    ["two boundaries", "multipart/form-data; boundary=B; boundary=C"],
+    ["a name that is not a token", 'multipart/form-data; bad name="x; boundary=C; y"; boundary=B'],
+    ["a leading space inside a skipped value", 'multipart/form-data; bad name="x; boundary= B; y"; boundary=C'],
+    ["a backslash in a name", String.raw`multipart/form-data; bad\name="x; boundary=B; y"; boundary=C`],
+    ["a space inside the type", "multipart/ form-data; boundary=B"],
+    ["a backslash in a quoted boundary", String.raw`multipart/form-data; boundary="B\\C"`],
+    ["a backslash in another quoted value", String.raw`multipart/form-data; a="\x"; boundary=B`],
+    ["spaces around `=`", "multipart/form-data; boundary = B"],
+    ["an empty boundary", 'multipart/form-data; boundary=""'],
+    ["a boundary past 70 characters", `multipart/form-data; boundary=${"b".repeat(71)}`],
+    ["a boundary ending in a space", 'multipart/form-data; boundary="B "'],
+    ["a boundary outside bchars", "multipart/form-data; boundary=B!"],
+    ["no boundary", "multipart/form-data"],
+    ["an empty parameter", "multipart/form-data;; boundary=B"],
+    ["another type", "text/plain; boundary=B"],
+  ])("returns null for %s, which takes the whole-body path", (_, contentType) => {
+    expect(multipartBoundary(contentType)).toBeNull();
+  });
+
+  it("accepts a boundary of 70 characters", () => {
+    expect(multipartBoundary(`multipart/form-data; boundary=${"b".repeat(70)}`)).toEqual({
+      boundary: "b".repeat(70),
+      quoted: false,
+    });
   });
 });
 

@@ -3770,9 +3770,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   cover; the staging gates of #1828 PR4-4 are pending. Reading: the token is authorized and the reservation made before
   any body byte is read; the bytes read before the type is known stop within two chunks of `MEDIA_BODY_LIMIT`, the
   stream's read-ahead included, at the reservation's deadline, and on v1 at the route's cut (arrival + `V1_TIME_MS` −
-  `T_REPLY`); a request handed back to the image path, by the sniff or by S1 answering `inactive` (the probe failed
-  after the reservation), is read there as before, with the image path's waits; a video or audio file is streamed into
-  R2 in parts of `PART_BYTES` (8 MiB), the route holding at most one part and one read, and refused at `AV_UPLOAD_LIMIT`
+  `T_REPLY`); a request handed back to the image path, by a `Content-Type` outside the canonical form both parsers read
+  alike (`multipartBoundary` in `src/platform/multipart-stream.ts`), by the sniff or by S1 answering `inactive` (the
+  probe failed after the reservation), is read there as before, with the image path's waits; a video or audio file is
+  streamed into R2 in parts of `PART_BYTES` (8 MiB), the route holding at most one part and one read, and refused at
+  `AV_UPLOAD_LIMIT`
   (90 MiB) + 1 bytes; the parts after it stay within `API_BODY_LIMIT`, a thumbnail file's bytes counted (its 413 comes
   before the description is judged); a part head within 16 KiB (`PART_HEAD_LIMIT` in
   `src/platform/multipart-stream.ts`), and the closing line's padding is dropped as it is read, one scan per chunk.
