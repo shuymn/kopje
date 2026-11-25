@@ -4,7 +4,7 @@ import { expect } from "vitest";
 import { NORMALIZE_PROTOCOL, UploadUnit, type UploadState } from "../src/media-processor";
 import { incomingKey } from "../src/platform/media-files";
 import { timedFixture } from "./av-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, deferred } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { putInput, stillPng } from "./media-job-helpers";
 import { type AvWorld, clock, held, queued } from "./media-processing-helpers";
@@ -18,8 +18,6 @@ import { type AvWorld, clock, held, queued } from "./media-processing-helpers";
 export class Storage {
   map = new Map<string, unknown>();
   alarm: number | null = null;
-  // A hold on a named storage call: it never answers.
-  hold: string | null = null;
   // Work run once as the next get starts (a request the object takes while the handler is under way).
   onGet: (() => Promise<void>) | null = null;
   constructor(private readonly kill: (name: string) => Promise<never> | null) {}
@@ -191,8 +189,8 @@ export async function platformFor(w: AvWorld) {
   let maintenance = false;
   // Bucket calls held until released ("get" of the input, "delete", "create:<kind>", "abort:<kind>"), and those
   // reached.
-  const holds = new Map<string, Promise<void>>();
-  const releases = new Map<string, () => void>();
+  // The calls held until `release`.
+  const holds = new Map<string, PromiseWithResolvers<void>>();
   const held: string[] = [];
   // The keys the bucket was asked to delete, and how many of the next deletes fail.
   const deletes: string[] = [];
@@ -252,20 +250,20 @@ export async function platformFor(w: AvWorld) {
         const key = String(args[0]);
         if (method === "get" && key.startsWith("incoming/") && holds.has("get")) {
           held.push("get");
-          await holds.get("get");
+          await holds.get("get")?.promise;
         }
         if (method === "createMultipartUpload") {
           const name = key.startsWith("originals/") ? "original" : "full";
           if (holds.has(`create:${name}`)) {
             held.push(`create:${name}`);
-            await holds.get(`create:${name}`);
+            await holds.get(`create:${name}`)?.promise;
           }
         }
         if (method === "delete") {
           await (kill("delete") ?? Promise.resolve());
           if (holds.has("delete")) {
             held.push("delete");
-            await holds.get("delete");
+            await holds.get("delete")?.promise;
           }
           deletes.push(String(args[0]));
           if (failingDeletes > 0) {
@@ -287,7 +285,7 @@ export async function platformFor(w: AvWorld) {
             uploadPart: upload.uploadPart.bind(upload),
             abort: async () => {
               aborts.push(name);
-              await holds.get(`abort:${name}`);
+              await holds.get(`abort:${name}`)?.promise;
               await upload.abort();
             },
             complete: async (parts: R2UploadedPart[]) => {
@@ -352,9 +350,9 @@ export async function platformFor(w: AvWorld) {
     aborts: () => aborts,
     deletes: () => deletes,
     hold(call: "get" | "delete" | "create:original" | "create:full" | "abort:original" | "abort:full"): void {
-      holds.set(call, new Promise<void>((resolve) => releases.set(call, resolve)));
+      holds.set(call, deferred());
     },
-    release: (call: string) => releases.get(call)?.(),
+    release: (call: string) => holds.get(call)?.resolve(),
     held: () => held,
     failDeletes: (count: number) => void (failingDeletes = count),
     envMaintenance: (on: boolean) => void (maintenance = on),
