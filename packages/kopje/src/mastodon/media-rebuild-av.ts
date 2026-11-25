@@ -29,6 +29,7 @@ import type { StillMaker, StillOutcome } from "../platform/media-transcoder";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreStub } from "../platform/store-client";
 import { storedBlurhash } from "../platform/stored-bounds";
+import { pngSize } from "./media-activation";
 
 // The media rebuild of a video or audio row (#1828 design 4.16; mastodon/media-rebuild.ts runs the call, its lease and
 // its fences). Its served `full` is the verified output the original already is (D11), and a video's `small` is the
@@ -400,10 +401,6 @@ async function adopt(
 }
 
 // The PNG's dimensions from its IHDR, which verifyStill has walked.
-function pngSize(png: Uint8Array): Size {
-  const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
-  return { width: view.getUint32(16), height: view.getUint32(20) };
-}
 
 // A new small, or the fallback.
 async function make(
@@ -448,7 +445,7 @@ async function make(
   // Images' output is read within STILL_OUTPUT_LIMIT and every call of it given up at the row's end.
   const preview = await call.bounded(
     () =>
-      stillPreview(call.images, made.png, pngSize(made.png), { end, now: call.now }, STILL_OUTPUT_LIMIT, (work) =>
+      stillPreview(call.images, made.png, pngSize(made.png), { end, now: call.now }, (work) =>
         within(work, end, call.now),
       ),
     end,

@@ -16,7 +16,7 @@ import {
   transferCut,
 } from "../domain/media-processing";
 import { activationProbe, type ContainerControl, pngSize } from "../mastodon/media-activation";
-import { avVerifier, STILL_OUTPUT_LIMIT, verifyStill } from "../platform/av-bytes";
+import { avVerifier, verifyStill } from "../platform/av-bytes";
 import { inTime } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { type ImageCodec, type Size, stillPreview } from "../platform/images";
@@ -476,13 +476,8 @@ async function poster(deps: UploadDeps, job: UploadJob, end: number, png: Uint8A
     return null;
   }
   try {
-    const made = await stillPreview(
-      deps.images,
-      png,
-      pngSize(png),
-      { end, now: deps.now },
-      STILL_OUTPUT_LIMIT,
-      (work) => inTime(work, end, deps.now),
+    const made = await stillPreview(deps.images, png, pngSize(png), { end, now: deps.now }, (work) =>
+      inTime(work, end, deps.now),
     );
     if (made.ok) {
       return { bytes: made.small.bytes, width: made.small.width, height: made.small.height, blurhash: made.blurhash };

@@ -462,9 +462,15 @@ function servedStill(small: EncodedImage): boolean {
   return size !== null && size.width === small.width && size.height === small.height;
 }
 
+// The media processor's PNG still re-encoded as a still WebP of `preview` (within SMALL_EDGE): encodeBounded, read
+// within STILL_OUTPUT_LIMIT, every call under `guard`, stripped, no metadata left, one frame, its real dimensions. The
+// upload's preview, the probes and the rebuild all encode it so.
+function encodeStill(codec: ImageCodec, png: Uint8Array, preview: Size, guard: CallGuard): Promise<EncodedImage> {
+  return encodeBounded(codec, png, { ...preview, format: "image/webp", still: true }, STILL_OUTPUT_LIMIT, guard);
+}
+
 // The preview of a video from the media processor's PNG still (#1828 design 4.10, 4.16), which verifyStill has passed
-// (platform/av-bytes.ts): re-encoded as a still WebP within SMALL_EDGE (encodeBounded: read within `limit`, every call
-// under `guard`, stripped, no metadata left, one frame, its real dimensions), and its blurhash from Images' RGBA output of the same input and transformation, given
+// (platform/av-bytes.ts): re-encoded as a still WebP within SMALL_EDGE (encodeStill), and its blurhash from Images' RGBA output of the same input and transformation, given
 // up as an upload's is (`blurhash`, ProcessOptions). A failure of the WebP is classified as processImage classifies
 // it; any failure of the RGBA output only leaves the blurhash null.
 export async function stillPreview(
@@ -472,7 +478,6 @@ export async function stillPreview(
   png: Uint8Array,
   size: Size,
   blurhash: { end: number; now: () => number },
-  limit: number,
   guard: CallGuard,
 ): Promise<
   | { ok: true; small: EncodedImage; blurhash: string | null; blurhashStop: BlurhashStop }
@@ -480,7 +485,7 @@ export async function stillPreview(
 > {
   const preview = fit(size, SMALL_EDGE);
   try {
-    const small = await encodeBounded(codec, png, { ...preview, format: "image/webp", still: true }, limit, guard);
+    const small = await encodeStill(codec, png, preview, guard);
     // The upload, the probes and the rebuild hold it to the same checks (stillWebpSize).
     if (!servedStill(small)) {
       return { ok: false, reason: "failed", detail: "small" };
@@ -519,13 +524,7 @@ export async function stillEncodes(
 ): Promise<"passed" | "refused" | "bad-output" | "quota" | "retry"> {
   try {
     // The body is read under the guard and within STILL_OUTPUT_LIMIT, as the upload's preview reads it.
-    const small = await encodeChecked(codec, png, {
-      ...fit(size, SMALL_EDGE),
-      format: "image/webp",
-      still: true,
-      limit: STILL_OUTPUT_LIMIT,
-      guard,
-    });
+    const small = await encodeStill(codec, png, fit(size, SMALL_EDGE), guard);
     return servedStill(small) ? "passed" : "bad-output";
   } catch (error) {
     const reason = codecFailure(error);
