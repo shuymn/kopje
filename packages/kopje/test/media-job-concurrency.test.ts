@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AV_WRITE_WINDOW_MS, ORPHAN_GRACE_MS } from "../src/domain/media";
+import { AV_GRANT_MS } from "../src/domain/media-processing";
 import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
 import { fileKey, originalKey } from "../src/platform/media-files";
 import { BUILD } from "./helpers";
@@ -88,6 +89,53 @@ describe("W1 and the per-write reauthorization", () => {
     });
     await p.settle();
     expect(p.writes()).toEqual(["original", "full"]);
+    expect((await held(w.store, up.id)).att?.processed).not.toBe(1);
+    await cleared(w, p, up.id);
+  });
+
+  it("full's complete outliving its grant leaves small a fresh grant, and the upload completes with its preview", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.beforeWrite("full", () => {
+      clock(Date.now() + AV_GRANT_MS + SECOND);
+      return Promise.resolve();
+    });
+    await p.settle();
+    expect(p.writes()).toEqual(["original", "full", "small"]);
+    expect(p.storeCalls().filter((call) => call === "confirmAvWrite")).toHaveLength(3);
+    expect(await landed(up.id, up.token)).toEqual({ original: true, full: true, small: true });
+    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1 });
+    await cleared(w, p, up.id);
+  });
+
+  it("a grant that expired on receipt is asked again before its write", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.afterCall("confirmAvWrite", () => {
+      clock(Date.now() + AV_GRANT_MS);
+      return Promise.resolve();
+    });
+    await p.settle();
+    expect(p.writes()).toEqual(["original", "full", "small"]);
+    expect(p.storeCalls().filter((call) => call === "confirmAvWrite")).toHaveLength(4);
+    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1 });
+    await cleared(w, p, up.id);
+  });
+
+  it("a grant reply held across a restore starts that one write and no other; the upload does not complete", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    // The bookmark is taken before original's grant commits; the restore to it commits before the grant's reply.
+    p.beforeCall("confirmAvWrite", async () => {
+      const taken = await bookmark(w.store);
+      p.afterCall("confirmAvWrite", () => restore(w.store, taken, Date.now()));
+    });
+    await p.settle();
+    expect(p.writes()).toEqual(["original"]);
+    expect(await landed(up.id, up.token)).toEqual({ original: true, full: false, small: false });
     expect((await held(w.store, up.id)).att?.processed).not.toBe(1);
     await cleared(w, p, up.id);
   });
