@@ -124,28 +124,47 @@ describe("W1 and the per-write reauthorization", () => {
     await cleared(w, p, up.id);
   });
 
-  it("a grant reply held across a restore starts that one write and no other; the upload does not complete", async () => {
+  it("full's grant reply held across a restore starts that one write and no other; after the sweep the file answers 404", async () => {
     const w = await avWorld();
     const p = await platformFor(w);
     const up = await upload(w, p);
-    // The bookmark is taken before original's grant commits; the restore to it commits before the grant's reply.
-    p.beforeCall("confirmAvWrite", async () => {
-      const taken = await bookmark(w.store);
-      p.afterCall("confirmAvWrite", () => restore(w.store, taken, Date.now()));
+    // Once original has landed, the bookmark is taken before full's grant commits, and the restore to it commits before
+    // that grant's reply arrives.
+    p.beforeWrite("original", () => {
+      p.beforeCall("confirmAvWrite", async () => {
+        const taken = await bookmark(w.store);
+        p.afterCall("confirmAvWrite", () => restore(w.store, taken, Date.now()));
+      });
+      return Promise.resolve();
     });
     await p.settle();
-    expect(p.writes()).toEqual(["original"]);
-    expect(await landed(up.id, up.token)).toEqual({ original: true, full: false, small: false });
+    expect(p.writes()).toEqual(["original", "full"]);
+    expect(await landed(up.id, up.token)).toEqual({ original: true, full: true, small: false });
     expect((await held(w.store, up.id)).att?.processed).not.toBe(1);
+    // The restore failed the job (`restored`); its unpublished attachment is collected from its gc_at.
+    const after = await held(w.store, up.id);
+    expect(after.row).toMatchObject({ state: "failed", failure: "restored" });
     await cleared(w, p, up.id);
+    const served = `/media/${up.token}/full.mp4`;
+    expect((await w.h.request(served)).status).toBe(200);
+    const deps = { build: () => BUILD, store: () => w.store };
+    const sweptAt = Math.max(T0 + AV_WRITE_WINDOW_MS, Date.parse(after.att!.gc_at!)) + MINUTE;
+    clock(sweptAt);
+    await sweepMedia(env, deps);
+    clock(sweptAt + ORPHAN_GRACE_MS);
+    await reconcileMedia(env, deps);
+    expect((await w.h.request(served)).status).toBe(404);
+    expect(await landed(up.id, up.token)).toEqual({ original: false, full: false, small: false });
   });
 
   it("a replay after R2 completed full writes nothing", async () => {
     const w = await avWorld();
     const p = await platformFor(w);
     const up = await upload(w, p);
-    p.killNext("complete:full");
+    // R2's complete has landed full; the invocation dies before its answer is used.
+    p.killNext("completed:full");
     expect(await p.fire()).toBe("killed");
+    expect(await env.MEDIA.head(fileKey(up.token, "full"))).not.toBeNull();
     const before = p.writes().length;
     await p.settle();
     expect(p.writes().length).toBe(before);

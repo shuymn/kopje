@@ -111,12 +111,18 @@ describe("table 1.3: D0 run", () => {
     const w = await avWorld();
     const p = await platformFor(w);
     const up = await upload(w, p);
-    // The fired alarm is consumed (getAlarm is null): run arms one, and D1 then replaces it.
-    p.storage.alarm = null;
-    await p.unit().run(up.id, up.token, up.teardownId);
-    const now = Date.now();
-    expect(p.storage.alarm).toBe(now);
-    await p.settle();
+    // The handler has started (the fired alarm is consumed, getAlarm null) and not yet reached D1 when run arrives.
+    let during: number | null | undefined;
+    p.storage.onGet = async () => {
+      await p.unit().run(up.id, up.token, up.teardownId);
+      during = p.storage.alarm;
+    };
+    const firedAt = p.storage.alarm;
+    expect(await p.fire()).toBe("returned");
+    expect(during).toBe(firedAt);
+    // D1 replaced run's alarm, and the one invocation completed the job: nothing is left to fire.
+    expect(p.storage.alarm).toBeNull();
+    expect(await p.settle()).toBe(0);
     await cleared(w, p, up.id);
     expect(p.starts()).toBe(1);
   });

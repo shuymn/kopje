@@ -20,9 +20,14 @@ export class Storage {
   alarm: number | null = null;
   // A hold on a named storage call: it never answers.
   hold: string | null = null;
+  // Work run once as the next get starts (a request the object takes while the handler is under way).
+  onGet: (() => Promise<void>) | null = null;
   constructor(private readonly kill: (name: string) => Promise<never> | null) {}
-  get<T>(key: string): Promise<T | undefined> {
-    return Promise.resolve(this.map.get(key) as T | undefined);
+  async get<T>(key: string): Promise<T | undefined> {
+    const hook = this.onGet;
+    this.onGet = null;
+    await hook?.();
+    return this.map.get(key) as T | undefined;
   }
   put(key: string, value: unknown): Promise<void> {
     this.map.set(key, value);
@@ -166,7 +171,7 @@ export type Platform = Awaited<ReturnType<typeof platformFor>>;
 // The platform of one upload's object, over the world's Store and the media bucket. `killAt` names the call at which
 // the next invocation dies: "before:<method>" (the call is never sent), "after:<method>" (it commits, its reply never
 // arrives), or "destroy", "commit:run" (inside D0's transaction), "committed:run" (just after it), "delete" (the
-// input's).
+// input's), "complete:<kind>" (before R2's complete) or "completed:<kind>" (after it).
 export async function platformFor(w: AvWorld) {
   const bytes = await avFixture("r1-silent.mp4");
   const verdict = await verifyBytes("video/mp4", bytes);
@@ -292,7 +297,9 @@ export async function platformFor(w: AvWorld) {
             complete: async (parts: R2UploadedPart[]) => {
               await writing(name);
               await (kill(`complete:${name}`) ?? Promise.resolve());
-              return complete(parts);
+              const completed = await complete(parts);
+              await (kill(`completed:${name}`) ?? Promise.resolve());
+              return completed;
             },
           });
         }
