@@ -1767,8 +1767,9 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   the outcome they had before these rules: a status the cutover converted with a video among images is edited and
   published as before, where Mastodon refuses the edit. A redraft of such a status (a new post naming the media its
   deletion detached) is a new set and is refused as Mastodon refuses it; for 24 hours after the deletion (the grace
-  period of detached media) the owner can still post the video alone and the images together. An image reservation that never completed, and a video or
-  audio upload whose request is still sending it, are not found (Mastodon's processing has no such state).
+  period of detached media) the owner can still post the video alone and the images together. An image reservation
+  that never completed, and a video or audio upload whose request is still sending it, are not found (Mastodon's
+  processing has no such state).
 - A `scheduled_at` of white space alone (a space, U+0085, U+FEFF) answers 422 `Record invalid`, an empty one reads
   as absent. Mastodon's `String#to_datetime` (`PostStatusService`) reads a value blank to Rails (a space, U+0085) as
   absent, so the status is posted at once, and refuses U+FEFF. Accepted, 2026-11-18.
