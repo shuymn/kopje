@@ -382,25 +382,15 @@ function normalize(db: Db, id: string, now: number, restoredAt: Marker): UploadR
   return apply(db, id, record, effectOf(record, now, restoredAt));
 }
 
-// The record K3 and K4 would leave, written nowhere (S9 and S10 in maintenance).
-function normalized(record: UploadRecord, now: number, restoredAt: Marker): UploadRecord {
-  const { att, row, slot } = record;
+// The processing state K3 and K4 would leave on the record, written nowhere (S9, the owner's GET and PUT): the row's
+// own, null where they delete the row (K3 on a staging row, K4's doom), or failed (K3's `restored`, K4's `deadline`,
+// which leave the attachment as it is).
+function normalizedState(record: UploadRecord, now: number, restoredAt: Marker): ProcessingRow["state"] | null {
   const effect = effectOf(record, now, restoredAt);
-  if (row === null || effect === null) {
-    return record;
+  if (record.row === null || effect === null) {
+    return record.row?.state ?? null;
   }
-  if (effect === "k3-staging") {
-    return { att, row: null, slot: slot?.phase === "staging" ? null : slot };
-  }
-  if (effect === "k4-doom") {
-    return { att: att === null ? null : { ...att, gc_at: DOOMED_AT }, row: null, slot };
-  }
-  // K3's `restored` and K4's `deadline` fail only a pending or running row.
-  if (row.state !== "pending" && row.state !== "running") {
-    return record;
-  }
-  const failure = effect === "k3-restored" ? "restored" : "deadline";
-  return { att, row: { ...row, state: "failed", failure }, slot };
+  return effect === "k3-staging" || effect === "k4-doom" ? null : "failed";
 }
 
 // ---- Activation and capacity
@@ -921,8 +911,8 @@ export const v1Outcome = readOperation.atStoreTime("now")<
   ) {
     return { status: "ended" };
   }
-  const { row } = normalized(record, now, restoredAt);
-  return row?.state === "staging" || row?.state === "pending" || row?.state === "running"
+  const state = normalizedState(record, now, restoredAt);
+  return state === "staging" || state === "pending" || state === "running"
     ? { status: "processing" }
     : { status: "ended" };
 });
@@ -1145,11 +1135,12 @@ function ownerState(db: Db, own: OwnerRow | undefined, now: number, restoredAt: 
   ) {
     return "failed";
   }
-  const { att, row } = normalized(record, now, restoredAt);
-  if (row === null || row.state === "staging" || attachmentState(att) !== "res") {
+  // ownerRow has answered a staging row already, and K3 and K4 leave the attachment of a row they keep as it is.
+  const state = normalizedState(record, now, restoredAt);
+  if (state === null || attachmentState(record.att) !== "res") {
     return "not_found";
   }
-  return row.state === "failed" ? "failed" : "processing";
+  return state === "failed" ? "failed" : "processing";
 }
 
 // The owner's answer for `own`, read in `state` (processing or finished).
