@@ -1,5 +1,5 @@
 import { NORMALIZE_PROFILE, probeImageTag } from "../domain/media-probes";
-import { avVerifier, verifyStill } from "../platform/av-bytes";
+import { type AvType, type AvVerdict, avVerifier, verifyStill } from "../platform/av-bytes";
 import { DeadlinePassed, within } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { toHex } from "../platform/hex";
@@ -38,15 +38,16 @@ export function pngSize(png: Uint8Array): Size {
 // ---- The activation probe of normalize@standard-4 (design 4.15; the PR4 plan's "Probe outcomes")
 
 // A probe answers `fail` only on positive evidence that the build is wrong, and `no-verdict` on anything else (an
-// existing pass kept, health unchanged). The evidence, exhaustively: /healthz answered 404 (a build without the
-// server), or without this protocol's version (media-processor.ts NORMALIZE_PROTOCOL); a route of the protocol
-// answered 404, or its method 405 (TranscoderUnavailable `evidence`, judged by the status); a 200 that breaks the
-// reply's contract (its headers, kind or length, a body longer than declared among it); a complete output the verifier
-// refuses, or whose declared duration disagrees with the file; a still verifyStill refuses; Images refusing that
-// verified still as input (stillEncodes `refused`). Every other answer (any code the server answers, envelope,
-// encode_failed, internal, truncated and no_output among them; a video answered without a still; busy, a timeout, a
-// lost connection, a body cut short or one whose source failed; Images' own output failing its checks) says nothing of
-// the build. An ordinary upload keeps A5: its input's failures are its outcome (jobs/media-jobs.ts).
+// existing pass kept, health unchanged). The evidence, exhaustively: /healthz answered 404 (a build without the server)
+// or 405, or a complete reply without this protocol's version (media-processor.ts NORMALIZE_PROTOCOL); a route of the
+// protocol answered 404, or its method 405 (TranscoderUnavailable `evidence`, judged by the status); a 200 that breaks
+// the reply's contract (its headers, kind or length, a body longer than declared among it); output bytes the verifier
+// refuses as it receives them, or a complete file whose declared duration disagrees with it; a still verifyStill
+// refuses; Images refusing that verified still as input (stillEncodes `refused`). Every other answer (any code the
+// server answers, envelope, encode_failed, internal, truncated and no_output among them; a video answered without a
+// still; busy, a timeout, a lost connection, a readiness body that could not be read, a body cut short or one whose
+// source failed before the verifier refused it; Images' own output failing its checks) says nothing of the build. An
+// ordinary upload keeps A5: its input's failures are its outcome (jobs/media-jobs.ts).
 
 // The packaged clip's envelope (container/probe.mp4: 192x144 H.264 at 15 fps for 2 s, with AAC): planVideo's estimate
 // (container/server/plan.go) is 1500 + 192·144·30·1.0/1e6 + 192·144·30·21/1e6 + 2·40 = 1,598.25 ms, which fits
@@ -108,33 +109,12 @@ export async function probeWork(
     if (!result.ok) {
       return { outcome: "no-verdict", reason: `normalize:${result.code}` };
     }
-    // The bytes the container sent, counted to the body's own end beside the verifier: transport (a source that failed,
-    // or a body that ended short of its length, which the verifier refuses by whichever check meets the missing bytes
-    // first) says nothing of the build; a complete file the verifier refuses, or one longer than declared, does.
-    const [verifying, counting] = result.file.tee();
-    const sent = (async () => {
-      const reader = counting.getReader();
-      let bytes = 0;
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) {
-            return { bytes, ended: true };
-          }
-          bytes += value.byteLength;
-        }
-      } catch {
-        return { bytes, ended: false };
-      }
-    })();
-    const { stream, verdict, abort } = avVerifier(result.type, result.length, { expectedDuration: result.duration });
-    await verifying.pipeThrough(stream).pipeTo(new WritableStream()).catch(abort);
-    const verified = await verdict;
-    if (!verified.ok) {
-      const { bytes, ended } = await sent;
-      if (!ended || bytes < result.length) {
-        return { outcome: "no-verdict", reason: ended ? "output-short" : "output-read" };
-      }
+    // The output read once, through the verifier, under its declared length: a byte past that length is the build's,
+    // and the read stops there; so is what the verifier refuses in the bytes received. Transport (a source that failed,
+    // or a body that ended short of its length, before either) says nothing of the build.
+    const verified = await readOutput(result.file, result.type, result.length, result.duration);
+    if (verified === "output-read" || verified === "output-short") {
+      return { outcome: "no-verdict", reason: verified };
     }
     if (!verified.ok || result.kind !== "video") {
       return { outcome: "fail", reason: verified.ok ? "kind" : `output:${verified.rule}` };
@@ -152,6 +132,57 @@ export async function probeWork(
       return { outcome: error.evidence !== null ? "fail" : "no-verdict", reason: error.reason };
     }
     return { outcome: "no-verdict", reason: error instanceof DeadlinePassed ? "timeout" : "operation" };
+  }
+}
+
+// The probe's output through avVerifier by one reader: each chunk counted against `length` before the verifier takes
+// it, so a body longer than declared is refused (length) at its first extra byte; a refusal of the bytes received ends
+// the read as soon as the verifier makes it. Either way the source is cancelled, without waiting for its end.
+async function readOutput(
+  file: ReadableStream<Uint8Array>,
+  type: AvType,
+  length: number,
+  duration: number,
+): Promise<AvVerdict | "output-read" | "output-short"> {
+  const { stream, verdict, abort } = avVerifier(type, length, { expectedDuration: duration });
+  void stream.readable.pipeTo(new WritableStream()).catch(() => {});
+  const writer = stream.writable.getWriter();
+  writer.closed.catch(() => {});
+  const reader = file.getReader();
+  // Before the end, the verdict settles only as a refusal.
+  const refused = verdict.then((settled) => ({ refused: settled }));
+  const stop = () => {
+    reader.cancel().catch(() => {});
+    writer.abort().catch(() => {});
+    abort();
+  };
+  let bytes = 0;
+  for (;;) {
+    let next: ReadableStreamReadResult<Uint8Array> | { refused: AvVerdict };
+    try {
+      next = await Promise.race([reader.read(), refused]);
+    } catch {
+      stop();
+      return "output-read";
+    }
+    if ("refused" in next) {
+      stop();
+      return next.refused;
+    }
+    if (next.done) {
+      if (bytes < length) {
+        stop();
+        return "output-short";
+      }
+      await writer.close().catch(() => {});
+      return verdict;
+    }
+    bytes += next.value.byteLength;
+    if (bytes > length) {
+      stop();
+      return { ok: false, rule: "length" };
+    }
+    await writer.write(next.value).catch(() => {});
   }
 }
 

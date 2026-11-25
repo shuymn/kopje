@@ -57,6 +57,9 @@ async function health(store: StoreStub) {
   return report.checks.mediaProcessor;
 }
 
+// A body whose first box is an ftyp of 100 bytes, which the verifier refuses at its header (an ftyp is at most 64).
+const OVERSIZED_FTYP = Uint8Array.from([0, 0, 0, 100, 0x66, 0x74, 0x79, 0x70, ...new Uint8Array(4088)]);
+
 async function genuine(extra: Partial<ServerAnswer> = {}): Promise<ServerAnswer> {
   const output = await avFixture("r1-av.mp4");
   const verdict = await verifyBytes("video/mp4", output);
@@ -122,6 +125,20 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     ["a 200 without its declared duration", { durationMs: null }, undefined, "normalize-contract"],
     // r5: a complete body longer than declared is the build's; one cut short is the connection's (below).
     ["a 200 body longer than its Content-Length", { lengthOff: -1 }, undefined, "output:length"],
+    // r6: the byte past the declared length is the build's; a connection failure after it does not undo it, and the
+    // read stops there, without waiting for the body's end.
+    ["a body longer than its Content-Length, then a reset", { lengthOff: -1, reset: true }, undefined, "output:length"],
+    [
+      "a body longer than its Content-Length, its tail held",
+      { lengthOff: -1, holdTail: true },
+      undefined,
+      "output:length",
+    ],
+    // r6: a complete MP4 declared a byte longer than it is: its own mdat, received whole, ends before the declared
+    // length, which the verifier refuses at that header.
+    ["a complete MP4 declared a byte longer than it is", { lengthOff: 1 }, undefined, "output:"],
+    // r6: what the verifier refuses in the bytes it received is the build's, and the read stops there.
+    ["an output the verifier refuses, its tail held", { output: OVERSIZED_FTYP, holdTail: true }, undefined, "output:"],
     // r5: a 405 on the method the protocol names is an image that does not speak it.
     ["a /normalize answered 405", { failure: { status: 405, code: "method_not_allowed" } }, undefined, "normalize:"],
     ["a still answered 405", { stillFailure: { status: 405, code: "method_not_allowed" } }, undefined, "still:"],
@@ -163,7 +180,7 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     ["a still answered 502", { stillFailure: { status: 502 } }],
     ["a still answered 500 internal", { stillFailure: { status: 500, code: "internal" } }],
     // r5: transport is not evidence: a body cut short of its Content-Length, or a connection reset in it.
-    ["a body cut short of its Content-Length", { lengthOff: 1 }],
+    ["a body cut short of its Content-Length", { truncateAt: 4096 }],
     ["a connection reset in the body", { reset: true }],
     // r5: the status is the evidence, not the code: a 500 naming not_found is the server's failure.
     ["a still answered 500 with Kopje-Error not_found", { stillFailure: { status: 500, code: "not_found" } }],

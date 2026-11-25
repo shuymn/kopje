@@ -449,6 +449,37 @@ describe("MediaProcessor", () => {
     expect(fake.calls.filter((call) => call.startsWith("POST"))).toEqual([]);
   });
 
+  // r6: a readiness reply whose body fails to read is the connection's, not the image's: the poll repeats, and the
+  // next reply's protocol 2 makes it ready.
+  it("polls again after a /healthz body that resets, and passes on the next reply", async () => {
+    let polls = 0;
+    const fake = fakeContainer(
+      server({
+        "/healthz": () => {
+          polls++;
+          if (polls > 1) {
+            return Response.json({ ok: true, protocol: NORMALIZE_PROTOCOL });
+          }
+          const body = new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.error(new Error("connection reset"));
+            },
+          });
+          return new Response(body, { headers: { "content-type": "application/json" } });
+        },
+      }),
+    );
+    expect(await probe(unit(fakeState(fake.container).ctx))).toMatchObject({ ok: true });
+    expect(polls).toBe(2);
+  });
+
+  // r6: a 405 on /healthz is an image that does not speak the protocol, as on the operation routes.
+  it("fails the probe of an image answering /healthz 405, sending it nothing", async () => {
+    const fake = fakeContainer(server({ "/healthz": () => new Response(null, { status: 405 }) }));
+    expect(await probe(unit(fakeState(fake.container).ctx))).toMatchObject({ ok: false, failure: "healthz" });
+    expect(fake.calls.filter((call) => call.startsWith("POST"))).toEqual([]);
+  });
+
   // r4 M3 (Codex's interleaving): probe A, given up at its deadline while its still is held, destroys its container
   // and answers; probe B starts the next container and waits on its copy; A's still then arrives. A's late work stops
   // nothing: the stop is the call's, after the work, so B's container runs on and B passes.
@@ -823,14 +854,27 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     expect("evidence" in outcome ? outcome.evidence : undefined).toBe(evidence ?? undefined);
   });
 
-  it("fails readiness, with protocol evidence, on a /healthz without this protocol's version", async () => {
+  // r6 (mixed rollout): the still's /still contract is the same in the image before protocol 2 (cd9292004), whose
+  // readiness names no version: stillNow takes it as ready and answers its PNG; only normalize needs protocol 2.
+  it("answers the still of an image whose /healthz names no protocol version (cd9292004's)", async () => {
     await env.MEDIA.put("originals/140000000000000042", new Uint8Array([1]));
-    const fake = counted(undefined, { "/healthz": () => Response.json({ ok: true }) });
+    const fake = counted(undefined, { "/healthz": () => Response.json({ ok: true, bootId: "old" }) });
     const outcome = await unit({ ...fakeState(fake.container).ctx, bucket: bucket() }).stillNow(
       "originals/140000000000000042",
       75_000,
     );
-    expect(outcome).toMatchObject({ ok: false, failure: "healthz", evidence: "protocol" });
+    expect(outcome).toMatchObject({ ok: true, png: PNG });
+    expect(fake.calls).toContain("POST /still");
+  });
+
+  it("fails the still, with method evidence, on a /healthz answered 405", async () => {
+    await env.MEDIA.put("originals/140000000000000043", new Uint8Array([1]));
+    const fake = counted(undefined, { "/healthz": () => new Response(null, { status: 405 }) });
+    const outcome = await unit({ ...fakeState(fake.container).ctx, bucket: bucket() }).stillNow(
+      "originals/140000000000000043",
+      75_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "healthz", evidence: "method" });
     expect(fake.calls).not.toContain("POST /still");
   });
 

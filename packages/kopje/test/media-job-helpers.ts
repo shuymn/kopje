@@ -35,6 +35,8 @@ export type ServerAnswer = {
   emptyTail?: boolean;
   // The body errors after its first chunk (a connection reset).
   reset?: boolean;
+  // The body stays open after its first chunk, never ending.
+  holdTail?: boolean;
 };
 
 export function fakeControl(
@@ -110,6 +112,9 @@ export function fakeControl(
             clock(Date.now() + options.transferMs);
             controller.enqueue(sent.subarray(half));
             return undefined;
+          }
+          if (answer.holdTail === true) {
+            return new Promise<void>(() => {});
           }
           if (answer.reset === true) {
             controller.error(new Error("connection reset"));

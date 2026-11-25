@@ -37,6 +37,7 @@ import { R2_CALL_MS, runUpload } from "./jobs/media-jobs";
 import { type ContainerControl, probeFinish, probeWork } from "./mastodon/media-activation";
 import { PROBE_FIXTURE_BASE64 } from "./media-probe-fixture";
 import { AV_OUTPUT_LIMIT, plannedDuration, STILL_OUTPUT_LIMIT } from "./platform/av-bytes";
+import { readBoundedBody } from "./platform/body";
 import { accountMonthlyTransforms, envInMaintenance, readConfig } from "./platform/config";
 import { errorFields } from "./platform/error-message";
 import { type ImageCodec, imagesCodec } from "./platform/images";
@@ -65,19 +66,39 @@ const PORT = 8080;
 // it, which a probe takes as the build's.
 export const NORMALIZE_PROTOCOL = 2;
 
-// What a /healthz answer says: ready (this protocol), `route` (404: a build without the server), `protocol` (another
-// version, or none), or null (not yet: any other status, a lost connection), which is polled again.
-async function healthAnswer(response: Response): Promise<"ready" | "route" | "protocol" | null> {
-  if (response.status === 404) {
+// The most of a /healthz body read: the server's is a few dozen bytes.
+const HEALTHZ_BODY_LIMIT = 1024;
+
+// What a /healthz answer says to `operation`: ready, `route` (404: a build without the server), `method` (405: an image
+// that does not speak the protocol), `protocol` (for normalize, a complete reply naming another version or none), or
+// null (not yet: any other status, a lost connection, a body whose read failed), which is polled again. The still's
+// /still contract predates the version, so for it any 200 is ready: a Worker that activates before its image keeps its
+// still rebuild.
+async function healthAnswer(
+  response: Response,
+  operation: "normalize" | "still",
+): Promise<"ready" | "route" | "method" | "protocol" | null> {
+  if (response.status !== 200 || operation === "still") {
     await response.body?.cancel();
-    return "route";
+    return response.status === 200
+      ? "ready"
+      : response.status === 404
+        ? "route"
+        : response.status === 405
+          ? "method"
+          : null;
   }
-  if (response.status !== 200) {
-    await response.body?.cancel();
+  const body = await readBoundedBody(response, HEALTHZ_BODY_LIMIT).catch(() => null);
+  if (body === null) {
     return null;
   }
-  const body: unknown = await response.json().catch(() => null);
-  const version = typeof body === "object" && body !== null ? (body as { protocol?: unknown }).protocol : undefined;
+  let version: unknown;
+  try {
+    const parsed: unknown = body === "too-large" ? null : JSON.parse(new TextDecoder().decode(body));
+    version = typeof parsed === "object" && parsed !== null ? (parsed as { protocol?: unknown }).protocol : undefined;
+  } catch {
+    version = undefined;
+  }
   return version === NORMALIZE_PROTOCOL ? "ready" : "protocol";
 }
 // The first start on a host pulls the image (the experiment's first pulls took 3.2 and 7.9 s); a probe waits longer.
@@ -377,7 +398,10 @@ async function startReady(
   for (;;) {
     const poll = new AbortController();
     const ready = await before(
-      port.fetch("http://container/healthz", { signal: poll.signal }).then(healthAnswer, () => null),
+      port.fetch("http://container/healthz", { signal: poll.signal }).then(
+        (response) => healthAnswer(response, operation),
+        () => null,
+      ),
       readyBy,
       deps,
       poll,
@@ -385,7 +409,7 @@ async function startReady(
     if (ready === "ready") {
       break;
     }
-    if (ready === "route" || ready === "protocol") {
+    if (ready === "route" || ready === "method" || ready === "protocol") {
       throw new ProbeFailure("healthz", undefined, ready);
     }
     if (ready === TIMED_OUT || deps.now() >= readyBy) {
@@ -700,7 +724,8 @@ export class ProcessorUnit {
 
 // The container of one unit of work as jobs/media-jobs.ts drives it: started on `instance` with Internet access
 // disabled and polled at /healthz until `by` (a 404 there, which the server never answers, is `wrong`: a build without
-// the server; a version other than NORMALIZE_PROTOCOL, or none, is `incompatible`), the normalize adapter, and the
+// the server, and so is a 405; a complete reply naming a version other than NORMALIZE_PROTOCOL, or none, is
+// `incompatible`), the normalize adapter, and the
 // confirmed stop (destroyContainer).
 function containerControl(
   container: Container,
@@ -720,7 +745,10 @@ function containerControl(
       for (;;) {
         const poll = new AbortController();
         const status = await before(
-          port.fetch("http://container/healthz", { signal: poll.signal }).then(healthAnswer, () => null),
+          port.fetch("http://container/healthz", { signal: poll.signal }).then(
+            (response) => healthAnswer(response, "normalize"),
+            () => null,
+          ),
           by,
           deps,
           poll,
@@ -734,7 +762,7 @@ function containerControl(
           image = info === TIMED_OUT ? image : (info?.image ?? image);
           return port;
         }
-        if (status === "route") {
+        if (status === "route" || status === "method") {
           return "wrong";
         }
         if (status === "protocol") {
