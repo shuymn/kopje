@@ -70,7 +70,11 @@ body 5 s, the Store calls (the check's health, the claim, the record) 10 s each,
 the probe object's call 245 s. A step is not started past the deadline, and an answer that settles past it starts no
 later step. A claim or record that does not answer in time answers `unconfirmed`: a late record still commits under its
 claim, which stays until its lease ends. The copy's delete is attempted whatever the time, and a put that answers late
-is deleted then, kept alive past the response.
+is deleted then, kept alive past the response. The request itself lasts no longer than its client: a Worker request ends
+when its client disconnects, at the latest at the CLI's 300 s, and only the cleanup and the fenced record kept alive
+with `waitUntil` go on. The probe object's container ends by its own bound whatever the client does: `PROBE_MS` +
+`DESTROY_MS` (210 + 30 s) from its start for normalize (`STILL_CHECK_MS`, 75 s, for the still check, its teardown
+included), and its alarm repeats a destroy that has not finished.
 
 ## Health
 

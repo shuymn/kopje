@@ -555,6 +555,22 @@ describe("MediaProcessor", () => {
     expect(state.alarm()).toBeNull();
   });
 
+  // Fix r6 (M1): the probe object's work does not depend on its caller. A probe whose caller is gone (its promise
+  // dropped, as a cancelled Worker request leaves the object's invocation running) still destroys its container by
+  // PROBE_MS + DESTROY_MS on the object's clock.
+  it("destroys its container by PROBE_MS + DESTROY_MS with no caller waiting", async () => {
+    const time = clock();
+    let started = false;
+    const fake = fakeContainer(server({ "/normalize": () => new Promise<Response>(() => {}) }), {
+      onStart: () => (started = true),
+    });
+    const begun = time.now();
+    void unit(fakeState(fake.container).ctx, time).probeNormalize(PROBE_KEY);
+    await vi.waitFor(() => expect(started).toBe(true));
+    await vi.waitFor(() => expect(fake.container.running).toBe(false), { timeout: 10_000 });
+    expect(time.now() - begun).toBeLessThanOrEqual(PROBE_MS + DESTROY_MS);
+  });
+
   // A commit confirmed only later: the container starts after it, and not at all when it fails.
   it("starts the container only after the alarm's write is confirmed", async () => {
     let confirm: (ok: boolean) => void = () => {};
