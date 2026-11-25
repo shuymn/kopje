@@ -10,7 +10,7 @@ import type { UploadProcessor } from "../src/platform/media-transcoder";
 import { sql } from "./api-helpers";
 import { BUILD } from "./helpers";
 import { pngOf } from "./local-emoji-helpers";
-import { TestCodec } from "./media-helpers";
+import { pngChunk, TestCodec } from "./media-helpers";
 import { type AvWorld, clock, type Started } from "./media-processing-helpers";
 
 // The processor's side of an upload for jobs/media-jobs.ts runUpload, with a container answering as
@@ -217,17 +217,6 @@ export function probeProcessor(control: ContainerControl, images: ImageCodec, cl
   };
 }
 
-function crc32(bytes: Uint8Array): number {
-  let crc = ~0;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let k = 0; k < 8; k++) {
-      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-    }
-  }
-  return ~crc >>> 0;
-}
-
 // A 1x1 PNG whose IDAT holds a deflate stream cut before its end, its CRC recomputed: verifyStill walks its chunks
 // and passes it; a decoder cannot read its pixels.
 export async function truncatedStill(): Promise<Uint8Array> {
@@ -235,17 +224,7 @@ export async function truncatedStill(): Promise<Uint8Array> {
   const view = new DataView(png.buffer, png.byteOffset);
   const idatAt = 33;
   const data = png.subarray(idatAt + 8, idatAt + 8 + view.getUint32(idatAt) - 4);
-  const typed = new Uint8Array(4 + data.length);
-  typed.set(new TextEncoder().encode("IDAT"));
-  typed.set(data, 4);
-  const out = new Uint8Array(33 + 12 + data.length + 12);
-  out.set(png.subarray(0, 33));
-  const outView = new DataView(out.buffer);
-  outView.setUint32(33, data.length);
-  out.set(typed, 37);
-  outView.setUint32(37 + typed.length, crc32(typed));
-  out.set(png.subarray(png.length - 12), 33 + 12 + data.length);
-  return out;
+  return new Uint8Array([...png.subarray(0, idatAt), ...pngChunk("IDAT", data), ...png.subarray(png.length - 12)]);
 }
 
 // The media bucket, logging each multipart upload's creation, completion and abort by its kind ("original", "full").

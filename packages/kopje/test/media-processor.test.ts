@@ -31,7 +31,7 @@ import {
 import { accessToken, adminClaims, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { avFixture, verifyBytes } from "./av-helpers";
+import { timedFixture } from "./av-helpers";
 import { BUILD, deferred, migratedStore } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { stillPng } from "./media-job-helpers";
@@ -133,12 +133,9 @@ const GENUINE: { mp4: Uint8Array; durationMs: string; still: Uint8Array } = {
 };
 const PROBE_KEY = `incoming/probe-${"a".repeat(32)}`;
 beforeAll(async () => {
-  GENUINE.mp4 = await avFixture("r1-av.mp4");
-  const verdict = await verifyBytes("video/mp4", GENUINE.mp4);
-  if (!verdict.ok) {
-    throw new Error("fixture refused");
-  }
-  GENUINE.durationMs = String(Math.round(verdict.facts.duration * 1000));
+  const fixture = await timedFixture("r1-av.mp4");
+  GENUINE.mp4 = fixture.bytes;
+  GENUINE.durationMs = String(fixture.durationMs);
   GENUINE.still = await stillPng();
   await env.MEDIA.put(
     PROBE_KEY,

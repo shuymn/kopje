@@ -3,7 +3,7 @@ import { expect } from "vitest";
 
 import { NORMALIZE_PROTOCOL, UploadUnit, type UploadState } from "../src/media-processor";
 import { incomingKey } from "../src/platform/media-files";
-import { avFixture, verifyBytes } from "./av-helpers";
+import { timedFixture } from "./av-helpers";
 import { BUILD } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { putInput, stillPng } from "./media-job-helpers";
@@ -173,11 +173,7 @@ export type Platform = Awaited<ReturnType<typeof platformFor>>;
 // arrives), or "destroy", "commit:run" (inside D0's transaction), "committed:run" (just after it), "delete" (the
 // input's), "complete:<kind>" (before R2's complete) or "completed:<kind>" (after it).
 export async function platformFor(w: AvWorld) {
-  const bytes = await avFixture("r1-silent.mp4");
-  const verdict = await verifyBytes("video/mp4", bytes);
-  if (!verdict.ok) {
-    throw new Error("fixture refused");
-  }
+  const { bytes, durationMs } = await timedFixture("r1-silent.mp4");
   const state = { killAt: null as string | null, killed: null as PromiseWithResolvers<void> | null };
   let destroyFails = false;
   let destroyHeld = false;
@@ -323,7 +319,7 @@ export async function platformFor(w: AvWorld) {
     },
     {
       bytes,
-      durationMs: Math.round(verdict.facts.duration * 1000),
+      durationMs,
       still: await stillPng(),
     },
   );

@@ -6,7 +6,7 @@ import { allocate, previewCut, transferCut } from "../src/domain/media-processin
 import { incomingOrphans, runUpload } from "../src/jobs/media-jobs";
 import { fileKey, incomingKey, originalKey, probeInputKey } from "../src/platform/media-files";
 import { sql } from "./api-helpers";
-import { avFixture, syntheticMp4, verifyBytes } from "./av-helpers";
+import { avFixture, syntheticMp4, timedFixture } from "./av-helpers";
 import { BUILD } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { fakeControl, jobOf, multipartLog, putInput, stillPng, uploadDeps } from "./media-job-helpers";
@@ -34,11 +34,7 @@ async function objects(id: string, token: string) {
 }
 
 async function durationMs(name: string): Promise<number> {
-  const verdict = await verifyBytes("video/mp4", await avFixture(name));
-  if (!verdict.ok) {
-    throw new Error("fixture refused");
-  }
-  return Math.round(verdict.facts.duration * 1000);
+  return (await timedFixture(name)).durationMs;
 }
 
 async function transformsUsed(w: Awaited<ReturnType<typeof avWorld>>): Promise<number> {
@@ -107,13 +103,9 @@ describe("runUpload (P12)", () => {
   async function refusedMp3(): Promise<{ output: Uint8Array; durationMs: string }> {
     // The last byte of the last frame's audio changed: frame data is not parsed, so only the Xing frame's music CRC,
     // checked once the stream has ended, refuses it (PR3's case).
-    const output = (await avFixture("mp3.mp3")).slice();
-    const verdict = await verifyBytes("audio/mpeg", output);
-    if (!verdict.ok) {
-      throw new Error("fixture refused");
-    }
+    const { bytes: output, durationMs } = await timedFixture("mp3.mp3", "audio/mpeg");
     output[output.length - 1]! ^= 0xff;
-    return { output, durationMs: String(Math.round(verdict.facts.duration * 1000)) };
+    return { output, durationMs: String(durationMs) };
   }
 
   it.each([
@@ -399,12 +391,8 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     const w = await avWorld();
     const up = await started(w);
     await putInput(up.id);
-    const output = await avFixture("mp3.mp3");
-    const verdict = await verifyBytes("audio/mpeg", output);
-    if (!verdict.ok) {
-      throw new Error("fixture refused");
-    }
-    const durationMs = String(Math.round(verdict.facts.duration * 1000));
+    const { bytes: output, durationMs: ms } = await timedFixture("mp3.mp3", "audio/mpeg");
+    const durationMs = String(ms);
     const before = await transformsUsed(w);
     const fake = fakeControl({ output, type: "audio/mpeg", durationMs });
     await runUpload(uploadDeps(w, fake.control), await jobOf(w, up));

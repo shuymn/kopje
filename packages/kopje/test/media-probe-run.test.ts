@@ -18,7 +18,7 @@ import { readConfig } from "../src/platform/config";
 import { probeInputKey } from "../src/platform/media-files";
 import type { StillOutcome, UploadProcessor } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
-import { avFixture, verifyBytes } from "./av-helpers";
+import { avFixture, timedFixture } from "./av-helpers";
 import { BUILD } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import {
@@ -61,14 +61,10 @@ async function health(store: StoreStub) {
 const OVERSIZED_FTYP = Uint8Array.from([0, 0, 0, 100, 0x66, 0x74, 0x79, 0x70, ...new Uint8Array(4088)]);
 
 async function genuine(extra: Partial<ServerAnswer> = {}): Promise<ServerAnswer> {
-  const output = await avFixture("r1-av.mp4");
-  const verdict = await verifyBytes("video/mp4", output);
-  if (!verdict.ok) {
-    throw new Error("fixture refused");
-  }
+  const { bytes: output, durationMs } = await timedFixture("r1-av.mp4");
   return {
     output,
-    durationMs: String(Math.round(verdict.facts.duration * 1000)),
+    durationMs: String(durationMs),
     still: await stillPng(),
     ...extra,
   };
