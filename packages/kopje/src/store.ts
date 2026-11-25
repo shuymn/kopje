@@ -598,8 +598,9 @@ export class Store extends DurableObject<Env> {
     return this.#avWrite(callerBuild, mediaProcessing.mediaDispatchRound, {});
   }
 
+  // The claim takes no marker: it is the Store's clock alone.
   incomingSweepClaim(callerBuild: string) {
-    return this.#avWrite(callerBuild, mediaProcessing.incomingSweepClaim, undefined);
+    return avRefusal(() => this.#kernel.execute(callerBuild, mediaProcessing.incomingSweepClaim, undefined));
   }
 
   incomingClassify(callerBuild: string, input: MarkedInput<typeof mediaProcessing.incomingClassify>) {
