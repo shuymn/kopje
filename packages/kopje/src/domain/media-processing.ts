@@ -4,6 +4,7 @@ import type { Db } from "../db/sql";
 import { type AudioFacts, isFrameRate, type VideoFacts } from "../platform/av-bytes";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
+import { type Restore, restoreTime } from "../platform/restore-marker";
 import { storedBlurhash, storedMediaDescription, storedMediaMeta } from "../platform/stored-bounds";
 import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
 import { instanceOrigin } from "./instance-domain";
@@ -298,9 +299,14 @@ function avAttachment(att: Attachment | null): Attachment | null {
   return att !== null && avReservation(att) ? att : null;
 }
 
-// K3's fence: the attachment was reserved at or before the last restore.
-function fenced(att: Attachment | null, restoredAt: number | null): boolean {
-  return att !== null && restoredAt !== null && Date.parse(att.created_at) <= restoredAt;
+// K3's fence: the attachment was reserved at or before the last restore. Asked only where K3 decides the answer, so an
+// unknown marker refuses just those operations (restoreTime).
+function fenced(att: Attachment | null, restoredAt: Restore): boolean {
+  if (att === null) {
+    return false;
+  }
+  const at = restoreTime(restoredAt);
+  return at !== null && Date.parse(att.created_at) <= at;
 }
 
 function deleteRow(db: Db, id: string): void {
@@ -329,9 +335,11 @@ function doom(db: Db, id: string): void {
 // K3, else K4, on the upload's record: at most one applies, since K3 leaves no row pending or running for K4.
 type Effect = "k3-staging" | "k3-restored" | "k4-doom" | "k4-deadline";
 
-function effectOf(record: UploadRecord, now: number, restoredAt: number | null): Effect | null {
+// K3 acts only on a staging, pending or running row, so the marker is asked for only there: a completed, failed or
+// absent row is decided whatever it says.
+function effectOf(record: UploadRecord, now: number, restoredAt: Restore): Effect | null {
   const { att, row } = record;
-  if (row === null) {
+  if (row === null || row.state === "failed") {
     return null;
   }
   if (fenced(att, restoredAt)) {
@@ -369,13 +377,13 @@ function apply(db: Db, id: string, record: UploadRecord, effect: Effect | null):
 }
 
 // K3 and K4 on the upload's record, written: a read computes them without writing (normalized).
-function normalize(db: Db, id: string, now: number, restoredAt: number | null): UploadRecord {
+function normalize(db: Db, id: string, now: number, restoredAt: Restore): UploadRecord {
   const record = load(db, id);
   return apply(db, id, record, effectOf(record, now, restoredAt));
 }
 
 // The record K3 and K4 would leave, written nowhere (S9 and S10 in maintenance).
-function normalized(record: UploadRecord, now: number, restoredAt: number | null): UploadRecord {
+function normalized(record: UploadRecord, now: number, restoredAt: Restore): UploadRecord {
   const { att, row, slot } = record;
   const effect = effectOf(record, now, restoredAt);
   if (row === null || effect === null) {
@@ -452,7 +460,7 @@ export const avActivation = readOperation.atStoreTime("now")<ActivationInput & {
 
 // ---- Inputs
 
-type Fence = { now: number; restoredAt: number | null };
+type Fence = { now: number; restoredAt: Restore };
 
 const ID_BYTES = 64;
 const IDENTITY = /^[\x21-\x7e]{1,64}$/;
@@ -972,12 +980,13 @@ export const v1Final = writeOperation.atStoreTime("now")<{ id: string; token: st
 
 // S10 while the Store refuses writes: a read. A completed upload before its gc_at answers 200; anything else
 // `maintenance`, with nothing doomed (K4 dooms it at its deadline once maintenance ends).
-export const v1FinalRead = readOperation.atStoreTime("now")<{ id: string; token: string } & Fence, V1Final>((
+// It reads no marker: K3 and K4 act only on an upload with a processing row, which is never a completed one.
+export const v1FinalRead = readOperation.atStoreTime("now")<{ id: string; token: string; now: number }, V1Final>((
   db,
-  { id, token, now, restoredAt },
+  { id, token, now },
 ) => {
   checkId(id);
-  const { att } = normalized(load(db, id), now, restoredAt);
+  const { att } = load(db, id);
   const media = liveDone(db, avAttachment(att), token, now);
   return media === null ? { status: "maintenance" } : { status: 200, media };
 });
@@ -1039,7 +1048,7 @@ function deleteUpload(
 // row K3 could act on (every image, a completed or failed AV upload) is decided without reading it, as an image's
 // start is (store.ts startImagePath); such an upload answers `needs_marker` there, which writes nothing, and the
 // Store's method runs it again with the marker it read (a marker it cannot read refuses the call, store.ts ownerRun).
-export type OwnerMarker = number | null | "unread";
+export type OwnerMarker = Restore | "unread";
 type NeedsMarker = { status: "needs_marker" };
 
 // What the owner's operations decide on of the upload `id` of `accountId`'s, read in one statement before anything else
@@ -1158,10 +1167,6 @@ export const deleteOwnerMedia = userMediaDeleteOperation.atStoreTime("now")<
   MediaDeleted | NeedsMarker
 >((db, { id, now, restoredAt }, { accountId }) => deleteUpload(db, accountId, id, now, restoredAt));
 
-// Nothing: the Store runs it to learn whether an operation's kind would be admitted when it cannot read the restore
-// marker (store.ts #avWrite).
-export const avAdmission = readOperation<undefined, null>(() => null);
-
 // ---- S12 and S13 the dispatch round
 
 type DispatchRun = { id: string; token: string; teardownId: string };
@@ -1199,11 +1204,13 @@ export const mediaDispatchRound = writeOperation.atStoreTime("now")<Fence, Dispa
     }
     return apply(db, id, record, effect);
   };
-  if (restoredAt !== null) {
+  // The round's K3 seek needs the restore's time: an unknown marker refuses the round (restoreTime).
+  const restored = restoreTime(restoredAt);
+  if (restored !== null) {
     for (const { id } of seek<{ id: string }>(
       `SELECT media_id AS id FROM media_processing INDEXED BY media_processing_restore
 			WHERE state <> 'failed' AND staged_at <= ? ORDER BY staged_at LIMIT ?`,
-      restoredAt,
+      restored,
     )) {
       guarded(id);
     }
@@ -1289,8 +1296,10 @@ function sweepState(db: Db): SweepState {
   };
 }
 
-function claimLive(sweep: SweepState, claim: number, restoredAt: number | null): boolean {
-  return sweep.claim !== null && sweep.claim === claim && (restoredAt === null || claim > restoredAt);
+// Whether the claim is the sweep's and was made after the last restore (an unknown marker refuses: restoreTime).
+function claimLive(sweep: SweepState, claim: number, restoredAt: Restore): boolean {
+  const at = restoreTime(restoredAt);
+  return sweep.claim !== null && sweep.claim === claim && (at === null || claim > at);
 }
 
 export const incomingSweepClaim = mediaDeleteOperation.atStoreTime("now")<
@@ -1340,7 +1349,7 @@ export const incomingClassify = mediaDeleteOperation.atStoreTime("now")<
 });
 
 export const incomingSwept = mediaDeleteOperation<
-  { claim: number; cursor: string | null; restoredAt: number | null },
+  { claim: number; cursor: string | null; restoredAt: Restore },
   { status: "swept" } | { status: "stale" }
 >((db, { claim, cursor, restoredAt }) => {
   const sweep = sweepState(db);

@@ -304,6 +304,8 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
     ["a time as a string", '{"at":"1760000000000"}'],
     ["an infinite time", '{"at":1e309}'],
     ["a negative time", '{"at":-1}'],
+    ["a fractional time", '{"at":0.5}'],
+    ["a time past the safe integers", '{"at":9007199254740992}'],
   ])(
     "refuses GET, PUT and DELETE of an upload K3 could act on with a 503, and writes nothing: %s",
     async (_name, body) => {
@@ -330,6 +332,99 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
       }
     },
   );
+
+  // One rule for every reader of the marker (code review r3): an unknown marker ({} here, on a writable Store) refuses
+  // only an answer or a write K3 could change, with the transient refusal (503); one K3 cannot change answers as before.
+  describe("an unknown marker on a writable Store (code review r3)", () => {
+    const transient = async (call: Promise<unknown>) => toStoreUnavailable(await rejectionOf(call))?.reason;
+    const MONTHLY = { instance: 1_000_000, account: 1_000_000 };
+
+    it("answers what K3 cannot change: S10's and S9's completed upload, a completed S6 replay, S8 after completion, the sweep's claim", async () => {
+      const w = await avWorld();
+      const up = await completed(w, { v1: true });
+      clock(T0 + 5 * SECOND);
+      const queuedUp = await held(w.store, up.id);
+      const answers = await unreadable<unknown>(
+        w,
+        async () => [
+          (await w.store.v1Final(BUILD, { id: up.id, token: up.token })).status,
+          (await w.store.v1Outcome(BUILD, { id: up.id, token: up.token })).status,
+          (await w.store.completeAvUpload(BUILD, { id: up.id, token: up.token, startId: up.startId, facts: VIDEO }))
+            .status,
+          (await w.store.releaseAvSlot(BUILD, { id: up.id, teardownId: up.teardownId })).status,
+          (await w.store.incomingSweepClaim(BUILD)).status,
+        ],
+        "{}",
+      );
+      expect(answers).toEqual([200, "done", "done", "released", "claimed"]);
+      expect(queuedUp.row).toBeNull();
+    });
+
+    it("refuses what K3 could change, for an unfinished upload, with the transient refusal", async () => {
+      const w = await avWorld();
+      const running = await started(w, { v1: true });
+      const w2 = await avWorld();
+      const pending = await queued(w2);
+      const w3 = await avWorld();
+      const candidate = await reserve(w3);
+      clock(T0 + 5 * SECOND);
+      const before = [await held(w.store, running.id), await held(w2.store, pending.id)];
+      const refusals = [
+        ...(await unreadable(
+          w,
+          async () => [
+            await transient(w.store.v1Final(BUILD, { id: running.id, token: running.token })),
+            await transient(w.store.v1Outcome(BUILD, { id: running.id, token: running.token })),
+            await transient(
+              w.store.completeAvUpload(BUILD, {
+                id: running.id,
+                token: running.token,
+                startId: running.startId,
+                facts: VIDEO,
+              }),
+            ),
+            await transient(w.store.mediaDispatchRound(BUILD)),
+          ],
+          "{}",
+        )),
+        ...(await unreadable(
+          w2,
+          async () => [
+            await transient(w2.store.releaseAvSlot(BUILD, { id: pending.id, teardownId: pending.teardownId })),
+            // The owner's own S11 as a Store call: the same refusal the route answers 503 with.
+            await transient(w2.store.deleteAvUpload(BUILD, { credential: w2.alice, id: pending.id })),
+          ],
+          "{}",
+        )),
+        ...(await unreadable(
+          w3,
+          async () => [
+            await transient(
+              w3.store.startTransforms(BUILD, {
+                credential: w3.alice,
+                id: candidate.id,
+                monthlyTransforms: MONTHLY,
+                now: Date.now(),
+              }),
+            ),
+          ],
+          "{}",
+        )),
+      ];
+      expect(refusals).toEqual(Array.from({ length: 7 }, () => "transient"));
+      expect([await held(w.store, running.id), await held(w2.store, pending.id)]).toEqual(before);
+    });
+
+    it("refuses the sweep's classification, which checks its claim against the restore", async () => {
+      const w = await avWorld();
+      const claimed = await w.store.incomingSweepClaim(BUILD);
+      expect(claimed.status).toBe("claimed");
+      const claim = (claimed as { claim: number }).claim;
+      expect(await unreadable(w, () => transient(w.store.incomingClassify(BUILD, { claim, keys: [] })), "{}")).toBe(
+        "transient",
+      );
+    });
+  });
 
   it("answers another account's S11 not found without reading the marker (code review r2)", async () => {
     const w = await avWorld();

@@ -8,10 +8,11 @@ import { handleScheduled, publishScheduled } from "../src/jobs/scheduled";
 import { uploadEmoji } from "../src/mastodon/emoji-upload";
 import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
 import { mediaKeys, restoreMarkerKey } from "../src/platform/media-files";
+import { toStoreUnavailable } from "../src/platform/store-errors";
 import { sha256Hex } from "../src/security/tokens";
 import { startImagePath } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
-import { BUILD, deferred, testKernel } from "./helpers";
+import { BUILD, deferred, rejectionOf, testKernel } from "./helpers";
 import { base64, pngOf } from "./local-emoji-helpers";
 import { TestCodec } from "./media-helpers";
 import {
@@ -1121,12 +1122,14 @@ describe("the Worker's clock off the Store's: each write and check of a stored m
 });
 
 describe("the restore marker read only for a candidate's image start", () => {
-  it("refuses a candidate's image start when the marker cannot be read, as S1 refuses it", async () => {
+  // An unknown marker refuses what K3 decides as transient, retryable, leaving the reservation as it was
+  // (platform/restore-marker.ts restoreTime, code review r3).
+  it("refuses a candidate's image start as transient when the marker cannot be read, changing nothing", async () => {
     const w = await avWorld();
     const up = await reserve(w, T0);
     await env.MEDIA.put(restoreMarkerKey(w.store.id.toString()), "{");
     clock(T0 + SECOND);
-    expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "expired" } });
+    expect(toStoreUnavailable(await rejectionOf(startImage(w, up.id)))?.reason).toBe("transient");
     expect(await stateOf(w, up.id)).toBe("unknown 0 1h | - | - | -");
   });
 

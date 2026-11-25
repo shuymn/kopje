@@ -26,13 +26,9 @@ import {
 } from "./platform/backup-state";
 import { errorFields } from "./platform/error-message";
 import { restoreMarkerKey } from "./platform/media-files";
+import { readRestore, type Restore } from "./platform/restore-marker";
 import { type ImportAuthority, StoreAdmin } from "./platform/store-admin";
-import {
-  type MaintenanceReason,
-  storeMaintenanceError,
-  toStoreUnavailable,
-  WRITE_REFUSALS,
-} from "./platform/store-errors";
+import { type MaintenanceReason, toStoreUnavailable, WRITE_REFUSALS } from "./platform/store-errors";
 import { readFlags } from "./platform/store-flags";
 import { type OperationInput, type StoreOperation, StoreKernel, type TimedOperation } from "./platform/store-kernel";
 import { defineRpc, STORE_RPC, type StoreRpc } from "./store-rpc";
@@ -47,13 +43,13 @@ const needsMarker = (output: Authorized<media.Started | { status: "needs_marker"
 
 // The image path's start (domain/media.ts startTransforms). The restore marker is read (`readMarker`) only when the
 // row is a candidate (`needs_marker`, a pass that writes nothing, so it runs no after-commit hook), and the start runs
-// again with it, so a candidate reserved at or before the last restore, or whose marker cannot be read, is refused as
-// S1 refuses it, and an ordinary image's start never depends on the marker.
+// again with it, so a candidate reserved at or before the last restore is refused as S1 refuses it, one whose marker
+// is unknown is refused as transient (restoreTime), and an ordinary image's start never depends on the marker.
 export async function startImagePath(
   kernel: StoreKernel,
   callerBuild: string,
   input: StartInput,
-  readMarker: () => Promise<number | null>,
+  readMarker: () => Promise<Restore>,
 ): Promise<Authorized<media.Started>> {
   const first = await kernel.executeQuiet(
     callerBuild,
@@ -67,13 +63,7 @@ export async function startImagePath(
   if (first.value.status !== "needs_marker") {
     return { status: "ok", value: first.value };
   }
-  let restoredAt: Exclude<media.RestoreMarker, "unread">;
-  try {
-    restoredAt = await readMarker();
-  } catch {
-    restoredAt = "unreadable";
-  }
-  const second = await kernel.execute(callerBuild, media.startTransforms, { ...input, restoredAt });
+  const second = await kernel.execute(callerBuild, media.startTransforms, { ...input, restoredAt: await readMarker() });
   if (second.status !== "ok") {
     return second;
   }
@@ -91,14 +81,14 @@ const asksMarker = (output: Authorized<unknown>) =>
 // The owner's GET, PUT and DELETE of an upload (domain/media-processing.ts ownerMedia, updateOwnerMedia,
 // deleteOwnerMedia), in startImagePath's two passes: the first without the restore marker, which an upload without a
 // processing row K3 could act on (every image) answers; one with such a row answers `needs_marker`, writing nothing,
-// and the operation runs again with the marker read. A marker that cannot be read refuses the call as transient (503),
-// unlike S10's read (v1Final), whose one answer besides maintenance K3 cannot change.
+// and the operation runs again with the marker read, which refuses it as transient (503) where it is unknown and K3
+// decides the answer (platform/restore-marker.ts restoreTime).
 export async function ownerRun<O>(
   kernel: StoreKernel,
   callerBuild: string,
   operation: TimedOperation<never, Authorized<O | { status: "needs_marker" }>, "now">,
   input: object,
-  readMarker: () => Promise<number | null>,
+  readMarker: () => Promise<Restore>,
 ): Promise<Authorized<Exclude<O, { status: "needs_marker" }>>> {
   const op = operation as TimedOperation<
     { now: number; [field: string]: unknown },
@@ -109,35 +99,11 @@ export async function ownerRun<O>(
   if (!asksMarker(first)) {
     return first as Authorized<Exclude<O, { status: "needs_marker" }>>;
   }
-  let restoredAt: number | null;
-  try {
-    restoredAt = await readMarker();
-  } catch {
-    // Without the marker the answer could show, change or delete a record a restore fenced as K3 would not leave
-    // it: the call is refused as retryable (503), the first pass having written nothing.
-    throw storeMaintenanceError("transient");
-  }
-  const second = await kernel.execute(callerBuild, op, { ...input, restoredAt });
+  const second = await kernel.execute(callerBuild, op, { ...input, restoredAt: await readMarker() });
   if (asksMarker(second)) {
     throw new Error("the owner's operation asked for the marker it was given");
   }
   return second as Authorized<Exclude<O, { status: "needs_marker" }>>;
-}
-
-// The time of the last restore (null when none was recorded), as the restore writes it: { at } in epoch milliseconds. A
-// marker that exists but is not JSON, or holds no such time, throws: it records a restore whose time is lost, which no
-// caller may take for none (each reader treats it as unreadable).
-async function lastRestore(bucket: R2Bucket, key: string): Promise<number | null> {
-  const marker = await bucket.get(key);
-  if (marker === null) {
-    return null;
-  }
-  const parsed = JSON.parse(await marker.text()) as unknown;
-  const at = typeof parsed === "object" && parsed !== null ? (parsed as { at?: unknown }).at : undefined;
-  if (typeof at !== "number" || !Number.isSafeInteger(at) || at < 0) {
-    throw new Error("the restore marker holds no restore time");
-  }
-  return at;
 }
 
 // The refusals a media processing write answers as `maintenance` (K1): the Store refuses writes, and the caller
@@ -523,8 +489,10 @@ export class Store extends DurableObject<Env> {
   // (federation/remote-media.ts), each at the Store's own time, so every safety window (LATE_PUT_MS after a claim)
   // is measured from a Store-recorded time. The maintenance reads the restore marker first (restoreMarkerKey).
   async maintainRemoteMedia(callerBuild: string, input: { cap: number; retentionDays: number }) {
-    const restoredAt = await lastRestore(this.env.MEDIA, restoreMarkerKey(this.ctx.id.toString()));
-    return this.#kernel.execute(callerBuild, remoteMedia.maintainRemoteMedia, { ...input, restoredAt });
+    return this.#kernel.execute(callerBuild, remoteMedia.maintainRemoteMedia, {
+      ...input,
+      restoredAt: await this.#restoredAt(),
+    });
   }
 
   // What an inbound request is judged on before it is verified (federation/inbox.ts processInbox), in one read, with
@@ -592,8 +560,10 @@ export class Store extends DurableObject<Env> {
     callerBuild: string,
     input: Omit<OperationInput<typeof mediaRebuild.rebuildLease>, "restoredAt">,
   ) {
-    const restoredAt = await lastRestore(this.env.MEDIA, restoreMarkerKey(this.ctx.id.toString()));
-    return this.#kernel.execute(callerBuild, mediaRebuild.rebuildLease, { ...input, restoredAt });
+    return this.#kernel.execute(callerBuild, mediaRebuild.rebuildLease, {
+      ...input,
+      restoredAt: await this.#restoredAt(),
+    });
   }
 
   // The image path's start (startImagePath), the restore marker read only for a candidate.
@@ -649,17 +619,8 @@ export class Store extends DurableObject<Env> {
     if (decided.status !== "maintenance") {
       return decided;
     }
-    // Without the marker the read is still exact for the one answer it gives besides `maintenance`: a completed
-    // upload has no processing row, so K3 cannot change it, and it is answered from its token and gc_at; anything
-    // else answers `maintenance` with or without the marker. So an unreadable marker is taken as none here, where the
-    // owner's operations (ownerRun), which answer an unfinished upload, refuse the call.
-    let restoredAt: number | null;
-    try {
-      restoredAt = await this.#restoredAt();
-    } catch {
-      restoredAt = null;
-    }
-    return this.#avRun(callerBuild, mediaProcessing.v1FinalRead, input, restoredAt);
+    // The read takes no marker: its one answer besides `maintenance` is a completed upload, which K3 cannot change.
+    return avRefusal(() => this.#kernel.execute(callerBuild, mediaProcessing.v1FinalRead, input));
   }
 
   // S11 as a Store call: a first pass without the marker (ownerRun's), so another account's upload, or one K3 cannot
@@ -715,39 +676,20 @@ export class Store extends DurableObject<Env> {
     return this.#avWrite(callerBuild, mediaProcessing.incomingSwept, input);
   }
 
-  async #restoredAt(): Promise<number | null> {
-    return lastRestore(this.env.MEDIA, restoreMarkerKey(this.ctx.id.toString()));
+  // The restore marker, read once per call in its three states (platform/restore-marker.ts): every reader goes through
+  // here, and the operation decides where an unknown one refuses it.
+  #restoredAt(): Promise<Restore> {
+    return readRestore(this.env.MEDIA, restoreMarkerKey(this.ctx.id.toString()));
   }
 
   // Runs a media processing operation with the restore marker, a refusal in AV_MAINTENANCE answered `maintenance` (K1).
-  // A marker that cannot be read fails the call only where the operation would be admitted: a Store that refuses it
-  // answers `maintenance` as it would with the marker.
+  // An unknown marker refuses, as transient, only an operation whose answer or write K3 decides (restoreTime).
   async #avWrite<O>(
     callerBuild: string,
     operation: StoreOperation<never, O>,
     input: unknown,
   ): Promise<O | AvMaintenance> {
-    let restoredAt: number | null;
-    try {
-      restoredAt = await this.#restoredAt();
-    } catch (error) {
-      const probed = await avRefusal(() =>
-        this.#kernel.executeProbing(callerBuild, mediaProcessing.avAdmission, undefined, operation.kind),
-      );
-      if ("status" in probed || (probed.refused !== null && AV_MAINTENANCE.has(probed.refused))) {
-        return { status: "maintenance" };
-      }
-      throw error;
-    }
-    return this.#avRun(callerBuild, operation, input, restoredAt);
-  }
-
-  #avRun<O>(
-    callerBuild: string,
-    operation: StoreOperation<never, O>,
-    input: unknown,
-    restoredAt: number | null,
-  ): Promise<O | AvMaintenance> {
+    const restoredAt = await this.#restoredAt();
     return avRefusal(() =>
       this.#kernel.execute(callerBuild, operation as StoreOperation<unknown, O>, {
         ...(input as object | undefined),

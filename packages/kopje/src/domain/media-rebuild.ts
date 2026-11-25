@@ -1,6 +1,7 @@
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
+import { type Restore, restoreTime } from "../platform/restore-marker";
 import type { ImportAuthority } from "../platform/store-admin";
 import { PITR_RESTORING, PITR_RESTORING_MS, REBUILD_LEASE } from "../platform/store-flags";
 import { MEDIA_META_BYTES, storedBlurhash } from "../platform/stored-bounds";
@@ -263,7 +264,7 @@ export const rebuildLease = mediaRebuildOperation.atStoreTime("now")<
     holder: string;
     generation?: number;
     release?: boolean;
-    restoredAt: number | null;
+    restoredAt: Restore;
     now: number;
   },
   RebuildLeaseResult
@@ -285,7 +286,8 @@ export const rebuildLease = mediaRebuildOperation.atStoreTime("now")<
   if (generation !== undefined && !(mine && live)) {
     return { status: "lost" };
   }
-  const ready = readiness(db, now, restoredAt);
+  // Acquiring or renewing waits on the restore's time (an unknown marker refuses: restoreTime); a release does not.
+  const ready = readiness(db, now, restoreTime(restoredAt));
   if (ready.status !== "ok") {
     return ready;
   }

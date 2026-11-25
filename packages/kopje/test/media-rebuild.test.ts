@@ -10,6 +10,7 @@ import { MAX_BUILDS_PER_CALL, rebuildMedia } from "../src/mastodon/media-rebuild
 import { imageBlurhash } from "../src/platform/blurhash";
 import { EMOJI_IMAGE_LIMIT, EMOJI_PREVIEW_LIMIT } from "../src/platform/emoji-image";
 import { type EncodeOptions, IMAGE_SIZE_LIMIT, RGBA_MIN_CALL_MS } from "../src/platform/images";
+import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { admitFlags, type OperatorGate } from "../src/platform/store-flags";
@@ -516,6 +517,28 @@ describe("media rebuild authorization", () => {
     expect(await files(row)).toEqual([false, false]);
     expect((await h.post(serviceClaims(), "/admin/media/rebuild")).status).toBe(200);
     expect(await files(row)).toEqual([true, true]);
+  });
+
+  it("releases a lease while the restore marker holds no time, and refuses to renew one (code review r3)", async () => {
+    const h = await setup();
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const first = await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h" });
+    expect(first).toMatchObject({ status: "ok", generation: 1 });
+    const key = restoreMarkerKey(h.store.id.toString());
+    await env.MEDIA.put(key, "{}");
+    try {
+      const renewed = rejectionOf(h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h", generation: 1 }));
+      expect(toStoreUnavailable(await renewed)?.reason).toBe("transient");
+      expect(
+        await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h", generation: 1, release: true }),
+      ).toEqual({ status: "released" });
+    } finally {
+      await env.MEDIA.delete(key);
+    }
+    // The released lease is free at once for another holder.
+    expect(await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "next" })).toMatchObject({
+      status: "ok",
+    });
   });
 
   it("has the Store check the admin again where it writes", async () => {
