@@ -7,7 +7,7 @@ import { storeMaintenanceError } from "./store-errors";
 // fence decides its answer or its write (restoreTime): an `unknown` marker refuses that operation and no other.
 export type Restore = number | null | "unknown";
 
-export function parseRestore(text: string): Exclude<Restore, null> {
+function parseRestore(text: string): Exclude<Restore, null> {
   try {
     const parsed = JSON.parse(text) as unknown;
     const at = typeof parsed === "object" && parsed !== null ? (parsed as { at?: unknown }).at : undefined;
