@@ -770,6 +770,8 @@ func (b *slowBody) Read(p []byte) (int, error) {
 func TestASlowInputAnswersWithinTheWorkDeadline(t *testing.T) {
 	fakeTools(t, probeOf("2", stream("audio", "aac", 0, 0, "0/0", "2")))
 	t.Setenv("FAKE_SLEEP", "5")
+	log := filepath.Join(t.TempDir(), "ffmpeg.log")
+	t.Setenv("FAKE_LOG", log)
 	// work_ms leaves the 1,580 ms audio estimate its 0.7 share (2,258 ms) after a slow input of up to 2.7 s.
 	req := httptest.NewRequest("POST", "/normalize?work_ms=5000&still_ms=0", &slowBody{sleep: time.Second})
 	req.ContentLength = -1
@@ -779,6 +781,10 @@ func TestASlowInputAnswersWithinTheWorkDeadline(t *testing.T) {
 	elapsed := time.Since(arrival)
 	if rec.Code != 504 || rec.Header().Get("Kopje-Error") != "timeout" || elapsed > 5300*time.Millisecond {
 		t.Fatalf("%d %q after %v", rec.Code, rec.Header().Get("Kopje-Error"), elapsed)
+	}
+	// The encode started, and the deadline cut it: an early timeout (of the input or the probe) is not this.
+	if started, _ := os.ReadFile(log); len(started) == 0 {
+		t.Fatal("the encoder never started")
 	}
 }
 
@@ -988,5 +994,18 @@ func TestMarkerWriterFindsTheMarkerAcrossWrites(t *testing.T) {
 		if other.found {
 			t.Fatalf("found in %q", line)
 		}
+	}
+}
+
+// /healthz names the protocol the server speaks, which the Worker requires before it sends work (the image before the
+// one work deadline answers none).
+func TestHealthzAnswersTheProtocol(t *testing.T) {
+	rec := do(t, newMux(threadsDefault), "GET", "/healthz", nil)
+	var health struct {
+		OK       bool `json:"ok"`
+		Protocol int  `json:"protocol"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &health); err != nil || rec.Code != 200 || !health.OK || health.Protocol != 2 {
+		t.Fatalf("%d %q", rec.Code, rec.Body.String())
 	}
 }

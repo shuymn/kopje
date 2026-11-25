@@ -107,12 +107,17 @@ func main() {
 	}
 }
 
+// The version of the protocol this server speaks, which /healthz answers and the Worker requires
+// (src/media-processor.ts NORMALIZE_PROTOCOL): 2 is /normalize's one work deadline (work_ms, still_ms). The image before
+// it, which took probe_ms and encode_ms, answers no version.
+const normalizeProtocol = 2
+
 // The server's routes. A request for any other path or method answers a code, as every failure does.
 func newMux(threads threading) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "bootId": bootID})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "bootId": bootID, "protocol": normalizeProtocol})
 	})
 	mux.HandleFunc("POST /normalize", exclusive(func(w http.ResponseWriter, r *http.Request) {
 		handleNormalize(w, r, threads)
