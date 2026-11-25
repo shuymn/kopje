@@ -507,7 +507,7 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
   describe("an unknown marker on a writable Store (code review r3)", () => {
     const transient = async (call: Promise<unknown>) => toStoreUnavailable(await rejectionOf(call))?.reason;
 
-    it("answers what K3 cannot change: S10's and S9's completed upload, a completed S6 replay, S8 after completion, the sweep's claim", async () => {
+    it("answers what K3 cannot change: S10's and S9's completed upload, a completed S6 replay, the poster's charge after it, S8 after completion, the sweep's claim", async () => {
       const w = await avWorld();
       const up = await completed(w, { v1: true });
       clock(T0 + 5 * SECOND);
@@ -520,12 +520,13 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
           (await w.store.v1Outcome(BUILD, { id: up.id, token: up.token })).status,
           (await w.store.completeAvUpload(BUILD, { id: up.id, token: up.token, startId: up.startId, facts: VIDEO }))
             .status,
+          (await w.store.chargeAvPoster(BUILD, { id: up.id, startId: up.startId, monthlyTransforms: MONTHLY })).status,
           (await w.store.releaseAvSlot(BUILD, { id: up.id, teardownId: up.teardownId })).status,
           (await w.store.incomingSweepClaim(BUILD)).status,
         ],
         "{}",
       );
-      expect(answers).toEqual([200, "done", "done", "released", "claimed"]);
+      expect(answers).toEqual([200, "done", "done", "refused", "released", "claimed"]);
       expect(queuedUp.row).toBeNull();
       // S8 deleted the slot, and the claim is recorded: the next one is not due.
       expect((await held(w.store, up.id)).slot).toBeNull();
@@ -613,7 +614,7 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
       ]).toEqual(before);
     });
 
-    it("refuses the processor's fence-dependent writes S1-S5 and S7 and the sweep's checkpoint, writing nothing", async () => {
+    it("refuses the processor's fence-dependent writes S1-S5, the poster's charge and S7 and the sweep's checkpoint, writing nothing", async () => {
       const cases: [string, (w: AvWorld) => Promise<{ id: string; run: () => Promise<unknown> }>][] = [
         [
           "S1",
@@ -664,6 +665,16 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
             return {
               id: up.id,
               run: () => w.store.confirmAvWrite(BUILD, { id: up.id, startId: up.startId, write: "full" }),
+            };
+          },
+        ],
+        [
+          "chargeAvPoster",
+          async (w) => {
+            const up = await started(w);
+            return {
+              id: up.id,
+              run: () => w.store.chargeAvPoster(BUILD, { id: up.id, startId: up.startId, monthlyTransforms: MONTHLY }),
             };
           },
         ],
