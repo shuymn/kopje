@@ -3152,7 +3152,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   at the Store's time, 422, a PUT writing nothing; a staging reservation (its request still holds it) and a doomed
   one are not found; DELETE is S11, which dooms it in any other state and keeps its processing slot. Attaching one
   refuses with `not_ready`. A completed upload's URLs are on the instance origin and http(s) (HTML-3):
-  `ownerMedia`, `updateOwnerMedia`, `deleteOwnerMedia` in `src/domain/media-processing.ts`, read through `ownerRun` in
+  `ownerMedia`, `updateOwnerMedia`, `deleteOwnerMedia` in `src/domain/media-processing.ts`, read through `markedRun` in
   `src/store.ts`; `test/media-av-upload.test.ts` ("answers another account 404 in every state", "the owner's reads
   of an upload in each state", "DELETE through the route"). The upload route that makes such rows is #1828's PR4-4.
   _Enforced (main)_ for custom emoji images (MEDIA-5): an emoji's image is an upload of the OAuth admin, but it is

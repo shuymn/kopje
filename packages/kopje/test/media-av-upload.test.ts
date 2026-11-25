@@ -15,7 +15,7 @@ import { fileKey, originalKey, restoreMarkerKey } from "../src/platform/media-fi
 import { readRestore } from "../src/platform/restore-marker";
 import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
-import { ownerRun } from "../src/store";
+import { markedRun } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
 import { imageUpload } from "./av-posting-helpers";
 import { BUILD, deferred, gateMarker, holdingMarker, rejectionOf, testKernel } from "./helpers";
@@ -232,22 +232,16 @@ describe("the owner's reads of an upload in each state (P9)", () => {
 
 const OWNER_OPS = [ownerMedia, updateOwnerMedia, deleteOwnerMedia] as const;
 
-// One of the owner's operations run through ownerRun in the Store, counting its marker reads: `answer` the
+// One of the owner's operations run through markedRun in the Store, counting its marker reads: `answer` the
 // operation's status (or DELETE's answer), or the Store's refusal.
-async function counted(
-  w: AvWorld,
-  op: (typeof OWNER_OPS)[number],
-  id: string,
-  who: Who = "alice",
-  marker: () => Promise<number | null> = () => Promise.resolve(null),
-) {
+async function counted(w: AvWorld, op: (typeof OWNER_OPS)[number], id: string, who: Who = "alice") {
   let reads = 0;
   const credential = who === "alice" ? w.alice : w.bob;
   const input = op === updateOwnerMedia ? { credential, id, changes: { description: "bob's" } } : { credential, id };
   const answered = await runInDurableObject(w.store, (_instance, state) =>
-    ownerRun(testKernel(state), BUILD, op as typeof ownerMedia, input, () => {
+    markedRun(testKernel(state), BUILD, op as typeof ownerMedia, input, () => {
       reads++;
-      return marker();
+      return Promise.resolve(null);
     }),
   );
   const value = answered.status === "ok" ? (answered.value as unknown) : answered.status;
@@ -1136,7 +1130,7 @@ describe("the Store's entry points across a deploy (code review r1)", () => {
   });
 });
 
-describe("the owner's two passes (store.ts ownerRun)", () => {
+describe("the owner's two passes (store.ts markedRun)", () => {
   it("reads the restore marker only for an upload whose processing row K3 could act on", async () => {
     const cases: [(w: AvWorld) => Promise<{ id: string }>, string, number][] = [
       [queued, "processing", 1],

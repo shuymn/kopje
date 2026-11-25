@@ -2,7 +2,13 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AV_WRITE_WINDOW_MS, DETACHED_GRACE_MS, ORPHAN_GRACE_MS, WRITE_WINDOW_MS } from "../src/domain/media";
+import {
+  AV_WRITE_WINDOW_MS,
+  DETACHED_GRACE_MS,
+  ORPHAN_GRACE_MS,
+  startTransforms,
+  WRITE_WINDOW_MS,
+} from "../src/domain/media";
 import { MAX_ATTEMPTS } from "../src/domain/scheduled-statuses";
 import { handleScheduled, publishScheduled } from "../src/jobs/scheduled";
 import { uploadEmoji } from "../src/mastodon/emoji-upload";
@@ -10,7 +16,7 @@ import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
 import { mediaKeys, restoreMarkerKey } from "../src/platform/media-files";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { sha256Hex } from "../src/security/tokens";
-import { startImagePath } from "../src/store";
+import { markedRun } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
 import { BUILD, deferred, rejectionOf, testKernel } from "./helpers";
 import { base64, pngOf } from "./local-emoji-helpers";
@@ -1188,14 +1194,15 @@ describe("publication judges its held media at the Store's time", () => {
   });
 });
 
-describe("the image start's two passes (store.ts startImagePath)", () => {
-  // Runs startImagePath on the Store's own kernel with an after-commit hook that counts, and a marker read that counts.
+describe("the image start's two passes (store.ts markedRun)", () => {
+  // Runs the image start through markedRun on the Store's own kernel with an after-commit hook that counts, and a marker read that counts.
   async function startCounted(w: AvWorld, id: string) {
     const counted = { commits: 0, reads: 0 };
     const answer = await runInDurableObject(w.store, (_instance, state) =>
-      startImagePath(
+      markedRun(
         testKernel(state, undefined, { afterCommit: () => counted.commits++ }),
         BUILD,
+        startTransforms,
         { credential: w.alice, id, monthlyTransforms: BUDGETS, now: Date.now() },
         () => {
           counted.reads++;
