@@ -163,6 +163,21 @@ describe("the boundary parameter, as workerd's MIME parser reads it (code review
   });
 });
 
+describe("a malformed parameter name, as workerd's MIME parser recovers (code review r4 M4)", () => {
+  // workerd refuses the name before reading its value and skips to the next `;`, so `boundary=C` inside the quotes is
+  // read, and as the first boundary it is the one: a body delimited by B is refused, as the reader takes C.
+  it('reads `bad name="x; boundary=C; y"; boundary=B` as formData() does', async () => {
+    const contentType = 'multipart/form-data; bad name="x; boundary=C; y"; boundary=B';
+    const body = enc.encode(`--B\r\n${HEAD_A}\r\n\r\nx\r\n--B--\r\n`);
+    const refused = await new Response(body, { headers: { "content-type": contentType } }).formData().then(
+      () => false,
+      () => true,
+    );
+    expect(refused).toBe(true);
+    expect(multipartBoundary(contentType)).toBe("C");
+  });
+});
+
 describe("the closing padding read in one pass (code review r2 LOW)", () => {
   it("reads 32 MiB of padding after the close in one chunk within a generous time", async () => {
     const head = enc.encode(`--B\r\n${HEAD_A}\r\n\r\nx\r\n--B--`);

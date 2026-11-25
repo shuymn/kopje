@@ -33,9 +33,10 @@ const HTTP_WHITESPACE = /^[\t\n\r ]+|[\t\n\r ]+$/g;
 const QUOTED_VALUE = /^[\t -~\u0080-ÿ]*$/;
 
 // The boundary of a multipart/form-data Content-Type, or null for any other type. Read as workerd's MIME parser reads
-// it, the WHATWG MIME type parse (code review r2 M4, r3 M4): a quoted value's `;` and `=` are its own, and of a
-// repeated parameter the first counts; a header that does not parse that way is null, and the whole-body path reads it.
-// platform/media-type.ts's parse refuses a repeated parameter, which this one must not.
+// it (code review r2-r4 M4): a quoted value's `;` and `=` are its own, a name that is not a token is skipped to the
+// next `;` before its value is read, and of a repeated parameter the first counts; a header that does not parse that
+// way is null, and the whole-body path reads it. platform/media-type.ts's parse refuses a repeated parameter, which
+// this one must not.
 export function multipartBoundary(contentType: string): string | null {
   const input = contentType.replace(HTTP_WHITESPACE, "");
   const slash = input.indexOf("/");
@@ -65,6 +66,13 @@ export function multipartBoundary(contentType: string): string | null {
     }
     const name = input.slice(at, nameEnd).toLowerCase();
     at = nameEnd;
+    // A name that is not a token is refused before its value is read, the rest skipped to the next `;`, quotes and all
+    // (workerd's MimeType::parse; code review r4 M4).
+    if (!HTTP_TOKEN.test(name)) {
+      const next = input.indexOf(";", at);
+      at = next === -1 ? input.length : next;
+      continue;
+    }
     if (at >= input.length || input[at] === ";") {
       continue;
     }
@@ -91,7 +99,7 @@ export function multipartBoundary(contentType: string): string | null {
         continue;
       }
     }
-    if (HTTP_TOKEN.test(name) && QUOTED_VALUE.test(value) && !parameters.has(name)) {
+    if (QUOTED_VALUE.test(value) && !parameters.has(name)) {
       parameters.set(name, value);
     }
   }
