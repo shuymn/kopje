@@ -317,30 +317,26 @@ function quoteLink(db: Db, id: string): QuoteLink | null {
 const IMAGES_AND_VIDEO = "Cannot attach a video to a post that already contains images";
 const NOT_READY = "Cannot attach files that have not finished processing. Try again in a moment!";
 
-// Which rules a set of media is held to (#1828 decision C9): `new`, a post or a scheduled post, and `edit`, an edit,
-// whose set is new unless it shows the status's media unchanged; `held`, a scheduled status's publication, keeps the
-// rules it was scheduled under. A new set may not hold a video or audio file beside other media, and an upload still
-// processing, or failed, refuses it with not_ready; an unchanged or held set keeps today's outcome, so a status the
-// cutover converted with a video among images is edited and published as before, and an upload still processing is
-// not found, as it was.
-type MediaRules = "new" | "edit" | "held";
-
 // The media a post or an edit attaches, in the order given, each once (MEDIA-1): own media already attached to
 // `statusId` (shown, or dropped by an earlier edit, as Mastodon's `status_id: [nil, @status.id]`), or unattached,
 // processed and not doomed. Media a scheduled status holds is attachable only by that scheduled status's publication
 // (`scheduledId`). Anything else, another account's media, media past its grace period, a reservation never staged and
 // an upload still staging included, refuses the whole request as PostStatusService#validate_media! does, with one
 // message for every reason: each id is read as Ruby's to_i reads it (requestedId), and every one not found is listed in
-// the order sent, repeats included. Then, for a new set (MediaRules), a video or audio file among two or more media
-// refuses it, and an own unattached upload still processing or failed (its processing row past staging,
-// media-processing.ts) refuses it with not_ready, in Mastodon's order.
+// the order sent, repeats included. Then, for a new set, a video or audio file among two or more media refuses it, and
+// an own unattached upload still processing or failed (its processing row past staging, media-processing.ts) refuses
+// it with not_ready, in Mastodon's order.
+// Which set is new (#1828 decision C9) follows from the ids given: a post or a scheduled post (neither id) attaches a
+// new set; an edit (`statusId`) a new set unless it shows the status's media unchanged; a scheduled status's
+// publication (`scheduledId`) keeps the rules it was scheduled under. A set that is not new keeps today's outcome, so
+// a status the cutover converted with a video among images is edited and published as before, and an upload still
+// processing is not found there, as it was.
 function mediaToAttach(
   db: Db,
   accountId: string,
   mediaIds: readonly string[],
   statusId: string | null,
   storeNow: number,
-  rules: MediaRules,
   scheduledId: string | null = null,
 ): string[] | { status: "invalid"; error: string } {
   if (mediaIds.length === 0) {
@@ -348,7 +344,7 @@ function mediaToAttach(
   }
   const requested = mediaIds.map(requestedId);
   // Each id is looked up by its stored form (storedIdOf), one primary-key probe each, and its processing row by its
-  // key. `ready` is 0 for an upload still processing, which only a set held to the new rules may find.
+  // key. `ready` is 0 for an upload still processing, which only a set that may be new finds.
   const rows = db.all<{ i: number; id: string | null; type: string | null; ready: number | null }>(
     `SELECT j.key AS i, m.id, m.type, m.processed AS ready FROM json_each(?1) j
 		LEFT JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = j.value AND m.account_id = ?2
@@ -362,7 +358,7 @@ function mediaToAttach(
     statusId,
     iso(storeNow),
     scheduledId,
-    rules === "held" ? 0 : 1,
+    scheduledId === null ? 1 : 0,
     DOOMED_AT,
   );
   const missing = rows.filter((row) => row.id === null).map((row) => requested[row.i] ?? "");
@@ -370,7 +366,7 @@ function mediaToAttach(
     return { status: "invalid", error: `Media ${missing.join(", ")} not found or already attached to another post` };
   }
   const ids = [...new Set(rows.map((row) => row.id ?? ""))];
-  if (rules === "held" || (rules === "edit" && statusId !== null && showsUnchanged(db, statusId, ids))) {
+  if (scheduledId !== null || (statusId !== null && showsUnchanged(db, statusId, ids))) {
     return ids;
   }
   if (ids.length > 1 && rows.some((row) => row.type === "video" || row.type === "audio")) {
@@ -585,15 +581,7 @@ export function preparePost(
       return { status: "quote_not_found" };
     }
   }
-  const media = mediaToAttach(
-    db,
-    accountId,
-    input.mediaIds,
-    null,
-    storeNow,
-    scheduledId === null ? "new" : "held",
-    scheduledId,
-  );
+  const media = mediaToAttach(db, accountId, input.mediaIds, null, storeNow, scheduledId);
   if (!Array.isArray(media)) {
     return media;
   }
@@ -1105,7 +1093,7 @@ export const editStatus = userWriteOperation.atStoreTime("storeNow")<
     return { status: "invalid", error: TOO_LONG };
   }
   // Before the "unchanged" test: UpdateStatusService validates the media before NoChangesSubmittedError.
-  const media = mediaToAttach(db, accountId, input.mediaIds, current.id, input.storeNow, "edit");
+  const media = mediaToAttach(db, accountId, input.mediaIds, current.id, input.storeNow);
   if (!Array.isArray(media)) {
     return media;
   }
