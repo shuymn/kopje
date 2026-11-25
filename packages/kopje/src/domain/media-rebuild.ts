@@ -1,6 +1,7 @@
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
+import { type Marker, restoreTime } from "../platform/restore-marker";
 import type { ImportAuthority } from "../platform/store-admin";
 import { PITR_RESTORING, PITR_RESTORING_MS, REBUILD_LEASE } from "../platform/store-flags";
 import { MEDIA_META_BYTES, storedBlurhash } from "../platform/stored-bounds";
@@ -218,20 +219,26 @@ function flag<T>(db: Db, name: string): T | null {
 // while a verified import is unpublished, or once its readonly maintenance has lasted REBUILD_SETTLE_MS. A PITR restore
 // rewinds those flags, so both count only from the last restore (`restoredAt`, recorded outside the database): an
 // unpublished flag from before it is not ready, and maintenance settles from the later of its start and the restore.
+// An active restore, or neither flag, decides by itself, so only the checks after them ask for the marker
+// (restoreTime).
 function readiness(
   db: Db,
   now: number,
-  restoredAt: number | null,
+  marker: Marker,
 ): { status: "ok" } | { status: "needs-readonly" } | { status: "restoring" } | { status: "settling"; readyAt: number } {
   const restoring = flag<{ at: number }>(db, PITR_RESTORING);
   if (restoring !== null && restoring.at > now - PITR_RESTORING_MS) {
     return { status: "restoring" };
   }
   const unpublished = flag<{ at: number }>(db, "unpublished");
+  const maintenance = flag<{ at: number }>(db, "maintenance");
+  if (unpublished === null && maintenance === null) {
+    return { status: "needs-readonly" };
+  }
+  const restoredAt = restoreTime(marker);
   if (unpublished !== null && (restoredAt === null || unpublished.at > restoredAt)) {
     return { status: "ok" };
   }
-  const maintenance = flag<{ at: number }>(db, "maintenance");
   if (maintenance === null) {
     return { status: "needs-readonly" };
   }
@@ -263,7 +270,7 @@ export const rebuildLease = mediaRebuildOperation.atStoreTime("now")<
     holder: string;
     generation?: number;
     release?: boolean;
-    restoredAt: number | null;
+    restoredAt: Marker;
     now: number;
   },
   RebuildLeaseResult
@@ -285,6 +292,7 @@ export const rebuildLease = mediaRebuildOperation.atStoreTime("now")<
   if (generation !== undefined && !(mine && live)) {
     return { status: "lost" };
   }
+  // Acquiring or renewing waits on the restore's time (readiness); a release never asks for it.
   const ready = readiness(db, now, restoredAt);
   if (ready.status !== "ok") {
     return ready;

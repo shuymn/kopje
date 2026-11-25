@@ -10,6 +10,7 @@ import { MAX_BUILDS_PER_CALL, rebuildMedia } from "../src/mastodon/media-rebuild
 import { imageBlurhash } from "../src/platform/blurhash";
 import { EMOJI_IMAGE_LIMIT, EMOJI_PREVIEW_LIMIT } from "../src/platform/emoji-image";
 import { type EncodeOptions, IMAGE_SIZE_LIMIT, RGBA_MIN_CALL_MS } from "../src/platform/images";
+import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { admitFlags, type OperatorGate } from "../src/platform/store-flags";
@@ -18,7 +19,7 @@ import { type AccessTeam, adminClaims, adminHarness, adminTeam, serviceClaims, s
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { ANIMATED_WEBP, JPEG_ORIENTATION_6, PNG_PLAIN, WIDE_PNG } from "./fixtures/images";
-import { BUILD, completeSetup, deferred, migratedStore, rejectionOf } from "./helpers";
+import { BUILD, completeSetup, deferred, holdingMarker, migratedStore, rejectionOf } from "./helpers";
 import { pngOf, pngOfBytes } from "./local-emoji-helpers";
 import { atStoreTime, bytes, framesKeepingCodec, recordRgba, TestCodec } from "./media-helpers";
 import {
@@ -516,6 +517,69 @@ describe("media rebuild authorization", () => {
     expect(await files(row)).toEqual([false, false]);
     expect((await h.post(serviceClaims(), "/admin/media/rebuild")).status).toBe(200);
     expect(await files(row)).toEqual([true, true]);
+  });
+
+  it("releases a lease while the restore marker holds no time, and refuses to renew one (code review r3)", async () => {
+    const h = await setup();
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const first = await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h" });
+    expect(first).toMatchObject({ status: "ok", generation: 1 });
+    const key = restoreMarkerKey(h.store.id.toString());
+    await env.MEDIA.put(key, "{}");
+    try {
+      const renewed = rejectionOf(h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h", generation: 1 }));
+      expect(toStoreUnavailable(await renewed)?.reason).toBe("transient");
+      expect(
+        await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h", generation: 1, release: true }),
+      ).toEqual({ status: "released" });
+    } finally {
+      await env.MEDIA.delete(key);
+    }
+    // The released lease is free at once for another holder.
+    expect(await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "next" })).toMatchObject({
+      status: "ok",
+    });
+  });
+
+  it("releases a lease while the marker read is held, and answers an active restore without the marker (code review r4)", async () => {
+    const h = await setup();
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    expect(await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h" })).toMatchObject({ status: "ok" });
+    expect(
+      await holdingMarker<unknown>(h.store, () =>
+        h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h", generation: 1, release: true }),
+      ),
+    ).toEqual({ answer: { status: "released" }, reads: 0 });
+    expect(await leaseRow(h.store)).toEqual([expect.objectContaining({ holder: "h", until: 0 })]);
+    await runInDurableObject(h.store, (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO kopje_state (name, value) VALUES ('pitr_restoring', ?)",
+        JSON.stringify({ at: Date.now() }),
+      );
+    });
+    const key = restoreMarkerKey(h.store.id.toString());
+    await env.MEDIA.put(key, "{}");
+    try {
+      expect(await h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "next" })).toEqual({
+        status: "restoring",
+      });
+    } finally {
+      await env.MEDIA.delete(key);
+    }
+  });
+
+  it("answers needs-readonly without the marker when neither flag is set (code review r5)", async () => {
+    const h = await setup({ env: { MAINTENANCE: "off" }, held: false });
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const take = () => h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h" });
+    expect(await holdingMarker<unknown>(h.store, take)).toEqual({ answer: { status: "needs-readonly" }, reads: 0 });
+    const key = restoreMarkerKey(h.store.id.toString());
+    await env.MEDIA.put(key, "{}");
+    try {
+      expect(await take()).toEqual({ status: "needs-readonly" });
+    } finally {
+      await env.MEDIA.delete(key);
+    }
   });
 
   it("has the Store check the admin again where it writes", async () => {

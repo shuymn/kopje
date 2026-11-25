@@ -145,7 +145,7 @@ import {
   type Status,
   statusStream,
 } from "./status-presenter";
-import { MEDIA_COLUMN_MAP } from "./status-rows";
+import { MEDIA_COLUMN_MAP, shownMediaSql } from "./status-rows";
 import {
   blankText,
   exceedsRawLength,
@@ -313,12 +313,24 @@ function quoteLink(db: Db, id: string): QuoteLink | null {
   return { url, uri: row.uri };
 }
 
+// Mastodon's media_attachments.validations (PostStatusService and UpdateStatusService#validate_media!).
+const IMAGES_AND_VIDEO = "Cannot attach a video to a post that already contains images";
+const NOT_READY = "Cannot attach files that have not finished processing. Try again in a moment!";
+
 // The media a post or an edit attaches, in the order given, each once (MEDIA-1): own media already attached to
 // `statusId` (shown, or dropped by an earlier edit, as Mastodon's `status_id: [nil, @status.id]`), or unattached,
 // processed and not doomed. Media a scheduled status holds is attachable only by that scheduled status's publication
-// (`scheduledId`). Anything else, another account's media, media still processing or past its grace period included,
-// refuses the whole request as PostStatusService#validate_media! does, with one message for every reason: each id is
-// read as Ruby's to_i reads it (requestedId), and every one not found is listed in the order sent, repeats included.
+// (`scheduledId`). Anything else, another account's media, media past its grace period, a reservation never staged and
+// an upload still staging included, refuses the whole request as PostStatusService#validate_media! does, with one
+// message for every reason: each id is read as Ruby's to_i reads it (requestedId), and every one not found is listed in
+// the order sent, repeats included. Then, for a new set, a video or audio file among two or more media refuses it, and
+// an own unattached upload still processing or failed (its processing row past staging, media-processing.ts) refuses
+// it with not_ready, in Mastodon's order.
+// Which set is new (#1828 decision C9) follows from the ids given: a post or a scheduled post (neither id) attaches a
+// new set; an edit (`statusId`) a new set unless it shows the status's media unchanged; a scheduled status's
+// publication (`scheduledId`) keeps the rules it was scheduled under. A set that is not new keeps today's outcome, so
+// a status the cutover converted with a video among images is edited and published as before, and an upload still
+// processing is not found there, as it was.
 function mediaToAttach(
   db: Db,
   accountId: string,
@@ -331,24 +343,47 @@ function mediaToAttach(
     return [];
   }
   const requested = mediaIds.map(requestedId);
-  // Each id is looked up by its stored form (storedIdOf), one primary-key probe each.
-  const rows = db.all<{ i: number; id: string | null }>(
-    `SELECT j.key AS i, m.id FROM json_each(?1) j
+  // Each id is looked up by its stored form (storedIdOf), one primary-key probe each, and its processing row by its
+  // key. `ready` is 0 for an upload still processing, which only a set that may be new finds.
+  const rows = db.all<{ i: number; id: string | null; type: string | null; ready: number | null }>(
+    `SELECT j.key AS i, m.id, m.type, m.processed AS ready FROM json_each(?1) j
 		LEFT JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = j.value AND m.account_id = ?2
 			AND (m.status_id = ?3
-			OR (m.status_id IS NULL AND m.scheduled_status_id IS ?5 AND ${liveMediaSql("m", "?4")}))
+			OR (m.status_id IS NULL AND m.scheduled_status_id IS ?5 AND (${liveMediaSql("m", "?4")}
+				OR (?6 AND m.processed = 0 AND m.gc_at IS NOT ?7 AND EXISTS (SELECT 1 FROM media_processing p
+					WHERE p.media_id = m.id AND p.state <> 'staging')))))
 		ORDER BY j.key`,
     JSON.stringify(requested.map(storedIdOf)),
     accountId,
     statusId,
     iso(storeNow),
     scheduledId,
+    scheduledId === null ? 1 : 0,
+    DOOMED_AT,
   );
   const missing = rows.filter((row) => row.id === null).map((row) => requested[row.i] ?? "");
   if (missing.length > 0) {
     return { status: "invalid", error: `Media ${missing.join(", ")} not found or already attached to another post` };
   }
-  return [...new Set(rows.map((row) => row.id ?? ""))];
+  const ids = [...new Set(rows.map((row) => row.id ?? ""))];
+  if (scheduledId !== null || (statusId !== null && showsUnchanged(db, statusId, ids))) {
+    return ids;
+  }
+  if (ids.length > 1 && rows.some((row) => row.type === "video" || row.type === "audio")) {
+    return { status: "invalid", error: IMAGES_AND_VIDEO };
+  }
+  if (rows.some((row) => row.ready === 0)) {
+    return { status: "invalid", error: NOT_READY };
+  }
+  return ids;
+}
+
+// Whether `ids` are the media the status `statusId` shows, whatever their order: an edit that keeps its set. The set
+// is the presenter's (status-rows.ts shownMediaSql: the first MAX_STATUS_MEDIA shown rows by position), so a status
+// the cutover left with more shown rows keeps the ones its readers see.
+function showsUnchanged(db: Db, statusId: string, ids: readonly string[]): boolean {
+  const shown = db.all<{ id: string }>(shownMediaSql("?"), statusId);
+  return shown.length === ids.length && shown.every((row) => ids.includes(row.id));
 }
 
 // Attaches `mediaIds` in order (from a scheduled status too). Media the status stops using stays attached but no

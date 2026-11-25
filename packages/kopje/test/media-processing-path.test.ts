@@ -2,16 +2,23 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AV_WRITE_WINDOW_MS, DETACHED_GRACE_MS, ORPHAN_GRACE_MS, WRITE_WINDOW_MS } from "../src/domain/media";
+import {
+  AV_WRITE_WINDOW_MS,
+  DETACHED_GRACE_MS,
+  ORPHAN_GRACE_MS,
+  startTransforms,
+  WRITE_WINDOW_MS,
+} from "../src/domain/media";
 import { MAX_ATTEMPTS } from "../src/domain/scheduled-statuses";
 import { handleScheduled, publishScheduled } from "../src/jobs/scheduled";
 import { uploadEmoji } from "../src/mastodon/emoji-upload";
 import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
 import { mediaKeys, restoreMarkerKey } from "../src/platform/media-files";
+import { toStoreUnavailable } from "../src/platform/store-errors";
 import { sha256Hex } from "../src/security/tokens";
-import { startImagePath } from "../src/store";
+import { markedRun } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
-import { BUILD, deferred, testKernel } from "./helpers";
+import { BUILD, deferred, rejectionOf, testKernel } from "./helpers";
 import { base64, pngOf } from "./local-emoji-helpers";
 import { TestCodec } from "./media-helpers";
 import {
@@ -739,7 +746,10 @@ describe("an abandoned candidate", () => {
       status: "ok",
       value: "abandoned",
     });
-    expect(await w.store.getMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({ status: "ok", value: null });
+    expect(await w.store.getMedia(BUILD, { credential: w.alice, id: up.id })).toEqual({
+      status: "ok",
+      value: { status: "not_found" },
+    });
     expect(await sql(w.store, "SELECT gc_at, url FROM media_attachments WHERE id = ?", up.id)).toEqual([
       { gc_at: new Date(0).toISOString(), url: "" },
     ]);
@@ -877,7 +887,10 @@ describe("a row without a URL is never live, nor a doomed one completed", () => 
     const id = await completedImage(w, T0);
     await sql(w.store, "UPDATE media_attachments SET url = '', gc_at = NULL WHERE id = ?", id);
     clock(T0 + SECOND);
-    expect(await w.store.getMedia(BUILD, { credential: w.alice, id })).toEqual({ status: "ok", value: null });
+    expect(await w.store.getMedia(BUILD, { credential: w.alice, id })).toEqual({
+      status: "ok",
+      value: { status: "not_found" },
+    });
     expect((await post(w, id)).status).toBe(422);
   });
 
@@ -1115,12 +1128,14 @@ describe("the Worker's clock off the Store's: each write and check of a stored m
 });
 
 describe("the restore marker read only for a candidate's image start", () => {
-  it("refuses a candidate's image start when the marker cannot be read, as S1 refuses it", async () => {
+  // An unknown marker refuses what K3 decides as transient, retryable, leaving the reservation as it was
+  // (platform/restore-marker.ts restoreTime, code review r3).
+  it("refuses a candidate's image start as transient when the marker cannot be read, changing nothing", async () => {
     const w = await avWorld();
     const up = await reserve(w, T0);
     await env.MEDIA.put(restoreMarkerKey(w.store.id.toString()), "{");
     clock(T0 + SECOND);
-    expect(await startImage(w, up.id)).toEqual({ status: "ok", value: { status: "expired" } });
+    expect(toStoreUnavailable(await rejectionOf(startImage(w, up.id)))?.reason).toBe("transient");
     expect(await stateOf(w, up.id)).toBe("unknown 0 1h | - | - | -");
   });
 
@@ -1179,14 +1194,15 @@ describe("publication judges its held media at the Store's time", () => {
   });
 });
 
-describe("the image start's two passes (store.ts startImagePath)", () => {
-  // Runs startImagePath on the Store's own kernel with an after-commit hook that counts, and a marker read that counts.
+describe("the image start's two passes (store.ts markedRun)", () => {
+  // Runs the image start through markedRun on the Store's own kernel with an after-commit hook that counts, and a marker read that counts.
   async function startCounted(w: AvWorld, id: string) {
     const counted = { commits: 0, reads: 0 };
     const answer = await runInDurableObject(w.store, (_instance, state) =>
-      startImagePath(
+      markedRun(
         testKernel(state, undefined, { afterCommit: () => counted.commits++ }),
         BUILD,
+        startTransforms,
         { credential: w.alice, id, monthlyTransforms: BUDGETS, now: Date.now() },
         () => {
           counted.reads++;

@@ -3,6 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import type { UserCredential } from "../domain/auth";
 import { type MediaChanges, type MonthlyTransforms, SWEEP_BATCH } from "../domain/media";
 import { parseFocus } from "../domain/media-focus";
+import type { OwnerMedia } from "../domain/media-processing";
 import type { MediaAttachment } from "../domain/status-presenter";
 import { readBoundedBody } from "../platform/body";
 import { accountMonthlyTransforms, readConfig } from "../platform/config";
@@ -484,15 +485,32 @@ export async function discardProfileUploads(
   sweepSoon(c, deps);
 }
 
+// An unfinished upload's processing failed, or passed its deadline (MediaController#check_processing).
+const PROCESSING_ERROR = "Error processing thumbnail for uploaded media";
+
+// The owner's answer for an upload (domain/media-processing.ts OwnerMedia): 200, 206 while processing (Mastodon's
+// status_code_for_media_attachment), 422 once failed, 404 otherwise.
+function ownerAnswer(c: ApiContext, outcome: OwnerMedia): Response {
+  switch (outcome.status) {
+    case "ok":
+      return c.json(outcome.media);
+    case "processing":
+      return c.json(outcome.media, 206);
+    case "failed":
+      return mastodonError(422, PROCESSING_ERROR);
+    case "not_found":
+      return recordNotFound();
+  }
+}
+
 // GET /api/v1/media/:id.
 export const getMedia: ApiHandler = async (c, deps) => {
   const credential = userCredential(c, deps);
-  const media = authorized(await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c) })));
-  return media === null ? recordNotFound() : c.json(media);
+  return ownerAnswer(c, authorized(await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c) }))));
 };
 
-// PUT and PATCH /api/v1/media/:id: description and focus of own unattached media. Attached media is described through
-// media_attributes[] of a status edit, as in Mastodon.
+// PUT and PATCH /api/v1/media/:id: description and focus of own unattached media, also while it is processing.
+// Attached media is described through media_attributes[] of a status edit, as in Mastodon.
 export const updateMedia: ApiHandler = withParams(
   async (c, deps, p) => {
     const description = p.get("description");
@@ -500,20 +518,22 @@ export const updateMedia: ApiHandler = withParams(
     const credential = userCredential(c, deps);
     if (problem !== undefined) {
       // MediaController#set_media_attachment finds the media (404) before update! validates it (422): a read, so it is
-      // answered in readonly maintenance too, as an edit's target is (statuses.ts editTarget).
+      // answered in readonly maintenance too, as an edit's target is (statuses.ts editTarget). The form's problem is
+      // answered before the upload's own state, a failed one's included (Mastodon checks the processing first).
       const found = authorized(await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c) })));
-      return found === null ? recordNotFound() : mastodonError(422, problem);
+      return found.status === "not_found" ? recordNotFound() : mastodonError(422, problem);
     }
     const changes: MediaChanges = { description, focus: parseFocus(p.get("focus")) };
-    const media = authorized(
-      await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes })),
+    return ownerAnswer(
+      c,
+      authorized(await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes }))),
     );
-    return media === null ? recordNotFound() : c.json(media);
   },
   { files: THUMBNAIL_FILE },
 );
 
-// DELETE /api/v1/media/:id: own unattached media; the sweep deletes its R2 objects after the response.
+// DELETE /api/v1/media/:id: own unattached media, an upload still processing or failed included (S11); the sweep
+// deletes its R2 objects after the response.
 export const deleteMedia: ApiHandler = async (c, deps) => {
   const credential = userCredential(c, deps);
   const outcome = authorized(await storeCall(c, deps, (s, b) => s.deleteMedia(b, { credential, id: mediaId(c) })));

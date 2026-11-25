@@ -28,8 +28,9 @@ export function clock(ms: number): void {
   vi.setSystemTime(ms);
 }
 
-export async function avWorld() {
-  const h = await community(["alice", "bob"], "read write");
+// deps wraps the Store stub the app calls (apiHarness), for a test that holds a route's call.
+export async function avWorld(deps: Parameters<typeof community>[2] = {}) {
+  const h = await community(["alice", "bob"], "read write", deps);
   vi.useFakeTimers({ toFake: ["Date"] });
   clock(T0);
   const credentialOf = async (name: "alice" | "bob") => ({
@@ -95,6 +96,9 @@ export const VIDEO: AvFacts = {
   frameRate: "30/1",
   preview: { width: 640, height: 360, blurhash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj" },
 };
+
+// A completed video without a still (S6 with no preview).
+export const VIDEO_NO_STILL: AvFacts = { ...VIDEO, preview: null };
 
 export const AUDIO: AvFacts = {
   kind: "audio",

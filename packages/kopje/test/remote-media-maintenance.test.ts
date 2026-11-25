@@ -13,8 +13,9 @@ import {
 import { outstandingRemoteMediaCalls, PUT_MS, R2_DELETE_MS } from "../src/federation/remote-media";
 import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
+import { toStoreUnavailable } from "../src/platform/store-errors";
 import { sql } from "./api-helpers";
-import { deferred } from "./helpers";
+import { BUILD, deferred, migratedStore, rejectionOf } from "./helpers";
 import { bucketWith, GIF, mediaWorld, type MediaWorld, settle } from "./remote-media-helpers";
 
 // The cache's maintenance through the production round (federation/remote-media.ts): the Store's calls, the media
@@ -441,6 +442,30 @@ describe("a late put through the round", () => {
 });
 
 describe("PITR validation through the round", () => {
+  it("refuses the maintenance with the transient refusal while the marker holds no restore time (code review r3)", async () => {
+    const w = await mediaWorld();
+    await env.MEDIA.put(restoreMarkerKey(w.t.store.id.toString()), "{}");
+    try {
+      const refused = await rejectionOf(w.t.store.maintainRemoteMedia(BUILD, { cap: 1_000, retentionDays: 30 }));
+      expect(toStoreUnavailable(refused)?.reason).toBe("transient");
+    } finally {
+      await clearRestore(w);
+    }
+  });
+
+  it("answers a Store without its domain unset while the marker holds no restore time (code review r4)", async () => {
+    const store = await migratedStore();
+    const key = restoreMarkerKey(store.id.toString());
+    await env.MEDIA.put(key, "{}");
+    try {
+      expect(await store.maintainRemoteMedia(BUILD, { cap: 1_000, retentionDays: 30 })).toMatchObject({
+        status: "unset",
+      });
+    } finally {
+      await env.MEDIA.delete(key);
+    }
+  });
+
   it("records the prefix whose heads fit before the record, and resumes after it", async () => {
     const w = await mediaWorld();
     const { tokens } = await cached(w, 5);

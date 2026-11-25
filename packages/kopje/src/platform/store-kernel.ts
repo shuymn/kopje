@@ -228,17 +228,6 @@ export class StoreKernel {
     return (await this.#run(callerBuild, operation, () => input, null)).output;
   }
 
-  // Runs an operation as execute does, without the after-commit hook when `wroteNothing` says its output is one that
-  // wrote nothing (the first pass of a two-pass operation that only asks for more input, store.ts startImagePath).
-  async executeQuiet<I, O, C extends StoreClock>(
-    callerBuild: string,
-    operation: TimedOperation<I, O, C>,
-    input: WithoutClock<I, C>,
-    wroteNothing: (output: O) => boolean,
-  ): Promise<O> {
-    return (await this.#run(callerBuild, operation, () => input, null, wroteNothing)).output;
-  }
-
   // Runs an operation as execute does, and reports from the same transaction whether one of kind `probe` would be
   // admitted now (null) or the reason it would be refused. Advisory: the probed operation is admitted again when it
   // runs. One refusal table serves both (refusalOf, flagRefusal).
@@ -268,7 +257,6 @@ export class StoreKernel {
     operation: StoreOperation<I, O>,
     inputOf: (refused: MaintenanceReason | null) => unknown,
     probe: OperationKind | null,
-    wroteNothing: (output: O) => boolean = () => false,
   ): Promise<{ output: O; refused: MaintenanceReason | null }> {
     if (callerBuild !== this.build) {
       throw storeMaintenanceError("version-mismatch");
@@ -287,7 +275,7 @@ export class StoreKernel {
       ) as I;
       return { output: operation.run(this.#sql, input, this.#transaction), refused };
     });
-    if (operation.kind !== "read" && !wroteNothing(result.output)) {
+    if (operation.kind !== "read") {
       this.#afterCommit(operation);
     }
     return result;

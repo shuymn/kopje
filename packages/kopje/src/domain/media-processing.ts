@@ -1,11 +1,13 @@
 import { selectSql } from "../db/columns";
 import { MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { type AudioFacts, isFrameRate, type VideoFacts } from "../platform/av-bytes";
+import { type AudioFacts, isEdge, isFrameRate, type VideoFacts } from "../platform/av-bytes";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
+import { type Marker, restoreTime } from "../platform/restore-marker";
 import { storedBlurhash, storedMediaDescription, storedMediaMeta } from "../platform/stored-bounds";
-import { userMediaDeleteOperation } from "./auth";
+import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
+import { instanceOrigin } from "./instance-domain";
 import { readState, writeState } from "./kopje-state";
 import {
   AV_CANDIDATE_TYPE,
@@ -15,7 +17,10 @@ import {
   deleteOwnMedia,
   DETACHED_GRACE_MS,
   DOOMED_AT,
+  describeMedia,
+  type MediaChanges,
   type MediaDeleted,
+  liveMediaSql,
   type MonthlyTransforms,
   setUp,
   uploadJobFits,
@@ -25,7 +30,7 @@ import {
 } from "./media";
 import { NORMALIZE_PROFILE, probePassed, probeState, type ProbeState } from "./media-probes";
 import { mediaDeleteOperation, readOperation, writeOperation } from "./operation";
-import { type MediaAttachment, type MediaRow, presentMedia } from "./status-presenter";
+import { isPlayable, type MediaAttachment, type MediaRow, presentMedia, processingMedia } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
 
 // The Store's side of a video or audio upload (#1828; the PR4 plan's section 1, and the TLA+ specification in
@@ -312,9 +317,14 @@ function avAttachment(att: Attachment | null): Attachment | null {
   return att !== null && avReservation(att) ? att : null;
 }
 
-// K3's fence: the attachment was reserved at or before the last restore.
-function fenced(att: Attachment | null, restoredAt: number | null): boolean {
-  return att !== null && restoredAt !== null && Date.parse(att.created_at) <= restoredAt;
+// K3's fence: the attachment was reserved at or before the last restore. Asked only where K3 decides the answer or the
+// write, so the marker is read (and an unknown one refuses) only there (restoreTime).
+function fenced(att: Attachment | null, restoredAt: Marker): boolean {
+  if (att === null) {
+    return false;
+  }
+  const at = restoreTime(restoredAt);
+  return at !== null && Date.parse(att.created_at) <= at;
 }
 
 function deleteRow(db: Db, id: string): void {
@@ -343,9 +353,11 @@ function doom(db: Db, id: string): void {
 // K3, else K4, on the upload's record: at most one applies, since K3 leaves no row pending or running for K4.
 type Effect = "k3-staging" | "k3-restored" | "k4-doom" | "k4-deadline";
 
-function effectOf(record: UploadRecord, now: number, restoredAt: number | null): Effect | null {
+// K3 acts only on a staging, pending or running row, so the marker is asked for only there: a completed, failed or
+// absent row is decided whatever it says.
+function effectOf(record: UploadRecord, now: number, restoredAt: Marker): Effect | null {
   const { att, row } = record;
-  if (row === null) {
+  if (row === null || row.state === "failed") {
     return null;
   }
   if (fenced(att, restoredAt)) {
@@ -383,30 +395,20 @@ function apply(db: Db, id: string, record: UploadRecord, effect: Effect | null):
 }
 
 // K3 and K4 on the upload's record, written: a read computes them without writing (normalized).
-function normalize(db: Db, id: string, now: number, restoredAt: number | null): UploadRecord {
+function normalize(db: Db, id: string, now: number, restoredAt: Marker): UploadRecord {
   const record = load(db, id);
   return apply(db, id, record, effectOf(record, now, restoredAt));
 }
 
-// The record K3 and K4 would leave, written nowhere (S9 and S10 in maintenance).
-function normalized(record: UploadRecord, now: number, restoredAt: number | null): UploadRecord {
-  const { att, row, slot } = record;
+// The processing state K3 and K4 would leave on the record, written nowhere (S9, the owner's GET and PUT): the row's
+// own, null where they delete the row (K3 on a staging row, K4's doom), or failed (K3's `restored`, K4's `deadline`,
+// which leave the attachment as it is).
+function normalizedState(record: UploadRecord, now: number, restoredAt: Marker): ProcessingRow["state"] | null {
   const effect = effectOf(record, now, restoredAt);
-  if (row === null || effect === null) {
-    return record;
+  if (record.row === null || effect === null) {
+    return record.row?.state ?? null;
   }
-  if (effect === "k3-staging") {
-    return { att, row: null, slot: slot?.phase === "staging" ? null : slot };
-  }
-  if (effect === "k4-doom") {
-    return { att: att === null ? null : { ...att, gc_at: DOOMED_AT }, row: null, slot };
-  }
-  // K3's `restored` and K4's `deadline` fail only a pending or running row.
-  if (row.state !== "pending" && row.state !== "running") {
-    return record;
-  }
-  const failure = effect === "k3-restored" ? "restored" : "deadline";
-  return { att, row: { ...row, state: "failed", failure }, slot };
+  return effect === "k3-staging" || effect === "k4-doom" ? null : "failed";
 }
 
 // ---- Activation and capacity
@@ -466,7 +468,7 @@ export const avActivation = readOperation.atStoreTime("now")<ActivationInput & {
 
 // ---- Inputs
 
-type Fence = { now: number; restoredAt: number | null };
+type Fence = { now: number; restoredAt: Marker };
 
 const ID_BYTES = 64;
 const IDENTITY = /^[\x21-\x7e]{1,64}$/;
@@ -513,7 +515,7 @@ export const takeAvSlot = writeOperation.atStoreTime("now")<
   if (row?.state === "staging") {
     return { status: "taken", stagedAt: row.staged_at, stagingMs: row.staged_until - now };
   }
-  if (fenced(att, restoredAt) || !candidate(att)) {
+  if (!candidate(att) || fenced(att, restoredAt)) {
     return { status: "gone" };
   }
   const left = v1Left === null ? null : Number.isSafeInteger(v1Left) ? v1Left : 0;
@@ -791,10 +793,6 @@ export type AvFacts = (
   | ({ contentType: "audio/mpeg" } & Pick<AudioFacts, "kind" | "duration" | "bitrate" | "bytes">)
 ) & { preview: { width: number; height: number; blurhash: string | null } | null };
 
-function edge(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= 65_535;
-}
-
 // The meta a completed upload stores (design 4.13's keys), the verifier's values as it computed them: video original
 // {width, height, frame_rate, duration, bitrate} and small {width, height} with a preview; audio original {duration,
 // bitrate}. Throws on facts that are not the verifier's shape.
@@ -819,10 +817,10 @@ function avMeta(facts: AvFacts): string | null {
     return storedMediaMeta(JSON.stringify({ original: { duration, bitrate } }));
   }
   const { width, height, frameRate } = facts;
-  if (!edge(width) || !edge(height) || !isFrameRate(frameRate)) {
+  if (!isEdge(width) || !isEdge(height) || !isFrameRate(frameRate)) {
     throw new Error("not verified video facts");
   }
-  if (preview !== null && (!edge(preview.width) || !edge(preview.height))) {
+  if (preview !== null && (!isEdge(preview.width) || !isEdge(preview.height))) {
     throw new Error("not a preview's geometry");
   }
   const original = { width, height, frame_rate: frameRate, duration, bitrate };
@@ -922,21 +920,32 @@ export const releaseAvSlot = writeOperation.atStoreTime("now")<
 // ---- S9 v1Outcome
 
 // S9, the v1 route's poll (a read): `done` for a completed upload, `processing` while unfinished, `ended` otherwise
-// (failed, doomed, gone), as K3 and K4 would leave the record at the Store's time.
+// (failed, doomed, gone), as K3 and K4 would leave the record at the Store's time. Only a reservation of that token
+// staging, or pending or running before its deadline_at, asks for the marker: K3 ends it, where every other record
+// answers alike whatever K3 says (a pending or running row at its deadline_at ends by K3 or by K4).
 export const v1Outcome = readOperation.atStoreTime("now")<
   { id: string; token: string } & Fence,
   { status: "done" | "processing" | "ended" }
 >((db, { id, token, now, restoredAt }) => {
   checkId(id);
-  const { att, row } = normalized(load(db, id), now, restoredAt);
-  const kind = attachmentState(avAttachment(att), token);
+  const record = load(db, id);
+  const kind = attachmentState(avAttachment(record.att), token);
   if (kind === "done") {
     return { status: "done" };
   }
-  if (kind !== "none" && (row?.state === "staging" || row?.state === "pending" || row?.state === "running")) {
-    return { status: "processing" };
+  const before = record.row;
+  if (
+    kind === "none" ||
+    before === null ||
+    before.state === "failed" ||
+    (before.state !== "staging" && now >= before.deadline_at)
+  ) {
+    return { status: "ended" };
   }
-  return { status: "ended" };
+  const state = normalizedState(record, now, restoredAt);
+  return state === "staging" || state === "pending" || state === "running"
+    ? { status: "processing" }
+    : { status: "ended" };
 });
 
 // ---- S10 v1Final
@@ -950,6 +959,13 @@ function httpOf(cause: Failure): 422 | 500 | 503 {
   return cause === "verifier" || cause === "unavailable" || cause === "timeout" ? 500 : 503;
 }
 
+// The attachment as its owner is shown it, by the presenter every owner's answer uses (GET, PUT, S10's 200): on the
+// instance origin, which a video without a still needs for VIDEO_POSTER (status-presenter.ts playablePreview), read
+// only for a playable one.
+function presentRow(db: Db, row: MediaRow): MediaAttachment {
+  return presentMedia(row, isPlayable(row.type) ? instanceOrigin(db) : null);
+}
+
 // A completed upload before its gc_at, presented; null otherwise (main reads a row past gc_at as gone).
 function liveDone(db: Db, att: Attachment | null, token: string, now: number): MediaAttachment | null {
   if (att === null || attachmentState(att, token) !== "done" || (att.gc_at !== null && att.gc_at <= iso(now))) {
@@ -959,19 +975,30 @@ function liveDone(db: Db, att: Attachment | null, token: string, now: number): M
     `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} WHERE m.id = ?`,
     att.id,
   );
-  return row === undefined ? null : presentMedia(row);
+  return row === undefined ? null : presentRow(db, row);
 }
 
 // S10, the v1 decision, made at the route's own cut or once S9 shows an outcome: 200 for a completed upload before
 // its gc_at; 503, changing nothing, for one from its gc_at on; the failure's answer for a failed one (422 for the input,
 // 500 for the processing); and otherwise 503 with the upload doomed (unfinished, failed `deadline` or `restored`, Q4),
-// whatever its deadline_at says.
+// whatever its deadline_at says. A reservation of that token pending or running is doomed without the marker: K3 fails it
+// `restored`, K4 dooms it or fails it `deadline`, and S10 dooms each the same, so every K3 outcome answers 503 with the
+// processing row deleted, gc_at DOOMED_AT and the slot kept. A staging one asks (K3 deletes its staging slot, which a
+// doom keeps), as does another token's record (K3 and K4 write on it).
 export const v1Final = writeOperation.atStoreTime("now")<{ id: string; token: string } & Fence, V1Final>((
   db,
   { id, token, now, restoredAt },
 ) => {
   checkId(id);
-  const { att: loaded, row } = normalize(db, id, now, restoredAt);
+  const record = load(db, id);
+  if (
+    attachmentState(avAttachment(record.att), token) === "res" &&
+    (record.row?.state === "pending" || record.row?.state === "running")
+  ) {
+    doom(db, id);
+    return { status: 503 };
+  }
+  const { att: loaded, row } = apply(db, id, record, effectOf(record, now, restoredAt));
   const att = avAttachment(loaded);
   const media = liveDone(db, att, token, now);
   if (media !== null) {
@@ -992,12 +1019,13 @@ export const v1Final = writeOperation.atStoreTime("now")<{ id: string; token: st
 
 // S10 while the Store refuses writes: a read. A completed upload before its gc_at answers 200; anything else
 // `maintenance`, with nothing doomed (K4 dooms it at its deadline once maintenance ends).
-export const v1FinalRead = readOperation.atStoreTime("now")<{ id: string; token: string } & Fence, V1Final>((
-  db,
-  { id, token, now, restoredAt },
-) => {
+// It reads no marker: K3 and K4 act only on an upload with a processing row, which is never a completed one.
+export const v1FinalRead = readOperation.atStoreTime("now")<
+  { id: string; token: string; now: number },
+  { status: 200; media: MediaAttachment } | { status: "maintenance" }
+>((db, { id, token, now }) => {
   checkId(id);
-  const { att } = normalized(load(db, id), now, restoredAt);
+  const { att } = load(db, id);
   const media = liveDone(db, avAttachment(att), token, now);
   return media === null ? { status: "maintenance" } : { status: 200, media };
 });
@@ -1010,32 +1038,173 @@ export const v1FinalRead = readOperation.atStoreTime("now")<{ id: string; token:
 // has one and its slot kept; a staging one is not found (its request still holds it). Anything else is decided by
 // deleteMedia's rules (media.ts deleteOwnMedia): a completed upload is in use while attached or kept, not found from
 // its gc_at on, and a doomed or absent one is not found.
-export const deleteAvUpload = userMediaDeleteOperation.atStoreTime("now")<{ id: string } & Fence, MediaDeleted>((
-  db,
-  { id, now, restoredAt },
-  { accountId },
-) => {
+// Ownership is read first, as on the owner's DELETE (deleteOwnerMedia): the marker only where K3 changes the answer.
+export const deleteAvUpload = userMediaDeleteOperation.atStoreTime("now")<
+  { id: string; now: number; restoredAt: Marker },
+  MediaDeleted
+>((db, { id, now, restoredAt }, { accountId }) => {
   checkId(id);
-  const { att, row } = normalize(db, id, now, restoredAt);
-  if (row?.state === "staging") {
+  return deleteUpload(db, accountId, id, now, restoredAt);
+});
+
+// S11 on the upload `id`, its ownership read before K3 and K4, so another account's record is never normalized: one
+// without a processing row by deleteMedia's rules, from the facts already read (the attachment's row itself is read
+// once, by ownUpload, as before #1828). An unattached reservation pending or running is doomed without the marker
+// unless it is a v1 one at its deadline_at: K3 fails it `restored` and S11 dooms it, as it dooms it unfenced, so both
+// answer `deleted` with the same rows; a v1 one K4 has doomed is not found, so there K3 decides. A staging one asks
+// too (K3 deletes it, and S11 then dooms the reservation).
+function deleteUpload(db: Db, accountId: string, id: string, now: number, restoredAt: Marker): MediaDeleted {
+  const own = ownerFacts(db, accountId, id, now);
+  if (own === undefined) {
     return "not_found";
   }
+  // An AV reservation never staged has no processing row either: S11 dooms it below.
+  const reservation =
+    own.own === 0 && own.used === 0 && (own.type === AV_CANDIDATE_TYPE || own.type === "video" || own.type === "audio");
+  if (own.processing === null && !reservation) {
+    return deleteOwnMedia(db, accountId, id, now, own);
+  }
+  const record = load(db, id);
+  const doomable = (att: Attachment | null): att is Attachment =>
+    att !== null && attachmentState(att) === "res" && att.scheduled_status_id === null && avReservation(att);
+  const before = record.row;
   if (
-    att !== null &&
-    att.account_id === accountId &&
-    attachmentState(att) === "res" &&
-    att.scheduled_status_id === null &&
-    avReservation(att)
+    doomable(record.att) &&
+    (before?.state === "pending" || before?.state === "running") &&
+    (before.reply_by === null || now < before.deadline_at)
   ) {
     doom(db, id);
     return "deleted";
   }
+  const { att, row } = apply(db, id, record, effectOf(record, now, restoredAt));
+  if (row?.state === "staging") {
+    return "not_found";
+  }
+  if (doomable(att)) {
+    doom(db, id);
+    return "deleted";
+  }
   return deleteOwnMedia(db, accountId, id, now);
+}
+
+// ---- The owner's GET, PUT and DELETE of an upload (P9, MEDIA-1)
+
+// What the owner's operations decide on of the upload `id` of `accountId`'s, read in one statement before anything else
+// of it (undefined for another account's or none): its type, its processing row's state (null without one), whether it
+// is live and unattached (`own`, media.ts ownUpload's rule) and, for DELETE, deleteMedia's `used` and `kept`. GET and
+// PUT read it with the columns the presenter takes (ownerRow); DELETE without them (ownerFacts). Both select by
+// OWNER_SQL's lookup (?1 the id, ?2 the account, ?3 the Store's time).
+type OwnerLookup = { processing: ProcessingRow["state"] | null; own: number };
+type OwnerFacts = OwnerLookup & { type: string; used: number; kept: number };
+type OwnerRow = MediaRow & OwnerLookup;
+
+const OWNER_SQL = {
+  state: `(SELECT p.state FROM media_processing p WHERE p.media_id = m.id) AS processing,
+				m.status_id IS NULL AND ${liveMediaSql("m", "?3")} AS own`,
+  from: `FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} WHERE m.id = ?1 AND m.account_id = ?2`,
+};
+
+function ownerRow(db: Db, accountId: string, id: string, now: number): OwnerRow | undefined {
+  return db.first<OwnerRow>(
+    `SELECT ${selectSql(MEDIA_COLUMN_MAP)}, ${OWNER_SQL.state} ${OWNER_SQL.from}`,
+    id,
+    accountId,
+    iso(now),
+  );
+}
+
+function ownerFacts(db: Db, accountId: string, id: string, now: number): OwnerFacts | undefined {
+  return db.first<OwnerFacts>(
+    `SELECT m.type AS type, ${OWNER_SQL.state},
+				m.status_id IS NOT NULL OR m.scheduled_status_id IS NOT NULL AS used, m.gc_at IS NULL AS kept
+			${OWNER_SQL.from}`,
+    id,
+    accountId,
+    iso(now),
+  );
+}
+
+// GET and PUT /api/v1/media/:id (Mastodon's MediaController): `ok` a completed upload (200), `processing` one still
+// processing before its deadline_at (206, masked: status-presenter.ts processingMedia), `failed` one failed or past its
+// deadline_at, read at the Store's time with no round needed (422), `not_found` anything else (404): another account's,
+// attached, a staging reservation (its request still holds it), a doomed or abandoned upload, a reservation never
+// staged, as today.
+export type OwnerMedia =
+  | { status: "ok"; media: MediaAttachment }
+  | { status: "processing"; media: MediaAttachment }
+  | { status: "failed" }
+  | { status: "not_found" };
+
+// The owner's view of the upload `own` names, as K3 and K4 would leave its record at `now` (written nowhere):
+// `finished` when it has no processing row, so media.ts's rules for a finished upload decide (ownUpload). The marker is
+// asked for only where K3 changes the state: a staging reservation is not found and a v2 upload at its deadline_at
+// failed whatever K3 says (K3 deletes the one and fails the other `restored`).
+type OwnerState = "finished" | "processing" | "failed" | "not_found";
+
+function ownerState(db: Db, own: OwnerRow | undefined, now: number, restoredAt: Marker): OwnerState {
+  if (own === undefined || own.processing === "staging") {
+    return "not_found";
+  }
+  if (own.processing === null) {
+    return own.own === 1 ? "finished" : "not_found";
+  }
+  const record = load(db, own.id);
+  const before = record.row;
+  if (
+    attachmentState(record.att) === "res" &&
+    (before?.state === "pending" || before?.state === "running") &&
+    before.reply_by === null &&
+    now >= before.deadline_at
+  ) {
+    return "failed";
+  }
+  // ownerRow has answered a staging row already, and K3 and K4 leave the attachment of a row they keep as it is.
+  const state = normalizedState(record, now, restoredAt);
+  if (state === null || attachmentState(record.att) !== "res") {
+    return "not_found";
+  }
+  return state === "failed" ? "failed" : "processing";
+}
+
+// The owner's answer for `own`, read in `state` (processing or finished).
+function shownOwn(db: Db, own: OwnerRow | undefined, state: "processing" | "finished"): OwnerMedia {
+  if (own === undefined || (state === "finished" && own.own !== 1)) {
+    return { status: "not_found" };
+  }
+  const media = presentRow(db, own);
+  return state === "processing" ? { status: "processing", media: processingMedia(media) } : { status: "ok", media };
+}
+
+// GET /api/v1/media/:id.
+export const ownerMedia = userReadOperation.atStoreTime("now")<
+  { id: string; now: number; restoredAt: Marker },
+  OwnerMedia
+>((db, { id, now, restoredAt }, { accountId }) => {
+  const own = ownerRow(db, accountId, id, now);
+  const state = ownerState(db, own, now, restoredAt);
+  return state === "processing" || state === "finished" ? shownOwn(db, own, state) : { status: state };
 });
 
-// Nothing: the Store runs it to learn whether an operation's kind would be admitted when it cannot read the restore
-// marker (store.ts #avWrite).
-export const avAdmission = readOperation<undefined, null>(() => null);
+// PUT /api/v1/media/:id: the description and focus of an upload still processing are written on its attachment (S6
+// leaves them) and it answers 206 as GET does; a failed one is refused (422) and nothing is written; a finished one is
+// updated as before.
+export const updateOwnerMedia = userWriteOperation.atStoreTime("now")<
+  { id: string; changes: MediaChanges; now: number; restoredAt: Marker },
+  OwnerMedia
+>((db, { id, changes, now, restoredAt }, { accountId }) => {
+  const state = ownerState(db, ownerRow(db, accountId, id, now), now, restoredAt);
+  if (state !== "processing" && state !== "finished") {
+    return { status: state };
+  }
+  describeMedia(db, id, changes);
+  return shownOwn(db, ownerRow(db, accountId, id, now), state);
+});
+
+// DELETE /api/v1/media/:id: S11 (deleteAvUpload's rule), the marker read only where K3 changes the answer.
+export const deleteOwnerMedia = userMediaDeleteOperation.atStoreTime("now")<
+  { id: string; now: number; restoredAt: Marker },
+  MediaDeleted
+>((db, { id, now, restoredAt }, { accountId }) => deleteUpload(db, accountId, id, now, restoredAt));
 
 // ---- S12 and S13 the dispatch round
 
@@ -1074,11 +1243,13 @@ export const mediaDispatchRound = writeOperation.atStoreTime("now")<Fence, Dispa
     }
     return apply(db, id, record, effect);
   };
-  if (restoredAt !== null) {
+  // The round's K3 seek needs the restore's time: an unknown marker refuses the round (restoreTime).
+  const restored = restoreTime(restoredAt);
+  if (restored !== null) {
     for (const { id } of seek<{ id: string }>(
       `SELECT media_id AS id FROM media_processing INDEXED BY media_processing_restore
 			WHERE state <> 'failed' AND staged_at <= ? ORDER BY staged_at LIMIT ?`,
-      restoredAt,
+      restored,
     )) {
       guarded(id);
     }
@@ -1164,8 +1335,14 @@ function sweepState(db: Db): SweepState {
   };
 }
 
-function claimLive(sweep: SweepState, claim: number, restoredAt: number | null): boolean {
-  return sweep.claim !== null && sweep.claim === claim && (restoredAt === null || claim > restoredAt);
+// Whether the claim is the sweep's and was made after the last restore: a claim consumed or not the sweep's is stale
+// whatever K3 says, so only the sweep's own claim asks for the marker (restoreTime).
+function claimLive(sweep: SweepState, claim: number, restoredAt: Marker): boolean {
+  if (sweep.claim === null || sweep.claim !== claim) {
+    return false;
+  }
+  const at = restoreTime(restoredAt);
+  return at === null || claim > at;
 }
 
 export const incomingSweepClaim = mediaDeleteOperation.atStoreTime("now")<
@@ -1215,7 +1392,7 @@ export const incomingClassify = mediaDeleteOperation.atStoreTime("now")<
 });
 
 export const incomingSwept = mediaDeleteOperation<
-  { claim: number; cursor: string | null; restoredAt: number | null },
+  { claim: number; cursor: string | null; restoredAt: Marker },
   { status: "swept" } | { status: "stale" }
 >((db, { claim, cursor, restoredAt }) => {
   const sweep = sweepState(db);

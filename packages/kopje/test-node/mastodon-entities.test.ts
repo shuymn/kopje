@@ -4,6 +4,7 @@ import type { Node } from "oxc-parser";
 import { describe, expect, it } from "vitest";
 
 import mastodon from "../test/fixtures/mastodon-4.7.5-api-access.json" with { type: "json" };
+import avMeta from "../test/fixtures/mastodon-4.7.5-av-meta.json" with { type: "json" };
 import {
   accepted,
   deviationIds,
@@ -399,5 +400,26 @@ describe(`entity fields match Mastodon v${mastodon.mastodon}`, () => {
         "Gone: not an entity of the fixture; remove its acknowledgement",
       ]);
     });
+  });
+});
+
+// A playable file's meta.original (#1828 P16): every fact Mastodon writes of a video or audio file beyond its
+// dimensions (Mastodon's "30/1" frame rate among them, test/fixtures/mastodon-4.7.5-av-meta.json) is a property of
+// Kopje's PlayableFacts, typed as the fixture's value is. The values the presenter shows are checked in workerd
+// (test/status-presenter.test.ts), from the same fixture.
+describe("a playable file's meta matches Mastodon's", () => {
+  const KEYWORDS: Record<string, string> = { TSStringKeyword: "string", TSNumberKeyword: "number" };
+
+  it("types each fact of the fixture's video and audio originals as its value", () => {
+    const { props } = targetProperties(ALL, { file: "src/domain/status-presenter.ts", typeName: "PlayableFacts" });
+    const typed = new Map(props.map((p) => [p.name, KEYWORDS[p.type.type] ?? p.type.type]));
+    const facts = [avMeta.video.meta.original, avMeta.audio.meta.original].flatMap((original) =>
+      Object.entries(original).filter(([name]) => name !== "width" && name !== "height"),
+    );
+    expect(facts.map(([name]) => name)).toContain("frame_rate");
+    expect(avMeta.video.meta.original.frame_rate).toBe("30/1");
+    for (const [name, value] of facts) {
+      expect([name, typed.get(name)]).toEqual([name, typeof value]);
+    }
   });
 });
