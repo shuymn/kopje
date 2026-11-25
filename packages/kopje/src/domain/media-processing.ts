@@ -71,20 +71,22 @@ const HOUR = 60 * MINUTE;
 
 const T_DISPATCH = 2 * SECOND;
 const T_START = 3 * SECOND;
-// The input streamed into the container: its size at INPUT_BYTES_PER_SECOND, at least T_INPUT_MIN.
-const INPUT_BYTES_PER_SECOND = 25 * 1024 * 1024;
+// The input streamed into the container: its size at INPUT_BYTES_PER_SECOND, at least T_INPUT_MIN. Measured on
+// normalize@standard-4: a 68 MB input took at most 3.15 s, which 16 MiB/s (4.05 s) covers.
+const INPUT_BYTES_PER_SECOND = 16 * 1024 * 1024;
 const T_INPUT_MIN = SECOND;
 const T_PROBE = SECOND;
 // The container's still, which /normalize holds out of the encode's cut.
 export const T_STILL = SECOND;
 // The Workers-side preview: Images' WebP and the RGBA_MIN_CALL_MS stillPreview keeps for the blurhash.
 const T_PREVIEW = 3 * SECOND;
-// The output into R2, the confirmed stop, three S5 calls and writes, and S6.
-const T_COMMIT = 6 * SECOND;
-// Of T_COMMIT, what the steps after the preview keep: the confirmed stop, the S5 grants and final writes, and S6. The
-// plan's T_COMMIT less the measured 4.5 s output into R2; a starting value the den-test edge runs measure (PR4-4). If
-// they grow it, T_COMMIT grows by the same amount, so a 4.5 s transfer near the edge keeps the preview's T_PREVIEW.
-const T_FINISH = 1500;
+// The output into R2, the confirmed stop, three S5 calls and writes, and S6: a 9 s share for the transfer into R2
+// (measured on normalize@standard-4 over 50 completed jobs: p95 5.72 s, at most 8.71 s) and T_FINISH.
+const T_COMMIT = 13 * SECOND;
+// Of T_COMMIT, what the steps after the preview keep: the confirmed stop, the S5 grants and final writes, and S6
+// (measured over the same jobs: p95 2.44 s, at most 3.65 s). T_COMMIT grows with T_FINISH, so a transfer at its share
+// near the edge keeps the preview's T_PREVIEW.
+const T_FINISH = 4 * SECOND;
 // The least time the optional preview is begun with: its WebP's share of T_PREVIEW (Images' 0.33 s p95 rounded up),
 // the rest of T_PREVIEW being the RGBA_MIN_CALL_MS stillPreview needs for a blurhash (below which it skips that).
 export const T_PREVIEW_MIN = T_PREVIEW - 2 * SECOND;
@@ -107,10 +109,10 @@ export const T_MIN_ENCODE = 5 * SECOND;
 export const AV_GRANT_MS = 2 * SECOND;
 export const V2_PROCESS_MS = 8 * MINUTE;
 // How long a v1 upload's request may hold its answer, from its arrival on the route's clock: the decision is S10's at
-// the route's cut, V1_TIME_MS less T_REPLY, and the answer starts by V1_TIME_MS. A provisional value, design 4.7's
-// floor: the plan's Q2 sets it from the den-test measurement of Elk's wait (the shortest browser's, less 10 %, at
-// most V2_PROCESS_MS), so every bound derived from it moves with it.
-export const V1_TIME_MS = 90 * SECOND;
+// the route's cut, V1_TIME_MS less T_REPLY, and the answer starts by V1_TIME_MS. Set by the plan's rule (the shortest
+// measured browser wait less 10 %, at most V2_PROCESS_MS): Elk's v1 upload in Chrome, Firefox and Playwright's WebKit
+// took an answer held 600 s and more, so V2_PROCESS_MS binds. Not measured on iOS Safari or the mobile apps.
+export const V1_TIME_MS = 8 * MINUTE;
 // How often the v1 route reads its upload's outcome (S9) while it waits.
 export const V1_POLL_MS = 2 * SECOND;
 // The largest video or audio file an upload takes (advertised as video_size_limit), the bytes of the `file` part's

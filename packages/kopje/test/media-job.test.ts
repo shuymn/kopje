@@ -544,21 +544,21 @@ describe("the upload's still (G2-3, C2-M4)", () => {
       expected: { completed: true },
     },
     {
-      // The edge the den-test runs measure: the preview has its 3 s (not skipped), leaving 1.65 s, and final writes of
-      // 1.5 s + 0.2 s exceed T_FINISH: both files land, S6 comes 50 ms past the deadline, and K4 records `deadline`.
-      name: "4.4 s transfer at the edge, Images held, final writes 1.5 s + 0.2 s (r3 edge): deadline",
+      // The transfer near its 9 s share: the preview has its 3 s (not skipped), leaving 4.15 s, and final writes of
+      // 3.8 s + 0.4 s exceed T_FINISH: both files land, S6 comes 50 ms past the deadline, and K4 records `deadline`.
+      name: "8.9 s transfer at the edge, Images held, final writes 3.8 s + 0.4 s (r3 edge): deadline",
       replyAt: (at: { still: number }) => at.still - 50,
-      transferMs: 4400,
+      transferMs: 8900,
       images: "held" as const,
-      completeMs: { original: 1500, full: 200 },
+      completeMs: { original: 3800, full: 400 },
       expected: { completed: false, failure: "deadline" },
     },
     {
-      // The transfer ends 2.05 s before the deadline: 0.55 s is left for the preview, under T_PREVIEW_MIN, so it is
+      // The transfer ends 4.55 s before the deadline: 0.55 s is left for the preview, under T_PREVIEW_MIN, so it is
       // skipped (no still asked for, no charge) and the upload completes with its poster.
-      name: "7 s transfer from 50 ms before the work deadline (r3 skip): S6 with the poster, no still asked for",
+      name: "11.5 s transfer from 50 ms before the work deadline (r3 skip): S6 with the poster, no still asked for",
       replyAt: (at: { still: number }) => at.still - 50,
-      transferMs: 7000,
+      transferMs: 11_500,
       images: "healthy" as const,
       expected: { completed: true, blurhash: null, stillAsked: false },
     },

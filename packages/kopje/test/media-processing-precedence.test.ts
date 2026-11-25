@@ -801,8 +801,8 @@ describe("named cells", () => {
     const w = await avWorld();
     const c = await queued(w, { v1: true });
     const { row } = await held(w.store, c.id);
-    // The start's fixed parts (start, input, probe, still, preview, commit) are 15 s at this input's size.
-    const fixed = 15 * SECOND;
+    // The start's fixed parts (start, input, probe, still, preview, commit) are 22 s at this input's size.
+    const fixed = 22 * SECOND;
     clock(row!.deadline_at! - fixed - T_MIN_ENCODE + 1);
     expect(await OPS.S4(w, { ...c, startId: "", invocation: "inv-late" })).toEqual({
       status: "settled",
@@ -816,7 +816,7 @@ describe("named cells", () => {
     const w = await avWorld();
     const c = await queued(w, { v1: true });
     const { row } = await held(w.store, c.id);
-    clock(row!.deadline_at! - 15 * SECOND - T_MIN_ENCODE);
+    clock(row!.deadline_at! - 22 * SECOND - T_MIN_ENCODE);
     expect(await OPS.S4(w, { ...c, startId: "", invocation: "inv-edge" })).toMatchObject({ status: "started" });
   });
 
