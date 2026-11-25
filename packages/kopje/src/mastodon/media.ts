@@ -128,7 +128,7 @@ async function readWithin(request: Request, ms: number): Promise<Uint8Array | "t
   }
 }
 
-function refusedForm(status: 400 | 413): { error: string; status: 400 | 413 } {
+export function refusedForm(status: 400 | 413): { error: string; status: 400 | 413 } {
   return { status, error: status === 413 ? "Request body is too large" : "Malformed request body" };
 }
 

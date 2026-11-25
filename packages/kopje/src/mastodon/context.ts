@@ -45,7 +45,8 @@ export type ApiDeps = {
   // inactive.
   mediaProcessor?: (env: Env) => MediaProcessorClient | null;
   // Resolves `ms` later on the route's clock (the v1 upload's waits and cuts, mastodon/media-av.ts); none: a timer.
-  wait?: (ms: number) => Promise<void>;
+  // An aborted `signal` cancels the wait, which then never resolves.
+  wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
 };
 
 export type AuthorSignature = { activity: Record<string, unknown>; keyId: string; key: StoredKey };

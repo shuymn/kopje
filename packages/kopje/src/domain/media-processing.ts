@@ -119,6 +119,12 @@ export const AV_UPLOAD_LIMIT = 94_371_840;
 export const SNIFF_BYTES = 64 * 1024;
 export const PART_BYTES = 8 * 1024 * 1024;
 export const STAGING_MS = 10 * MINUTE;
+// The most one R2 call of a cleanup (a multipart upload's abort, an input's delete) is awaited, by the processor and
+// by the upload route.
+export const R2_CALL_MS = 30 * SECOND;
+// The most a Store call is awaited where nothing else bounds it: S7 after an unconfirmed stop (the container may still
+// run, and the alarm retries the stop), and the upload route's v2 calls and cleanup.
+export const STORE_CALL_MS = 30 * SECOND;
 export const DISPATCH_MS = 2 * MINUTE;
 export const MAX_AV_INFLIGHT = 2;
 export const DISPATCH_BATCH = 50;

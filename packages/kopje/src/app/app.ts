@@ -72,7 +72,7 @@ export type AppDeps = {
   // The media processor (src/media-processor.ts), null without its binding; worker.ts passes processorClient.
   mediaProcessor?: (env: Env) => MediaProcessorClient | null;
   // Resolves `ms` later on the API's clock, for the v1 media upload's waits (default: a timer); tests hold it.
-  wait?: (ms: number) => Promise<void>;
+  wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
 };
 
 // The admin API writes that leave moderation jobs (domain/suspension.ts): the action and the unsuspension of an

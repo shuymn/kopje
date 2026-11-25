@@ -342,9 +342,11 @@ export class MultipartStream {
     this.#kept = null;
   }
 
-  async cancel(): Promise<void> {
+  // Cancels the body, not awaiting the stream's cancel: one that never settles holds nothing up (code review r1 M2).
+  cancel(): Promise<void> {
     this.#done = true;
     this.#kept = null;
-    await this.#reader.cancel().catch(() => {});
+    this.#reader.cancel().catch(() => {});
+    return Promise.resolve();
   }
 }

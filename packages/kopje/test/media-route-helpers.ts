@@ -21,9 +21,17 @@ export class RouteTimers {
   readonly #listeners: ((ms: number) => void)[] = [];
   constructor(readonly now: () => number) {}
 
-  wait = (ms: number): Promise<void> =>
+  // A wait the route cancels (its signal aborted) leaves the pending ones.
+  wait = (ms: number, signal?: AbortSignal): Promise<void> =>
     new Promise<void>((resolve) => {
-      this.#waits.push({ at: this.now() + ms, resolve });
+      const wait = { at: this.now() + ms, resolve };
+      this.#waits.push(wait);
+      signal?.addEventListener("abort", () => {
+        const i = this.#waits.indexOf(wait);
+        if (i !== -1) {
+          this.#waits.splice(i, 1);
+        }
+      });
       for (const listener of this.#listeners.splice(0)) {
         listener(ms);
       }
@@ -258,7 +266,11 @@ export class SlowBody {
   cancelled = false;
   readonly reachedHold = deferred();
 
-  constructor(bytes: Uint8Array, options: { chunk?: number; holdAt?: number } = {}) {
+  readonly #stallCancel: boolean;
+
+  // stallCancel: the stream's cancel never settles.
+  constructor(bytes: Uint8Array, options: { chunk?: number; holdAt?: number; stallCancel?: boolean } = {}) {
+    this.#stallCancel = options.stallCancel ?? false;
     this.#bytes = bytes;
     this.#chunk = options.chunk ?? 64 * 1024;
     this.#holdAt = options.holdAt ?? Infinity;
@@ -286,6 +298,7 @@ export class SlowBody {
       },
       cancel: () => {
         this.cancelled = true;
+        return this.#stallCancel ? new Promise<void>(() => {}) : undefined;
       },
     });
   }
@@ -326,4 +339,67 @@ export async function lastUpload(w: RouteWorld, who: "alice" | "bob" = "alice"):
     throw new Error("no reservation");
   }
   return row.id;
+}
+
+// ---- An R2 bucket whose multipart calls a test may hold or count (code review r1 M1-M3)
+
+export type BucketHooks = {
+  // The create's reply, held after R2 created the upload.
+  holdCreate?: Promise<void>;
+  // Each part's reply, held after R2 stored the part (the last part sent: the final one of a small file).
+  holdPart?: Promise<void>;
+  // abort() and delete() that never answer.
+  stallAbort?: boolean;
+  stallDelete?: boolean;
+};
+
+export type BucketCounts = { creates: number; parts: number; completes: number; aborts: number; deletes: number };
+
+export function hookedBucket(hooks: BucketHooks): {
+  bucket: R2Bucket;
+  counts: BucketCounts;
+  partReached: Promise<void>;
+} {
+  const counts: BucketCounts = { creates: 0, parts: 0, completes: 0, aborts: 0, deletes: 0 };
+  const partReached = deferred();
+  const never = new Promise<never>(() => {});
+  const bucket = new Proxy(env.MEDIA, {
+    get(target, method: string) {
+      if (method === "delete") {
+        return (key: string | string[]) => {
+          counts.deletes++;
+          return hooks.stallDelete === true ? never : target.delete(key);
+        };
+      }
+      if (method !== "createMultipartUpload") {
+        const value = Reflect.get(target, method) as unknown;
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      }
+      return async (key: string) => {
+        counts.creates++;
+        const upload = await target.createMultipartUpload(key);
+        await hooks.holdCreate;
+        return {
+          key: upload.key,
+          uploadId: upload.uploadId,
+          uploadPart: async (n: number, part: Uint8Array) => {
+            counts.parts++;
+            const uploaded = await upload.uploadPart(n, part);
+            partReached.resolve();
+            await hooks.holdPart;
+            return uploaded;
+          },
+          complete: (p: R2UploadedPart[]) => {
+            counts.completes++;
+            return upload.complete(p);
+          },
+          abort: () => {
+            counts.aborts++;
+            return hooks.stallAbort === true ? never : upload.abort();
+          },
+        };
+      };
+    },
+  });
+  return { bucket, counts, partReached: partReached.promise };
 }
