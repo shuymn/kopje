@@ -178,6 +178,22 @@ describe("a malformed parameter name, as workerd's MIME parser recovers (code re
   });
 });
 
+describe("an unquoted value's leading whitespace, as workerd's MIME parser keeps it (code review r5 M4)", () => {
+  const contentType = 'multipart/form-data; bad name="x; boundary= B; y"; boundary=C';
+  it.each([
+    ["--B", false],
+    ["-- B", true],
+  ])("reads the boundary as formData() does for a body delimited by %s", async (delimiter, parsed) => {
+    const body = enc.encode(`${delimiter}\r\n${HEAD_A}\r\n\r\nx\r\n${delimiter}--\r\n`);
+    const form = await new Response(body, { headers: { "content-type": contentType } }).formData().then(
+      (f) => f.get("a"),
+      () => null,
+    );
+    expect(form).toBe(parsed ? "x" : null);
+    expect(multipartBoundary(contentType)).toBe(" B");
+  });
+});
+
 describe("the closing padding read in one pass (code review r2 LOW)", () => {
   it("reads 32 MiB of padding after the close in one chunk within a generous time", async () => {
     const head = enc.encode(`--B\r\n${HEAD_A}\r\n\r\nx\r\n--B--`);

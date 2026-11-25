@@ -30,6 +30,7 @@ export type PartHead = { name: string | null; file: boolean; bytes: Uint8Array }
 
 const HTTP_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const HTTP_WHITESPACE = /^[\t\n\r ]+|[\t\n\r ]+$/g;
+const TRAILING_WHITESPACE = /[\t\n\r ]+$/;
 const QUOTED_VALUE = /^[\t -~\u0080-ÿ]*$/;
 
 // The boundary of a multipart/form-data Content-Type, or null for any other type. Read as workerd's MIME parser reads
@@ -93,7 +94,8 @@ export function multipartBoundary(contentType: string): string | null {
       }
     } else {
       const valueEnd = input.indexOf(";", at);
-      value = input.slice(at, valueEnd === -1 ? input.length : valueEnd).replace(HTTP_WHITESPACE, "");
+      // Only trailing whitespace is trimmed from an unquoted value, as workerd does (code review r5 M4).
+      value = input.slice(at, valueEnd === -1 ? input.length : valueEnd).replace(TRAILING_WHITESPACE, "");
       at = valueEnd === -1 ? input.length : valueEnd;
       if (value === "") {
         continue;
