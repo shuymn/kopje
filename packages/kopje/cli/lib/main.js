@@ -68,7 +68,8 @@ Commands
                                 the last (docs/media-processor.md); still@standard-1 checks the profile (a still of the
                                 packaged clip, its PNG and Images) and records nothing: the media rebuild records its
                                 own probe of it. Both are refused in maintenance and while the Store is read-only.
-                                Prints each result. Exits 1 when a probe did not pass, 3 when the instance has no
+                                Prints each result. Exits 1 when a probe did not pass or its verdict was not recorded
+                                (another probe replaced it), 3 when the instance has no
                                 MediaProcessor binding (deploy/README.md, "Video and audio")
   emoji [--after <id>]          list the local custom emoji, enabled and disabled, oldest first
   emoji add <shortcode> <file> [--category <name>] [--unlisted] [--replace]
@@ -1039,9 +1040,9 @@ export async function run({
           }
           // normalize@standard-4: its activation probe's verdict, recorded for the build ("recorded"; a probe claimed
           // within the cooldown is not run again and has none). still@standard-1: its check's verdict, recorded nowhere
-          // ("checked"). The exit status follows the verdict.
+          // ("checked"). The exit status follows a committed verdict: a claim another replaced ("stale") recorded none.
           print(result.probe);
-          failed ||= result.probe.verdict?.outcome !== "pass";
+          failed ||= !["recorded", "checked"].includes(result.probe.status) || result.probe.verdict?.outcome !== "pass";
         }
         return failed ? 1 : 0;
       }

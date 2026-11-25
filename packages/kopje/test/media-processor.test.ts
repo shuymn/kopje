@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { run } from "../cli/lib/main.js";
 import { createApp } from "../src/app/app";
+import { probeName } from "../src/domain/media-probes";
 import { PROBE_FIXTURE_BASE64 } from "../src/media-probe-fixture";
 import {
   AV_OUTPUT_LIMIT,
@@ -26,6 +27,7 @@ import {
   type UploadProcessor,
 } from "../src/platform/media-transcoder";
 import { accessToken, adminClaims, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
+import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { avFixture, verifyBytes } from "./av-helpers";
 import { BUILD, deferred, migratedStore } from "./helpers";
@@ -1119,8 +1121,23 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
       });
       return { code, out: out.join(""), err: err.join("") };
     };
-    return { post, cli };
+    return { post, cli, store };
   }
+
+  it("exits 1 for a passing normalize probe whose claim another replaced (stale), its verdict not recorded", async () => {
+    let store: Awaited<ReturnType<typeof migratedStore>> | null = null;
+    const replaced = await harness(async (profile) => {
+      if (profile === "normalize@standard-4") {
+        await sql(store!, "DELETE FROM kopje_state WHERE name = ?", probeName("attempt", profile));
+      }
+      return true;
+    });
+    store = replaced.store;
+    const run = await replaced.cli(["media-processor", "probe", "normalize@standard-4"]);
+    expect(run.out).toContain('"status": "stale"');
+    expect(run.out).toContain('"outcome": "pass"');
+    expect(run.code).toBe(1);
+  });
 
   it("refuses an unknown profile, and answers 409 without the binding", async () => {
     const passes = vi.fn(() => Promise.resolve(true));
