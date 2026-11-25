@@ -1064,24 +1064,22 @@ function deleteUpload(db: Db, accountId: string, id: string, now: number, restor
 
 // What the owner's operations decide on of the upload `id` of `accountId`'s, read in one statement before anything else
 // of it (undefined for another account's or none): its type, its processing row's state (null without one), whether it
-// is live and unattached (`own`, media.ts ownUpload's rule) and deleteMedia's `used` and `kept`. GET and PUT read it
-// with the columns the presenter takes (ownerRow); DELETE without them (ownerFacts).
-type OwnerFacts = {
-  type: string;
-  processing: ProcessingRow["state"] | null;
-  own: number;
-  used: number;
-  kept: number;
+// is live and unattached (`own`, media.ts ownUpload's rule) and, for DELETE, deleteMedia's `used` and `kept`. GET and
+// PUT read it with the columns the presenter takes (ownerRow); DELETE without them (ownerFacts). Both select by
+// OWNER_SQL's lookup (?1 the id, ?2 the account, ?3 the Store's time).
+type OwnerLookup = { processing: ProcessingRow["state"] | null; own: number };
+type OwnerFacts = OwnerLookup & { type: string; used: number; kept: number };
+type OwnerRow = MediaRow & OwnerLookup;
+
+const OWNER_SQL = {
+  state: `(SELECT p.state FROM media_processing p WHERE p.media_id = m.id) AS processing,
+				m.status_id IS NULL AND ${liveMediaSql("m", "?3")} AS own`,
+  from: `FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} WHERE m.id = ?1 AND m.account_id = ?2`,
 };
-type OwnerRow = MediaRow & OwnerFacts;
 
 function ownerRow(db: Db, accountId: string, id: string, now: number): OwnerRow | undefined {
   return db.first<OwnerRow>(
-    `SELECT ${selectSql(MEDIA_COLUMN_MAP)}, (SELECT p.state FROM media_processing p WHERE p.media_id = m.id) AS processing,
-				m.status_id IS NULL AND ${liveMediaSql("m", "?3")} AS own,
-				m.status_id IS NOT NULL OR m.scheduled_status_id IS NOT NULL AS used, m.gc_at IS NULL AS kept
-			FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX}
-			WHERE m.id = ?1 AND m.account_id = ?2`,
+    `SELECT ${selectSql(MEDIA_COLUMN_MAP)}, ${OWNER_SQL.state} ${OWNER_SQL.from}`,
     id,
     accountId,
     iso(now),
@@ -1090,11 +1088,9 @@ function ownerRow(db: Db, accountId: string, id: string, now: number): OwnerRow 
 
 function ownerFacts(db: Db, accountId: string, id: string, now: number): OwnerFacts | undefined {
   return db.first<OwnerFacts>(
-    `SELECT m.type AS type, (SELECT p.state FROM media_processing p WHERE p.media_id = m.id) AS processing,
-				m.status_id IS NULL AND ${liveMediaSql("m", "?3")} AS own,
+    `SELECT m.type AS type, ${OWNER_SQL.state},
 				m.status_id IS NOT NULL OR m.scheduled_status_id IS NOT NULL AS used, m.gc_at IS NULL AS kept
-			FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX}
-			WHERE m.id = ?1 AND m.account_id = ?2`,
+			${OWNER_SQL.from}`,
     id,
     accountId,
     iso(now),
