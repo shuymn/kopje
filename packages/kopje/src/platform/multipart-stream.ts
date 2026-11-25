@@ -9,6 +9,8 @@
 // `replay` is asked for, every raw chunk pulled is also kept, so a request handed back to the whole-body path is read
 // there byte for byte as sent: the chunks kept, then the rest of the body.
 
+import { parseMediaType } from "./media-type";
+
 const CR = 13;
 const LF = 10;
 const DASH = 45;
@@ -28,22 +30,14 @@ export class MultipartRefused extends Error {
 // it is a file part (a filename that is not empty). `bytes`: the header lines as sent.
 export type PartHead = { name: string | null; file: boolean; bytes: Uint8Array };
 
-// The boundary of a multipart/form-data Content-Type, or null for any other type.
+// The boundary of a multipart/form-data Content-Type, read as a media type (RFC 9110: a quoted value's `;` and `=` are
+// its own, code review r2 M4), or null for any other type, and for a header that does not parse that way, which the
+// whole-body path then reads.
 export function multipartBoundary(contentType: string): string | null {
-  const [type, ...params] = contentType.split(";");
-  if (type?.trim().toLowerCase() !== "multipart/form-data") {
-    return null;
-  }
-  for (const param of params) {
-    const eq = param.indexOf("=");
-    if (eq !== -1 && param.slice(0, eq).trim().toLowerCase() === "boundary") {
-      const raw = param.slice(eq + 1).trim();
-      const value = raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2 ? raw.slice(1, -1) : raw;
-      // RFC 2046: 1 to 70 characters.
-      return value.length >= 1 && value.length <= 70 ? value : null;
-    }
-  }
-  return null;
+  const type = parseMediaType(contentType);
+  const value = type?.essence === "multipart/form-data" ? type.parameters.get("boundary") : undefined;
+  // RFC 2046: 1 to 70 characters.
+  return value !== undefined && value.length >= 1 && value.length <= 70 ? value : null;
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
@@ -94,8 +88,8 @@ export class MultipartStream {
   // LF, `--` and the boundary: workerd's form parser takes a delimiter at an LF, a CR before it being the delimiter's
   // (form-data.c++), so a part's body ends before that CR, and a CR alone is data.
   readonly #delimiter: Uint8Array;
-  // Unconsumed bytes, the body's start preceded by the LF the first delimiter lacks.
-  #buf: Uint8Array = new Uint8Array([LF]);
+  // Unconsumed bytes.
+  #buf: Uint8Array = new Uint8Array(0);
   #done = false;
   #kept: Uint8Array[] | null = [];
   #pulled = 0;
@@ -176,14 +170,16 @@ export class MultipartStream {
     if (this.#at === "body") {
       await this.body(() => {});
     } else if (this.#at === "start") {
-      // The first delimiter, after any preamble.
+      // The first delimiter: the first `--` and the boundary anywhere, mid-line included, as workerd's form parser
+      // takes it (code review r2 M4).
+      const first = this.#delimiter.subarray(1);
       for (;;) {
-        const at = indexOf(this.#buf, this.#delimiter);
+        const at = indexOf(this.#buf, first);
         if (at !== -1) {
-          this.#buf = this.#buf.subarray(at + this.#delimiter.byteLength);
+          this.#buf = this.#buf.subarray(at + first.byteLength);
           break;
         }
-        this.#buf = this.#buf.subarray(Math.max(0, this.#buf.byteLength - this.#delimiter.byteLength + 1));
+        this.#buf = this.#buf.subarray(Math.max(0, this.#buf.byteLength - first.byteLength + 1));
         if (!(await this.#pull())) {
           throw new MultipartRefused("malformed");
         }
@@ -193,11 +189,16 @@ export class MultipartStream {
     // (RFC 2046; workerd ignores the rest); CRLF or LF begins a part, as workerd reads it; anything else is refused.
     const first = await this.#byteAt(0);
     if (first === DASH && (await this.#byteAt(1)) === DASH) {
-      // Each padding byte is dropped as it is read, so padding of any length holds no memory.
+      // The padding buffered is dropped in one pass, then the next chunk read, so padding of any length holds no
+      // memory and costs one scan (code review r2 LOW).
       this.#buf = this.#buf.subarray(2);
       let end = await this.#byteAt(0);
       while (end === 0x20 || end === 0x09) {
-        this.#buf = this.#buf.subarray(1);
+        let i = 1;
+        while (i < this.#buf.byteLength && (this.#buf[i] === 0x20 || this.#buf[i] === 0x09)) {
+          i++;
+        }
+        this.#buf = this.#buf.subarray(i);
         end = await this.#byteAt(0);
       }
       if (end !== undefined && end !== LF && !(end === CR && (await this.#byteAt(1)) === LF)) {

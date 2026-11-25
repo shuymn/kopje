@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MultipartRefused, MultipartStream } from "../src/platform/multipart-stream";
+import { MultipartRefused, MultipartStream, multipartBoundary } from "../src/platform/multipart-stream";
 
 // The AV upload's multipart reader (#1828 PR4-4) frames a body as workerd's form parser does (the image path's parser,
 // Request#formData): a delimiter is LF then `--` and the boundary, a CR before it belonging to the delimiter; after
@@ -80,6 +80,8 @@ const AGREED: Record<string, string> = {
   "a head ended by lf lf": `--B\r\n${HEAD_A}\n\nx\r\n--B--\r\n`,
   "a cr lf inside data": `--B\r\n${FILE_F}\r\n\r\nx\r\n\r\n-B\r\n--\r\n--B--\r\n`,
   "an empty body": `--B\r\n${HEAD_A}\r\n\r\n\r\n--B--\r\n`,
+  // workerd takes the first `--B` anywhere as the first delimiter, mid-line included (code review r2 M4).
+  "a first delimiter mid-line": `preamble --B\r\n${HEAD_A}\r\n\r\nfrom-preamble\r\n--B\r\n${FILE_F}\r\n\r\nvideo\r\n--B--\r\n`,
 };
 
 const REFUSED_BY_BOTH: Record<string, string> = {
@@ -142,5 +144,43 @@ describe("the closing line's padding", () => {
     await reader.body(() => {});
     expect(await reader.next()).toBeNull();
     expect(reader.buffered).toBeLessThanOrEqual(chunk.byteLength);
+  });
+});
+
+describe("the boundary parameter, as workerd's MIME parser reads it (code review r2 M4)", () => {
+  it.each([
+    ['multipart/form-data; note="a;boundary=inner;z"; boundary=B'],
+    ['multipart/form-data; boundary="B"'],
+    ["multipart/form-data;boundary=B"],
+    ['Multipart/Form-Data; BOUNDARY="B"; charset=utf-8'],
+  ])("reads %s as formData() does", async (contentType) => {
+    const body = enc.encode(`--B\r\n${HEAD_A}\r\n\r\nx\r\n--B--\r\n`);
+    const form = await new Response(body, { headers: { "content-type": contentType } }).formData();
+    expect(form.get("a")).toBe("x");
+    expect(multipartBoundary(contentType)).toBe("B");
+  });
+});
+
+describe("the closing padding read in one pass (code review r2 LOW)", () => {
+  it("reads 32 MiB of padding after the close in one chunk within a generous time", async () => {
+    const head = enc.encode(`--B\r\n${HEAD_A}\r\n\r\nx\r\n--B--`);
+    const padding = new Uint8Array(32 * 1024 * 1024).fill(0x20);
+    const chunks = [head, padding, enc.encode("\r\n")];
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk === undefined) {
+          controller.close();
+        } else {
+          controller.enqueue(chunk);
+        }
+      },
+    });
+    const reader = new MultipartStream(stream, "B", Number.MAX_SAFE_INTEGER);
+    await reader.next();
+    await reader.body(() => {});
+    const started = performance.now();
+    expect(await reader.next()).toBeNull();
+    expect(performance.now() - started).toBeLessThan(250);
   });
 });
