@@ -5,7 +5,19 @@ import { AV_WRITE_WINDOW_MS, ORPHAN_GRACE_MS } from "../src/domain/media";
 import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
 import { fileKey, originalKey } from "../src/platform/media-files";
 import { BUILD } from "./helpers";
-import { avWorld, type AvWorld, bookmark, clock, held, MINUTE, restore, T0 } from "./media-processing-helpers";
+import {
+  ACTIVE,
+  avWorld,
+  type AvWorld,
+  bookmark,
+  clock,
+  held,
+  MINUTE,
+  reserve,
+  restore,
+  SECOND,
+  T0,
+} from "./media-processing-helpers";
 import { cleared, platformFor, upload } from "./media-unit-helpers";
 
 // Interleavings of an upload's object (UploadUnit) with the owner, the Store and the platform, through the production
@@ -108,19 +120,35 @@ describe("the start rule", () => {
     await cleared(w, p, up.id);
   });
 
-  it("a restored live run (K3) writes nothing and keeps its slot until its release", async () => {
+  it("a restored live run (K3) writes nothing, and no third upload takes a slot before its S8", async () => {
     const w = await avWorld();
     const p = await platformFor(w);
     const up = await upload(w, p);
     p.afterCall("startNormalize", async () => {
       await restore(w.store, await bookmark(w.store), Date.now());
     });
+    const take = async () => {
+      const next = await reserve(w, Date.now());
+      return w.store.takeAvSlot(BUILD, {
+        id: next.id,
+        token: next.token,
+        kind: "video",
+        v1Left: null,
+        activation: ACTIVE,
+      });
+    };
+    let beforeRelease: { second: string; third: string } | null = null;
     p.beforeCall("releaseAvSlot", async () => {
-      expect((await held(w.store, up.id)).slot).not.toBeNull();
+      // Past the restore marker, so the new reservations are not fenced; the restored run's slot still counts.
+      clock(Date.now() + SECOND);
+      beforeRelease = { second: (await take()).status, third: (await take()).status };
     });
     await p.settle();
+    expect(beforeRelease).toEqual({ second: "taken", third: "busy" });
     expect(p.writes()).toEqual([]);
     expect(await landed(up.id, up.token)).toEqual({ original: false, full: false, small: false });
     await cleared(w, p, up.id);
+    // After its S8, the slot is free again.
+    expect((await take()).status).toBe("taken");
   });
 });

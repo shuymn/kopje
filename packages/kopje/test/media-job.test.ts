@@ -9,7 +9,7 @@ import { sql } from "./api-helpers";
 import { avFixture, verifyBytes } from "./av-helpers";
 import { BUILD } from "./helpers";
 import { TestCodec } from "./media-helpers";
-import { fakeControl, jobOf, putInput, stillPng, uploadDeps } from "./media-job-helpers";
+import { fakeControl, jobOf, multipartLog, putInput, stillPng, uploadDeps } from "./media-job-helpers";
 import { avWorld, clock, held, HOUR, started } from "./media-processing-helpers";
 
 // runUpload (jobs/media-jobs.ts, the PR4 plan's 1.3 D3-D7) through the production Store and the media bucket, the
@@ -94,6 +94,55 @@ describe("runUpload (P12)", () => {
     const fake = fakeControl({ output, durationMs: String(await durationMs("r1-silent.mp4")), ...answer });
     await runUpload(uploadDeps(w, fake.control), await jobOf(w, up));
     expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "verifier" });
+    expect(await objects(up.id, up.token)).toMatchObject({ original: false, full: false });
+  });
+
+  async function refusedMp3(): Promise<{ output: Uint8Array; durationMs: string }> {
+    // The last byte of the last frame's audio changed: frame data is not parsed, so only the Xing frame's music CRC,
+    // checked once the stream has ended, refuses it (PR3's case).
+    const output = (await avFixture("mp3.mp3")).slice();
+    const verdict = await verifyBytes("audio/mpeg", output);
+    if (!verdict.ok) {
+      throw new Error("fixture refused");
+    }
+    output[output.length - 1]! ^= 0xff;
+    return { output, durationMs: String(Math.round(verdict.facts.duration * 1000)) };
+  }
+
+  it.each([
+    [
+      "an MP3 whose music CRC refuses it at its end",
+      async () => ({ ...(await refusedMp3()), type: "audio/mpeg" as const }),
+    ],
+    [
+      "the same MP3, its body ending in an empty chunk",
+      async () => ({ ...(await refusedMp3()), type: "audio/mpeg" as const, emptyTail: true }),
+    ],
+    [
+      "an output 100 bytes longer than its declared length",
+      async () => ({
+        output: await avFixture("r1-silent.mp4"),
+        durationMs: String(await durationMs("r1-silent.mp4")),
+        lengthOff: -100,
+      }),
+    ],
+    [
+      "an output that ends early",
+      async () => ({
+        output: await avFixture("r1-silent.mp4"),
+        durationMs: String(await durationMs("r1-silent.mp4")),
+        truncateAt: 1000,
+      }),
+    ],
+  ])("aborts both multipart uploads, completing neither, for %s (P12)", async (_name, answer) => {
+    const w = await avWorld();
+    const up = await started(w);
+    await putInput(up.id);
+    const { bucket, log } = multipartLog();
+    await runUpload(uploadDeps(w, fakeControl(await answer()).control, { bucket }), await jobOf(w, up));
+    expect((await held(w.store, up.id)).row).toMatchObject({ state: "failed", failure: "verifier" });
+    expect(log.filter((entry) => entry.startsWith("complete:"))).toEqual([]);
+    expect(log.filter((entry) => entry.startsWith("abort:")).toSorted()).toEqual(["abort:full", "abort:original"]);
     expect(await objects(up.id, up.token)).toMatchObject({ original: false, full: false });
   });
 

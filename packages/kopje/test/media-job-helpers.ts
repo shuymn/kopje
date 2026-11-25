@@ -25,6 +25,10 @@ export type ServerAnswer = {
   failure?: { status: number; code: string; body?: string };
   // The response's body ends after this many bytes, whatever its Content-Length says.
   truncateAt?: number;
+  // The Content-Length declared this many bytes off the body's length.
+  lengthOff?: number;
+  // The body ends with one empty chunk.
+  emptyTail?: boolean;
 };
 
 export function fakeControl(
@@ -57,10 +61,19 @@ export function fakeControl(
       const output = answer.output ?? new Uint8Array();
       const type = answer.type ?? "video/mp4";
       const sent = answer.truncateAt === undefined ? output : output.subarray(0, answer.truncateAt);
-      return new Response(sent, {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(sent);
+          if (answer.emptyTail === true) {
+            controller.enqueue(new Uint8Array(0));
+          }
+          controller.close();
+        },
+      });
+      return new Response(body, {
         headers: {
           "content-type": type,
-          "content-length": String(output.byteLength),
+          "content-length": String(output.byteLength + (answer.lengthOff ?? 0)),
           "kopje-kind": type === "video/mp4" ? "video" : "audio",
           ...(type === "video/mp4" ? { "kopje-still": String((answer.still ?? null) !== null) } : {}),
           ...(answer.durationMs === null ? {} : { "kopje-duration-ms": answer.durationMs ?? "2000" }),
@@ -170,4 +183,36 @@ export async function truncatedStill(): Promise<Uint8Array> {
   outView.setUint32(37 + typed.length, crc32(typed));
   out.set(png.subarray(png.length - 12), 33 + 12 + data.length);
   return out;
+}
+
+// The media bucket, logging each multipart upload's creation, completion and abort by its kind ("original", "full").
+export function multipartLog(): { bucket: R2Bucket; log: string[] } {
+  const log: string[] = [];
+  const kind = (key: string) => (key.startsWith("originals/") ? "original" : "full");
+  const bucket = new Proxy(env.MEDIA, {
+    get(target, method: string) {
+      const value = (target as unknown as Record<string, unknown>)[method];
+      if (method !== "createMultipartUpload") {
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      }
+      return async (key: string, options?: R2MultipartOptions) => {
+        const upload = await target.createMultipartUpload(key, options);
+        log.push(`create:${kind(key)}`);
+        return {
+          key: upload.key,
+          uploadId: upload.uploadId,
+          uploadPart: upload.uploadPart.bind(upload),
+          abort: async () => {
+            log.push(`abort:${kind(key)}`);
+            await upload.abort();
+          },
+          complete: async (parts: R2UploadedPart[]) => {
+            log.push(`complete:${kind(key)}`);
+            return upload.complete(parts);
+          },
+        };
+      };
+    },
+  });
+  return { bucket, log };
 }
