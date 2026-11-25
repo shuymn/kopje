@@ -339,7 +339,9 @@ describe("stillEncodes's body read (r2 M6)", () => {
     });
     const codec = imagesCodec(fakeBinding({ info: { format: "image/png", width: 320, height: 180 }, output: held }));
     const end = Date.now() + 50;
-    const answer = stillEncodes(codec, PNG_PLAIN, { width: 320, height: 180 }, (work) => within(work, end, Date.now));
+    const answer = stillEncodes(codec, bytes(PNG_PLAIN), { width: 320, height: 180 }, (work) =>
+      within(work, end, Date.now),
+    );
     const late = new Promise<"still waiting">((resolve) => setTimeout(() => resolve("still waiting"), 500));
     // The guard's give-up passes on (the probe's no-verdict `timeout`), at the deadline rather than never.
     const settled = await Promise.race([answer.catch((error: unknown) => error), late]);
