@@ -5342,8 +5342,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
   the largest at most, 48,489,479.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
-  a turn presents at most 18,723,568 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
-  JSON again at most doubles it), S = 7,394,679 being the most JSON a streamed subject presents, the quote
+  a turn presents at most 18,725,328 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  JSON again at most doubles it), S = 7,395,559 being the most JSON a streamed subject presents, the quote
   conversation's (`update` and `status.update` a boost of a quote, `conversation` one whose last status is a quote, as a
   conversation shows no boost as its last status, `notification` its status, report and warning together, an
   announcement), derived from the maxima table (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). Held

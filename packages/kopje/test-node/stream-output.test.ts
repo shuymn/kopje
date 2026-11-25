@@ -417,14 +417,14 @@ describe("the caps (RES-6)", () => {
   it("derives instanceBytes and socketBytes from the baseline, the largest peak and the tables", () => {
     expect({ ATTACHMENT_WORKING, UNIT_PEAK, P, N, TAG_TABLE_BYTES, EVENT_TABLE_BYTES }).toEqual({
       ATTACHMENT_WORKING: 12_632_096,
-      UNIT_PEAK: 48_486_839.5,
+      UNIT_PEAK: 48_489_479.5,
       P: HEAP_PEAKS.groups.backstop,
       N: 616,
       TAG_TABLE_BYTES: 262_208,
       EVENT_TABLE_BYTES: 5_242_944,
     });
     const room = ISOLATE - Math.ceil(1.25 * STORE_BASELINE.bytes) - P - TAG_TABLE_BYTES - EVENT_TABLE_BYTES;
-    expect(room).toBe(17_143_751);
+    expect(room).toBe(17_141_111);
     const instanceBytes = Math.floor(room / MIB) * MIB;
     expect(STREAM_OUTPUT.instanceBytes).toBe(instanceBytes);
     expect(STREAM_OUTPUT.socketBytes).toBe(Math.floor(instanceBytes / 3 / MIB) * MIB);
