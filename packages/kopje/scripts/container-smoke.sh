@@ -311,7 +311,9 @@ for _ in $(seq 1 100); do
 done
 [ "$(status "$(req healthz http://127.0.0.1:8080/healthz)")" = 200 ] || { echo "no /healthz" >&2; exit 1; }
 # The protocol version the Worker requires (src/media-processor.ts NORMALIZE_PROTOCOL).
-grep -q '"protocol":2' "$work/out/healthz" || { echo "/healthz names no protocol 2: $(cat "$work/out/healthz")" >&2; exit 1; }
+# Its top-level field, exactly; the body is not printed.
+python3 -I -c 'import json, sys; v = json.load(open(sys.argv[1])).get("protocol"); sys.exit(0 if type(v) is int and v == 2 else 1)' \
+  "$work/out/healthz" 2>/dev/null || { echo "/healthz names no protocol 2" >&2; exit 1; }
 
 failed=0
 check() { # <ok?> <message>
