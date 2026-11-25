@@ -151,7 +151,6 @@ const STATE = {
 } as const;
 
 const isTime = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
-const isTimeOrNull = (n: unknown): n is number | null => n === null || isTime(n);
 
 // An array input as given over RPC (a caller may send anything), or none.
 function listOf<T>(value: readonly T[]): readonly T[] {
@@ -1494,10 +1493,8 @@ export const maintainRemoteMedia = writeOperation.atStoreTime("now")<
   if (!isTime(now) || !isTime(cap) || instanceDomain(db) === null) {
     return empty("unset");
   }
+  // A time readRestore validated (a non-negative safe integer), or null.
   const restoredAt = restoreTime(restore);
-  if (!isTimeOrNull(restoredAt)) {
-    return empty("unset");
-  }
   if (restoredAt !== null && now - restoredAt < REMOTE_SETTLE_MS) {
     return empty("settling");
   }

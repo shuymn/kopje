@@ -10,20 +10,15 @@ export type Restore = number | null | "unknown";
 // point, so an operation that never reaches one never reads the marker (withMarker).
 export type Marker = Restore | "unread";
 
-function parseRestore(text: string): Exclude<Restore, null> {
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    const at = typeof parsed === "object" && parsed !== null ? (parsed as { at?: unknown }).at : undefined;
-    return typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? at : "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
 export async function readRestore(bucket: R2Bucket, key: string): Promise<Restore> {
   try {
     const marker = await bucket.get(key);
-    return marker === null ? null : parseRestore(await marker.text());
+    if (marker === null) {
+      return null;
+    }
+    const parsed = JSON.parse(await marker.text()) as unknown;
+    const at = typeof parsed === "object" && parsed !== null ? (parsed as { at?: unknown }).at : undefined;
+    return typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? at : "unknown";
   } catch {
     return "unknown";
   }
