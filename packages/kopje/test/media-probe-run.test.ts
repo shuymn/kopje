@@ -23,6 +23,7 @@ import {
 } from "./media-job-helpers";
 import { avWorld, clock, SECOND, started, T0 } from "./media-processing-helpers";
 import { community } from "./status-helpers";
+import { encodeWebp } from "./webp-fixtures";
 
 // The activation probe of normalize@standard-4 as the round and the CLI run it (mastodon/media-activation.ts
 // activationProbe and probeWork, the PR4 plan's "Probe outcomes"), the container answering as
@@ -121,6 +122,29 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     expect(run).toMatchObject({ status: "recorded", verdict: { outcome: "fail" } });
     expect(run.status === "recorded" && run.verdict.outcome === "fail" && run.verdict.reason).toContain(reason);
     expect(await health(store)).toMatchObject({ ok: false, state: "degraded" });
+  });
+
+  it("fails a still Images made past STILL_LONG_EDGE, on both profiles, as the rebuild refuses it (M5)", async () => {
+    const wide = await encodeWebp(700, 100, { fill: "flat" });
+    const codec = () => {
+      const made = new TestCodec();
+      made.encodeResponder = (options) => (options.format === "image/webp" ? wide : null);
+      return made;
+    };
+    const store = await freshStore();
+    const { run } = await probeOnce(store, await genuine(), { codec: codec() });
+    expect(run).toMatchObject({ status: "recorded", verdict: { outcome: "fail", reason: "images" } });
+    const checked = await stillCheck({
+      bucket: env.MEDIA,
+      stills: {
+        still: () => Promise.reject(new Error("unused")),
+        probe: async () => ({ ok: true, png: await stillPng(), image: null }),
+        probeInput: new Uint8Array([1, 2, 3]),
+      },
+      images: codec(),
+      now: () => Date.now(),
+    });
+    expect(checked).toMatchObject({ outcome: "fail", reason: "images" });
   });
 
   it("a busy container reaches no verdict: the last verdict stands", async () => {

@@ -1,7 +1,15 @@
+import { STILL_LONG_EDGE, STILL_OUTPUT_LIMIT } from "./av-bytes";
 import { imageBlurhash, type Rgba } from "./blurhash";
 import { readBodyPrefix } from "./body";
 import { DeadlinePassed, within } from "./deadline";
-import { IMAGE_MATRIX_LIMIT, type ImageType, isAnimated, retainedMetadata, sniffImageType } from "./image-bytes";
+import {
+  IMAGE_MATRIX_LIMIT,
+  type ImageType,
+  isAnimated,
+  retainedMetadata,
+  sniffImageType,
+  webpSize,
+} from "./image-bytes";
 import { stripImageOutput } from "./remote-media-bytes";
 
 // Re-encoding of uploaded images (MEDIA-3). The Images binding is reached only through ImageCodec, a narrow
@@ -434,6 +442,25 @@ export async function processImage(
   }
 }
 
+// The geometry of a still `small` as Kopje serves one, whether adopted or just made: at most STILL_OUTPUT_LIMIT bytes,
+// a still WebP that walks, with no retained metadata and edges of 1 to STILL_LONG_EDGE. null when it is not one.
+export function stillWebpSize(bytes: Uint8Array): Size | null {
+  // webpSize walks every chunk and answers only edges of at least 1.
+  const size = bytes.byteLength <= STILL_OUTPUT_LIMIT ? webpSize(bytes) : null;
+  return size === null ||
+    retainedMetadata(bytes, "image/webp") !== null ||
+    isAnimated(bytes, "image/webp") ||
+    Math.max(size.width, size.height) > STILL_LONG_EDGE
+    ? null
+    : size;
+}
+
+// Whether Images' still WebP is one Kopje serves, its parsed geometry the one Images reported (info()).
+function servedStill(small: EncodedImage): boolean {
+  const size = stillWebpSize(small.bytes);
+  return size !== null && size.width === small.width && size.height === small.height;
+}
+
 // The preview of a video from the media processor's PNG still (#1828 design 4.10, 4.16), which verifyStill has passed
 // (platform/av-bytes.ts): re-encoded as a still WebP within SMALL_EDGE (encodeBounded: read within `limit`, every call
 // under `guard`, stripped, no metadata left, one frame, its real dimensions), and its blurhash from Images' RGBA output of the same input and transformation, given
@@ -453,6 +480,10 @@ export async function stillPreview(
   const preview = fit(size, SMALL_EDGE);
   try {
     const small = await encodeBounded(codec, png, { ...preview, format: "image/webp", still: true }, limit, guard);
+    // The upload, the probes and the rebuild hold it to the same checks (stillWebpSize).
+    if (!servedStill(small)) {
+      return { ok: false, reason: "failed", detail: "small" };
+    }
     const hashed = await previewBlurhash(codec, png, preview, small, blurhash);
     return { ok: true, small, blurhash: hashed.blurhash, blurhashStop: hashed.stop };
   } catch (error) {
@@ -485,8 +516,13 @@ export async function stillEncodes(
   guard: CallGuard,
 ): Promise<"passed" | "failed" | "quota" | "retry"> {
   try {
-    await encodeChecked(codec, png, { ...fit(size, SMALL_EDGE), format: "image/webp", still: true, guard });
-    return "passed";
+    const small = await encodeChecked(codec, png, {
+      ...fit(size, SMALL_EDGE),
+      format: "image/webp",
+      still: true,
+      guard,
+    });
+    return servedStill(small) ? "passed" : "failed";
   } catch (error) {
     const reason = codecFailure(error);
     return reason === "output" || reason === "unsupported" ? "failed" : reason === "quota" ? "quota" : "retry";

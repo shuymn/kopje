@@ -11,14 +11,19 @@ import {
   AvRefusal,
   type AvType,
   avVerifier,
-  STILL_LONG_EDGE,
   STILL_OUTPUT_LIMIT,
   verifyStill,
 } from "../platform/av-bytes";
 import { DeadlinePassed, within } from "../platform/deadline";
 import { toHex } from "../platform/hex";
-import { isAnimated, retainedMetadata, webpSize } from "../platform/image-bytes";
-import { type ImageCodec, type Size, stillBlurhash, stillEncodes, stillPreview } from "../platform/images";
+import {
+  type ImageCodec,
+  type Size,
+  stillBlurhash,
+  stillEncodes,
+  stillPreview,
+  stillWebpSize,
+} from "../platform/images";
 import { fileKey, originalKey, probeInputKey } from "../platform/media-files";
 import type { StillMaker, StillOutcome } from "../platform/media-transcoder";
 import type { ImportAuthority } from "../platform/store-admin";
@@ -343,7 +348,7 @@ async function adopt(
     return { kind: "problem", outcome: "failed", detail: "small-invalid" };
   }
   const bytes = new Uint8Array(await call.bounded(() => object.arrayBuffer(), end));
-  const size = smallSize(bytes);
+  const size = stillWebpSize(bytes);
   if (size === null) {
     return { kind: "problem", outcome: "failed", detail: "small-invalid" };
   }
@@ -392,19 +397,6 @@ async function adopt(
     call.bucket.put(key, bytes, { httpMetadata: { contentType: "image/webp" }, customMetadata: metadataOf(facts) }),
   );
   return facts;
-}
-
-// The geometry of a `small` as Kopje serves one, whether adopted or just made: at most STILL_OUTPUT_LIMIT bytes, a
-// still WebP that walks, with no retained metadata and edges of 1 to STILL_LONG_EDGE. null when it is not one.
-function smallSize(bytes: Uint8Array): Size | null {
-  // webpSize walks every chunk and answers only edges of at least 1.
-  const size = bytes.byteLength <= STILL_OUTPUT_LIMIT ? webpSize(bytes) : null;
-  return size === null ||
-    retainedMetadata(bytes, "image/webp") !== null ||
-    isAnimated(bytes, "image/webp") ||
-    Math.max(size.width, size.height) > STILL_LONG_EDGE
-    ? null
-    : size;
 }
 
 // The PNG's dimensions from its IHDR, which verifyStill has walked.
@@ -476,7 +468,7 @@ async function make(
     return RETRY;
   }
   // Held to what an adopted small is held to, so a later call can adopt what this one writes.
-  const size = smallSize(preview.small.bytes);
+  const size = stillWebpSize(preview.small.bytes);
   if (size === null || size.width !== preview.small.width || size.height !== preview.small.height) {
     return RETRY;
   }

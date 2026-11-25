@@ -11,6 +11,7 @@ import { BUILD } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { fakeControl, jobOf, multipartLog, putInput, stillPng, uploadDeps } from "./media-job-helpers";
 import { avWorld, clock, held, HOUR, started } from "./media-processing-helpers";
+import { encodeWebp } from "./webp-fixtures";
 
 // runUpload (jobs/media-jobs.ts, the PR4 plan's 1.3 D3-D7) through the production Store and the media bucket, the
 // container answering as container/server/main.go does.
@@ -235,6 +236,15 @@ describe("the upload's still (G2-3, C2-M4)", () => {
     expect(spent.charged).toBe(0);
     expect(spent.files.small).toBeNull();
     expect(spent.after.att?.processed).toBe(1);
+  });
+
+  it("writes no small Images made past STILL_LONG_EDGE, as the rebuild refuses it, and completes with the poster (M5)", async () => {
+    const codec = new TestCodec();
+    const wide = await encodeWebp(700, 100, { fill: "flat" });
+    codec.encodeResponder = (options) => (options.format === "image/webp" ? wide : null);
+    const { after, files } = await run(codec);
+    expect(after.att?.processed).toBe(1);
+    expect(files.small).toBeNull();
   });
 
   it("charges no Images transformation for audio, which has no still (P15)", async () => {
