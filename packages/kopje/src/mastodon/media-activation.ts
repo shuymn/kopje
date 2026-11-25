@@ -242,15 +242,20 @@ export const PROBE_ROUTE_MS = PROBE_BODY_MS + 3 * PROBE_STORE_MS + 2 * PROBE_COP
 // The still check's call: STILL_CHECK_MS, which includes the object's destroy, plus its way there and back.
 const STILL_CHECK_CALL_MS = 85_000;
 
+// The probe object's refusals before it starts a container (media-processor.ts #owned): busy (another call's work, an
+// orphan running, or the alarm destroying one) and its alarm's write failing or settling late.
+const NOT_STARTED: ReadonlySet<string> = new Set(["busy", "storage", "storage-late"]);
+
 type Wait = (ms: number) => Promise<void>;
 const timerWait: Wait = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 export const OVER: unique symbol = Symbol("over");
 
 // The steps of one probe request, each started by `start` only before `end` and ending at its cut, the earlier of `end`
-// and its start plus its own bound `ms`: its value, or OVER when the cut passes first or it settles at or past the cut
-// (an answer just past it, before the timer fires, too: so a late answer starts no later step; a rejection passes on).
-// `cleanup` starts even past `end` (the copy's delete, which may still settle, is handed to `retain`); `keep` uses an
-// answer settling past the cut (the record, issued before it under its claim's fence).
+// and its start plus its own bound `ms`: its value, or OVER when the cut passes first or it settles, answering or
+// rejecting, at or past the cut (just past it, before the timer fires, too: so a late answer starts no later step; a
+// rejection before the cut passes on). A write the step issued may still commit after its cut (the record, under its
+// claim's fence); the request only does not take its answer. `cleanup` starts even past `end` and takes what settles
+// (the copy's delete, which may still settle, is handed to `retain`).
 export function probeSteps(
   end: number,
   now: () => number,
@@ -260,7 +265,7 @@ export function probeSteps(
   return async <P extends PromiseLike<unknown>>(
     start: () => P,
     ms: number,
-    options: { cleanup?: boolean; keep?: boolean } = {},
+    options: { cleanup?: boolean } = {},
   ): Promise<Awaited<P> | typeof OVER> => {
     if (options.cleanup !== true && now() >= end) {
       return OVER;
@@ -271,8 +276,17 @@ export function probeSteps(
       retain(running);
     }
     const cut = Math.min(end, now() + ms);
-    const settled = await Promise.race([running, wait(Math.max(0, cut - now())).then((): typeof OVER => OVER)]);
-    return settled !== OVER && options.keep !== true && options.cleanup !== true && now() >= cut ? OVER : settled;
+    const late = () => options.cleanup !== true && now() >= cut;
+    let settled: Awaited<P> | typeof OVER;
+    try {
+      settled = await Promise.race([running, wait(Math.max(0, cut - now())).then((): typeof OVER => OVER)]);
+    } catch (error) {
+      if (late()) {
+        return OVER;
+      }
+      throw error;
+    }
+    return settled !== OVER && late() ? OVER : settled;
   };
 }
 type Step = ReturnType<typeof probeSteps>;
@@ -314,6 +328,9 @@ async function dropCopy(step: Step, bucket: Pick<R2Bucket, "delete">, key: strin
 
 export type ProbeRun =
   | { status: "recorded"; verdict: ProbeVerdict }
+  // The probe object refused before it started a container (NOT_STARTED): nothing is recorded, so the claim, with no
+  // result, holds the profile for PROBE_CLAIM_MS only (media-probes.ts), not PROBE_RETRY_MS.
+  | { status: "not_started"; verdict: ProbeVerdict }
   | { status: "cooldown"; retryAt: number }
   | { status: "not_due" }
   | { status: "stale"; verdict: ProbeVerdict }
@@ -375,6 +392,9 @@ export async function activationProbe(
   if (result.outcome !== "pass") {
     console.warn({ event: "kopje.media.probe.verdict", outcome: result.outcome, reason: result.reason });
   }
+  if (result.outcome === "no-verdict" && NOT_STARTED.has(result.reason)) {
+    return { status: "not_started", verdict: result };
+  }
   const recorded = await step(
     () =>
       deps.store.recordMediaProbeResult(deps.build, {
@@ -385,7 +405,6 @@ export async function activationProbe(
         imageTag: probeImageTag(image),
       }),
     PROBE_STORE_MS,
-    { keep: true },
   );
   if (recorded === OVER) {
     console.warn({ event: "kopje.media.probe.unconfirmed", step: "record" });

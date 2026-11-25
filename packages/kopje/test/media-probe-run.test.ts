@@ -790,6 +790,55 @@ describe("the probes' copy I/O, bounded on the request path", () => {
     await env.MEDIA.delete(left.map((object) => object.key));
   });
 
+  // r8 M1: a record reply that arrives past the request's deadline is not taken: the request answers unconfirmed, and
+  // the write it issued commits in the Store under its claim's fence all the same.
+  it("a record reply past the request's deadline answers unconfirmed, and the write still commits", async () => {
+    const store = await freshStore();
+    const h = harness("none");
+    const processor = probeProcessor(
+      fakeControl(await genuine()).control,
+      new TestCodec(),
+      await avFixture("r1-av.mp4"),
+    );
+    let t = Date.now();
+    const end = t + PROBE_ROUTE_MS;
+    const late = {
+      claimMediaProbe: (...args: Parameters<StoreStub["claimMediaProbe"]>) => store.claimMediaProbe(...args),
+      recordMediaProbeResult: async (...args: Parameters<StoreStub["recordMediaProbeResult"]>) => {
+        const answer = await store.recordMediaProbeResult(...args);
+        t = end + 1;
+        return answer;
+      },
+    } as unknown as StoreStub;
+    const run = await activationProbe(
+      { build: BUILD, store: late, bucket: h.bucket, processor, wait: h.wait, now: () => t, end },
+      false,
+    );
+    expect(run).toEqual({ status: "unconfirmed", verdict: { outcome: "pass", imagesVerified: true } });
+    expect(await health(store)).toMatchObject({ ok: true, state: "ready" });
+  });
+
+  // r8 M2 (Codex's interleaving): probe A's container is still running (its destroy unconfirmed, its verdict's write
+  // lost); B claims once A's claim is past PROBE_CLAIM_MS and the probe object answers busy, starting no container. B
+  // records nothing, so its claim holds the profile for PROBE_CLAIM_MS, not the hour a recorded result holds it.
+  it("a probe the object refuses as busy records nothing, and its claim holds only PROBE_CLAIM_MS", async () => {
+    const store = await freshStore();
+    const h = harness("none");
+    const claim = () => store.claimMediaProbe(BUILD, { profile: "normalize@standard-4", build: BUILD, due: false });
+    expect(await claim()).toMatchObject({ status: "claimed" });
+    const b = T0 + PROBE_CLAIM_MS + SECOND;
+    clock(b);
+    const processor = {
+      probeInput: new Uint8Array([1, 2, 3]),
+      probeNormalize: () => Promise.resolve({ outcome: "no-verdict", reason: "busy", image: null }),
+    } as unknown as UploadProcessor;
+    const run = await activationProbe({ build: BUILD, store, bucket: h.bucket, processor, wait: h.wait }, false);
+    expect(run).toEqual({ status: "not_started", verdict: { outcome: "no-verdict", reason: "busy" } });
+    expect(await claim()).toMatchObject({ status: "cooldown" });
+    clock(b + PROBE_CLAIM_MS + SECOND);
+    expect(await claim()).toMatchObject({ status: "claimed" });
+  });
+
   // r7 M1: a claim the Store committed whose reply is lost starts no probe, and holds the profile only for
   // PROBE_CLAIM_MS (a claim that recorded no result), not the hour a recorded result holds it.
   it("a lost claim reply holds the profile for PROBE_CLAIM_MS, not PROBE_RETRY_MS", async () => {

@@ -29,8 +29,10 @@ separately, by their own probe of `still@standard-1`.
 The cron (every 5 minutes) runs the probe of `normalize@standard-4` when the binding and a positive budget are present
 and the profile needs one: no verdict for the deployed version, an upload's infrastructure failure since the last pass,
 or a pass whose Images step could not be checked, an hour after it. One claim a profile is shared with
-`kopje-admin media-processor probe normalize@standard-4`, so the two never probe at once, and a claim is not given again
-within an hour of the last one for the same version.
+`kopje-admin media-processor probe normalize@standard-4`, so the two never probe at once, and a claim for the same
+version is not given again within an hour (`PROBE_RETRY_MS`) of one that recorded an outcome, or within 5 minutes
+(`PROBE_CLAIM_MS`) of one that recorded none: its reply or its record lost, its request cut short, or the probe object
+busy with an earlier container and starting none.
 
 The probe copies the 2-second clip that ships in the package to `incoming/probe-<nonce>` in the media bucket, starts the
 container on standard-4 without Internet access, streams the copy through it, holds the output to Kopje's verifier with
@@ -72,12 +74,13 @@ and its own bound: the credential check (`adminGate` and the Access token) 10 s,
 check's health, the claim, the record) 10 s each, the copy's put and delete 5 s each, the probe object's call 245 s, and
 the still check's Images what is left of its 75 s. A step is not started past the deadline, and an answer at or past its
 cut, even one before its timer fires, starts no later step. A credential check, body or health past its cut answers 504;
-a claim or record past its cut answers `unconfirmed`. A claim that records no result (its reply lost, or its request cut
-before its probe or its record) holds the profile for `PROBE_CLAIM_MS` (5 min, longer than any request), not the hour
-(`PROBE_RETRY_MS`) a recorded result holds it. A pass whose claim is older than an infrastructure failure recorded
-for its build records nothing (`stale`): the failure is the newer evidence. A record already sent may still commit in
-the Store after its reply is lost, under its claim's fence; that is the Store finishing a write it received, not work
-the Worker keeps.
+a claim or record past its cut answers `unconfirmed`, as does a rejection past it. A probe the probe object refuses
+before it starts a container (busy) answers `not_started` and records nothing. A claim that records no result (its reply
+lost, or its request cut before its probe or its record) holds the profile for `PROBE_CLAIM_MS` (5 min, longer than any
+request), not the hour (`PROBE_RETRY_MS`) a recorded result holds it. A pass whose claim is older than an infrastructure
+failure recorded for its build records nothing (`stale`): the failure is the newer evidence. A record already sent may
+still commit in the Store after its reply is lost or arrives past its cut, under its claim's fence; that is the Store
+finishing a write it received, not work the Worker keeps.
 
 What the Worker keeps past the response is explicit: the probe's work with the copy's delete after it, and a late put's
 delete, are handed to `waitUntil`, which outlives a client that disconnects by at most its grace (30 s); a copy left

@@ -1409,6 +1409,54 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     expect(probed).not.toHaveBeenCalled();
   });
 
+  // r8 M1: a credential check that fails just past its step's bound, before the timer fires, ends the request as one
+  // that did not answer in time: the cut applies to a rejection as to an answer.
+  it("answers 504 when the credential check rejects past its step's bound", async () => {
+    const team = await adminTeam();
+    const store = await migratedStore();
+    await setTeamAccess(store, team);
+    const gated = Promise.withResolvers<never>();
+    let asked = false;
+    const held = new Proxy(store, {
+      get(target, name, receiver) {
+        if (name === "adminGate") {
+          return () => {
+            asked = true;
+            return gated.promise;
+          };
+        }
+        const value: unknown = Reflect.get(target, name, receiver);
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    let t = NOW;
+    const app = createApp({
+      build: () => BUILD,
+      now: () => t,
+      store: () => held,
+      fetch: team.fetch,
+      images: () => new TestCodec(),
+      mediaProcessor: () => ({ stills: unusedStills, uploads: unusedUploads }),
+    });
+    const answer = Promise.resolve(
+      app.fetch(
+        new Request("https://admin.kopje.test/admin/media-processor/probe", {
+          method: "POST",
+          body: JSON.stringify({ profile: "normalize@standard-4" }),
+          headers: { "cf-access-jwt-assertion": await accessToken(team, adminClaims()) },
+        }),
+        env,
+        createExecutionContext(),
+      ),
+    );
+    await vi.waitFor(() => expect(asked).toBe(true));
+    t += PROBE_STORE_MS + 1;
+    gated.reject(new Error("store unavailable"));
+    const response = await answer;
+    expect(response.status).toBe(504);
+    expect(await response.json()).toMatchObject({ code: "probe-timeout" });
+  });
+
   it("refuses an unknown profile, and answers 409 without the binding", async () => {
     const passes = vi.fn(() => Promise.resolve(true));
     const bound = await harness(passes);
