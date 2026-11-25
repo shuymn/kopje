@@ -42,6 +42,7 @@ import {
   VIDEO,
 } from "./media-processing-helpers";
 import { observedSql } from "./read-helpers";
+import { storeWith } from "./setup-helpers";
 
 // The owner's GET, PUT and DELETE of a video or audio upload in each state (#1828 P9, MEDIA-1), through the routes, with
 // rows made by the Store's own operations (domain/media-processing.ts): 206 masked while processing, 422 once failed or
@@ -949,19 +950,10 @@ describe("the owner's text and masks while processing (code review r1)", () => {
 
 type Call = (...args: unknown[]) => Promise<unknown>;
 
-// The Store stub the app calls, with its method `name` wrapped by `wrap` (apiHarness's wrapStore).
+// The Store stub the app calls, with its method `name` wrapped by `wrap` (apiHarness's wrapStore, storeWith).
 function around(name: string, wrap: (call: Call) => Call) {
   return (store: StoreStub): StoreStub =>
-    new Proxy(store, {
-      get: (target, key) => {
-        const value = Reflect.get(target, key) as unknown;
-        if (typeof value !== "function") {
-          return value;
-        }
-        const call: Call = (...args) => (target as unknown as Record<string, Call>)[String(key)]!(...args);
-        return key === name ? wrap(call) : call;
-      },
-    });
+    storeWith(store, { [name]: wrap((...args) => (store as unknown as Record<string, Call>)[name]!(...args)) });
 }
 
 // Holds the first call until `release` resolves, `reached` resolved when it is held: an explicit await point in a
