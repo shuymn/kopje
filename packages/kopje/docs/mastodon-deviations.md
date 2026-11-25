@@ -1688,9 +1688,10 @@ Media (the `MediaAttachment` entity):
   again in a moment.` while two video or audio uploads are already processing, and a failed processing is not tried
   again by the server (Mastodon retries the job). An audio file has no artwork (`preview_url` null), where Mastodon
   extracts the cover. While the processor is not accepting uploads, video and audio are refused as before (422
-  `Validation failed: File content type is invalid`). So are they, as before, under a `Content-Type` outside the plain
-  form every common client sends (`multipart/form-data`, then `;`-separated `name=token` or `name="quoted"` parameters
-  with no backslash, and exactly one `boundary` of RFC 2046's characters): the request is read whole, as an image's.
+  `Validation failed: File content type is invalid`). So are they under a `Content-Type` outside the plain form every
+  common client sends (`multipart/form-data`, then `;`-separated `name=token` or `name="quoted"` parameters with no
+  backslash, and exactly one `boundary` of RFC 2046's characters): the request is read whole, as an image's, with the
+  image path's limits and errors (a file over 16 MB is refused for its size before its type).
 - A video or audio upload whose form has several errors may report another of them than Mastodon: a `thumbnail` sent
   before the `file` part is refused (422 `Validation failed: Thumbnail must be blank`) before any part after the file is
   read, so a description too long after the file is not the error reported, where Mastodon reports the description
