@@ -2,19 +2,17 @@
 
 The media processor is the optional container that turns video and audio into the files Kopje serves (#1828). It is
 added by the deploy template's "Video and audio" block ([deploy/README.md](../../../deploy/README.md)). This page is
-for the operator: how it is activated, what its probes and health report, and how to turn it off. The mechanisms live
-in `src/media-processor.ts` (the Durable Object), `src/jobs/media-jobs.ts` (an upload's work and the rounds) and
-`src/mastodon/media-activation.ts` (the activation probe); the rules are in the [threat model](threat-model.md)
-(MEDIA-2, MEDIA-8, RES-1).
-
-In this release no route accepts a video or audio upload yet: an upload of either still answers 422. What runs is the
-processor's side, so that it can be checked on an instance before uploads are turned on.
+for the operator: how it is activated, what an upload costs and answers, what its probes and health report, and how to
+turn it off. The mechanisms live in `src/media-processor.ts` (the Durable Object), `src/jobs/media-jobs.ts` (an
+upload's work and the rounds), `src/mastodon/media-av.ts` (the upload route) and `src/mastodon/media-activation.ts`
+(the activation probe); the rules are in the [threat model](threat-model.md) (MEDIA-2, MEDIA-4, MEDIA-8, RES-1,
+RES-6).
 
 ## Activation
 
-Once a release turns uploads on, uploads of video and audio are active when all three hold, for the Worker version
-that is deployed. In this release they make the processor `ready` in health's `mediaProcessor` and nothing more: an
-upload of video or audio still answers 422.
+Uploads of video and audio are active when all three hold, for the Worker version that is deployed; the instance
+then advertises video and audio types on `/api/v1/instance` and `/api/v2/instance`, and `/api/v{1,2}/media` takes
+them. Otherwise an upload of either answers 422 as an unsupported type, and the instance advertises images only.
 
 - the `MEDIA_PROCESSOR` binding (the template's block);
 - `MEDIA_UPLOAD_MONTHLY_JOBS` above 0, the container jobs uploads may start in a UTC month;
@@ -103,7 +101,32 @@ container:
 
 Each state carries the month's spent jobs (`spent`), the budget and the capacity slots that count now (`slots`).
 
-## Uploads, capacity and cleanup
+## Uploads
+
+An upload's file is staged into R2 while the request is read (at most 90 MiB, `AV_UPLOAD_LIMIT`), then queued, which
+charges one job of `MEDIA_UPLOAD_MONTHLY_JOBS`; a refused or abandoned upload charges nothing. `/api/v2/media` answers
+202 at once and the client polls `GET /api/v1/media/:id`. `/api/v1/media` waits for the result, at most `V1_TIME_MS`
+from the request's arrival: it asks for the outcome every 2 seconds, takes its decision `T_REPLY` (2 s) before that
+time, and answers 503 `Media processing took too long. Try a shorter file.` once it passes, the upload cancelled.
+`V1_TIME_MS` is 90 s in this release, a provisional value: it is to be set from a measurement on a staging instance,
+from the shortest time a measured browser client waits for an upload's answer, since one value serves every client. The
+edges of what each endpoint admits (the longest video of a given size, codec and ingress that still finishes in time)
+are estimated admission limits, not measured wall times, and are published here once runs at the edges on a staging
+instance measure them.
+
+A video is re-encoded to an H.264 and AAC MP4 (at most 1080p at 60 fps up to 120 s, 720p at 30 fps up to 300 s, 480p
+at 30 fps up to 600 s), audio to MP3; a longer file, or one past the processing envelope, is refused with 422. Two
+uploads at once already processing make a third answer 503 `Media processing is busy. Try again in a moment.`
+
+Cost. An upload runs one `standard-4` container (4 vCPU, 12 GiB of memory, 20 GB of disk) for its wall time W, at most
+`V2_PROCESS_MS` (8 minutes) plus its stop: about 12 × W GiB-s of memory, 20 × W GB-s of disk and up to 4 × W vCPU-s
+of CPU, billed against the Workers Paid allowance (90,000 GiB-s, 720,000 GB-s and 22,500 vCPU-s a month, shared with
+any other container) and at Cloudflare's container prices beyond it. A one-minute 1080p video takes well under two
+minutes; the worst job, 8 minutes, is 5,760 GiB-s, so `MEDIA_UPLOAD_MONTHLY_JOBS` × 5,760 GiB-s bounds the month's
+memory. Set the budget from that bound and the allowance left for other containers. One account can spend the whole
+month's budget ([threat model](threat-model.md), "Accepted risks").
+
+## Capacity and cleanup
 
 At most two uploads are processed at once (`MAX_AV_INFLIGHT`). An upload's container runs in its own Durable Object,
 which keeps a cleanup alarm before it starts anything: a job interrupted at any point is cleaned up by that alarm, and
@@ -138,5 +161,6 @@ job had started, until the processor confirms its stop ([backup.md](backup.md), 
 
 ## Turning it off
 
-Set `MEDIA_UPLOAD_MONTHLY_JOBS` to 0: uploads of video and audio are refused, the probe round stops, and jobs already
-queued finish. To remove the processor, follow [deploy/README.md](../../../deploy/README.md), "Video and audio".
+Set `MEDIA_UPLOAD_MONTHLY_JOBS` to 0: uploads of video and audio are refused as an unsupported type, the instance stops
+advertising them, the probe round stops, and jobs already queued finish. To remove the processor, follow
+[deploy/README.md](../../../deploy/README.md), "Video and audio".

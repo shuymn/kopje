@@ -80,17 +80,18 @@ service token and the variables it needs. Accounts besides the admin's are made 
 
 ## Video and audio (optional)
 
-Kopje takes image uploads only. Video and audio need the media processor: a container with a pinned ffmpeg build,
+Kopje alone takes image uploads. Video and audio need the media processor: a container with a pinned ffmpeg build,
 which Cloudflare runs next to the Worker and bills by use under the Workers Paid plan's container allowance. Its
 Dockerfile ships in the `kopje` package (`node_modules/kopje/container`), so the image always matches the installed
 version, and every deploy builds it: Workers Builds (the button's) needs no Docker on your machine, while
 `npx wrangler deploy` from your own machine needs Docker running there (GitHub's runners have it).
 
-In this release uploads stay image-only. The processor already serves the media rebuild, which makes the stills of
-video rows with it (`kopje-admin media-rebuild`, activated by its own probe of `still@standard-1`), and once it is
-bound and `MEDIA_UPLOAD_MONTHLY_JOBS` is positive the cron probes the profile uploads will use, `normalize@standard-4`
-([media-processor.md](https://github.com/shuymn/kopje/blob/main/packages/kopje/docs/media-processor.md)). The two
-activations are separate. To add it:
+Once it is bound and `MEDIA_UPLOAD_MONTHLY_JOBS` is positive, the cron probes the profile uploads use,
+`normalize@standard-4`, and when that probe passes the instance takes video and audio uploads, each spending one job of
+the budget ([media-processor.md](https://github.com/shuymn/kopje/blob/main/packages/kopje/docs/media-processor.md),
+"Uploads", for what a job costs and how long `/api/v1/media` waits). The processor also serves the media rebuild,
+which makes the stills of video rows with it (`kopje-admin media-rebuild`, activated by its own probe of
+`still@standard-1`). The two activations are separate. To add it:
 
 1. Export `MediaProcessor` from `src/index.ts`. The template's file already does; an instance made from an earlier
    template has `export { default, Store } from "kopje";`, and `wrangler deploy` then fails with "Your Worker depends
