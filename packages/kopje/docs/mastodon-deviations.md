@@ -1699,6 +1699,9 @@ Media (the `MediaAttachment` entity):
   `Request body is too large` before the description is judged. A `thumbnail` after the file, a malformed query and the
   other orders answer as for an image; of several `thumbnail` parts the last counts, so a thumbnail file followed by an
   empty `thumbnail` is no thumbnail, as on the image path and in Mastodon.
+- A local video's or audio file's `Document` in its Note writes `duration` to the millisecond (`PT29.964S`), where
+  Mastodon writes its stored seconds as ffprobe gives them (to the microsecond); the API's `meta` keeps the stored
+  value.
 - A local upload's `blurhash` (avatars and headers included; 4 × 4 components, alpha dropped) is computed, as
   Mastodon's BlurhashTranscoder computes one from the `small` style, from Images' raw RGBA output of Kopje's preview (at
   most 640 pixels an edge, where Mastodon's small style is 230,400 pixels), fitted within 100 pixels by area averaging
