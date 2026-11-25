@@ -568,6 +568,20 @@ describe("media rebuild authorization", () => {
     }
   });
 
+  it("answers needs-readonly without the marker when neither flag is set (code review r5)", async () => {
+    const h = await setup({ env: { MAINTENANCE: "off" }, held: false });
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const take = () => h.store.mediaRebuildLease(BUILD, { authority: admin, holder: "h" });
+    expect(await holdingMarker<unknown>(h.store, take)).toEqual({ answer: { status: "needs-readonly" }, reads: 0 });
+    const key = restoreMarkerKey(h.store.id.toString());
+    await env.MEDIA.put(key, "{}");
+    try {
+      expect(await take()).toEqual({ status: "needs-readonly" });
+    } finally {
+      await env.MEDIA.delete(key);
+    }
+  });
+
   it("has the Store check the admin again where it writes", async () => {
     const h = await setup();
     const admin = { ...ACCESS, teamDomain: team.teamDomain };
