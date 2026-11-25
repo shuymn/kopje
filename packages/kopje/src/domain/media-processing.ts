@@ -78,7 +78,7 @@ const T_PREVIEW = 3 * SECOND;
 const T_COMMIT = 6 * SECOND;
 // Of T_COMMIT, what the steps after the preview keep: the confirmed stop, the S5 grants and final writes, and S6. The
 // plan's T_COMMIT less the measured 4.5 s output into R2; a starting value the den-test edge runs measure (PR4-4).
-export const T_FINISH = 1500;
+const T_FINISH = 1500;
 // The least time the optional preview is begun with: its WebP's share of T_PREVIEW (Images' 0.33 s p95 rounded up),
 // the rest of T_PREVIEW being the RGBA_MIN_CALL_MS stillPreview needs for a blurhash (below which it skips that).
 export const T_PREVIEW_MIN = T_PREVIEW - 2 * SECOND;
