@@ -554,12 +554,11 @@ export class ProcessorUnit {
         bucket === undefined
           ? { ok: false as const, failure: "no-bucket", image: null, destroyed: true }
           : runStill(container, bucket, key, this.deps, deadline),
-      (deadline) => deadline,
+      // The still's stop is attempted by its deadline (runStill), so nothing follows it.
+      0,
       // A still whose cleanup ran past the call's deadline is not used: the caller has given up on it.
       (outcome) =>
         outcome.ok ? { ok: false, failure: "late", image: outcome.image, destroyed: outcome.destroyed } : outcome,
-      // The still's stop is attempted by its deadline (runStill), so its fallback alarm is that deadline.
-      (deadline) => deadline,
     );
     if ("refused" in owned) {
       return { ok: false, failure: owned.refused, image: null };
@@ -606,9 +605,8 @@ export class ProcessorUnit {
         );
         return { ...verdict, image: control.image(), destroyed };
       },
-      (deadline) => deadline + DESTROY_MS,
+      DESTROY_MS,
       (verdict) => verdict,
-      (deadline) => deadline + DESTROY_MS,
     );
     if ("refused" in owned) {
       return { outcome: "no-verdict", reason: owned.refused, image: null };
@@ -619,38 +617,38 @@ export class ProcessorUnit {
 
   // Runs one operation that owns this object's container (design 4.5): refused as busy while another runs here or an
   // orphan still runs; the alarm set past its bound and confirmed durable before anything starts; then, once the
-  // container is destroyed, its storage and alarm removed, or the alarm brought forward to retry the destroy. That
-  // cleanup is awaited only until `replyBy(deadline)`: one that has not finished by then leaves the alarm, which removes
-  // the storage itself (alarm), and the result goes through `late`.
+  // container is destroyed, its storage and alarm removed, or the alarm brought forward to retry the destroy. The call's
+  // bound is its deadline plus `teardown`, the time its stop's attempt may take after it: the alarm armed before the
+  // start is set for that bound (for a call whose invocation ends before its own stop), and the cleanup is awaited only
+  // until it: one that has not finished by then leaves the alarm, which removes the storage itself (alarm), and the
+  // result goes through `late`.
   async #owned<R extends { destroyed: boolean }>(
     ms: number,
     run: (deadline: number, container: Container) => Promise<R>,
-    replyBy: (deadline: number) => number,
+    teardown: number,
     late: (report: R) => R,
-    // The alarm armed before the start, for a call whose invocation ends before its own stop: no later than the bound
-    // the call states for its stop's attempt.
-    fallback: (deadline: number) => number,
-  ): Promise<R | { refused: string; destroyed: boolean }> {
+  ): Promise<R | { refused: string }> {
     const container = this.state.container;
     if (container === undefined) {
-      return { refused: "no-container", destroyed: true };
+      return { refused: "no-container" };
     }
     if (this.#inFlight !== null || this.#cleaning) {
-      return { refused: "busy", destroyed: true };
+      return { refused: "busy" };
     }
     const deadline = this.deps.now() + ms;
+    const bound = deadline + teardown;
     if (container.running) {
       // An orphan; the alarm owns it. Setting it for now is awaited only until the call's deadline.
       await before(this.alarmNow(), deadline, this.deps);
-      return { refused: "busy", destroyed: false };
+      return { refused: "busy" };
     }
     // No await since the checks above: two calls cannot both pass.
-    this.#inFlight = fallback(deadline);
+    this.#inFlight = bound;
     try {
       // The alarm's write and its commit are awaited within the call's deadline too.
       const stored = await before(
         (async () => {
-          await this.state.storage.setAlarm(fallback(deadline));
+          await this.state.storage.setAlarm(bound);
           await this.state.storage.sync();
           return true;
         })().catch((error: unknown) => {
@@ -661,11 +659,11 @@ export class ProcessorUnit {
         this.deps,
       );
       if (stored === false) {
-        return { refused: "storage", destroyed: true };
+        return { refused: "storage" };
       }
       // A commit that settled past the deadline leaves no time: nothing is started.
       if (stored === TIMED_OUT || this.deps.now() >= deadline) {
-        return { refused: "storage-late", destroyed: true };
+        return { refused: "storage-late" };
       }
       const report = await run(deadline, container);
       // Nothing to clean up once the container is gone (the object's storage goes too, so a fresh object leaves
@@ -679,7 +677,7 @@ export class ProcessorUnit {
             return true;
           },
         ),
-        replyBy(deadline),
+        bound,
         this.deps,
       );
       return cleaned === TIMED_OUT ? late(report) : report;
