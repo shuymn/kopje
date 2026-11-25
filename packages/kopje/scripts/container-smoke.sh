@@ -656,8 +656,9 @@ for case in "over-cap.bin 413 too_large" "text.txt 422 unreadable"; do
 done
 
 # The work deadline: rung1.mp4 sent at a quarter of its size a second, so its input takes about 4 s, to a container
-# held to SLOW_CPUS. Whatever the answer (the envelope refused for the time left, a timeout at the cut, or an output),
-# its first byte arrives by SLOW_WORK_MS from the request's start, never a fixed encode time after the input.
+# held to SLOW_CPUS. The answer is one of the envelope refused for the time left (422 envelope), a timeout at the cut
+# (504 timeout) or an output that decodes, and its first byte arrives by SLOW_WORK_MS from the request's start, never a
+# fixed encode time after the input.
 slow="$name-slow"
 docker run -d --name "$slow" --network none --cpus "$SLOW_CPUS" --memory "$MEMORY" --read-only \
   --tmpfs /tmp:rw,size=1g "$image" >/dev/null
@@ -667,7 +668,8 @@ for _ in $(seq 1 240); do
 done
 cp "$work/fixture/rung1.mp4" "$work/in/slow.mp4"
 rate=$(($(wc -c <"$work/in/slow.mp4") / 4 + 1))
-h="$(docker run --rm --network "container:$slow" -v "$work/in:/in:ro" "$CURL_IMAGE" -sS -H 'Expect:' -o /dev/null -D - \
+h="$(docker run --rm --network "container:$slow" -v "$work/in:/in:ro" -v "$work/out:/out" "$CURL_IMAGE" -sS -H 'Expect:' \
+  -o /out/slow.normalized -D - \
   -w 'starttransfer: %{time_starttransfer}\n' --limit-rate "$rate" -X POST --data-binary @/in/slow.mp4 \
   -H 'Content-Type: application/octet-stream' \
   "http://127.0.0.1:8080/normalize?work_ms=$SLOW_WORK_MS&still_ms=1000" | tr -d '\r')"
@@ -678,6 +680,11 @@ got="$(status "$h") $(header Kopje-Error "$h")"
 check "$(python3 -I -c 'import sys; print("true" if float(sys.argv[1]) * 1000 <= int(sys.argv[2]) and int(sys.argv[3]) >= 3000 else "false")' \
   "${first:-99}" "$SLOW_WORK_MS" "${input_ms:-0}")" \
   "slow input: $got, first byte at ${first:-?} s, input ${input_ms:-?} ms, want by $SLOW_WORK_MS ms with 3 s or more of input"
+case "$got" in
+  "200 ") check "$(decodes slow.normalized && echo true)" "slow input: its output does not decode" ;;
+  "422 envelope" | "504 timeout") ;;
+  *) check false "slow input: $got, want 200, 422 envelope or 504 timeout" ;;
+esac
 echo "| slow.mp4 | normalize, work $SLOW_WORK_MS ms | $(status "$h") | ${first:-} | $(awk -v ms="${input_ms:-0}" 'BEGIN { printf "%.1f", ms / 1000 }') | | | | | | $(header Kopje-Error "$h") |"
 
 # Kopje's verifier on every output and still kept above.
