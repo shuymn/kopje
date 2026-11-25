@@ -152,6 +152,8 @@ describe("the boundary parameter, as workerd's MIME parser reads it (code review
     ['multipart/form-data; note="a;boundary=inner;z"; boundary=B'],
     ['multipart/form-data; boundary="B"'],
     ["multipart/form-data;boundary=B"],
+    ["multipart/form-data; boundary=B; boundary=B"],
+    ["multipart/form-data; boundary=B; boundary=C"],
     ['Multipart/Form-Data; BOUNDARY="B"; charset=utf-8'],
   ])("reads %s as formData() does", async (contentType) => {
     const body = enc.encode(`--B\r\n${HEAD_A}\r\n\r\nx\r\n--B--\r\n`);

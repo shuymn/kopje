@@ -9,8 +9,6 @@
 // `replay` is asked for, every raw chunk pulled is also kept, so a request handed back to the whole-body path is read
 // there byte for byte as sent: the chunks kept, then the rest of the body.
 
-import { parseMediaType } from "./media-type";
-
 const CR = 13;
 const LF = 10;
 const DASH = 45;
@@ -30,14 +28,76 @@ export class MultipartRefused extends Error {
 // it is a file part (a filename that is not empty). `bytes`: the header lines as sent.
 export type PartHead = { name: string | null; file: boolean; bytes: Uint8Array };
 
-// The boundary of a multipart/form-data Content-Type, read as a media type (RFC 9110: a quoted value's `;` and `=` are
-// its own, code review r2 M4), or null for any other type, and for a header that does not parse that way, which the
-// whole-body path then reads.
+const HTTP_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const HTTP_WHITESPACE = /^[\t\n\r ]+|[\t\n\r ]+$/g;
+const QUOTED_VALUE = /^[\t -~\u0080-ÿ]*$/;
+
+// The boundary of a multipart/form-data Content-Type, or null for any other type. Read as workerd's MIME parser reads
+// it, the WHATWG MIME type parse (code review r2 M4, r3 M4): a quoted value's `;` and `=` are its own, and of a
+// repeated parameter the first counts; a header that does not parse that way is null, and the whole-body path reads it.
+// platform/media-type.ts's parse refuses a repeated parameter, which this one must not.
 export function multipartBoundary(contentType: string): string | null {
-  const type = parseMediaType(contentType);
-  const value = type?.essence === "multipart/form-data" ? type.parameters.get("boundary") : undefined;
+  const input = contentType.replace(HTTP_WHITESPACE, "");
+  const slash = input.indexOf("/");
+  const semicolon = input.indexOf(";");
+  const end = semicolon === -1 ? input.length : semicolon;
+  if (slash === -1 || slash > end) {
+    return null;
+  }
+  const type = input.slice(0, slash);
+  const subtype = input.slice(slash + 1, end).replace(HTTP_WHITESPACE, "");
+  if (!HTTP_TOKEN.test(type) || !HTTP_TOKEN.test(subtype)) {
+    return null;
+  }
+  if (`${type}/${subtype}`.toLowerCase() !== "multipart/form-data") {
+    return null;
+  }
+  const parameters = new Map<string, string>();
+  let at = end;
+  while (at < input.length) {
+    at++; // the `;`
+    while (at < input.length && /[\t\n\r ]/.test(input[at] ?? "")) {
+      at++;
+    }
+    let nameEnd = at;
+    while (nameEnd < input.length && input[nameEnd] !== ";" && input[nameEnd] !== "=") {
+      nameEnd++;
+    }
+    const name = input.slice(at, nameEnd).toLowerCase();
+    at = nameEnd;
+    if (at >= input.length || input[at] === ";") {
+      continue;
+    }
+    at++; // the `=`
+    let value: string;
+    if (input[at] === '"') {
+      value = "";
+      at++;
+      while (at < input.length && input[at] !== '"') {
+        if (input[at] === "\\" && at + 1 < input.length) {
+          at++;
+        }
+        value += input[at];
+        at++;
+      }
+      while (at < input.length && input[at] !== ";") {
+        at++;
+      }
+    } else {
+      const valueEnd = input.indexOf(";", at);
+      value = input.slice(at, valueEnd === -1 ? input.length : valueEnd).replace(HTTP_WHITESPACE, "");
+      at = valueEnd === -1 ? input.length : valueEnd;
+      if (value === "") {
+        continue;
+      }
+    }
+    if (HTTP_TOKEN.test(name) && QUOTED_VALUE.test(value) && !parameters.has(name)) {
+      parameters.set(name, value);
+    }
+  }
+  const boundary = parameters.get("boundary");
   // RFC 2046: 1 to 70 characters.
-  return value !== undefined && value.length >= 1 && value.length <= 70 ? value : null;
+  return boundary !== undefined && boundary.length >= 1 && boundary.length <= 70 ? boundary : null;
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
