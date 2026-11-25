@@ -9,8 +9,9 @@
 // `replay` is asked for, every raw chunk pulled is also kept, so a request handed back to the whole-body path is read
 // there byte for byte as sent: the chunks kept, then the rest of the body.
 
-const CRLF = new Uint8Array([13, 10]);
-const DASHES = new Uint8Array([45, 45]);
+const CR = 13;
+const LF = 10;
+const DASH = 45;
 
 // The most bytes of one part's head (its header lines), as a file part's head is bounded on the whole-body path
 // (params.ts FILE_PART_SLACK).
@@ -69,15 +70,32 @@ function indexOf(haystack: Uint8Array, needle: Uint8Array, from = 0): number {
   return -1;
 }
 
+// The end of a part's head in `buf`: the LF ending its last line (`at`, a CR before it left out) and where the body
+// begins after the empty line (`next`), or null while no empty line is buffered.
+function headEnd(buf: Uint8Array): { at: number; next: number } | null {
+  for (let i = buf.indexOf(LF); i !== -1; i = buf.indexOf(LF, i + 1)) {
+    const at = i > 0 && buf[i - 1] === CR ? i - 1 : i;
+    if (buf[i + 1] === LF) {
+      return { at, next: i + 2 };
+    }
+    if (buf[i + 1] === CR && buf[i + 2] === LF) {
+      return { at, next: i + 3 };
+    }
+  }
+  return null;
+}
+
 // What a guard does with each pull: a deadline or a cancellation races the read (a rejection cancels the body).
 export type PullGuard = <T>(read: Promise<T>) => Promise<T>;
 
 export class MultipartStream {
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>;
   readonly #boundary: string;
+  // LF, `--` and the boundary: workerd's form parser takes a delimiter at an LF, a CR before it being the delimiter's
+  // (form-data.c++), so a part's body ends before that CR, and a CR alone is data.
   readonly #delimiter: Uint8Array;
-  // Unconsumed bytes, the body's start preceded by the CRLF the first delimiter lacks.
-  #buf: Uint8Array = CRLF;
+  // Unconsumed bytes, the body's start preceded by the LF the first delimiter lacks.
+  #buf: Uint8Array = new Uint8Array([LF]);
   #done = false;
   #kept: Uint8Array[] | null = [];
   #pulled = 0;
@@ -90,7 +108,7 @@ export class MultipartStream {
   constructor(body: ReadableStream<Uint8Array>, boundary: string, limit: number, guard: PullGuard = (read) => read) {
     this.#reader = body.getReader();
     this.#boundary = boundary;
-    this.#delimiter = new TextEncoder().encode(`\r\n--${boundary}`);
+    this.#delimiter = new TextEncoder().encode(`\n--${boundary}`);
     this.limit = limit;
     this.guard = guard;
   }
@@ -129,12 +147,19 @@ export class MultipartStream {
     return true;
   }
 
-  async #need(n: number): Promise<void> {
-    while (this.#buf.byteLength < n) {
+  // The byte at `i` of the unconsumed bytes, or undefined at the body's end.
+  async #byteAt(i: number): Promise<number | undefined> {
+    while (this.#buf.byteLength <= i) {
       if (!(await this.#pull())) {
-        throw new MultipartRefused("malformed");
+        return undefined;
       }
     }
+    return this.#buf[i];
+  }
+
+  // Where a part's body ends before a delimiter found at `at`: before the CR that precedes it, if any.
+  #bodyEnd(at: number): number {
+    return at > 0 && this.#buf[at - 1] === CR ? at - 1 : at;
   }
 
   // The next part's head, or null after the closing delimiter. The current part's body, if any, is skipped (each of
@@ -159,38 +184,41 @@ export class MultipartStream {
         }
       }
     }
-    await this.#need(2);
-    if (this.#buf[0] === DASHES[0] && this.#buf[1] === DASHES[1]) {
+    // After the boundary: `--` closes, taken only with transport padding and then CRLF, LF or the body's end after it
+    // (RFC 2046; workerd ignores the rest); CRLF or LF begins a part, as workerd reads it; anything else is refused.
+    const first = await this.#byteAt(0);
+    if (first === DASH && (await this.#byteAt(1)) === DASH) {
+      let i = 2;
+      for (let byte = await this.#byteAt(i); byte === 0x20 || byte === 0x09; byte = await this.#byteAt(++i)) {
+        // transport padding
+      }
+      const end = await this.#byteAt(i);
+      if (end !== undefined && end !== LF && !(end === CR && (await this.#byteAt(i + 1)) === LF)) {
+        throw new MultipartRefused("malformed");
+      }
       this.#at = "end";
       return null;
     }
-    // Transport padding, then the line's CRLF.
-    for (;;) {
-      await this.#need(1);
-      const byte = this.#buf[0];
-      if (byte !== 0x20 && byte !== 0x09) {
-        break;
-      }
+    if (first === LF) {
       this.#buf = this.#buf.subarray(1);
-    }
-    await this.#need(2);
-    if (this.#buf[0] !== CRLF[0] || this.#buf[1] !== CRLF[1]) {
+    } else if (first === CR && (await this.#byteAt(1)) === LF) {
+      this.#buf = this.#buf.subarray(2);
+    } else {
       throw new MultipartRefused("malformed");
     }
-    this.#buf = this.#buf.subarray(2);
-    // The header lines end at an empty line: CRLF CRLF, or CRLF at once when there are none.
+    // The header lines end at an empty line, of LF or CRLF; at once when there are none.
     let bytes: Uint8Array;
     for (;;) {
-      await this.#need(2);
-      if (this.#buf[0] === CRLF[0] && this.#buf[1] === CRLF[1]) {
+      const lead = await this.#byteAt(0);
+      if (lead === LF || (lead === CR && (await this.#byteAt(1)) === LF)) {
         bytes = new Uint8Array(0);
-        this.#buf = this.#buf.subarray(2);
+        this.#buf = this.#buf.subarray(lead === LF ? 1 : 2);
         break;
       }
-      const end = indexOf(this.#buf, new Uint8Array([13, 10, 13, 10]));
-      if (end !== -1 && end <= PART_HEAD_LIMIT) {
-        bytes = this.#buf.slice(0, end);
-        this.#buf = this.#buf.subarray(end + 4);
+      const end = headEnd(this.#buf);
+      if (end !== null && end.at <= PART_HEAD_LIMIT) {
+        bytes = this.#buf.slice(0, end.at);
+        this.#buf = this.#buf.subarray(end.next);
         break;
       }
       if (this.#buf.byteLength > PART_HEAD_LIMIT + 4) {
@@ -229,11 +257,12 @@ export class MultipartStream {
     if (this.#at !== "body") {
       throw new Error("no part body to read");
     }
-    const keep = this.#delimiter.byteLength - 1;
+    // The delimiter's possible start and the CR that may precede it.
+    const keep = this.#delimiter.byteLength;
     for (;;) {
       const at = indexOf(this.#buf, this.#delimiter);
       if (at !== -1) {
-        const last = this.#buf.subarray(0, at);
+        const last = this.#buf.subarray(0, this.#bodyEnd(at));
         this.#buf = this.#buf.subarray(at + this.#delimiter.byteLength);
         this.#at = "delimiter";
         if (last.byteLength > 0) {
@@ -258,9 +287,9 @@ export class MultipartStream {
     for (;;) {
       const at = indexOf(this.#buf, this.#delimiter);
       if (at !== -1) {
-        return this.#buf.subarray(0, Math.min(at, n));
+        return this.#buf.subarray(0, Math.min(this.#bodyEnd(at), n));
       }
-      if (this.#buf.byteLength >= n + this.#delimiter.byteLength) {
+      if (this.#buf.byteLength >= n + this.#delimiter.byteLength + 1) {
         return this.#buf.subarray(0, n);
       }
       if (!(await this.#pull())) {
