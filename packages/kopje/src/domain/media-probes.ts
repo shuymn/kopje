@@ -179,6 +179,12 @@ export function probePassed(db: Db, profile: ProbeProfile, build: string, now: n
   return record !== null && record.version === build && record.ok;
 }
 
+// Whether an infrastructure failure for the verdict's build came at or after it (health shows it; the probe round
+// probes again).
+export function failedSince(failure: ProbeFailure | null, record: ProbeRecord): boolean {
+  return failure !== null && failure.version === record.version && failure.at >= record.at;
+}
+
 // Whether the profile needs a probe for `build`: no verdict for it, a failure, a pass Images did not verify, or an
 // infrastructure failure for the build at or after its pass.
 function probeDue(state: ProbeState, build: string): boolean {
@@ -186,7 +192,7 @@ function probeDue(state: ProbeState, build: string): boolean {
   if (record === null || record.version !== build || !record.ok || record.imagesVerified === false) {
     return true;
   }
-  return failure !== null && failure.version === build && failure.at >= record.at;
+  return failedSince(failure, record);
 }
 
 // The generic probe operations below (the CLI's and the probe round's) write NORMALIZE_PROFILE only: the still

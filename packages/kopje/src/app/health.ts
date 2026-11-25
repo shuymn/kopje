@@ -1,3 +1,4 @@
+import { failedSince } from "../domain/media-probes";
 import type { AvActivation } from "../domain/media-processing";
 import type { BackupConfigResult } from "../platform/backup-config";
 import type { BackupState } from "../platform/backup-state";
@@ -113,9 +114,7 @@ async function mediaProcessorCheck(
     ok: true,
     state: "ready",
     imagesVerified: verdict.imagesVerified !== false,
-    ...(failure !== null && failure.version === build && failure.at >= verdict.at
-      ? { infrastructureFailure: true }
-      : {}),
+    ...(failedSince(failure, verdict) ? { infrastructureFailure: true } : {}),
     ...usage,
   };
 }
