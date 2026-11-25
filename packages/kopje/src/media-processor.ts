@@ -175,10 +175,10 @@ class ProbeFailure extends Error {
   }
 }
 
-// A refusal of a still's input, from the response's status and code together: 422 with one of the plan's input
+// A refusal of the input, from the response's status and code together: 422 with one of the route's `known` input
 // refusals, or 413 too_large. A code under any other status is not one.
-function inputRefusal(status: number, code: string | null): StillInputRefusal | undefined {
-  const refusal = STILL_INPUT_REFUSALS.find((known) => known === code);
+function inputRefusal<C extends string>(known: readonly C[], status: number, code: string | null): C | undefined {
+  const refusal = known.find((refusing) => refusing === code);
   if (refusal === undefined) {
     return undefined;
   }
@@ -193,7 +193,7 @@ async function readStill(response: Response): Promise<Uint8Array> {
     const evidence = response.status === 200 ? "contract" : replyEvidence(response.status, code);
     throw new ProbeFailure(
       response.status !== 200 ? `still:${reasonCode(response.status, code)}` : "still-status",
-      inputRefusal(response.status, code),
+      inputRefusal(STILL_INPUT_REFUSALS, response.status, code),
       evidence ?? undefined,
     );
   }
@@ -298,15 +298,16 @@ export async function normalize(port: Fetcher, job: NormalizeJob): Promise<Norma
   const code = errorCode(response);
   if (response.status !== 200) {
     await response.body?.cancel();
-    const refused = NORMALIZE_REFUSALS.find((known) => known === code);
     if (code === "envelope" && response.status === 422) {
       return { ok: false, outcome: "envelope", code, stages };
     }
-    if (refused !== undefined && response.status === (refused === "too_large" ? 413 : 422)) {
+    const refused = inputRefusal(NORMALIZE_REFUSALS, response.status, code);
+    if (refused !== undefined) {
       return { ok: false, outcome: "refused", code: refused, stages };
     }
-    if (response.status === 500 && NORMALIZE_INPUT_FAILURES.some((known) => known === code)) {
-      return { ok: false, outcome: "refused", code: code as string, stages };
+    const failed = response.status === 500 ? NORMALIZE_INPUT_FAILURES.find((known) => known === code) : undefined;
+    if (failed !== undefined) {
+      return { ok: false, outcome: "refused", code: failed, stages };
     }
     if (response.status === 504 && code === "timeout") {
       return { ok: false, outcome: "timeout", code, stages };
