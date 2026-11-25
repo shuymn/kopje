@@ -127,14 +127,7 @@ import {
 } from "./quotes";
 import { type Refresh, refreshDue, runningRefresh } from "./reply-walk-reads";
 import { normalizeSearchText } from "./search-text";
-import {
-  editMediaSql,
-  MAX_STATUS_MEDIA,
-  MAX_STATUS_MENTION_ROWS,
-  MAX_STATUS_TAGS,
-  pollOptionsSql,
-  statusUriSql,
-} from "./status-bounds";
+import { editMediaSql, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, pollOptionsSql, statusUriSql } from "./status-bounds";
 import {
   isPlayable,
   type MediaAttachment,
@@ -152,7 +145,7 @@ import {
   type Status,
   statusStream,
 } from "./status-presenter";
-import { MEDIA_COLUMN_MAP } from "./status-rows";
+import { MEDIA_COLUMN_MAP, shownMediaSql } from "./status-rows";
 import {
   blankText,
   exceedsRawLength,
@@ -389,14 +382,11 @@ function mediaToAttach(
   return ids;
 }
 
-// Whether `ids` are the media the status `statusId` shows, whatever their order: an edit that keeps its set. A status
-// shows at most MAX_STATUS_MEDIA, read through media_attachments_status.
+// Whether `ids` are the media the status `statusId` shows, whatever their order: an edit that keeps its set. The set
+// is the presenter's (status-rows.ts shownMediaSql: the first MAX_STATUS_MEDIA shown rows by position), so a status
+// the cutover left with more shown rows keeps the ones its readers see.
 function showsUnchanged(db: Db, statusId: string, ids: readonly string[]): boolean {
-  const shown = db.all<{ id: string }>(
-    `SELECT id FROM media_attachments INDEXED BY media_attachments_status WHERE status_id = ? AND shown = 1
-		LIMIT ${MAX_STATUS_MEDIA + 1}`,
-    statusId,
-  );
+  const shown = db.all<{ id: string }>(shownMediaSql("?"), statusId);
   return shown.length === ids.length && shown.every((row) => ids.includes(row.id));
 }
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { sql } from "./api-helpers";
+import { bearer, sql } from "./api-helpers";
 import {
   convertToVideo,
   IMAGES_AND_VIDEO,
@@ -47,6 +47,34 @@ describe("an edit's media (P10)", () => {
     expect(await edit(w, status.id, { status: "again", media_ids: reordered })).toMatchObject({
       status: 200,
       body: { media_attachments: reordered.map((id) => ({ id })) },
+    });
+  });
+
+  it("keeps a converted set of five shown rows when the edit names the four the status shows (code review r1 M3)", async () => {
+    const w = await avWorld();
+    clock(T0 + SECOND);
+    const media = [await imageUpload(w), await imageUpload(w), await imageUpload(w), await imageUpload(w)];
+    const posted = await postAs(w, { status: "converted", media_ids: media });
+    expect(posted.status).toBe(200);
+    const id = (posted.body as { id: string }).id;
+    await convertToVideo(w, media[1]!);
+    // A fifth shown row after the four, as the cutover may leave one: the status shows the first MAX_STATUS_MEDIA.
+    const fifth = await imageUpload(w);
+    await sql(
+      w.store,
+      "UPDATE media_attachments SET status_id = ?, shown = 1, position = 4, gc_at = NULL WHERE id = ?",
+      id,
+      fifth,
+    );
+    const shown = await w.h.request(`/api/v1/statuses/${id}`, bearer(w.h.users.alice.token));
+    const ids = (await shown.json<{ media_attachments: { id: string }[] }>()).media_attachments.map((m) => m.id);
+    expect(ids).toEqual(media);
+    expect(await edit(w, id, { status: "edited", media_ids: ids })).toMatchObject({
+      status: 200,
+      body: {
+        content: "<p>edited</p>",
+        media_attachments: [{ id: media[0] }, { id: media[1], type: "video" }, { id: media[2] }, { id: media[3] }],
+      },
     });
   });
 
