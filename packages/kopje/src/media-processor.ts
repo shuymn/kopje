@@ -30,9 +30,16 @@
 // awaited until it, and one that has not finished by then is left to the alarm, which repeats it until it is done.
 import { DurableObject } from "cloudflare:workers";
 
+import type { MonthlyTransforms } from "./domain/media";
+import { HARD_HOLD_MS, V2_PROCESS_MS } from "./domain/media-processing";
+import { runUpload } from "./jobs/media-jobs";
+import { type ContainerControl, probeWork } from "./mastodon/media-activation";
 import { PROBE_FIXTURE_BASE64 } from "./media-probe-fixture";
 import { AV_OUTPUT_LIMIT, plannedDuration, STILL_OUTPUT_LIMIT } from "./platform/av-bytes";
+import { accountMonthlyTransforms, readConfig } from "./platform/config";
 import { errorFields } from "./platform/error-message";
+import { type ImageCodec, imagesCodec } from "./platform/images";
+import { incomingKey } from "./platform/media-files";
 import {
   type MediaProcessorClient,
   NORMALIZE_INPUT_FAILURES,
@@ -41,11 +48,14 @@ import {
   type NormalizeResult,
   type ProbeProfile,
   type ProbeReport,
+  type ProbeVerdict,
   STILL_INPUT_REFUSALS,
   type StillInputRefusal,
   type StillOutcome,
   TranscoderUnavailable,
 } from "./platform/media-transcoder";
+import { defaultStore, type StoreStub } from "./platform/store-client";
+import { buildOf } from "./version";
 
 // The port container/server listens on.
 const PORT = 8080;
@@ -553,6 +563,8 @@ export type UnitState = {
   readonly container?: Container | undefined;
   // The media bucket, which stillNow reads its input from.
   readonly bucket?: Pick<R2Bucket, "get">;
+  // Images, which the activation probe's still goes through.
+  readonly images?: ImageCodec;
   readonly storage: Pick<DurableObjectStorage, "setAlarm" | "deleteAll" | "sync">;
 };
 
@@ -607,6 +619,37 @@ export class ProcessorUnit {
     }
     const { destroyed: _destroyed, ...outcome } = owned;
     return outcome;
+  }
+
+  // The activation probe of normalize@standard-4 on the copy of the clip at `key` (jobs/media-jobs.ts probeWork), on
+  // this object's one container under the same single-owner rule as probeNow; a probe that cannot run here (busy, no
+  // container, storage) reaches no verdict.
+  async probeNormalize(key: string): Promise<ProbeVerdict & { image: string | null }> {
+    const { bucket, images } = this.state;
+    const owned = await this.#owned<ProbeVerdict & { image: string | null; destroyed: boolean }>(
+      PROBE_MS,
+      async (deadline, container) => {
+        if (bucket === undefined || images === undefined) {
+          return { outcome: "no-verdict", reason: "no-bucket", image: null, destroyed: true };
+        }
+        const control = containerControl(container, this.deps, "normalize", "standard-4");
+        const verdict = await probeWork(
+          { ...control, bucket, images, now: this.deps.now },
+          key,
+          deadline,
+          PROBE_WORK_MS,
+        );
+        const destroyed = await destroyContainer(container, this.deps);
+        return { ...verdict, image: control.image(), destroyed };
+      },
+      (deadline) => deadline + DESTROY_MS,
+      (verdict) => verdict,
+    );
+    if ("refused" in owned) {
+      return { outcome: "no-verdict", reason: owned.refused, image: null };
+    }
+    const { destroyed: _destroyed, ...verdict } = owned;
+    return verdict;
   }
 
   // Runs one operation that owns this object's container (design 4.5): refused as busy while another runs here or an
@@ -718,13 +761,253 @@ export class ProcessorUnit {
   }
 }
 
+// The container of one unit of work as jobs/media-jobs.ts drives it: started on `instance` with Internet access
+// disabled and polled at /healthz until `by` (a 404 there, which the server never answers, is `wrong`: a build without
+// the server), the normalize adapter, and the confirmed stop (destroyContainer).
+function containerControl(
+  container: Container,
+  deps: ProbeDeps,
+  operation: "normalize",
+  instance: "standard-4",
+): ContainerControl & { image: () => string | null } {
+  let image: string | null = container.images.media ?? null;
+  return {
+    image: () => image,
+    async ready(by) {
+      if (image === null || deps.now() >= by) {
+        return null;
+      }
+      container.start({ image, instance, enableInternet: false, labels: { app: "kopje-media", operation, instance } });
+      const port = container.getTcpPort(PORT);
+      for (;;) {
+        const poll = new AbortController();
+        const status = await before(
+          port.fetch("http://container/healthz", { signal: poll.signal }).then(
+            async (response) => {
+              await response.body?.cancel();
+              return response.status;
+            },
+            () => null,
+          ),
+          by,
+          deps,
+          poll,
+        );
+        if (status === 200) {
+          const info = await before(
+            container.inspect().catch(() => null),
+            by,
+            deps,
+          );
+          image = info === TIMED_OUT ? image : (info?.image ?? image);
+          return port;
+        }
+        if (status === 404) {
+          return "wrong";
+        }
+        if (status === TIMED_OUT || deps.now() >= by) {
+          return null;
+        }
+        await deps.wait(Math.min(READY_POLL_MS, by - deps.now()));
+      }
+    },
+    normalize,
+    stop: () => destroyContainer(container, deps),
+  };
+}
+
+// ---- Uploads (#1828 PR4 plan, section 1.3)
+//
+// An upload's object, u:<id>:<token>, runs its work in alarm(), which the platform runs one at a time; its record
+// (`upload`: the id, the file token, the teardown_id and when run first stored it, on this object's clock) is the only
+// thing it stores besides its alarm. The steps, each set and confirmed after the one alarm D1 arms:
+//   D0 run         the record and an alarm for now in one storage transaction; a record without an alarm gets one;
+//                  otherwise nothing, so a repeated run, or one during alarm(), starts no second invocation
+//   D1 entry       the record-age stop: a record V2_PROCESS_MS + HARD_HOLD_MS old with no container running deletes
+//                  the input and the storage (W9); else an invocation id drawn in memory and the alarm set for
+//                  CLEANUP_RETRY_MS later and confirmed (sync), which every later step relies on
+//   D2 S4          started: runUpload (D3-D7, jobs/media-jobs.ts); settled or gone: the cleanup replay; maintenance
+//                  (or no answer): a running container is stopped, and the invocation ends with the record and alarm
+//                  kept, so the alarm repeats it
+//   D4             the confirmed stop; an unconfirmed one ends the invocation with no Store write, its granted slot
+//                  counting, and the alarm repeats it
+//   D8 input       incoming/<id> deleted, best effort, whatever S8 answers
+//   D9 S8          the stop confirmation with the record's teardown_id, only after a confirmed stop: `released`
+//                  deletes the storage (its alarm too); anything else ends the invocation and the alarm repeats D8, D9
+// The cleanup replay (S4 not `started`): the stop under D4's rule, then D8 and D9.
+const UPLOAD_KEY = "upload";
+
+type UploadRecord = { id: string; token: string; teardownId: string; at: number };
+
+export type UploadState = {
+  readonly container?: Container | undefined;
+  readonly bucket: R2Bucket;
+  readonly storage: Pick<
+    DurableObjectStorage,
+    "get" | "put" | "transaction" | "getAlarm" | "setAlarm" | "deleteAll" | "sync"
+  >;
+};
+
+export type UploadUnitDeps = ProbeDeps & {
+  build: string;
+  store: () => StoreStub;
+  images: ImageCodec;
+  monthlyTransforms: () => MonthlyTransforms;
+};
+
+export class UploadUnit {
+  constructor(
+    private readonly state: UploadState,
+    private readonly deps: UploadUnitDeps,
+  ) {}
+
+  // D0.
+  async run(id: string, token: string, teardownId: string): Promise<void> {
+    const at = this.deps.now();
+    await this.state.storage.transaction(async (txn) => {
+      if ((await txn.get<UploadRecord>(UPLOAD_KEY)) === undefined) {
+        await txn.put(UPLOAD_KEY, { id, token, teardownId, at } satisfies UploadRecord);
+        await txn.setAlarm(at);
+      } else if ((await txn.getAlarm()) === null) {
+        await txn.setAlarm(at);
+      }
+    });
+  }
+
+  async holds(): Promise<boolean> {
+    return (await this.state.storage.get<UploadRecord>(UPLOAD_KEY)) !== undefined;
+  }
+
+  // D1-D9. A failure is logged and leaves the alarm D1 set, which repeats the cleanup.
+  async alarm(): Promise<void> {
+    const record = await this.state.storage.get<UploadRecord>(UPLOAD_KEY);
+    if (record === undefined) {
+      return;
+    }
+    const { storage, container } = this.state;
+    const now = this.deps.now();
+    if (now - record.at >= V2_PROCESS_MS + HARD_HOLD_MS && container?.running !== true) {
+      console.warn({ event: "kopje.media.job.record_aged", id: record.id });
+      await this.#dropInput(record);
+      await storage.deleteAll();
+      return;
+    }
+    const invocation = crypto.randomUUID();
+    await storage.setAlarm(now + CLEANUP_RETRY_MS);
+    await storage.sync();
+    try {
+      const asked = this.deps.now();
+      const started = await this.deps
+        .store()
+        .startNormalize(this.deps.build, { id: record.id, token: record.token, invocation });
+      if (started.status === "maintenance") {
+        await this.#stop();
+        return;
+      }
+      if (started.status !== "started") {
+        await this.#cleanup(record);
+        return;
+      }
+      const control = containerControlOf(container, this.deps);
+      const end = await runUpload(
+        {
+          ...control,
+          build: this.deps.build,
+          store: this.deps.store(),
+          bucket: this.state.bucket,
+          images: this.deps.images,
+          monthlyTransforms: this.deps.monthlyTransforms(),
+          now: this.deps.now,
+        },
+        {
+          id: record.id,
+          token: record.token,
+          startId: started.startId,
+          endpoint: started.endpoint,
+          inputBytes: started.inputBytes,
+          deadline: asked + started.msLeft,
+        },
+      );
+      if (end.stopped) {
+        await this.#release(record);
+      }
+    } catch (error) {
+      console.warn({ event: "kopje.media.job.alarm_failed", id: record.id, ...errorFields(error) });
+      await this.#stop();
+    }
+  }
+
+  // The cleanup replay: the stop under D4's rule, then D8 and D9.
+  async #cleanup(record: UploadRecord): Promise<void> {
+    if (await this.#stop()) {
+      await this.#release(record);
+    }
+  }
+
+  // Whether no container runs here: destroyed and confirmed, or none was running.
+  async #stop(): Promise<boolean> {
+    const container = this.state.container;
+    return container === undefined || !container.running || destroyContainer(container, this.deps);
+  }
+
+  async #dropInput(record: UploadRecord): Promise<void> {
+    await this.state.bucket.delete(incomingKey(record.id)).catch((error: unknown) => {
+      console.warn({ event: "kopje.media.job.input_delete_failed", id: record.id, ...errorFields(error) });
+    });
+  }
+
+  // D8, then D9: the storage goes only once S8 answers `released`.
+  async #release(record: UploadRecord): Promise<void> {
+    await this.#dropInput(record);
+    const released = await this.deps
+      .store()
+      .releaseAvSlot(this.deps.build, { id: record.id, teardownId: record.teardownId });
+    if (released.status === "released") {
+      await this.state.storage.deleteAll();
+    }
+  }
+}
+
+// An upload's container control, or one that never becomes ready when the object has no container.
+function containerControlOf(container: Container | undefined, deps: ProbeDeps): ContainerControl {
+  if (container === undefined) {
+    return { ready: () => Promise.resolve(null), normalize, stop: () => Promise.resolve(true) };
+  }
+  return containerControl(container, deps, "normalize", "standard-4");
+}
+
 export class MediaProcessor extends DurableObject<Env> {
   readonly #unit: ProcessorUnit;
+  readonly #upload: UploadUnit;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.#unit = new ProcessorUnit({ container: ctx.container, storage: ctx.storage, bucket: env.MEDIA });
+    const images = imagesCodec(env.IMAGES);
+    this.#unit = new ProcessorUnit({ container: ctx.container, storage: ctx.storage, bucket: env.MEDIA, images });
+    this.#upload = new UploadUnit(
+      { container: ctx.container, storage: ctx.storage, bucket: env.MEDIA },
+      {
+        ...defaultDeps,
+        build: buildOf(env),
+        store: () => defaultStore(env),
+        images,
+        monthlyTransforms: () => {
+          const config = readConfig(env);
+          return config.ok
+            ? { instance: config.config.IMAGES_MONTHLY_TRANSFORMS, account: accountMonthlyTransforms(config.config) }
+            : { instance: 0, account: 0 };
+        },
+      },
+    );
     this.#unit.start();
+  }
+
+  run(id: string, token: string, teardownId: string): Promise<void> {
+    return this.#upload.run(id, token, teardownId);
+  }
+
+  probeNormalize(key: string): Promise<ProbeVerdict & { image: string | null }> {
+    return this.#unit.probeNormalize(key);
   }
 
   probeNow(profile: ProbeProfile): Promise<ProbeReport> {
@@ -735,7 +1018,11 @@ export class MediaProcessor extends DurableObject<Env> {
     return this.#unit.stillNow(key, ms);
   }
 
-  override alarm(): Promise<void> {
+  // An upload's object holds its record; any other object's alarm is the probe and still cleanup.
+  override async alarm(): Promise<void> {
+    if (await this.#upload.holds()) {
+      return this.#upload.alarm();
+    }
     return this.#unit.alarm();
   }
 }
@@ -762,6 +1049,11 @@ export function processorClient(env: Env, build: string) {
     stills: {
       still: (key, ms) => still(`rb:${crypto.randomUUID()}`, key, ms),
       probe: (key, ms) => still(`p:${build}:${STILL_PROFILE}`, key, ms),
+      probeInput: decodeFixture(),
+    },
+    uploads: {
+      run: (id, token, teardownId) => namespace.getByName(`u:${id}:${token}`).run(id, token, teardownId),
+      probeNormalize: (key) => namespace.getByName(`p:${build}:normalize@standard-4`).probeNormalize(key),
       probeInput: decodeFixture(),
     },
   } satisfies MediaProcessorClient;

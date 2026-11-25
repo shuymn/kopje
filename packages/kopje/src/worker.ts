@@ -7,6 +7,7 @@ import {
   scheduledCardImages,
   scheduledFieldLinks,
   scheduledLinkCards,
+  scheduledMedia,
   scheduledRemoteMedia,
 } from "./jobs/scheduled";
 import { processorClient } from "./media-processor";
@@ -35,7 +36,7 @@ export default {
   // Every 5 minutes: a field link round (one account's profile links checked), a link card round (a few statuses' cards
   // fetched), a card image round (a few card images fetched and re-encoded), a remote media round (the cache of remote
   // avatars and headers maintained and a few files fetched), the delivery sweep and doorbell, the media sweep and
-  // reconciliation, a round of inbound jobs (purges, Moves), the daily backup when it is due or running, and a turn of
+  // reconciliation, the media processor's dispatch, probe and incoming/ orphan rounds, a round of inbound jobs (purges, Moves), the daily backup when it is due or running, and a turn of
   // the streaming API (which closes the sockets of expired tokens). Each is a no-op in maintenance, by design, and each
   // runs on its own.
   scheduled: (_controller, env, ctx) => {
@@ -43,6 +44,13 @@ export default {
     ctx.waitUntil(scheduledLinkCards(env, inboxDeps));
     ctx.waitUntil(scheduledCardImages(env, inboxDeps));
     ctx.waitUntil(scheduledRemoteMedia(env, inboxDeps));
+    ctx.waitUntil(
+      scheduledMedia(env, {
+        build: buildOf,
+        store: defaultStore,
+        processor: (e) => processorClient(e, buildOf(e))?.uploads ?? null,
+      }),
+    );
     ctx.waitUntil(
       defaultStore(env)
         .streamTick(buildOf(env))

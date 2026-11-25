@@ -26,10 +26,12 @@ import {
   type ProbeReport,
   type StillMaker,
   TranscoderUnavailable,
+  type UploadProcessor,
 } from "../src/platform/media-transcoder";
 import { accessToken, adminClaims, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, deferred, migratedStore } from "./helpers";
+import { gate, type GATES } from "./media-processing-helpers";
 import { memoryIO } from "./ops-helpers";
 
 type Handler = (request: Request) => Response | Promise<Response>;
@@ -105,6 +107,13 @@ function fakeContainer(
 const unusedStills: StillMaker = {
   still: () => Promise.reject(new Error("unused")),
   probe: () => Promise.reject(new Error("unused")),
+  probeInput: new Uint8Array(),
+};
+
+// The probe route of still@standard-1 never runs an upload or the activation probe.
+const unusedUploads: UploadProcessor = {
+  run: () => Promise.reject(new Error("unused")),
+  probeNormalize: () => Promise.reject(new Error("unused")),
   probeInput: new Uint8Array(),
 };
 
@@ -1225,16 +1234,32 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
 
   // The admin app with this processor (null: no binding), and the CLI's fetch through an Access edge that turns its
   // service token into a JWT.
-  async function harness(probe: ((profile: ProbeProfile) => Promise<ProbeReport>) | null) {
+  async function harness(
+    probe: ((profile: ProbeProfile) => Promise<ProbeReport>) | null,
+    gated: keyof typeof GATES | null = null,
+  ) {
     const team = await adminTeam();
     const store = await migratedStore();
     await setTeamAccess(store, team);
+    if (gated !== null) {
+      await gate(store, gated, true);
+    }
+    // normalize@standard-4's activation probe, its verdict from the same report.
+    const uploads: UploadProcessor = {
+      ...unusedUploads,
+      probeNormalize: async () => {
+        const answer = await probe!("normalize@standard-4");
+        return answer.ok
+          ? { outcome: "pass", imagesVerified: true, image: null }
+          : { outcome: "fail", reason: "ready", image: null };
+      },
+    };
     const app = createApp({
       build: () => BUILD,
       now: () => NOW,
       store: () => store,
       fetch: team.fetch,
-      mediaProcessor: () => (probe === null ? null : { probeNow: probe, stills: unusedStills }),
+      mediaProcessor: () => (probe === null ? null : { probeNow: probe, stills: unusedStills, uploads }),
     });
     const call = (request: Request) => app.fetch(request, env, createExecutionContext());
     const post = async (profile: unknown) =>
@@ -1313,4 +1338,17 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     expect(unbound.code).toBe(3);
     expect(unbound.err).toContain("not bound");
   });
+
+  it.each(["maintenance", "dump"] as const)(
+    "refuses the activation probe while the Store refuses writes (%s), and the CLI prints the refusal",
+    async (gated) => {
+      const probe = vi.fn((profile: ProbeProfile) => Promise.resolve(report(profile)));
+      const refused = await harness(probe, gated);
+      expect((await refused.post("normalize@standard-4")).status).toBeGreaterThanOrEqual(400);
+      const printed = await refused.cli(["media-processor", "probe", "normalize@standard-4"]);
+      expect(printed.code).not.toBe(0);
+      expect(printed.err).toMatch(gated === "maintenance" ? /maintenance/ : /read-?only|dump|writes/i);
+      expect(probe).not.toHaveBeenCalled();
+    },
+  );
 });

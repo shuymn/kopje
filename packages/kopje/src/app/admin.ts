@@ -6,6 +6,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { AnnouncementChanges } from "../domain/announcements";
 import type { LoaderDeps } from "../federation/loader";
 import { uploadEmoji } from "../mastodon/emoji-upload";
+import { activationProbe } from "../mastodon/media-activation";
 import { rebuildMedia } from "../mastodon/media-rebuild";
 import { parseScheduledAt } from "../mastodon/statuses";
 import { type AccessSettings, adminRefusal, adminUsable, normalizeTeamDomain } from "../platform/access-settings";
@@ -317,8 +318,13 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
       health: () => (health ??= stub(c).health(b)),
       localKeys: (caller: string) => stub(c).localKeys(caller),
       backupState: (caller: string) => stub(c).backupState(caller),
+      avActivation: (caller: string, input: Parameters<StoreStub["avActivation"]>[1]) =>
+        stub(c).avActivation(caller, input),
     };
-    const report = await healthReport(b, config, () => once, { backup: readBackupConfig(c.env) });
+    const report = await healthReport(b, config, () => once, {
+      backup: readBackupConfig(c.env),
+      mediaProcessor: { binding: mediaProcessor(c.env) !== null },
+    });
     let detail: unknown;
     try {
       detail = await once.health();
@@ -585,8 +591,11 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
 
   // ---- media processor (src/media-processor.ts)
 
-  // The smoke probe of one execution profile: a container started on its instance type runs its operation on the
-  // packaged fixture. It reads and writes nothing of the instance; it answers once the container is destroyed.
+  // A probe of one execution profile. normalize@standard-4's is its activation probe (jobs/media-jobs.ts
+  // activationProbe): one claim shared with the probe round, the packaged clip copied to incoming/probe-<nonce> and run
+  // through the container, the verifier and Images, and the verdict recorded for this build. It writes the Store, so
+  // maintenance and a read-only Store refuse it (503) before any container starts. still@standard-1's is the smoke
+  // probe, which writes nothing.
   admin.post("/media-processor/probe", async (c) => {
     const { profile } = await jsonBody(c);
     if (!isProbeProfile(profile)) {
@@ -601,6 +610,13 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
         },
         409,
       );
+    }
+    if (profile === "normalize@standard-4") {
+      const probed = await activationProbe(
+        { build: build(c.env), store: stub(c), bucket: c.env.MEDIA, processor: processor.uploads },
+        false,
+      );
+      return c.json({ probe: probed });
     }
     return c.json({ report: await processor.probeNow(profile) });
   });

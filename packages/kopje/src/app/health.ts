@@ -1,3 +1,4 @@
+import type { AvActivation } from "../domain/media-processing";
 import type { BackupConfigResult } from "../platform/backup-config";
 import type { BackupState } from "../platform/backup-state";
 import { type Config, type ConfigResult, userKek } from "../platform/config";
@@ -9,7 +10,8 @@ import { checkKey } from "../security/keyring";
 type Check = { ok: boolean; [detail: string]: unknown };
 
 // The Store RPCs the report uses.
-export type HealthStore = Pick<StoreStub, "health" | "localKeys" | "backupState">;
+export type HealthStore = Pick<StoreStub, "health" | "localKeys" | "backupState"> &
+  Partial<Pick<StoreStub, "avActivation">>;
 
 export type HealthReport = { ok: boolean; build: string; checks: Record<string, Check> };
 
@@ -26,9 +28,12 @@ export async function healthReport(
     backup,
     now = Date.now(),
     compatibilityFlags = Cloudflare.compatibilityFlags,
+    mediaProcessor,
   }: {
     checkKeys?: boolean;
     backup?: BackupConfigResult | undefined;
+    // Whether the processor's binding is present: the detailed report shows the media processor's state.
+    mediaProcessor?: { binding: boolean } | undefined;
     now?: number;
     compatibilityFlags?: Readonly<Record<string, boolean>>;
   } = {},
@@ -58,8 +63,61 @@ export async function healthReport(
     if (backup !== undefined) {
       checks.backup = await backupCheck(build, backup, store, now);
     }
+    if (mediaProcessor !== undefined) {
+      checks.mediaProcessor = await mediaProcessorCheck(build, config.config, mediaProcessor.binding, store);
+    }
   }
   return { ok: Object.values(checks).every((check) => check.ok), build, checks };
+}
+
+// The media processor's state for video and audio uploads (#1828 design 4.15; docs/media-processor.md), read from the
+// Store's activation (avActivation) and never starting a container:
+//   disabled     no binding, or MEDIA_UPLOAD_MONTHLY_JOBS 0 (`reason` says which)
+//   provisioned  the binding and a budget, and no verdict for this build yet: `lastProbe` "unavailable" when a probe was
+//                attempted for it and reached none, "never" when none was
+//   ready        a pass for this build: uploads are admitted; `imagesVerified` false when its Images step answered 9422,
+//                and `infrastructureFailure` when an upload met one since (a re-probe is due; admission stands)
+//   degraded     a failed probe for this build: uploads are refused
+// with the month's spent units, the budget, and the slots counting now. Only `degraded` is not ok.
+async function mediaProcessorCheck(
+  build: string,
+  config: Config,
+  binding: boolean,
+  store: () => HealthStore,
+): Promise<Check> {
+  const budget = config.MEDIA_UPLOAD_MONTHLY_JOBS;
+  const read = store().avActivation;
+  if (read === undefined) {
+    return { ok: true, state: "disabled", reason: "unread" };
+  }
+  let activation: AvActivation;
+  try {
+    activation = await read(build, { binding, budget, build });
+  } catch (error) {
+    return { ok: false, state: "unknown", error: errorMessage(error) };
+  }
+  const usage = { spent: activation.spent, budget, slots: activation.slots };
+  if (!binding || budget <= 0) {
+    return { ok: true, state: "disabled", reason: binding ? "budget" : "binding", ...usage };
+  }
+  const { record, attempt, failure } = activation.probe;
+  const verdict = record !== null && record.version === build ? record : null;
+  if (verdict === null) {
+    const attempted = attempt !== null && attempt.version === build;
+    return { ok: true, state: "provisioned", lastProbe: attempted ? "unavailable" : "never", ...usage };
+  }
+  if (!verdict.ok) {
+    return { ok: false, state: "degraded", ...usage };
+  }
+  return {
+    ok: true,
+    state: "ready",
+    imagesVerified: verdict.imagesVerified !== false,
+    ...(failure !== null && failure.version === build && failure.at > verdict.at
+      ? { infrastructureFailure: true }
+      : {}),
+    ...usage,
+  };
 }
 
 // The compatibility flags the code relies on, as the running Worker has them: an instance's own wrangler.jsonc may lack

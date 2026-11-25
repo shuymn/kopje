@@ -99,10 +99,25 @@ export class TranscoderUnavailable extends Error {
   }
 }
 
+// The activation probe's verdict of normalize@standard-4 (jobs/media-jobs.ts probeWork), from what the container, the
+// verifier and Images did with the packaged clip.
+export type ProbeVerdict =
+  | { outcome: "pass"; imagesVerified: boolean }
+  | { outcome: "fail" | "no-verdict"; reason: string };
+
+// The processor as the dispatch round, the probe round and the probe command reach it: an upload's `run` (D0, on the
+// object u:<id>:<token>), and the activation probe on the profile's object of a copy of `probeInput` at `key`.
+export type UploadProcessor = {
+  run(id: string, token: string, teardownId: string): Promise<void>;
+  probeNormalize(key: string): Promise<ProbeVerdict & { image: string | null }>;
+  readonly probeInput: Uint8Array;
+};
+
 // The processor as the app layer reaches it, through the binding the instance template's optional block adds.
 export type MediaProcessorClient = {
   probeNow(profile: ProbeProfile): Promise<ProbeReport>;
   readonly stills: StillMaker;
+  readonly uploads: UploadProcessor;
 };
 
 // A still the container made, as the Durable Object answers it: the PNG read within STILL_OUTPUT_LIMIT and its declared

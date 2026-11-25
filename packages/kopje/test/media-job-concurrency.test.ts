@@ -1,0 +1,126 @@
+import { env } from "cloudflare:workers";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { AV_WRITE_WINDOW_MS, ORPHAN_GRACE_MS } from "../src/domain/media";
+import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
+import { fileKey, originalKey } from "../src/platform/media-files";
+import { BUILD } from "./helpers";
+import { avWorld, type AvWorld, bookmark, clock, held, MINUTE, restore, T0 } from "./media-processing-helpers";
+import { cleared, platformFor, upload } from "./media-unit-helpers";
+
+// Interleavings of an upload's object (UploadUnit) with the owner, the Store and the platform, through the production
+// Store and the media bucket (the PR4 plan's W1 and per-write reauthorization, the start rule, K3).
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+const deleteOf = (w: AvWorld, id: string) => async () => {
+  await w.store.deleteAvUpload(BUILD, { credential: w.alice, id });
+};
+
+async function landed(id: string, token: string) {
+  const [original, full, small] = await Promise.all([
+    env.MEDIA.head(originalKey(id)),
+    env.MEDIA.head(fileKey(token, "full")),
+    env.MEDIA.head(fileKey(token, "small")),
+  ]);
+  return { original: original !== null, full: full !== null, small: small !== null };
+}
+
+describe("W1 and the per-write reauthorization", () => {
+  it("a grant reply held across DELETE starts at most one write; after the sweep and reconciliation the file answers 404", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    // full's grant commits, the owner's DELETE commits, then the grant's reply arrives.
+    p.beforeWrite("original", () => {
+      p.afterCall("confirmAvWrite", deleteOf(w, up.id));
+      return Promise.resolve();
+    });
+    await p.settle();
+    expect(p.writes()).toEqual(["original", "full"]);
+    expect(await landed(up.id, up.token)).toEqual({ original: true, full: true, small: false });
+    expect((await held(w.store, up.id)).att?.processed).not.toBe(1);
+    await cleared(w, p, up.id);
+    const served = `/media/${up.token}/full.mp4`;
+    expect((await w.h.request(served)).status).toBe(200);
+    const deps = { build: () => BUILD, store: () => w.store };
+    const sweptAt = T0 + AV_WRITE_WINDOW_MS + MINUTE;
+    clock(sweptAt);
+    await sweepMedia(env, deps);
+    clock(sweptAt + ORPHAN_GRACE_MS);
+    await reconcileMedia(env, deps);
+    expect((await w.h.request(served)).status).toBe(404);
+    expect(await landed(up.id, up.token)).toEqual({ original: false, full: false, small: false });
+  });
+
+  it("originals' complete held while DELETE commits: full's complete and small's put never start", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.beforeWrite("original", deleteOf(w, up.id));
+    await p.settle();
+    expect(p.writes()).toEqual(["original"]);
+    expect(await landed(up.id, up.token)).toEqual({ original: true, full: false, small: false });
+    await cleared(w, p, up.id);
+  });
+
+  it("a job whose deadline passes during full's complete starts no small put", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.beforeWrite("full", async () => {
+      const deadline = (await held(w.store, up.id)).row?.deadline_at ?? 0;
+      clock(deadline + 1);
+    });
+    await p.settle();
+    expect(p.writes()).toEqual(["original", "full"]);
+    expect((await held(w.store, up.id)).att?.processed).not.toBe(1);
+    await cleared(w, p, up.id);
+  });
+
+  it("a replay after R2 completed full writes nothing", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.killNext("complete:full");
+    expect(await p.fire()).toBe("killed");
+    const before = p.writes().length;
+    await p.settle();
+    expect(p.writes().length).toBe(before);
+    expect((await held(w.store, up.id)).att?.processed).not.toBe(1);
+    await cleared(w, p, up.id);
+  });
+});
+
+describe("the start rule", () => {
+  it("two alarms and a dispatch's run start one container, and the upload completes once", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    clock(p.storage.alarm ?? Date.now());
+    await Promise.all([p.unit().alarm(), p.unit().alarm(), p.unit().run(up.id, up.token, up.teardownId)]);
+    await p.settle();
+    expect(p.starts()).toBe(1);
+    expect(p.writes().filter((name) => name === "full")).toHaveLength(1);
+    expect((await held(w.store, up.id)).att).toMatchObject({ processed: 1 });
+    await cleared(w, p, up.id);
+  });
+
+  it("a restored live run (K3) writes nothing and keeps its slot until its release", async () => {
+    const w = await avWorld();
+    const p = await platformFor(w);
+    const up = await upload(w, p);
+    p.afterCall("startNormalize", async () => {
+      await restore(w.store, await bookmark(w.store), Date.now());
+    });
+    p.beforeCall("releaseAvSlot", async () => {
+      expect((await held(w.store, up.id)).slot).not.toBeNull();
+    });
+    await p.settle();
+    expect(p.writes()).toEqual([]);
+    expect(await landed(up.id, up.token)).toEqual({ original: false, full: false, small: false });
+    await cleared(w, p, up.id);
+  });
+});
