@@ -18,7 +18,7 @@ import { toStoreUnavailable } from "../src/platform/store-errors";
 import { ownerRun } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
 import { imageUpload } from "./av-posting-helpers";
-import { BUILD, deferred, holdingMarker, rejectionOf, testKernel } from "./helpers";
+import { BUILD, deferred, gateMarker, holdingMarker, rejectionOf, testKernel } from "./helpers";
 import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS } from "./media-helpers";
 import {
   ACTIVE,
@@ -484,6 +484,26 @@ describe("a restore marker that cannot be read (code review r1 M2)", () => {
         [{ status: "stale" }, { status: "stale" }],
         { status: "ended" },
       ]);
+    });
+
+    it("answers a PUT held at the marker read 404 once S10 dooms the upload meanwhile, writing no text (code review r5)", async () => {
+      const w = await avWorld();
+      const up = await started(w, { v1: true });
+      clock(T0 + 5 * SECOND);
+      const text = "SELECT description, focus_x, focus_y, focus_given FROM media_attachments WHERE id = ?";
+      const before = await sql(w.store, text, up.id);
+      const gate = await gateMarker(w.store);
+      try {
+        const putting = put(w, up.id, { description: "lost", focus: "0.5,0.5" });
+        await gate.reached();
+        expect(await w.store.v1Final(BUILD, { id: up.id, token: up.token })).toEqual({ status: 503 });
+        gate.open();
+        expect(await putting).toEqual({ status: 404, body: NOT_FOUND });
+        expect(gate.reads()).toBe(1);
+      } finally {
+        await gate.close();
+      }
+      expect(await sql(w.store, text, up.id)).toEqual(before);
     });
 
     it("commits the sweep's claim while the marker read is held", async () => {
