@@ -1770,7 +1770,8 @@ export type ValidationResult = { token: string; heads: readonly { variant: strin
 // PITR validation's heads, in token order, from the batch of the restore `restore` (maintainRemoteMedia's
 // validationRestore). Nothing applies unless that restore is the walk's (validationCursor) and the marker's, read here
 // only once the walk's matches: a result of an earlier restore's batch delivered after a later restore rewound the walk
-// changes nothing. Per object, by its variants:
+// changes nothing, nor does one arriving once that restore's walk is complete (remote_media_validated_at). Per object,
+// by its variants:
 //   - `full` or the legacy `still` (an animated image's) unknown (a failed head): tried again from that object, and
 //     handled as missing after VALIDATION_FAILURES in a row, so it never holds the walk back (the cache is
 //     disposable, and the file is fetched again);
@@ -1790,7 +1791,13 @@ export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
   { status: "recorded"; reset: number; stills: number } | { status: "stale" }
 >((db, { restore, results, now, restoredAt }) => {
   const progress = validationCursor(db);
-  if (!isTime(restore) || !isTime(now) || progress.restore !== restore || restoreTime(restoredAt) !== restore) {
+  // A result for a restore whose walk is complete (a batch's result delayed past the pass that ended it) is stale,
+  // decided before the marker is asked for: the walk confirmed every object since.
+  const validated = Number(state(db, STATE.validated) ?? "-1");
+  if (!isTime(restore) || !isTime(now) || progress.restore !== restore || validated >= restore) {
+    return { status: "stale" };
+  }
+  if (restoreTime(restoredAt) !== restore) {
     return { status: "stale" };
   }
   let reset = 0;

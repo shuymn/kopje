@@ -10,6 +10,7 @@ import {
   remoteMediaOrphans,
   REMOTE_SETTLE_MS,
   VALIDATION_FAILURES,
+  type ValidationHead,
 } from "../src/domain/remote-media";
 import { type MediaRow, presentMedia } from "../src/domain/status-presenter";
 import { STATUS_MEDIA_COLUMN_MAP } from "../src/domain/status-rows";
@@ -536,6 +537,58 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
 });
 
 // A stale attempt's failed head counts toward neither allowance: the walk moves past the token.
+// Results of batches delivered late, once a later batch completed the walk and the next pass marked the restore
+// validated: stale, decided before the marker is asked for (`unread` answers), and nothing changes.
+describe("a result delivered after its restore's walk completed", () => {
+  it.each([
+    ["the named still", "still"],
+    ["`full`", "full"],
+  ] as const)("is stale for failed heads of %s, the video and its still untouched", async (_name, path) => {
+    const w = await mediaWorld();
+    const v = await cachedVideo(w);
+    const restoredAt = await mark(w);
+    try {
+      at(w, restoredAt + REMOTE_SETTLE_MS);
+      const batch = await w.op(maintainRemoteMedia, { now: Date.now(), restoredAt, cap: CAP, retentionDays: 14 });
+      expect(batch.validationRestore).toBe(restoredAt);
+      const result = (full: ValidationHead, still: ValidationHead) => ({
+        restore: restoredAt,
+        results: [
+          {
+            token: v.token,
+            heads: [
+              { variant: "full", head: full },
+              ...(full === "unknown" ? [] : [{ variant: `s${v.attempt}`, head: still }]),
+            ],
+          },
+        ],
+        now: Date.now(),
+      });
+      const delayed = path === "still" ? result("present", "unknown") : result("unknown", "unknown");
+      // A later batch sees both present; the next pass finds nothing past the cursor and ends the walk.
+      expect(await w.op(recordRemoteMediaValidation, { ...result("present", "present"), restoredAt })).toEqual({
+        status: "recorded",
+        reset: 0,
+        stills: 0,
+      });
+      await w.op(maintainRemoteMedia, { now: Date.now(), restoredAt, cap: CAP, retentionDays: 14 });
+      expect(await sql(w.t.store, "SELECT value FROM kopje_state WHERE name = 'remote_media_validated_at'")).toEqual([
+        { value: String(restoredAt) },
+      ]);
+      for (let n = 0; n < VALIDATION_FAILURES; n++) {
+        expect(await w.op(recordRemoteMediaValidation, { ...delayed, restoredAt: "unread" })).toEqual({
+          status: "stale",
+        });
+      }
+      expect(await slotStill(w, v.slot)).toMatchObject({ still_key: `s${v.attempt}` });
+      expect(await stillRow(w, v.token)).toMatchObject({ state: "stored", attempt: v.attempt });
+      expect(await w.objects()).toMatchObject([{ token: v.token, state: "stored" }]);
+    } finally {
+      await unmark(w);
+    }
+  });
+});
+
 describe("a stale attempt's result", () => {
   it("counts nothing for a failed head of an attempt the stored row no longer names, and the walk moves on", async () => {
     const w = await mediaWorld();

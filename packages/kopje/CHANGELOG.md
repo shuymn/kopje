@@ -107,6 +107,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- After a point-in-time restore, a result of the remote media cache's validation that reached the Store late (after a
+  later batch had confirmed the same files and the walk had ended) could still count failed checks against a cached
+  file confirmed present and, at the third, delete it to be fetched again. Such a result now changes nothing.
 - A post sent while the sweep was deleting an expired upload could still attach it and keep a broken attachment, when
   the posting Worker's clock was behind the sweep's. The Store now decides on its own clock both whether an upload can
   be attached and whether the sweep can take it.
