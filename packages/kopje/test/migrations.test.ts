@@ -16280,6 +16280,34 @@ describe("0123_media_thumbnails", () => {
     });
   });
 
+  // RES-7 (T11): the trigger bodies' reads, as statements of their own: the delete trigger's UPDATE seeks the parent's
+  // current child through media_attachments_thumbnail, the UPDATE guard the parent by its key.
+  it("seeks the current child and the parent by their keys in the trigger bodies", async () => {
+    await upgraded((sql) => {
+      const plan = (query: string, ...values: SqlStorageValue[]) =>
+        sql
+          .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, ...values)
+          .toArray()
+          .map((row) => row.detail);
+      expect(
+        plan(
+          "UPDATE media_attachments SET gc_at = '1970-01-01T00:00:00.000Z', url = '' WHERE thumbnail_of = ? AND gc_at IS NULL",
+          PARENT,
+        ),
+      ).toEqual([
+        expect.stringMatching(/^SEARCH media_attachments USING INDEX media_attachments_thumbnail \(thumbnail_of=\?\)$/),
+      ]);
+      expect(
+        plan(
+          `SELECT 1 FROM media_attachments p WHERE p.id = ? AND p.account_id = ? AND p.file_token IS NOT NULL
+						AND p.type IN ('video', 'audio')`,
+          PARENT,
+          A,
+        ),
+      ).toEqual([expect.stringMatching(/^SEARCH p USING INDEX sqlite_autoindex_media_attachments_1 \(id=\?\)$/)]);
+    });
+  });
+
   it("dooms the current child when its parent row is deleted, and only it", async () => {
     await upgraded((sql) => {
       insert(sql, {})();
