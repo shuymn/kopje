@@ -577,6 +577,52 @@ describe("presenting a thumbnail (T6, T7)", () => {
     expect(await getOwn(w, parent.id)).toMatchObject({ media: { preview_url: PREVIEW(child.token), blurhash: null } });
   });
 
+  it("federates a current thumbnail as the Document's icon with its blurhash, and none it would not show (T9)", async () => {
+    const w = await avWorld();
+    const { parent, child } = await thumbnailed(w);
+    const posted = await w.h.request(
+      "/api/v1/statuses",
+      bearer(w.h.users.alice.token, json({ status: "with a video", media_ids: [parent.id] })),
+    );
+    expect(posted.status).toBe(200);
+    const status = await posted.json<{ id: string; uri: string }>();
+    const shown = async () => {
+      const note = JSON.parse((await w.store.localNote(BUILD, { uri: status.uri }))!) as {
+        attachment: Record<string, unknown>[];
+      };
+      const answer = await w.h.request(`/api/v1/statuses/${status.id}`, bearer(w.h.users.alice.token));
+      const rest = await answer.json<{ media_attachments: { preview_url: string; blurhash: string | null }[] }>();
+      return { note: note.attachment[0]!, rest: rest.media_attachments[0]! };
+    };
+    const linked = await shown();
+    expect(linked.rest).toMatchObject({ preview_url: PREVIEW(child.token), blurhash: THUMB_BLURHASH });
+    expect(linked.note).toMatchObject({
+      type: "Document",
+      url: `https://kopje.test/media/${parent.token}/full.mp4`,
+      blurhash: THUMB_BLURHASH,
+      icon: { type: "Image", mediaType: "image/webp", url: PREVIEW(child.token) },
+    });
+    // A child whose preview the presenter refuses (the parent's own file, a non-http(s) URL): no icon on the Note, and
+    // the parent's own blurhash, as REST shows the parent alone.
+    for (const preview of [`https://kopje.test/media/${parent.token}/full.mp4`, "javascript:alert(1)"]) {
+      await sql(w.store, "UPDATE media_attachments SET preview_url = ? WHERE id = ?", preview, child.id);
+      const refused = await shown();
+      expect(refused.rest).toMatchObject({ preview_url: PREVIEW(parent.token), blurhash: VIDEO.preview?.blurhash });
+      expect(refused.note).not.toHaveProperty("icon");
+      expect(refused.note).toMatchObject({ blurhash: VIDEO.preview?.blurhash });
+    }
+    // A child with no blurhash: the icon without one, never the still's.
+    await sql(
+      w.store,
+      "UPDATE media_attachments SET preview_url = ?, blurhash = NULL WHERE id = ?",
+      PREVIEW(child.token),
+      child.id,
+    );
+    const bare = await shown();
+    expect(bare.note).toMatchObject({ icon: { url: PREVIEW(child.token) } });
+    expect(bare.note).not.toHaveProperty("blurhash");
+  });
+
   it("keeps main's mask for a processing upload without a thumbnail (no VIDEO_POSTER), and only three facts with one", async () => {
     const w = await avWorld();
     const pending = await queued(w);
@@ -729,6 +775,8 @@ describe("the sweep and a thumbnail (T5, T5r, T13k)", () => {
   });
 
   it("keeps a retired thumbnail's original through THUMBNAIL_KEEP_MS - 1 ms and takes it at the first batch past", async () => {
+    // The point-in-time window (30 days) and a day more (D26).
+    expect(THUMBNAIL_KEEP_MS).toBe(31 * 24 * 60 * 60 * 1000);
     const w = await avWorld();
     const { parent, child: a } = await thumbnailed(w);
     await putObjects(a);
