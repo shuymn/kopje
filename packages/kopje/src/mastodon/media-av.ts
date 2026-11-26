@@ -16,7 +16,7 @@ import {
   V1_POLL_MS,
   V1_TIME_MS,
 } from "../domain/media-processing";
-import { presentMedia, processingMedia, type ThumbnailFacts } from "../domain/status-presenter";
+import { presentMedia, processingMedia, type ThumbnailFacts, withThumbnail } from "../domain/status-presenter";
 import { sniffAvUpload } from "../platform/av-bytes";
 import { readConfig } from "../platform/config";
 import { DeadlinePassed } from "../platform/deadline";
@@ -31,6 +31,7 @@ import { maintenanceError, mastodonError } from "./errors";
 import {
   budgetRefusal,
   discard,
+  discardProfileUploads,
   EXPIRED_MESSAGE,
   FILE_BLANK,
   INVALID_TYPE,
@@ -42,7 +43,6 @@ import {
   refusedForm,
   reserve,
   storeThumbnail,
-  sweepSoon,
   THUMBNAIL_INVALID_TYPE,
   THUMBNAIL_TOO_LARGE,
   thumbnailFileProblem,
@@ -69,9 +69,11 @@ import { API_BODY_LIMIT, MULTIPART_PARTS, type Params, parseBody, readQuery, ref
 // Video and audio (the PR4 plan's 1.1 and 1.4, the route's side; domain/media-processing.ts names S1-S10):
 //   S1 takes the staging slot (503 busy, 429 spent) and answers the staging time; the file part is streamed into
 //   incoming/<id> by an R2 multipart upload of PART_BYTES parts, holding at most PART_BYTES and one read; AV_UPLOAD_LIMIT
-//   + 1 bytes, a second `file` part or a `thumbnail` file part refuse it (422); the staging time cancels the reader.
-//   The text fields are validated once every part is read. Every staging exit aborts the multipart upload and calls
-//   S2, and deletes incoming/<id> only on its `released`.
+//   + 1 bytes or a second `file` part refuse it (422); the staging time cancels the reader. One sent `thumbnail` part
+//   is taken (#1828 PR6, a file or non-empty text; an empty field is absent): after the file a second is refused (422,
+//   D-9), a file part at its head and a text part once its first byte is peeked, and a trailing thumbnail file is
+//   collected only once the file's last part is sent. The text fields are validated once every part is read. Every
+//   staging exit aborts the multipart upload and calls S2, and deletes incoming/<id> only on its `released`.
 //   S3 queues the upload with the validated text: `queued` dispatches the processor after the response; v2 answers
 //   202 with nothing processed yet; v1 waits. `refused_cleanup_yours` deletes the input and answers by its reason;
 //   `gone` and a reply not received deletes nothing. S1 and S3 are repeated once when no reply is received.
@@ -312,16 +314,13 @@ class Cleanup {
     );
   }
 
-  // A thumbnail the request made (#1828 PR6) and no S3 linked: doomed unless linked (media.ts discard, `doom`; a linked
-  // one is no upload of the owner's, so nothing happens to it), then the sweep after the response deletes its keys.
-  // Added only once the making has settled, so it never races the making's own writes.
+  // A thumbnail the request made (#1828 PR6) and no S3 linked: doomed unless linked (media.ts discardProfileUploads; a
+  // linked one is no upload of the owner's, so nothing happens to it), then the sweep after the response deletes its
+  // keys. Added only once the making has settled, so it never races the making's own writes.
   discardThumbnail(child: ProfileUpload): void {
     this.step(
       2 * STORE_CALL_MS + R2_CALL_MS,
-      async () => {
-        await discard(this.#c, this.#deps, child);
-        sweepSoon(this.#c, this.#deps);
-      },
+      () => discardProfileUploads(this.#c, this.#deps, [child]),
       (fields) => console.warn({ event: "kopje.media.upload.abandon_failed", ...fields }),
     );
   }
@@ -445,10 +444,10 @@ async function collected(
   return body;
 }
 
-// The bytes of a part as sent (its head and body) and of its delimiter: what the text parts weigh against
-// API_BODY_LIMIT, the bound of any form's text (params.ts readParams).
-function weight(text: Text): number {
-  return text.head.bytes.byteLength + text.body.byteLength + 4 + 80;
+// The bytes of a part as sent (its head and a body of `body` bytes) and of its delimiter: what the text parts weigh
+// against API_BODY_LIMIT, the bound of any form's text (params.ts readParams).
+function weight(head: PartHead, body: number): number {
+  return head.bytes.byteLength + body + 4 + 80;
 }
 
 // The request with its body replayed from what `reader` read, for the image pipeline.
@@ -749,7 +748,7 @@ class AvUpload {
       this.#thumbnail = thumbnail.body;
       thumbnail.body = new Uint8Array();
     }
-    if (this.#texts.reduce((sum, t) => sum + weight(t), 0) > API_BODY_LIMIT) {
+    if (this.#texts.reduce((sum, t) => sum + weight(t.head, t.body.byteLength), 0) > API_BODY_LIMIT) {
       return new StagingRefusal(413, "Request body is too large");
     }
     return null;
@@ -819,7 +818,9 @@ class AvUpload {
           }
         }
       });
-      let weighed = this.#texts.reduce((sum, t) => sum + weight(t), 0);
+      let weighed = this.#texts.reduce((sum, t) => sum + weight(t.head, t.body.byteLength), 0);
+      // A trailing thumbnail file, kept here until it is judged (one before the file was judged before the slot).
+      let trailing: Uint8Array | null = null;
       for (;;) {
         const head = await this.#reader.next();
         if (head === null) {
@@ -828,8 +829,9 @@ class AvUpload {
         if (head.name === "file") {
           throw new StagingRefusal(422, REPEATED_FILE);
         }
-        // D-9: a second sent thumbnail is refused, a file at its head, none of its bytes read, and text once read
-        // (empty text is none, G1); one file is kept within IMAGE_SIZE_LIMIT, its head weighed and its body not.
+        // D-9: a second sent thumbnail is refused, a file at its head, none of its bytes read, and text once its
+        // first byte is peeked (empty text is none, G1); one file is kept within IMAGE_SIZE_LIMIT, its head weighed and
+        // its body not.
         const repeated = head.name === "thumbnail" && this.#texts.some(sentThumbnail);
         const thumbnail = head.name === "thumbnail" && head.file;
         // A repeated text is judged by its first byte, before its body is collected.
@@ -844,12 +846,12 @@ class AvUpload {
         const body = thumbnail
           ? await collected(this.#reader, IMAGE_SIZE_LIMIT, () => new StagingRefusal(422, THUMBNAIL_TOO_LARGE))
           : await collected(this.#reader, API_BODY_LIMIT);
-        weighed += weight({ head, body: thumbnail ? new Uint8Array() : body });
+        weighed += weight(head, thumbnail ? 0 : body.byteLength);
         if (weighed > API_BODY_LIMIT || this.#texts.length >= MULTIPART_PARTS) {
           throw new StagingRefusal(413, "Request body is too large");
         }
         if (thumbnail) {
-          this.#thumbnail = body;
+          trailing = body;
         }
         // A file part's bytes, past the weight's bound (RES-1), are not kept here: #params reads it as a zero-byte file.
         this.#texts.push(head.file ? { head, body: new Uint8Array() } : { head, body });
@@ -860,11 +862,13 @@ class AvUpload {
         throw new StagingRefusal(params.status ?? 422, params.error);
       }
       // A thumbnail file after the file is judged once the form is (the description first, as the image path orders
-      // them); one before it was judged before the slot.
-      const problem =
-        this.#thumbnail === null ? undefined : thumbnailFileProblem(this.#thumbnail.byteLength, this.#thumbnail);
-      if (problem !== undefined) {
-        throw new StagingRefusal(422, problem);
+      // them).
+      if (trailing !== null) {
+        const problem = thumbnailFileProblem(trailing.byteLength, trailing);
+        if (problem !== undefined) {
+          throw new StagingRefusal(422, problem);
+        }
+        this.#thumbnail = trailing;
       }
       if (fill > 0) {
         await flush();
@@ -980,7 +984,7 @@ class AvUpload {
   async #queued(
     stagedAt: number,
     staged: { bytes: number; params: Params },
-    child: ProfileUpload | null,
+    child: Pick<ProfileUpload, "id" | "token"> | null,
   ): Promise<{ response: Response | Promise<Response>; kept: boolean }> {
     if (this.#answered) {
       return { response: mastodonError(503, PROCESS_TOO_LONG), kept: false };
@@ -1077,31 +1081,22 @@ class AvUpload {
   // v2's 202: the upload as its owner's GET shows it while it processes (url, preview_url, meta and blurhash null), with
   // its current thumbnail as S3 answered it (#1828 PR6 D-5: its preview_url, meta.small and blurhash).
   #accepted(text: UploadText, thumbnail: ThumbnailFacts | null): Response {
-    const masked = processingMedia(
-      presentMedia({
-        id: this.#id,
-        type: this.#kind,
-        url: "",
-        preview_url: null,
-        description: storedMediaDescription(text.description),
-        meta: null,
-        focus_x: text.focus === undefined ? null : text.focus.x,
-        focus_y: text.focus?.y ?? 0,
-        blurhash: null,
-        remote: 0,
-        cached: null,
-        cached_preview: null,
-      }),
-    );
+    const own = presentMedia({
+      id: this.#id,
+      type: this.#kind,
+      url: "",
+      preview_url: null,
+      description: storedMediaDescription(text.description),
+      meta: null,
+      focus_x: text.focus === undefined ? null : text.focus.x,
+      focus_y: text.focus?.y ?? 0,
+      blurhash: null,
+      remote: 0,
+      cached: null,
+      cached_preview: null,
+    });
     const media =
-      thumbnail === null
-        ? masked
-        : {
-            ...masked,
-            preview_url: thumbnail.preview_url,
-            meta: thumbnail.small === null ? null : { small: thumbnail.small },
-            blurhash: thumbnail.blurhash,
-          };
+      thumbnail === null ? processingMedia(own) : processingMedia(withThumbnail(own, thumbnail), { thumbnail: true });
     return this.#c.json(media, 202);
   }
 

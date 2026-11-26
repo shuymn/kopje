@@ -30,7 +30,7 @@ import {
   type ApiHandler,
   authorized,
   credential as authCredential,
-  refuseAfterAuth,
+  withParams,
   storeCall,
   userCredential,
 } from "./context";
@@ -43,7 +43,6 @@ import {
   type ParamEntry,
   type Params,
   parseBody,
-  readParams,
   readQuery,
   refusedStatus,
 } from "./params";
@@ -672,43 +671,48 @@ export const getMedia: ApiHandler = async (c, deps) => {
 // Attached media is described through media_attributes[] of a status edit, as in Mastodon. A multipart body may carry
 // a thumbnail of up to IMAGE_SIZE_LIMIT (THUMBNAIL_FILE), so its token is checked before the body is read (an invalid
 // token reads no 17.8 MB body), as credentialsUpdate does (accounts.ts). A request with a thumbnail, or one removing it
-// (updateThumbnail), takes its own order; any other is answered as before #1828 PR6.
+// (updateThumbnail), takes its own order; any other is answered as before #1828 PR6. An unreadable body is answered
+// after the token is checked again with the time then (withParams): it may have expired while the body arrived.
 export const updateMedia: ApiHandler = async (c, deps) => {
-  const multipart = mediaTypeOf(c.req.header("content-type")) === "multipart/form-data";
-  if (multipart) {
+  if (mediaTypeOf(c.req.header("content-type")) === "multipart/form-data") {
     const value = authCredential(c, deps);
     authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, value)));
   }
-  const read = await readParams(c.req.raw, { files: THUMBNAIL_FILE });
-  if (!read.ok) {
-    // Checked again with the time now, as withParams does: the token may have expired while the body arrived.
-    return refuseAfterAuth(c, deps, mastodonError(read.status, refusedForm(read.status).error));
-  }
-  const p = read.params;
-  const description = p.get("description");
-  const credential = userCredential(c, deps);
-  const thumbnail = p.file("thumbnail") ?? p.get("thumbnail");
-  if (thumbnailSent(thumbnail) || p.sentNull("thumbnail")) {
-    return updateThumbnail(c, deps, p, thumbnailSent(thumbnail) ? thumbnail : null);
-  }
-  const problem = mediaProblem(p, description);
-  if (problem !== undefined) {
-    // MediaController#set_media_attachment finds the media (404) before update! validates it (422): a read, so it is
-    // answered in readonly maintenance too, as an edit's target is (statuses.ts editTarget). The form's problem is
-    // answered before the upload's own state, a failed one's included (Mastodon checks the processing first).
-    const found = authorized(await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c) })));
-    return found.status === "not_found" ? recordNotFound() : mastodonError(422, problem);
-  }
-  const changes: MediaChanges = { description, focus: parseFocus(p.get("focus")) };
-  const outcome = authorized(
-    await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes })),
-  );
-  if (outcome.status === "blank" || outcome.status === "gone") {
-    // Answers to a thumbnail, which this branch does not send.
-    throw new Error("updateMedia answered a thumbnail that was not sent");
-  }
-  return ownerAnswer(c, outcome);
+  return updateWithParams(c, deps);
 };
+
+const updateWithParams = withParams(
+  async (c, deps, p) => {
+    const thumbnail = p.file("thumbnail") ?? p.get("thumbnail");
+    if (thumbnailSent(thumbnail)) {
+      return updateThumbnail(c, deps, p, thumbnail);
+    }
+    if (p.sentNull("thumbnail")) {
+      return updateThumbnail(c, deps, p, null);
+    }
+    // Any thumbnail left is absent or empty, so the description is the form's only problem.
+    const description = p.get("description");
+    const credential = userCredential(c, deps);
+    const problem = descriptionProblem(description);
+    if (problem !== undefined) {
+      // MediaController#set_media_attachment finds the media (404) before update! validates it (422): a read, so it is
+      // answered in readonly maintenance too, as an edit's target is (statuses.ts editTarget). The form's problem is
+      // answered before the upload's own state, a failed one's included (Mastodon checks the processing first).
+      const found = authorized(await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c) })));
+      return found.status === "not_found" ? recordNotFound() : mastodonError(422, problem);
+    }
+    const changes: MediaChanges = { description, focus: parseFocus(p.get("focus")) };
+    const outcome = authorized(
+      await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes })),
+    );
+    if (outcome.status === "blank" || outcome.status === "gone") {
+      // Answers to a thumbnail, which this branch does not send.
+      throw new Error("updateMedia answered a thumbnail that was not sent");
+    }
+    return ownerAnswer(c, outcome);
+  },
+  { files: THUMBNAIL_FILE },
+);
 
 // A Store reply not received: thrown other than as an HTTP answer of the Store's (an authorization refusal) or as the
 // Store's unavailability (maintenance, an overloaded object), both passed on. A retryable transport error is a reply
