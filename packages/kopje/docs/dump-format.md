@@ -504,7 +504,7 @@ the video or audio upload whose custom thumbnail the row is (its parent). A row 
 own file token, neither attached nor scheduled, and, while current (`gc_at` NULL), completed with its URL; a chunk
 holding any other row with it set fails with `media_attachments: an invalid thumbnail link`. Rows insert in any order,
 so the parent is checked once every row is in: a current child whose parent is not a local video or audio upload of
-the same account, or a replaced child (`gc_at` set) that keeps its URL, fails verification with
+the same account, or a replaced child (`gc_at` set) that keeps its URL or never completed, fails verification with
 `thumbnail-link-invalid`. A replaced child whose parent is gone is kept. A dump taken before 0123 has no such column:
 it restores into a Store at its own migrations, which then upgrades, and every row reads NULL. A file built from legacy
 data holds NULL in every row.

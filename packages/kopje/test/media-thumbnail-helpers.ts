@@ -96,7 +96,6 @@ export async function objects(up: Up): Promise<{ original: boolean; full: boolea
   };
 }
 
-// One sweep run (mastodon/media.ts sweepMedia: the release, then one batch).
 export function sweep(store: StoreStub): Promise<number> {
   return sweepMedia(env, { build: () => BUILD, store: () => store });
 }

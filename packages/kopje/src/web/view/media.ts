@@ -34,8 +34,8 @@ export function mediaView(media: MediaAttachment, domain: string): MediaView | n
     previewUrl === null || (previewUrl.host === domain && previewUrl.pathname === VIDEO_POSTER)
       ? undefined
       : previewUrl.href;
-  // A sized video's box is the video's own (meta.original): its small variant may be a custom thumbnail's, which is
-  // only its poster (#1828 PR6). One without a small variant (a remote one) stays in the 16/9 box.
+  // A video or gifv with meta.small, which may be a custom thumbnail's (only its poster, #1828 PR6), is sized by its
+  // original; one without stays in the 16/9 box.
   const small = media.meta?.small;
   const original = media.meta?.original;
   const size =

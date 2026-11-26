@@ -177,9 +177,10 @@ export function captureMedia(
 		 WHERE state = 'absent' OR (state = 'copied' AND destination IS NOT ?)`,
     destination,
   );
-  // Completed local uploads: their original is in R2 at originals/<id> (platform/media-files.ts). A thumbnail only while
-  // current (domain/media-thumbnails.ts): a retired or doomed one is never made current again by a restore, and every
-  // row the sweep may select (domain/media.ts expiredMedia) has gc_at set, so no row is both selected and captured.
+  // Completed local uploads: their original is in R2 at originals/<id> (platform/media-files.ts). A thumbnail only if
+  // current when captured (domain/media-thumbnails.ts; one a point-in-time restore makes current again is captured by
+  // the next run), and every row the sweep may select (domain/media.ts expiredMedia) has gc_at set, so no row is both
+  // selected and captured.
   sql.exec(
     `INSERT INTO backup_media (source, required_run, state)
 		 SELECT 'originals/' || id, ?, 'pending' FROM media_attachments WHERE file_token IS NOT NULL AND processed = 1
