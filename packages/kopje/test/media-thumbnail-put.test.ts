@@ -296,6 +296,126 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     expect(await imageRows(w)).toEqual([{ id: child?.id, thumbnail_of: parent.id, gc_at: null }]);
   });
 
+  it("repeats a link once when its reply is lost as a retryable transport error (r1 M3)", async () => {
+    const w = await routeWorld();
+    const parent = await completed(w);
+    w.gate.drops.set("updateMedia", 1);
+    w.gate.retryableDrops.add("updateMedia");
+    const response = await answer(await send(w, method, parent.id, multipartBody([thumbPart()])));
+    const child = await current(w, parent.id);
+    expect(response.status).toBe(200);
+    expect(response.body["preview_url"]).toContain(`/media/${child?.token}/small.`);
+    expect(w.gate.calls.filter((c) => c === "updateMedia")).toHaveLength(2);
+    expect(await imageRows(w)).toEqual([{ id: child?.id, thumbnail_of: parent.id, gc_at: null }]);
+  });
+
+  it("does not repeat a link whose reply is an overloaded object's error: 503, sent once (r1 M3)", async () => {
+    const w = await routeWorld();
+    const parent = await completed(w);
+    w.gate.drops.set("updateMedia", 1);
+    w.gate.overloadedDrops.add("updateMedia");
+    expect((await send(w, method, parent.id, multipartBody([thumbPart()]))).status).toBe(503);
+    expect(w.gate.calls.filter((c) => c === "updateMedia")).toHaveLength(1);
+  });
+
+  it("writes nothing on a link repeat that finds its thumbnail current: a later description stays (W-T5, r1 M1)", async () => {
+    const w = await routeWorld();
+    const parent = await completed(w);
+    const held = w.gate.hold("updateMedia", "after");
+    const reached = w.gate.reached("updateMedia");
+    const first = send(w, method, parent.id, multipartBody([thumbPart(), { name: "description", data: "first" }]));
+    await reached;
+    try {
+      const second = await answer(await send(w, method, parent.id, jsonBody({ description: "second" })));
+      expect(second.body["description"]).toBe("second");
+      w.gate.drops.set("updateMedia", 1);
+    } finally {
+      held.resolve();
+    }
+    const repeated = await answer(await first);
+    const child = await current(w, parent.id);
+    expect(repeated).toEqual({
+      status: 200,
+      body: expect.objectContaining({
+        description: "second",
+        preview_url: expect.stringContaining(`/media/${child?.token}/small.`),
+      }),
+    });
+    expect(w.gate.calls.filter((c) => c === "updateMedia")).toHaveLength(3);
+    expect((await answer(await send(w, method, parent.id, jsonBody({})))).body["description"]).toBe("second");
+  });
+
+  it("checks the token again before answering a multipart body it cannot parse (r1 M4)", async () => {
+    const w = await routeWorld();
+    const parent = await completed(w);
+    const expiry = Date.now() + 1_000;
+    await sql(
+      w.store,
+      "UPDATE oauth_tokens SET expires_at = ? WHERE token_hash = ?",
+      new Date(expiry).toISOString(),
+      w.alice.tokenHash,
+    );
+    const reading = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const body = new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          reading.resolve();
+          await resume.promise;
+          controller.enqueue(new Uint8Array(1024).fill(0x78));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const response = send(w, method, parent.id, { body, contentType: "multipart/form-data; boundary=b" });
+    await reading.promise;
+    try {
+      await w.advance(expiry);
+    } finally {
+      resume.resolve();
+    }
+    expect((await response).status).toBe(401);
+  });
+
+  it("discards and sweeps a thumbnail whose link the Store refuses for the token's scope (r1 M5)", async () => {
+    const w = await routeWorld();
+    const parent = await completed(w);
+    const held = w.gate.hold("updateMedia");
+    const reached = w.gate.reached("updateMedia");
+    const response = send(w, method, parent.id, multipartBody([thumbPart()]));
+    await reached;
+    try {
+      expect(await imageRows(w)).toHaveLength(1);
+      await sql(w.store, "UPDATE oauth_tokens SET scopes = 'read' WHERE token_hash = ?", w.alice.tokenHash);
+    } finally {
+      held.resolve();
+    }
+    expect((await response).status).toBe(403);
+    expect(w.gate.calls).toContain("abandonMedia");
+  });
+
+  it("runs the sweep after a removal whose reply is lost: the retired thumbnail's files are released (r1 LOW 2)", async () => {
+    const w = await routeWorld();
+    const parent = await completed(w);
+    expect((await send(w, method, parent.id, multipartBody([thumbPart()]))).status).toBe(200);
+    const a = await current(w, parent.id);
+    w.gate.drops.set("updateMedia", 1);
+    expect((await send(w, method, parent.id, jsonBody({ thumbnail: null }))).status).toBe(503);
+    expect(await current(w, parent.id)).toBeUndefined();
+    expect(await has(fileKey(a?.token ?? "", "small"))).toBe(false);
+    expect(await has(originalKey(a?.id ?? ""))).toBe(true);
+  });
+
+  it("runs the sweep after a thumbnail whose completion committed with both replies lost (r1 LOW 3)", async () => {
+    const w = await routeWorld();
+    const parent = await completed(w);
+    w.gate.drops.set("completeMedia", 2);
+    expect((await send(w, method, parent.id, multipartBody([thumbPart()]))).status).toBe(500);
+    expect(await current(w, parent.id)).toBeUndefined();
+    expect(await imageRows(w)).toEqual([]);
+  });
+
   it("answers 503 when both link replies are lost: an unlinked thumbnail is swept, a linked one stays (W-T5)", async () => {
     const w = await routeWorld();
     const parent = await completed(w);

@@ -532,7 +532,7 @@ export type ProfileUpload = Pick<Upload, "id" | "token" | "credential">;
 // it on any failure, a throw included, once its own writes have settled; after ok the caller owns the completed upload
 // and discards it (discard, `doom`) if no link commits.
 export async function storeThumbnail(
-  c: UploadContext,
+  c: UploadContext & AfterResponse,
   deps: ApiDeps,
   credential: () => UserCredential,
   bytes: Uint8Array,
@@ -550,7 +550,9 @@ export async function storeThumbnail(
   try {
     outcome = await transformReserved(c, deps, upload, bytes, { description: "", focus: undefined }, end);
   } catch (error) {
+    // A completion that committed with both its replies lost is doomed here (discard): the sweep takes its files now.
     await discard(c, deps, upload);
+    sweepSoon(c, deps);
     throw error;
   }
   if ("error" in outcome) {
@@ -674,8 +676,8 @@ export const updateMedia: ApiHandler = async (c, deps) => {
   }
   const read = await readParams(c.req.raw, { files: THUMBNAIL_FILE });
   if (!read.ok) {
-    const response = mastodonError(read.status, refusedForm(read.status).error);
-    return multipart ? response : refuseAfterAuth(c, deps, response);
+    // Checked again with the time now, as withParams does: the token may have expired while the body arrived.
+    return refuseAfterAuth(c, deps, mastodonError(read.status, refusedForm(read.status).error));
   }
   const p = read.params;
   const description = p.get("description");
@@ -704,14 +706,20 @@ export const updateMedia: ApiHandler = async (c, deps) => {
 };
 
 // A Store reply not received: thrown other than as an HTTP answer of the Store's (an authorization refusal) or as the
-// Store's unavailability (maintenance), both passed on.
+// Store's unavailability (maintenance, an overloaded object), both passed on. A retryable transport error is a reply
+// lost too: the call may have reached the object and committed (Durable Objects' retryable errors).
 const LOST: unique symbol = Symbol("lost");
+
+function transportLost(error: StoreUnavailableError): boolean {
+  const cause = error.cause as { retryable?: unknown; overloaded?: unknown } | undefined;
+  return error.reason === "transient" && cause?.retryable === true && cause.overloaded !== true;
+}
 
 async function replyOf<T>(call: () => Promise<T>): Promise<T | typeof LOST> {
   try {
     return await call();
   } catch (error) {
-    if (error instanceof HTTPException || error instanceof StoreUnavailableError) {
+    if (error instanceof HTTPException || (error instanceof StoreUnavailableError && !transportLost(error))) {
       throw error;
     }
     console.warn({ event: "kopje.media.thumbnail.reply_lost", ...errorFields(error) });
@@ -770,29 +778,28 @@ async function updateThumbnail(
   }
   if (thumbnail === null) {
     const removed = await replyOf(update(null));
-    if (removed === LOST) {
-      return mastodonError(503, UNAVAILABLE);
-    }
+    // A removal whose reply was lost may have committed: the sweep runs whatever the answer.
     sweepSoon(c, deps);
-    return updatedAnswer(c, authorized(removed));
+    return removed === LOST ? mastodonError(503, UNAVAILABLE) : updatedAnswer(c, authorized(removed));
   }
   const made = await storeThumbnail(c, deps, credential, new Uint8Array(await thumbnail.arrayBuffer()));
   if (!made.ok) {
     return mastodonError(made.status, made.error);
   }
   const link = { id: made.upload.id, token: made.upload.token };
-  let linked: Awaited<ReturnType<ReturnType<typeof update>>> | typeof LOST;
+  let outcome: UpdatedMedia | typeof LOST;
   try {
-    linked = await replyOf(update(link));
+    let linked = await replyOf(update(link));
     if (linked === LOST) {
       linked = await replyOf(update(link));
     }
+    // An authorization refusal is thrown here too, so it takes the same cleanup.
+    outcome = linked === LOST ? LOST : authorized(linked);
   } catch (error) {
     await discard(c, deps, made.upload);
     sweepSoon(c, deps);
     throw error;
   }
-  const outcome = linked === LOST ? LOST : authorized(linked);
   if (outcome === LOST || (outcome.status !== "ok" && outcome.status !== "processing")) {
     // Only an unlinked thumbnail is doomed (a committed link makes it no upload of the owner's, discard).
     await discard(c, deps, made.upload);

@@ -91,6 +91,11 @@ export class StoreGate {
     { before?: PromiseWithResolvers<void>; after?: PromiseWithResolvers<void>; skip: number }
   >();
   readonly drops = new Map<string, number>();
+  // Methods whose dropped reply is the runtime's retryable transport error (a Durable Object call that reached the
+  // object, `retryable: true`), not a plain Error.
+  readonly retryableDrops = new Set<string>();
+  // Methods whose dropped reply is an overloaded object's error (`retryable` and `overloaded`).
+  readonly overloadedDrops = new Set<string>();
   readonly fails = new Map<string, number>();
   readonly calls: string[] = [];
   readonly #reached = new Map<string, PromiseWithResolvers<void>>();
@@ -145,7 +150,12 @@ export class StoreGate {
           const dropping = this.drops.get(method) ?? 0;
           if (dropping > 0) {
             this.drops.set(method, dropping - 1);
-            throw new Error(`${method} reply lost`);
+            const lost = new Error(`${method} reply lost`);
+            throw this.overloadedDrops.has(method)
+              ? Object.assign(lost, { retryable: true, overloaded: true })
+              : this.retryableDrops.has(method)
+                ? Object.assign(lost, { retryable: true })
+                : lost;
           }
           return answer;
         };
