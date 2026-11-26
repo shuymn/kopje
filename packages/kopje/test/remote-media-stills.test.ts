@@ -1,7 +1,10 @@
+import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { probeName } from "../src/domain/media-probes";
 import {
+  CACHED_MEDIA_BYTES,
+  cachedMediaUrls,
   confirmRemoteMediaDeleted,
   DEFER_MS,
   dropAttachmentFiles,
@@ -26,14 +29,18 @@ import {
   STILL_CLAIM_WALK,
   STILL_LEASE_MS,
 } from "../src/domain/remote-media-stills";
+import { type MediaRow, presentMedia } from "../src/domain/status-presenter";
 import { STILL_OUTPUT_LIMIT } from "../src/platform/av-bytes";
+import { VIDEO_POSTER } from "../src/platform/brand-assets";
 import { REMOTE_MEDIA_CACHE_MIN_BYTES } from "../src/platform/config";
-import { R2_DELETE_KEYS } from "../src/platform/media-files";
+import { R2_DELETE_KEYS, restoreMarkerKey } from "../src/platform/media-files";
 import { type Restore, withMarker } from "../src/platform/restore-marker";
 import type { StoreOperation } from "../src/platform/store-kernel";
-import { STILL_CHARGE_MAX } from "../src/platform/stored-bounds";
+import { BLURHASH_BYTES, mediaCacheSql, STILL_CHARGE_MAX } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { BUILD, rejectionOf } from "./helpers";
+import { dumpViaRpc } from "./ops-helpers";
+import { mp4 } from "./remote-media-fixtures";
 import { claimWith, fence, mediaWorld, type MediaWorld } from "./remote-media-helpers";
 
 // Remote video stills, the Store's side (#1828 PR5-1; domain/remote-media-stills.ts and the cache's own transitions in
@@ -943,6 +950,173 @@ describe("slot writers clear a named still (P21b)", () => {
     const { recordRemoteMediaValidation } = await import("../src/domain/remote-media");
     await w.op(recordRemoteMediaValidation, { results: [{ token: v.token, missing: true }], now: w.clock.now });
     expect(await slotOf(w, v.slot)).toEqual({ token: null, still_ext: null, still_key: null, still_blurhash: null });
+  });
+});
+
+describe("presentation (P21a, P21c)", () => {
+  const ORIGIN = "https://kopje.test";
+  // The attachment row as the status presenter reads it, its packed columns from the production SQL.
+  const presented = async (w: MediaWorld, media: string) => {
+    const [row] = await sql<MediaRow>(
+      w.t.store,
+      `SELECT m.id, m.type, m.url, m.preview_url, m.description, m.meta, NULL AS focus_x, 0 AS focus_y, m.blurhash,
+				1 AS remote, ${mediaCacheSql("m", "attachment")} AS cached, ${mediaCacheSql("m", "thumbnail")} AS cached_preview
+			FROM media_attachments m WHERE m.id = ?`,
+      media,
+    );
+    return presentMedia({ ...row!, description: row!.description ?? "" }, ORIGIN);
+  };
+
+  async function withStill(w: MediaWorld, options: { blurhash?: string } = {}) {
+    await passStill(w);
+    const v = await video(w, { stills: STILLS, ...options });
+    const attempt = ((await claim(w)).out as { attempt: string }).attempt;
+    await recordStill(w, v.token, attempt);
+    return { ...v, still: `${ORIGIN}/media/r/${v.token}/s${attempt}.webp` };
+  }
+
+  it("shows the named still and its blurhash for a video without an icon or a blurhash of its own", async () => {
+    const w = await mediaWorld();
+    const v = await withStill(w);
+    expect(await presented(w, v.media)).toMatchObject({
+      url: `${ORIGIN}/media/r/${v.token}/full.mp4`,
+      preview_url: v.still,
+      blurhash: BLURHASH,
+    });
+  });
+
+  it("keeps the attachment's own blurhash over the still's", async () => {
+    const w = await mediaWorld();
+    const own = "UBL_:rOpGG-;~qRjWBay00t7%Mof%May9ZRj";
+    const v = await withStill(w, { blurhash: own });
+    expect(await presented(w, v.media)).toMatchObject({ preview_url: v.still, blurhash: own });
+  });
+
+  it("shows an icon added by an edit, uncached, over the still, without the still's blurhash", async () => {
+    const w = await mediaWorld();
+    const v = await withStill(w);
+    await sql(
+      w.t.store,
+      "UPDATE media_attachments SET preview_url = ? WHERE id = ?",
+      "https://files.example/i.png",
+      v.media,
+    );
+    expect(await presented(w, v.media)).toMatchObject({ preview_url: "https://files.example/i.png", blurhash: null });
+  });
+
+  it("shows the poster once the slot is replaced by another file", async () => {
+    const w = await mediaWorld();
+    const v = await withStill(w);
+    await sql(w.t.store, "UPDATE media_attachments SET url = ? WHERE id = ?", `${v.url}?2`, v.media);
+    await w.db((d) => syncAttachmentFiles(d, v.media, w.clock.now));
+    expect(await presented(w, v.media)).toMatchObject({ preview_url: `${ORIGIN}${VIDEO_POSTER}`, blurhash: null });
+  });
+
+  it("keeps an image's cached preview: its file over an uncached remote icon, or its animated still", () => {
+    const row = (over: Partial<MediaRow>): MediaRow => ({
+      id: "800000000000000001",
+      type: "image",
+      url: "https://files.example/m/1.png",
+      preview_url: "https://files.example/p/1.png",
+      description: "",
+      meta: null,
+      focus_x: null,
+      focus_y: 0,
+      blurhash: null,
+      remote: 1,
+      cached: null,
+      cached_preview: null,
+      ...over,
+    });
+    const t = "F".repeat(43);
+    expect(presentMedia(row({ cached: `${t}:png:` }), ORIGIN).preview_url).toBe(`${ORIGIN}/media/r/${t}/full.png`);
+    expect(presentMedia(row({ cached: `${t}:gif:png` }), ORIGIN).preview_url).toBe(`${ORIGIN}/media/r/${t}/still.png`);
+  });
+
+  it("parses a packed file at CACHED_MEDIA_BYTES, and refuses one past it or malformed", () => {
+    const t = "T".repeat(64);
+    const key = `s${"a".repeat(32)}`;
+    const blurhash = `e0${":".repeat(BLURHASH_BYTES - 2)}`;
+    const packed = `${t}:webm:avif:${key} ${blurhash}`;
+    expect(packed.length).toBe(CACHED_MEDIA_BYTES);
+    expect(cachedMediaUrls(packed, ORIGIN)).toEqual({
+      image: `${ORIGIN}/media/r/${t}/full.webm`,
+      still: `${ORIGIN}/media/r/${t}/${key}.avif`,
+      stillBlurhash: blurhash,
+    });
+    expect(cachedMediaUrls(`${packed}0`, ORIGIN)).toBeNull();
+    expect(cachedMediaUrls(`${t}:mp4::${key} `, ORIGIN)).toBeNull();
+    expect(cachedMediaUrls(`${t}:mp4:webp:s${"A".repeat(32)} `, ORIGIN)).toBeNull();
+    expect(cachedMediaUrls(`${t}:mp4:webp:${key}:x `, ORIGIN)).toBeNull();
+    expect(cachedMediaUrls(`${t}:mp4:webp:${key} bad`, ORIGIN)).toMatchObject({ stillBlurhash: null });
+  });
+});
+
+describe("PR5-1 leaves remote stills unreachable (P18c, P-PITR1)", () => {
+  // A remote video the real round caches, with a `still@standard-1` pass recorded through the generic probe claim.
+  async function cachedVideo(w: MediaWorld) {
+    const claimed = await w.t.store.claimMediaProbe(BUILD, { profile: "still@standard-1", build: BUILD, due: false });
+    if (claimed.status !== "claimed") {
+      throw new Error(claimed.status);
+    }
+    await w.t.store.recordMediaProbeResult(BUILD, {
+      profile: "still@standard-1",
+      claim: claimed.claim,
+      outcome: "pass",
+      imagesVerified: true,
+      imageTag: null,
+    });
+    const author = await w.remote({ avatar: null });
+    const url = `https://files.example/m/${++videos}.mp4`;
+    const { media } = await w.attach(author.id, url, { type: "video" });
+    const file = mp4({ mdat: 1000 });
+    w.serve(url, file, { "content-length": String(file.length) });
+    expect(await w.round()).toMatchObject({ claimed: 1, stored: 1 });
+    const [object] = await w.objects();
+    return { media, token: object!.token };
+  }
+
+  it("queues no still from the real round, with a pass and stills otherwise possible", async () => {
+    const w = await mediaWorld();
+    await cachedVideo(w);
+    expect(await stillRows(w)).toEqual([]);
+  });
+
+  it("validates a restored full-only video as main does: it stays cached and served", async () => {
+    const w = await mediaWorld();
+    const { token: t } = await cachedVideo(w);
+    const restoredAt = w.clock.now;
+    await env.MEDIA.put(restoreMarkerKey(w.t.store.id.toString()), JSON.stringify({ at: restoredAt }));
+    try {
+      at(w, restoredAt + REMOTE_SETTLE_MS);
+      expect((await w.round()).validated).toBe(1);
+      expect((await w.round()).validated).toBe(0);
+      expect(await w.objects()).toMatchObject([{ token: t, state: "stored" }]);
+      expect(await env.MEDIA.head(`remote/${t}/full`)).not.toBeNull();
+      await w.exact();
+    } finally {
+      await env.MEDIA.delete(restoreMarkerKey(w.t.store.id.toString()));
+    }
+  });
+});
+
+describe("the dump (DATA-3)", () => {
+  it("leaves out the stills, the lease and the stills counter", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w, { stills: STILLS });
+    const attempt = ((await claim(w)).out as { attempt: string }).attempt;
+    await recordStill(w, v.token, attempt);
+    await video(w, { stills: STILLS });
+    at(w, w.clock.now + STILL_LEASE_MS);
+    await claim(w);
+    expect(await stillRows(w)).toHaveLength(2);
+    expect(await leaseOf(w)).not.toBeNull();
+    vi.useRealTimers();
+    const { text } = await dumpViaRpc(w.t.store);
+    expect(text).toMatch(/INSERT INTO "media_attachments"/);
+    expect(text).not.toMatch(/"remote_media_stills"|remote_still_lease|media_still_jobs|"still_key"/);
+    expect(text).toMatch(/"name":"0122_remote_media_stills"/);
   });
 });
 

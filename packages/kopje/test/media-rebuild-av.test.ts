@@ -1034,3 +1034,163 @@ describe("media rebuild of video rows: interruptions and lease loss (#1828 P25)"
     expect(await bytesOf(`files/${bad.token}/small`)).toEqual(STILL);
   });
 });
+
+// The rebuild's still probe and the generic one share one claim, cooldown and classifier (#1828 PR5 W-P, P-RBQ): each
+// case through the real entry points, the rebuild in readonly maintenance and the generic claim outside it.
+describe("the still probe's one claim, shared with the generic probe (W-P, P-RBQ)", () => {
+  const STILL = "still@standard-1" as const;
+  const maintenance = async (store: StoreStub, on: boolean) => {
+    if (on) {
+      await sql(
+        store,
+        "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('maintenance', ?)",
+        JSON.stringify({ mode: "readonly", at: Date.now() - REBUILD_SETTLE_MS - 60_000 }),
+      );
+    } else {
+      await sql(store, "DELETE FROM kopje_state WHERE name = 'maintenance'");
+    }
+  };
+  const records = (store: StoreStub) => store.mediaProbeRecords(BUILD, { profile: STILL });
+  const claimGeneric = async (store: StoreStub, due = false) => {
+    await maintenance(store, false);
+    const claimed = await store.claimMediaProbe(BUILD, { profile: STILL, build: BUILD, due });
+    await maintenance(store, true);
+    return claimed;
+  };
+  const probes = (calls: string[]) => calls.filter((c) => c.startsWith("probe"));
+
+  it("refuses the generic record whose claim the rebuild's replaced (1)", async () => {
+    const store = await setup();
+    await addAv(store, "video");
+    const generic = await claimGeneric(store);
+    expect(generic.status).toBe("claimed");
+    // The generic claim is past PROBE_CLAIM_MS (its request ended): the rebuild claims, probes and records.
+    await ageProbe(store, 5 * 60 * 1000);
+    const made = maker();
+    expect(await run(store, { stills: made.stills })).toMatchObject({ counts: { built: 1 } });
+    expect(probes(made.calls)).toHaveLength(1);
+    await maintenance(store, false);
+    expect(
+      await store.recordMediaProbeResult(BUILD, {
+        profile: STILL,
+        claim: (generic as { claim: string }).claim,
+        outcome: "fail",
+        imagesVerified: false,
+        imageTag: null,
+      }),
+    ).toEqual({ status: "stale" });
+    expect((await records(store)).record).toMatchObject({ ok: true, imagesVerified: true });
+  });
+
+  it("cools the generic claim down PROBE_RETRY_MS after the rebuild's failure (2) or no verdict (3)", async () => {
+    for (const [answers, codec] of [
+      [{ probe: { ok: false, failure: "route", image: null, evidence: "route" } as StillOutcome }, null],
+      [{}, 9500],
+    ] as const) {
+      const store = await setup();
+      await addAv(store, "video");
+      const c = new TestCodec();
+      c.failEncode = codec;
+      await run(store, { stills: maker(answers).stills, codec: c });
+      const { attempt } = await records(store);
+      expect(attempt).toMatchObject({ result: codec === null ? "fail" : "no-verdict" });
+      expect(await claimGeneric(store, true)).toEqual({ status: "cooldown", retryAt: attempt!.at + PROBE_RETRY_MS });
+      // The rebuild waits the same hour: no container, no Images call.
+      const again = maker();
+      await run(store, { stills: again.stills, codec: c });
+      expect(probes(again.calls)).toEqual([]);
+    }
+  });
+
+  it("stops at an unfinished generic claim younger than PROBE_CLAIM_MS before calling the processor (4)", async () => {
+    const store = await setup();
+    const row = await addAv(store, "video");
+    const before = await rowOf(store, row.id);
+    expect((await claimGeneric(store)).status).toBe("claimed");
+    const made = maker();
+    expect(await run(store, { stills: made.stills })).toMatchObject({ stopped: "retry", next: null });
+    expect(made.calls).toEqual([]);
+    expect(await rowOf(store, row.id)).toEqual(before);
+  });
+
+  it("skips its probe over a generic verified pass (5), and probes over a stored failure, clearing it (6)", async () => {
+    const store = await setup();
+    await addAv(store, "video");
+    const claimed = await claimGeneric(store);
+    await maintenance(store, false);
+    await store.recordMediaProbeResult(BUILD, {
+      profile: STILL,
+      claim: (claimed as { claim: string }).claim,
+      outcome: "pass",
+      imagesVerified: true,
+      imageTag: null,
+    });
+    await maintenance(store, true);
+    const skipped = maker();
+    await run(store, { stills: skipped.stills });
+    expect(probes(skipped.calls)).toEqual([]);
+    // An infrastructure failure for the build after the pass: the rebuild probes once the hour is over, and its pass
+    // clears the failure.
+    await maintenance(store, false);
+    await store.recordMediaInfrastructureFailure(BUILD, { profile: STILL, build: BUILD });
+    await maintenance(store, true);
+    await ageProbe(store, PROBE_RETRY_MS);
+    await addAv(store, "video");
+    const probing = maker();
+    await run(store, { stills: probing.stills });
+    expect(probes(probing.calls)).toHaveLength(1);
+    expect(await records(store)).toMatchObject({ record: { ok: true, imagesVerified: true }, failure: null });
+  });
+
+  it("records no result for a probe object that answers busy, holding the profile PROBE_CLAIM_MS only (7)", async () => {
+    const store = await setup();
+    await addAv(store, "video");
+    const busy = maker({ probe: { ok: false, failure: "busy", image: null } });
+    expect(await run(store, { stills: busy.stills })).toMatchObject({ stopped: "retry" });
+    const { attempt, record } = await records(store);
+    expect(attempt).not.toHaveProperty("result");
+    expect(record).toBeNull();
+    expect(await claimGeneric(store)).toEqual({ status: "cooldown", retryAt: attempt!.at + 5 * 60 * 1000 });
+    await ageProbe(store, 5 * 60 * 1000);
+    expect((await claimGeneric(store)).status).toBe("claimed");
+  });
+
+  it("classifies Images' own bad output as no verdict and 9422 as an unverified pass (8)", async () => {
+    const store = await setup();
+    await addAv(store, "video");
+    const bad = new TestCodec();
+    bad.encodeResult = new Uint8Array([1, 2, 3, 4]);
+    expect(await run(store, { stills: maker().stills, codec: bad })).toMatchObject({ stopped: "retry" });
+    expect(await records(store)).toMatchObject({ record: null, attempt: { result: "no-verdict" } });
+    await ageProbe(store, PROBE_RETRY_MS);
+    const quota = new TestCodec();
+    quota.failEncode = 9422;
+    expect(await run(store, { stills: maker().stills, codec: quota })).toMatchObject({ stopped: "quota" });
+    expect(await records(store)).toMatchObject({
+      record: { ok: true, imagesVerified: false },
+      attempt: { result: "pass" },
+    });
+  });
+
+  it("charges nothing and starts no still while the current pass is unverified (P-RBQ)", async () => {
+    const store = await setup();
+    const row = await addAv(store, "video");
+    const before = await rowOf(store, row.id);
+    const quota = new TestCodec();
+    quota.failEncode = 9422;
+    const first = maker();
+    expect(await run(store, { stills: first.stills, codec: quota })).toMatchObject({ stopped: "quota", next: null });
+    expect(first.calls).toEqual([expect.stringMatching(/^probe /)]);
+    expect(await records(store)).toMatchObject({ record: { ok: true, imagesVerified: false } });
+    const second = maker();
+    expect(await run(store, { stills: second.stills })).toMatchObject({ stopped: "quota", next: null });
+    expect(second.calls).toEqual([]);
+    expect(await counters(store)).toEqual([[], []]);
+    expect(await rowOf(store, row.id)).toEqual(before);
+    // Due again after PROBE_RETRY_MS: a verified pass lets the rebuild go on.
+    await ageProbe(store, PROBE_RETRY_MS);
+    const later = maker();
+    expect(await run(store, { stills: later.stills })).toMatchObject({ counts: { built: 1 } });
+    expect(probes(later.calls)).toHaveLength(1);
+  });
+});
