@@ -207,9 +207,9 @@ non-public object whose author a bridge migration changed stops the conversion (
 URLs, `https://imagedelivery.net/<account hash>/<image id>/<variant>`, into actor properties, statuses, earlier
 versions of edited statuses and activities. Without `--images`, attachments, avatars and headers keep these URLs and
 nothing is downloaded: the media keeps working only while the images stay in Cloudflare Images. Unattached local images
-are kept without a status either way. A legacy `focalPoint` is not carried (#1778): every media row holds no focus
-(`focus_x` and `focus_y` 0, `focus_given` 0) and no earlier version shows one, whatever the legacy object held. To move
-the images into Kopje's own media (R2):
+are kept without a status either way. A legacy `focalPoint` is not carried: every media row holds no focus (`focus_x`
+and `focus_y` 0, `focus_given` 0) and no earlier version shows one, whatever the legacy object held. To move the images
+into Kopje's own media (R2):
 
 1. `kopje-admin images-export <export> --images-account <hash> --out <images dir>` reads the export and collects every
    image id under the operator's account hash (the `<hash>` in the URLs above) from actor and object properties and
@@ -370,28 +370,26 @@ Records are keyed by AP URIs, never by assigned ids, and compared as exact value
 
 Any missing, extra or changed record FAILs: missing content, content rewritten to the same length, a dropped
 relationship, a recipient removed or added, a widened visibility, a dropped reply link and a count difference all do
-(DATA-12). Content over the sanitizer's limit fails too unless `--accept-truncation` is given
-(`truncation.overLimit`). An earlier version's attachments (`status_edits.media_json`) fail `edits` unless they are
-exactly what the conversion writes: text that a JSON parser reads as an array of objects, spelled as JSON serialization
-spells what it read, holding only the keys the conversion writes, in `meta` too. The history reads them with SQLite's
-JSON functions, which can read any other form otherwise than the check does. A domain block whose value is no domain
-name and a notification a remote account owns, which
-the conversion drops, fail too unless `--accept-deletions` is given (`dropped`). Run it twice in a cutover: on the
-converted dump before importing, and on a `kopje-admin dump` of the Store after the import. The check needs the
-conversion's base time, at which a status whose `published` and `cdate` are both outside the writers' form (unreadable,
-or outside years 0 to 9999) is stored: it reads it from a converted dump's `createdAt`, and a dump of the Store, which
-records its own time there, needs `--base-time` with the manifest's `baseTime` (without it the check stops with
-`base-time-required`).
+(DATA-12). Content over the sanitizer's limit fails too unless `--accept-truncation` is given (`truncation.overLimit`).
+An earlier version's attachments (`status_edits.media_json`) fail `edits` unless they are exactly what the conversion
+writes (a JSON array of objects in its canonical spelling, holding only the keys the conversion writes, in `meta` too),
+since the history reads them with SQLite's JSON functions, which can read any other form otherwise than the check does.
+A domain block whose value is no domain name and a notification a remote account owns, which the conversion drops, fail
+too unless `--accept-deletions` is given (`dropped`). Run it twice in a cutover: on the converted dump before importing,
+and on a `kopje-admin dump` of the Store after the import. The check needs the conversion's base time, at which a status
+whose `published` and `cdate` are both outside the writers' form (unreadable, or outside years 0 to 9999) is stored: it
+reads it from a converted dump's `createdAt`, and a dump of the Store, which records its own time there, needs
+`--base-time` with the manifest's `baseTime` (without it the check stops with `base-time-required`).
 
 **Remote domains with a port or trailing dots.** The converter stores a remote account's domain as the Worker does,
 without the port or any trailing dot of its actor id's host, so ids whose hosts differ only by those are one address:
 the later row's username becomes the reserved `! <id>` and its refresh is requested, as for any shared address.
 `verify-conversion` works the domain out on its own and compares the stored column as it is. A Store converted by an
-earlier release (which kept the whole host, or later every trailing dot but one), or restored from such a Store's
-dump, may keep such domains, which address lookup, the one-account-per-address rule and the filters by domain read
-apart from the account's handle; domain blocks read the actor id's host as well, without its port and trailing dots,
-so they still cover such an account. Nothing stored tells a converted row from an imported one, so they are not
-rewritten, by an upgrade or otherwise; this read-only query, which reads every account, lists the first 100 by id:
+earlier release, which kept more of the host, or restored from such a Store's dump, may keep such domains, which address
+lookup, the one-account-per-address rule and the filters by domain read apart from the account's handle; domain blocks
+read the actor id's host without its port and trailing dots, so they still cover such an account. Nothing stored tells a
+converted row from an imported one, so they are not rewritten, by an upgrade or otherwise; this read-only query, which
+reads every account, lists the first 100 by id:
 
 ```sh
 kopje-admin sql "SELECT id, uri, domain FROM accounts WHERE domain IS NOT NULL AND (instr(domain, ':') > 0 OR substr(domain, -1) = '.') ORDER BY id LIMIT 100"

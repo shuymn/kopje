@@ -85,8 +85,8 @@ so a change made only in the dashboard does not last.
 | `kopje.media.job.unavailable`            | An upload met a failure of the processor, R2 or the Store (`reason`); it failed `unavailable`                                                                         | [media-processor.md](media-processor.md)           |
 | `kopje.media.job.still_refused`          | Images refused a video's still the verifier passed; the upload completed with the poster, and a re-probe is due                                                       | [media-processor.md](media-processor.md)           |
 | `kopje.media.job.record_aged`            | An upload's object reached `V2_PROCESS_MS` + `HARD_HOLD_MS` with no confirmed release and its container stopped; it drops its record once the input is deleted        | [media-processor.md](media-processor.md)           |
-| `kopje.media.job.input_delete_failed`    | An upload's input delete (D8) failed or passed `R2_CALL_MS`; the record and its alarm stay, and the alarm repeats it                                                  | [media-processor.md](media-processor.md)           |
-| `kopje.media.upload.reply_lost`          | A Store call of the upload route (S1 or S3) lost its reply; the route asks once more, then answers 503                                                                | [media-processor.md](media-processor.md)           |
+| `kopje.media.job.input_delete_failed`    | An upload's input delete failed or passed `R2_CALL_MS`; the record and its alarm stay, and the alarm repeats it                                                       | [media-processor.md](media-processor.md)           |
+| `kopje.media.upload.reply_lost`          | The upload route's Store call taking its slot or queueing it lost its reply; the route asks once more, then answers 503                                               | [media-processor.md](media-processor.md)           |
 | `kopje.media.upload.failed`              | An `/api/v1/media` request answered 503 at `V1_TIME_MS`, and the work it left failed later                                                                            | [media-processor.md](media-processor.md)           |
 | `kopje.media.upload.staging_failed`      | Staging a video or audio file into R2 failed; the upload answered 503 and its slot was released                                                                       | [media-processor.md](media-processor.md)           |
 | `kopje.media.upload.abort_failed`        | A refused staging's multipart `abort()` rejected; the incomplete upload is never served                                                                               | [media-processor.md](media-processor.md)           |
@@ -105,13 +105,12 @@ so a change made only in the dashboard does not last.
 | `kopje.stream.output_closed`             | A streaming connection was closed (1013): the instance's allowance is full or a charge is unknown                                                                     | [threat-model.md](threat-model.md), RES-6          |
 | `kopje.stream.output_refused`            | A streaming upgrade was refused (503): the instance's allowance is full or a charge is unknown                                                                        | [threat-model.md](threat-model.md), RES-6          |
 
-`kopje.stream.output_near` with `scope` `instance` (warn) means held stream output passed three quarters of
-`instanceBytes`: at the allowance, connections are closed and upgrades refused. It is logged once per crossing, and
-again when the Store restarts above three quarters. Its `closing` counts closed sockets whose clients still hold them,
-as a client that keeps connections without reading does. `kopje.stream.output_closed` or
-`kopje.stream.output_refused` with `scope` `unknown` follows an upgrade: streaming stays stopped until the previous
-release's connections end. With `scope` `socket` (log level), both `output_near` and `output_closed` are one
-connection's allowance, a reading client's normal end, and need no action.
+`kopje.stream.output_near` (warn) is logged once per crossing of three quarters of `instanceBytes`, and again when the
+Store restarts above it; its `closing` counts closed sockets whose clients still hold them, as a client that keeps
+connections without reading does. `kopje.stream.output_closed` or `kopje.stream.output_refused` with `scope` `unknown`
+follows an upgrade: streaming stays stopped until the previous release's connections end. With `scope` `socket` (log
+level), `output_near` and `output_closed` are one connection's allowance, a reading client's normal end, and need no
+action.
 
 `kopje.jobs.item.parked` is logged at warn, not error: the attempt that parks the job also logs `kopje.jobs.item.failed`
 at error with `parked: true`, and error is kept for events whose name says they failed. Family `handshake_replays` is a
