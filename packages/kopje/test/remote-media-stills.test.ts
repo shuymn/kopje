@@ -33,11 +33,12 @@ import { type MediaRow, presentMedia } from "../src/domain/status-presenter";
 import { STILL_OUTPUT_LIMIT } from "../src/platform/av-bytes";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
 import { REMOTE_MEDIA_CACHE_MIN_BYTES } from "../src/platform/config";
-import { R2_DELETE_KEYS, restoreMarkerKey } from "../src/platform/media-files";
+import { R2_DELETE_KEYS, remoteMediaPath, restoreMarkerKey } from "../src/platform/media-files";
 import { type Restore, withMarker } from "../src/platform/restore-marker";
 import type { StoreOperation } from "../src/platform/store-kernel";
 import { BLURHASH_BYTES, mediaCacheSql, STILL_CHARGE_MAX } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
+import { harness } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD, rejectionOf } from "./helpers";
 import { dumpViaRpc } from "./ops-helpers";
@@ -572,6 +573,40 @@ describe("the claim (P19a)", () => {
     await w.exact();
   });
 
+  it("skips a doomed row presented to the claim walk", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w, { stills: STILLS });
+    await claim(w);
+    await w.db((db) => dropAttachmentFiles(db, v.media, w.clock.now));
+    at(w, w.clock.now + LATE_PUT_MS);
+    // Due again though doomed (doomObject leaves it due no more): the walk must skip it on the object's state.
+    await sql(w.t.store, "UPDATE remote_media_stills SET due_at = ? WHERE token = ?", w.clock.now, v.token);
+    const before = await stillOf(w, v.token);
+    expect(await claim(w)).toEqual({ out: { status: "walked", deleted: 0, deferred: 0 }, reads: 1 });
+    expect(await stillOf(w, v.token)).toEqual(before);
+    await w.exact();
+  });
+
+  it("makes the row due no more right after its STILL_CLAIMS-th claim, still unsettled", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w, { stills: STILLS });
+    for (const n of [1, 2, 3]) {
+      const { out } = await claim(w);
+      expect(out).toMatchObject({ status: "claimed", claims: n });
+      expect(await stillOf(w, v.token)).toMatchObject({
+        claims: n,
+        outcome: null,
+        still_charge: STILL_OUTPUT_LIMIT,
+        due_at: n < 3 ? w.clock.now + LATE_PUT_MS : null,
+      });
+      // Unsettled: due again LATE_PUT_MS after the claim, past the lease.
+      at(w, w.clock.now + LATE_PUT_MS);
+    }
+    expect(await claim(w)).toEqual({ out: { status: "idle", reason: "none" }, reads: 0 });
+  });
+
   it("stops after STILL_CLAIMS claims", async () => {
     const w = await mediaWorld();
     await passStill(w);
@@ -636,6 +671,33 @@ describe("admission (P19d, the Store's part)", () => {
     // A settled attempt.
     await failStill(w, v.token, attempt, "retry", true);
     expect(await admit(w, v.token, attempt)).toEqual({ out: { admitted: false }, reads: 0 });
+  });
+});
+
+describe("admission, further cases (P19d)", () => {
+  it("refuses a current attempt while a different attempt holds the live lease", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const a = await video(w, { stills: STILLS });
+    at(w, w.clock.now + 1);
+    const b = await video(w, { stills: STILLS });
+    const first = (await claim(w)).out as { token: string; attempt: string };
+    expect(first.token).toBe(a.token);
+    at(w, w.clock.now + STILL_LEASE_MS);
+    expect((await claim(w)).out).toMatchObject({ status: "claimed", token: b.token });
+    expect(await stillOf(w, a.token)).toMatchObject({ attempt: first.attempt, outcome: null });
+    expect(await admit(w, a.token, first.attempt)).toEqual({ out: { admitted: false }, reads: 0 });
+  });
+
+  it("is refused by the Store in readonly maintenance (a write)", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w, { stills: STILLS });
+    const { attempt } = (await claim(w)).out as { attempt: string };
+    await sql(w.t.store, "INSERT INTO kopje_state (name, value) VALUES ('maintenance', ?)", JSON.stringify({ at: 1 }));
+    expect(await rejectionOf(w.t.store.admitRemoteStill(BUILD, { token: v.token, attempt }))).toBeInstanceOf(Error);
+    await sql(w.t.store, "DELETE FROM kopje_state WHERE name = 'maintenance'");
+    expect(await w.t.store.admitRemoteStill(BUILD, { token: v.token, attempt })).toEqual({ admitted: true });
   });
 });
 
@@ -847,6 +909,38 @@ describe("the failure (P19c, the Store's part)", () => {
     ).toEqual({ confirmed: 1 });
     expect(await w.usage()).toEqual({ bytes: usage.bytes - 1000, doomed: 0, pending: usage.pending });
     await w.exact();
+  });
+
+  it("settles a still whose video gained an icon of its own, releasing its reservation", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w, { stills: STILLS });
+    const reserved = await chargeOf(w, v.token);
+    const { attempt } = (await claim(w)).out as { attempt: string };
+    await sql(
+      w.t.store,
+      "UPDATE media_attachments SET preview_url = 'https://files.example/i.png' WHERE id = ?",
+      v.media,
+    );
+    expect(await failStill(w, v.token, attempt, "retry")).toEqual({
+      out: { status: "settled", outcome: "retry" },
+      reads: 1,
+    });
+    expect(await stillOf(w, v.token)).toMatchObject({ outcome: "retry", still_charge: 0 });
+    expect(await chargeOf(w, v.token)).toBe(reserved);
+    expect(await leaseOf(w)).toBeNull();
+    await w.exact();
+  });
+
+  it("leaves the lease alone on a doomed object's failure", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w, { stills: STILLS });
+    const { attempt } = (await claim(w)).out as { attempt: string };
+    const held = await leaseOf(w);
+    await w.db((d) => dropAttachmentFiles(d, v.media, w.clock.now));
+    expect(await failStill(w, v.token, attempt, "retry", false)).toEqual({ out: { status: "doomed" }, reads: 1 });
+    expect(await leaseOf(w)).toEqual(held);
   });
 
   it("releases the lease only for its holder: a stale release after a newer lease changes nothing", async () => {
@@ -1257,6 +1351,13 @@ describe("PR5-1 leaves remote stills unreachable (P18c, P-PITR1)", () => {
       expect((await w.round()).validated).toBe(0);
       expect(await w.objects()).toMatchObject([{ token: t, state: "stored" }]);
       expect(await env.MEDIA.head(`remote/${t}/full`)).not.toBeNull();
+      // Served through the route as before the restore.
+      const served = await harness(w.t.store, { MAINTENANCE: "readonly", MEDIA: env.MEDIA }).request(
+        remoteMediaPath(t, "full", "video/mp4"),
+      );
+      expect(served.status).toBe(200);
+      expect(served.headers.get("content-type")).toBe("video/mp4");
+      expect((await served.arrayBuffer()).byteLength).toBeGreaterThan(0);
       await w.exact();
     } finally {
       await env.MEDIA.delete(restoreMarkerKey(w.t.store.id.toString()));
