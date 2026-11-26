@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { healthReport } from "../src/app/health";
 import { PROBE_CLAIM_MS, PROBE_RETRY_MS } from "../src/domain/media-probes";
-import { runUpload } from "../src/jobs/media-jobs";
+import { mediaProbeRound, runUpload } from "../src/jobs/media-jobs";
 import {
   activationProbe,
   PROBE_CALL_MS,
@@ -16,7 +16,7 @@ import {
 } from "../src/mastodon/media-activation";
 import { readConfig } from "../src/platform/config";
 import { probeInputKey } from "../src/platform/media-files";
-import type { StillOutcome, UploadProcessor } from "../src/platform/media-transcoder";
+import type { StillMaker, StillOutcome, UploadProcessor } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
 import { avFixture, timedFixture } from "./av-helpers";
 import { BUILD } from "./helpers";
@@ -266,7 +266,6 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     const checked = await stillCheck({
       bucket: env.MEDIA,
       stills: {
-        still: () => Promise.reject(new Error("unused")),
         probe: async () => ({ ok: true, png: await stillPng(), image: null }),
         probeInput: new Uint8Array([1, 2, 3]),
       },
@@ -350,7 +349,6 @@ describe("the still check of still@standard-1 (kopje-admin media-processor probe
     const verdict = await stillCheck({
       bucket: env.MEDIA,
       stills: {
-        still: () => Promise.reject(new Error("unused")),
         probe: () => Promise.resolve(out),
         probeInput: new Uint8Array([1, 2, 3]),
       },
@@ -460,7 +458,6 @@ describe("the probes' copy I/O, bounded on the request path", () => {
           : stillCheck({
               bucket: h.bucket,
               stills: {
-                still: () => Promise.reject(new Error("unused")),
                 probe: () => Promise.reject(new Error("unused")),
                 probeInput: new Uint8Array([1, 2, 3]),
               },
@@ -658,7 +655,6 @@ describe("the probes' copy I/O, bounded on the request path", () => {
     const checking = stillCheck({
       bucket: h.bucket,
       stills: {
-        still: () => Promise.reject(new Error("unused")),
         probe: async () => ({ ok: true, png: await stillPng(), image: null }),
         probeInput: new Uint8Array([1, 2, 3]),
       },
@@ -695,7 +691,6 @@ describe("the probes' copy I/O, bounded on the request path", () => {
         void stillCheck({
           bucket: h.bucket,
           stills: {
-            still: () => Promise.reject(new Error("unused")),
             probe: () => answered.promise,
             probeInput: input,
           },
@@ -769,7 +764,6 @@ describe("the probes' copy I/O, bounded on the request path", () => {
     const verdict = await stillCheck({
       bucket: h.bucket,
       stills: {
-        still: () => Promise.reject(new Error("unused")),
         probe: () => {
           t = end - 1;
           return Promise.resolve({ ok: true as const, png, image: null });
@@ -894,6 +888,154 @@ describe("a late pass and a newer infrastructure failure (r7 M3)", () => {
     clock(T0 + PROBE_CLAIM_MS + SECOND);
     expect(await store.claimMediaProbe(BUILD, { profile, build: BUILD, due: true })).toMatchObject({
       status: "claimed",
+    });
+  });
+});
+
+// P4s: the probe round probes each profile whose own budget is positive, with the binding, through the generic claim,
+// and records each verdict for the build.
+describe("the probe round per budget (P4s, #1828 PR5-2)", () => {
+  async function round(store: StoreStub, budgets: { uploads: number; stills: number }) {
+    const normalized: string[] = [];
+    const stilled: string[] = [];
+    const processor: UploadProcessor = {
+      run: () => Promise.reject(new Error("unused")),
+      probeNormalize: (key) => {
+        normalized.push(key);
+        return Promise.resolve({ outcome: "pass", imagesVerified: true, image: null });
+      },
+      probeInput: new Uint8Array([1, 2, 3]),
+    };
+    const stills: Pick<StillMaker, "probe" | "probeInput"> = {
+      probe: async (key) => {
+        stilled.push(key);
+        return { ok: true, png: await stillPng(), image: null };
+      },
+      probeInput: new Uint8Array([1, 2, 3]),
+    };
+    await mediaProbeRound({
+      build: BUILD,
+      store,
+      bucket: env.MEDIA,
+      processor,
+      budget: budgets.uploads,
+      stills,
+      images: new TestCodec(),
+      stillsBudget: budgets.stills,
+    });
+    const verdict = async (profile: "normalize@standard-4" | "still@standard-1") =>
+      (await store.mediaProbeRecords(BUILD, { profile })).record;
+    return {
+      normalized,
+      stilled,
+      normalize: await verdict("normalize@standard-4"),
+      still: await verdict("still@standard-1"),
+    };
+  }
+
+  it("probes still@standard-1 alone with stills on and uploads off", async () => {
+    const probed = await round(await freshStore(), { uploads: 0, stills: 5 });
+    expect(probed.normalized).toEqual([]);
+    expect(probed.stilled).toHaveLength(1);
+    expect(probed.still).toMatchObject({ version: BUILD, ok: true, imagesVerified: true });
+    expect(probed.normalize).toBeNull();
+  });
+
+  it("probes normalize@standard-4 alone with uploads on and stills off", async () => {
+    const probed = await round(await freshStore(), { uploads: 5, stills: 0 });
+    expect(probed.normalized).toHaveLength(1);
+    expect(probed.stilled).toEqual([]);
+    expect(probed.normalize).toMatchObject({ version: BUILD, ok: true });
+    expect(probed.still).toBeNull();
+  });
+
+  it("probes both with both on, and neither is due again within the hour", async () => {
+    const store = await freshStore();
+    const first = await round(store, { uploads: 5, stills: 5 });
+    expect([first.normalized.length, first.stilled.length]).toEqual([1, 1]);
+    const again = await round(store, { uploads: 5, stills: 5 });
+    expect([again.normalized.length, again.stilled.length]).toEqual([0, 0]);
+  });
+});
+
+// P23s: health over the profiles the positive budgets need (the worst state, main's qualifiers kept per profile).
+describe("health's mediaProcessor with remote stills (P23s, #1828 PR5-2)", () => {
+  const config = (uploads: number, stills: number) =>
+    readConfig({ ...env, MEDIA_UPLOAD_MONTHLY_JOBS: String(uploads), MEDIA_STILL_MONTHLY_JOBS: String(stills) });
+  const check = async (store: StoreStub, uploads: number, stills: number, binding = true) =>
+    (await healthReport(BUILD, config(uploads, stills), () => store, { mediaProcessor: { binding } })).checks
+      .mediaProcessor;
+  async function verdict(
+    store: StoreStub,
+    profile: "normalize@standard-4" | "still@standard-1",
+    outcome: "pass" | "fail",
+    imagesVerified = true,
+  ) {
+    const claimed = await store.claimMediaProbe(BUILD, { profile, build: BUILD, due: false });
+    await store.recordMediaProbeResult(BUILD, {
+      profile,
+      claim: (claimed as { claim: string }).claim,
+      outcome,
+      imagesVerified,
+      imageTag: null,
+    });
+  }
+
+  it("is disabled for a positive stills budget without the binding, and for no positive budget", async () => {
+    const store = await freshStore();
+    expect(await check(store, 0, 5, false)).toMatchObject({ ok: true, state: "disabled", reason: "binding" });
+    expect(await check(store, 5, 5, false)).toMatchObject({ ok: true, state: "disabled", reason: "binding" });
+    expect(await check(store, 0, 0)).toMatchObject({
+      ok: true,
+      state: "disabled",
+      reason: "budget",
+      stills: { spent: 0, budget: 0 },
+    });
+  });
+
+  it("reports the stills profile alone with uploads off: provisioned, then ready, then degraded", async () => {
+    const store = await freshStore();
+    expect(await check(store, 0, 5)).toMatchObject({
+      ok: true,
+      state: "provisioned",
+      lastProbe: "never",
+      stills: { spent: 0, budget: 5 },
+      profiles: { "still@standard-1": { state: "provisioned" } },
+    });
+    expect(await check(store, 0, 5)).not.toHaveProperty(["profiles", "normalize@standard-4"]);
+    await verdict(store, "still@standard-1", "pass", false);
+    expect(await check(store, 0, 5)).toMatchObject({ ok: true, state: "ready", imagesVerified: false });
+    clock(T0 + PROBE_RETRY_MS);
+    await verdict(store, "still@standard-1", "fail");
+    expect(await check(store, 0, 5)).toMatchObject({ ok: false, state: "degraded" });
+    // Uploads alone do not need it: the failed still profile does not degrade them.
+    await verdict(store, "normalize@standard-4", "pass");
+    expect(await check(store, 5, 0)).toMatchObject({ ok: true, state: "ready" });
+  });
+
+  it("is the worst of both: one failed, the other ready, is degraded; an infrastructure failure after a pass is ready", async () => {
+    const store = await freshStore();
+    await verdict(store, "normalize@standard-4", "pass");
+    expect(await check(store, 5, 5)).toMatchObject({
+      ok: true,
+      state: "provisioned",
+      profiles: { "normalize@standard-4": { state: "ready" }, "still@standard-1": { state: "provisioned" } },
+    });
+    await verdict(store, "still@standard-1", "pass");
+    expect(await check(store, 5, 5)).toMatchObject({ ok: true, state: "ready", imagesVerified: true });
+    await store.recordMediaInfrastructureFailure(BUILD, { profile: "still@standard-1", build: BUILD });
+    expect(await check(store, 5, 5)).toMatchObject({
+      ok: true,
+      state: "ready",
+      infrastructureFailure: true,
+      profiles: { "still@standard-1": { infrastructureFailure: true } },
+    });
+    clock(T0 + PROBE_RETRY_MS);
+    await verdict(store, "normalize@standard-4", "fail");
+    expect(await check(store, 5, 5)).toMatchObject({
+      ok: false,
+      state: "degraded",
+      profiles: { "normalize@standard-4": { state: "degraded" }, "still@standard-1": { state: "ready" } },
     });
   });
 });

@@ -7,9 +7,12 @@ import {
   type RemoteMediaFence,
   type RemoteMediaMaintenance,
   type RemoteMediaOutcome,
+  type StillsActivation,
+  type ValidationHead,
+  type ValidationResult,
 } from "../domain/remote-media";
 import { envInMaintenance, MEDIA_CACHE_RETENTION_DEFAULT_DAYS, readConfig } from "../platform/config";
-import { DeadlinePassed, inTime, releaseUnstarted, withinKept } from "../platform/deadline";
+import { admitted, DeadlinePassed, inTime, releaseUnstarted, withinKept } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { remoteFileKey } from "../platform/media-files";
 import { type StoreStub, storeRpc } from "../platform/store-client";
@@ -107,13 +110,6 @@ function bounded<T>(work: () => Promise<T>, end: number, now: () => number): Pro
   return withinKept(running, work, end, now);
 }
 
-// The end of an operation of `budget` ms started now within an allocation ending at `end`, or null when it does not
-// fit (it is not started).
-export function admitted(budget: number, end: number, now: () => number): number | null {
-  const at = now();
-  return at + budget <= end ? at + budget : null;
-}
-
 type ClaimResult = { outcome: RemoteMediaOutcome; step: string; host: string | null };
 
 // The outcome of a fetch that failed: a policy RPC error, the shared budget, or a timeout at the window's end leaves
@@ -188,7 +184,7 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
   const workEnd = sweepCursor === null ? maintenanceEnd : maintenanceEnd - SWEEP_MS;
   for (const step of [
     () => deleteDoomed(maintained.deletions, workEnd),
-    () => validate(maintained.validation, workEnd),
+    () => validate(maintained.validation, maintained.validationRestore, workEnd),
     () => (sweepCursor === null ? Promise.resolve() : sweep(sweepCursor)),
   ]) {
     try {
@@ -227,44 +223,62 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
   }
 
   // The heads of a prefix of the batch, each object started only when the heads of all its variants fit before the
-  // record's own budget, and stopped at the first that does not or fails: the completed prefix is recorded (with the
-  // failed one, which the Store counts), so the next round resumes after it.
-  async function validate(objects: RemoteMediaMaintenance["validation"], end: number): Promise<void> {
-    const results: { token: string; missing: boolean; failed?: boolean }[] = [];
+  // record's own budget, each variant reported present, missing or unknown (a head that failed or did not answer in
+  // time), the batch stopped after an object with an unknown variant or at one whose heads no longer fit: the completed
+  // prefix is recorded with the batch's restore (the Store applies nothing for another restore's batch), so the next
+  // round resumes after it.
+  async function validate(
+    objects: RemoteMediaMaintenance["validation"],
+    restore: number | null,
+    end: number,
+  ): Promise<void> {
+    const results: ValidationResult[] = [];
     const headsEnd = end - STORE_CALL_MS;
     for (const object of objects) {
       if (admitted(R2_HEAD_MS * object.keys.length, headsEnd, deps.now) === null) {
         break;
       }
-      let missing = false;
-      let outcome: "complete" | "stopped" | "failed" = "complete";
-      try {
-        for (const key of object.keys) {
-          const by = admitted(R2_HEAD_MS, headsEnd, deps.now);
-          if (by === null) {
-            outcome = "stopped";
-            break;
+      const heads: { variant: string; head: ValidationHead }[] = [];
+      let stopped = false;
+      for (const key of object.keys) {
+        const by = admitted(R2_HEAD_MS, headsEnd, deps.now);
+        if (by === null) {
+          stopped = true;
+          break;
+        }
+        const variant = key.slice(key.lastIndexOf("/") + 1);
+        try {
+          heads.push({
+            variant,
+            head: (await bounded(() => bucket.head(key), by, deps.now)) === null ? "missing" : "present",
+          });
+        } catch (error) {
+          if (!(error instanceof DeadlinePassed)) {
+            console.warn({ event: "kopje.remote_media.head_failed", ...errorFields(error) });
           }
-          const head = await bounded(() => bucket.head(key), by, deps.now);
-          missing ||= head === null;
+          heads.push({ variant, head: "unknown" });
+          break;
         }
-      } catch (error) {
-        if (!(error instanceof DeadlinePassed)) {
-          console.warn({ event: "kopje.remote_media.head_failed", ...errorFields(error) });
-        }
-        outcome = "failed";
       }
-      if (outcome === "failed") {
-        results.push({ token: object.token, missing: false, failed: true });
-      }
-      if (outcome !== "complete") {
+      if (stopped) {
         break;
       }
-      results.push({ token: object.token, missing });
+      results.push({ token: object.token, heads });
+      if (heads.some((entry) => entry.head === "unknown")) {
+        break;
+      }
     }
-    if (results.length > 0) {
-      await store((s) => s.recordRemoteMediaValidation(build, { results }), end);
-      round.validated = results.filter((result) => result.failed !== true).length;
+    if (results.length > 0 && restore !== null) {
+      const recorded = await store(
+        (s) =>
+          s.recordRemoteMediaValidation(build, { restore, results }) as Promise<
+            { status: "recorded"; reset: number; stills: number } | { status: "stale" }
+          >,
+        end,
+      );
+      if (recorded.status === "recorded") {
+        round.validated = results.filter((result) => result.heads.every((entry) => entry.head !== "unknown")).length;
+      }
     }
   }
 
@@ -443,8 +457,15 @@ export async function remoteMediaRound(env: Env, deps: RemoteMediaDeps): Promise
     };
   };
 
+  // Remote stills (#1828 PR5): the Store queues a still with a video it records only when the processor is bound, the
+  // stills budget positive and still@standard-1 passed for this build (domain/remote-media.ts queueStill).
+  const stills: StillsActivation = {
+    binding: (env as Env & { MEDIA_PROCESSOR?: unknown }).MEDIA_PROCESSOR !== undefined,
+    budget: config.ok ? config.config.MEDIA_STILL_MONTHLY_JOBS : 0,
+    build,
+  };
   const record = (claim: RemoteMediaClaim, outcome: RemoteMediaOutcome) =>
-    store((s) => s.recordRemoteMedia(build, { ...fence(claim), outcome }), end);
+    store((s) => s.recordRemoteMedia(build, { ...fence(claim), outcome, stills }), end);
 
   // Lane 0 (profile images, emoji, thumbnails) LANE0_CONCURRENCY at a time, and lane 1 (attachments' files) beside it,
   // one at a time; a claim not started is released at the end.

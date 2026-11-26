@@ -17,11 +17,11 @@ import {
   type ProbeDeps,
   processorClient,
   ProcessorUnit,
-  STILL_CALL_MS,
   STILL_TEARDOWN_MS,
   type UnitState,
 } from "../src/media-processor";
 import {
+  STILL_CALL_MS,
   PROBE_PROFILES,
   type ProbeProfile,
   type StillMaker,
@@ -110,6 +110,7 @@ function fakeContainer(
 // The probe route never makes a still.
 const unusedStills: StillMaker = {
   still: () => Promise.reject(new Error("unused")),
+  remote: () => Promise.reject(new Error("unused")),
   probe: () => Promise.reject(new Error("unused")),
   probeInput: new Uint8Array(),
 };
@@ -927,6 +928,63 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     expect(state.cleared()).toBe(1);
   });
 
+  // P-ISO (MEDIA-8): a remote still runs on a fresh object named for its token and attempt, reads its one input, the
+  // cached file, once, and answers only once its container is destroyed.
+  it("runs a remote still on s:<token>:<attempt>, reading remote/<token>/full once, destroyed before it answers", async () => {
+    const token = `iso${"r".repeat(40)}`;
+    const attempt = "0123456789abcdef0123456789abcdef";
+    const input = new Uint8Array(4000).fill(5);
+    await env.MEDIA.put(`remote/${token}/full`, input);
+    const names: string[] = [];
+    const fake = counted();
+    const media = bucket();
+    const state = fakeState(fake.container);
+    const namespace = {
+      getByName(name: string) {
+        names.push(name);
+        return unit({ ...state.ctx, bucket: media });
+      },
+    };
+    const client = processorClient({ ...env, MEDIA_PROCESSOR: namespace } as never, "v1")!;
+    const outcome = await client.stills.remote(token, attempt, STILL_CALL_MS);
+    expect(outcome).toMatchObject({ ok: true, png: PNG });
+    expect(names).toEqual([`s:${token}:${attempt}`]);
+    expect(media.reads).toEqual([`remote/${token}/full`]);
+    expect(fake.bodies).toEqual([input]);
+    expect(fake.started()).toMatchObject({ instance: "standard-1", enableInternet: false });
+    expect(fake.calls).toEqual(["start", "GET /healthz", "POST /still", "destroy"]);
+    expect(fake.container.running).toBe(false);
+    expect(state.cleared()).toBe(1);
+  });
+
+  // The cut is labelled by whether the input drained into the request body, not by whether its read answered:
+  // a body that stalls after the read answered is the input's deadline, a drained input whose processor stalls the
+  // operation's.
+  it("labels a cut input-deadline while the input's body stalls, and operation-deadline once it drained", async () => {
+    const stalled = {
+      get: () =>
+        Promise.resolve({
+          size: 3,
+          body: new ReadableStream<Uint8Array>({ start: (controller) => controller.enqueue(new Uint8Array([1])) }),
+        } as unknown as R2ObjectBody),
+    };
+    const a = counted();
+    const cut = await unit({ ...fakeState(a.container).ctx, bucket: stalled }, clock()).stillNow("any", STILL_CALL_MS);
+    expect(cut).toMatchObject({ ok: false, failure: "input-deadline" });
+    expect(a.calls).toContain("POST /still");
+    expect(a.calls.at(-1)).toBe("destroy");
+
+    await env.MEDIA.put("originals/140000000000000061", new Uint8Array([1, 2, 3]));
+    const b = counted(undefined, { "/still": () => new Promise<Response>(() => {}) });
+    const late = await unit({ ...fakeState(b.container).ctx, bucket: bucket() }, clock()).stillNow(
+      "originals/140000000000000061",
+      STILL_CALL_MS,
+    );
+    expect(late).toMatchObject({ ok: false, failure: "operation-deadline" });
+    expect(b.bodies).toEqual([new Uint8Array([1, 2, 3])]);
+    expect(b.calls.at(-1)).toBe("destroy");
+  });
+
   it.each([
     [422, "no_video", "no_video"],
     [422, "pixels", "pixels"],
@@ -1134,7 +1192,8 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
       "originals/140000000000000013",
       60_000,
     );
-    expect(outcome).toMatchObject({ ok: false, failure: "operation-deadline" });
+    // Cut before the input drained into the request body: the input's deadline, not the operation's.
+    expect(outcome).toMatchObject({ ok: false, failure: "input-deadline" });
     expect(cancelled).toBe(true);
     expect(fake.calls).not.toContain("POST /still");
     expect(fake.calls.at(-1)).toBe("destroy");
@@ -1464,9 +1523,15 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     const before = await copies();
     const good = await bound.post("still@standard-1");
     expect(good.status).toBe(200);
-    // The still check records nothing, and its copy of the clip is gone.
+    // The still probe records its verdict for the build under the profile's claim (P-CLI), and its copy of the clip is
+    // gone.
     expect(await good.json()).toEqual({
-      probe: { status: "checked", verdict: { outcome: "pass", imagesVerified: true, image: null } },
+      probe: { status: "recorded", verdict: { outcome: "pass", imagesVerified: true } },
+    });
+    expect((await bound.store.mediaProbeRecords(BUILD, { profile: "still@standard-1" })).record).toMatchObject({
+      version: BUILD,
+      ok: true,
+      imagesVerified: true,
     });
     expect(passes).toHaveBeenCalledOnce();
     expect(await copies()).toEqual(before);
@@ -1486,8 +1551,8 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     expect(passed.code, passed.err).toBe(0);
     // The CLI's list is the Worker's.
     expect(seen).toEqual([...PROBE_PROFILES]);
-    expect(passed.out).toContain('"status": "checked"');
-    expect(passed.out).toContain('"status": "recorded"');
+    expect(passed.out).not.toContain('"status": "checked"');
+    expect(passed.out.match(/"status": "recorded"/g)).toHaveLength(2);
 
     const one = await harness((profile) => Promise.resolve(profile !== "normalize@standard-4"));
     expect((await one.cli(["media-processor", "probe", "still@standard-1"])).code).toBe(0);
@@ -1496,10 +1561,18 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     const again = await all.cli(["media-processor", "probe", "normalize@standard-4"]);
     expect(again.code).toBe(1);
     expect(again.out).toContain('"status": "cooldown"');
+    // A second still probe within the hour is not run either: the profile's claim cools down as normalize's.
+    const stillAgain = await all.cli(["media-processor", "probe", "still@standard-1"]);
+    expect(stillAgain.code).toBe(1);
+    expect(stillAgain.out).toContain('"status": "cooldown"');
     const still = await harness((profile) => Promise.resolve(profile !== "still@standard-1"));
     const failed = await still.cli(["media-processor", "probe", "still@standard-1"]);
     expect(failed.code).toBe(1);
     expect(failed.out).toContain('"outcome": "fail"');
+    expect((await still.store.mediaProbeRecords(BUILD, { profile: "still@standard-1" })).record).toMatchObject({
+      version: BUILD,
+      ok: false,
+    });
     // A type P27 did not choose is no profile.
     expect((await one.cli(["media-processor", "probe", "normalize@standard-3"])).code).toBe(2);
     expect((await one.cli(["media-processor", "probe", "normalize@standard-2"])).code).toBe(2);

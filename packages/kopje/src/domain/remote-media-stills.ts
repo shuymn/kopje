@@ -8,7 +8,7 @@ import { readState, state, writeState } from "./kopje-state";
 import { chargeJob, jobFits } from "./media";
 import { writeOperation } from "./operation";
 import {
-  chargeObject,
+  chargeStill,
   DEFER_MS,
   LANE1_HEADROOM,
   LATE_PUT_MS,
@@ -115,15 +115,6 @@ function slotRowHolds(db: Db, slot: number, token: string): boolean {
 
 function objectState(db: Db, token: string): string | undefined {
   return db.first<{ state: string }>("SELECT state FROM remote_media_objects WHERE token = ?1", token)?.state;
-}
-
-// One charge move of the still of the stored object `token`: the ledger row and usage (chargeObject) by `delta`.
-function chargeStill(db: Db, token: string, delta: number): void {
-  if (delta === 0) {
-    return;
-  }
-  db.run("UPDATE remote_media_objects SET charge = charge + ?2 WHERE token = ?1 AND state = 'stored'", token, delta);
-  chargeObject(db, token, { bytes: delta });
 }
 
 // Whether the claim `claimedAt` follows the last restore (the marker read here: an attempt from before a restore may
@@ -326,15 +317,16 @@ export const recordRemoteStill = writeOperation.atStoreTime("now")<
 
 export type RemoteStillFailure =
   | { status: "settled"; outcome: "retry" | "park" }
-  // The object is doomed: nothing settles, the row keeps its attempt and charge until the deletion.
+  // The object is doomed: nothing settles, the row keeps its attempt and charge until the deletion (the lease is
+  // released all the same on a confirmed stop).
   | { status: "doomed" }
   // Not the row's current attempt, or one claimed at or before the last restore.
   | { status: "stale" };
 
 // The failure of `attempt` (design 4.14's outcomes, the round's classification): fenced on the attempt alone (the
 // row's current one, unsettled, queued, claimed after the last restore), with no record deadline and no qualification
-// check, so a late failure still releases a live reservation. A doomed object answers `doomed` and changes nothing. On a
-// stored object the first call settles the attempt: its outcome, its reservation released (the ledger and usage by
+// check, so a late failure still releases a live reservation. A doomed object answers `doomed` and settles nothing,
+// its charge left to the deletion, the lease released as below. On a stored object the first call settles the attempt: its outcome, its reservation released (the ledger and usage by
 // −still_charge), and due again at max(claimed_at + LATE_PUT_MS, now + RETRY_DELAYS_MS[claims − 1]) for a retry, never
 // for a park or after the STILL_CLAIMS-th claim, and the lease released when the attempt holds it and `keepLease` is
 // false (no container started, or its stop confirmed). A replay answers the recorded outcome and writes nothing, the
@@ -361,6 +353,11 @@ export const failRemoteStill = writeOperation.atStoreTime("now")<
     return { status: "stale" };
   }
   if (objectState(db, token) !== "stored") {
+    // The doomed object's charge is the deletion's to release; the lease goes with a confirmed stop all the same, so
+    // the next tick can claim another video.
+    if (!keep) {
+      release(db, attempt);
+    }
     return { status: "doomed" };
   }
   chargeStill(db, token, -row.still_charge);

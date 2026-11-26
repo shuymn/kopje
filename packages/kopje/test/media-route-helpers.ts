@@ -180,6 +180,7 @@ export async function routeWorld(
   const processor: MediaProcessorClient = {
     stills: {
       still: () => Promise.reject(new Error("no still in a route test")),
+      remote: () => Promise.reject(new Error("no still in a route test")),
       probe: () => Promise.reject(new Error("no still in a route test")),
       probeInput: new Uint8Array(),
     },

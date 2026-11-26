@@ -27,6 +27,7 @@ import {
   syncProfileFiles,
   type RemoteMediaClaim,
   type RemoteMediaOutcome,
+  VALIDATION_FAILURES,
 } from "../src/domain/remote-media";
 import { readConfig, REMOTE_MEDIA_CACHE_MIN_BYTES } from "../src/platform/config";
 import { SAFE_INTEGER_MAX } from "../src/platform/stored-bounds";
@@ -557,13 +558,62 @@ describe("maintenance (maintainRemoteMedia)", () => {
       { token: a!.token, keys: [`remote/${a!.token}/full`, `remote/${a!.token}/still`] },
     ]);
     // Its still is missing: the object is doomed and the slot reset to pending.
-    await w.op(recordRemoteMediaValidation, { results: [{ token: a!.token, missing: true }], now: w.clock.now });
+    await w.op(recordRemoteMediaValidation, {
+      restore: restoredAt,
+      restoredAt,
+      results: [
+        {
+          token: a!.token,
+          heads: [
+            { variant: "full", head: "present" },
+            { variant: "still", head: "missing" },
+          ],
+        },
+      ],
+      now: w.clock.now,
+    });
     expect((await w.slots()).find((s) => String(s.id) === a!.slot)).toMatchObject({ token: null, due_at: w.clock.now });
     const second = await maintain(w, restoredAt);
     expect(second.validation).toEqual([]);
     expect(await sql(w.t.store, "SELECT value FROM kopje_state WHERE name = 'remote_media_validated_at'")).toEqual([
       { value: String(restoredAt) },
     ]);
+    await w.exact();
+  });
+
+  // As the release before the named stills counted any failed head of the object first: `full` missing with its
+  // legacy still's head failing is a failed batch, the object doomed only at the VALIDATION_FAILURES-th.
+  it("counts a failed legacy still head before a missing `full`, as main did", async () => {
+    const w = await mediaWorld();
+    await w.remote();
+    const [a] = (await claim(w)).claims;
+    await record(w, a!, stored(100, ["files.example"], "image/gif"));
+    const restoredAt = w.clock.now + 1;
+    w.clock.now = restoredAt + REMOTE_SETTLE_MS;
+    expect((await maintain(w, restoredAt)).validation).toEqual([
+      { token: a!.token, keys: [`remote/${a!.token}/full`, `remote/${a!.token}/still`] },
+    ]);
+    const result = () =>
+      w.op(recordRemoteMediaValidation, {
+        restore: restoredAt,
+        restoredAt,
+        results: [
+          {
+            token: a!.token,
+            heads: [
+              { variant: "full", head: "missing" },
+              { variant: "still", head: "unknown" },
+            ],
+          },
+        ],
+        now: w.clock.now,
+      });
+    for (let n = 1; n < VALIDATION_FAILURES; n++) {
+      expect(await result()).toEqual({ status: "recorded", reset: 0, stills: 0 });
+      expect((await w.objects()).find((o) => o.token === a!.token)).toMatchObject({ state: "stored" });
+    }
+    expect(await result()).toEqual({ status: "recorded", reset: 1, stills: 0 });
+    expect((await w.objects()).find((o) => o.token === a!.token)).toMatchObject({ state: "doomed" });
     await w.exact();
   });
 
@@ -580,7 +630,13 @@ describe("maintenance (maintainRemoteMedia)", () => {
     const first = w.clock.now + 1;
     w.clock.now = first + REMOTE_SETTLE_MS;
     expect((await maintain(w, first)).validation.map((v) => v.token)).toEqual(tokens);
-    await w.op(recordRemoteMediaValidation, { results: [{ token: tokens[0]!, missing: false }], now: w.clock.now });
+    const present = (token: string) => ({ token, heads: [{ variant: "full", head: "present" as const }] });
+    await w.op(recordRemoteMediaValidation, {
+      restore: first,
+      restoredAt: first,
+      results: [present(tokens[0]!)],
+      now: w.clock.now,
+    });
     // A bookmark taken here holds the walk's progress past the first object.
     const names = ["remote_media_validation", "remote_media_validated_at"];
     const state = () =>
@@ -591,7 +647,9 @@ describe("maintenance (maintainRemoteMedia)", () => {
       );
     const bookmark = await state();
     await w.op(recordRemoteMediaValidation, {
-      results: tokens.slice(1).map((token) => ({ token, missing: false })),
+      restore: first,
+      restoredAt: first,
+      results: tokens.slice(1).map(present),
       now: w.clock.now,
     });
     expect((await maintain(w, first)).validation).toEqual([]);

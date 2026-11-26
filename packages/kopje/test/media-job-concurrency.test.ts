@@ -198,7 +198,7 @@ describe("the start rule", () => {
         await p.unit().run(id, token, teardownId);
       },
     } as unknown as UploadProcessor;
-    const round = mediaDispatchRound({ build: BUILD, store: w.store, bucket: env.MEDIA, processor, budget: 10 });
+    const round = mediaDispatchRound({ build: BUILD, store: w.store, processor });
     await handed.promise;
     // The platform runs one alarm at a time: the second delivery runs once the first returns.
     const first = p.unit().alarm();

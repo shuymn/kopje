@@ -6,6 +6,7 @@ import { run as cliRun } from "../cli/lib/main.js";
 import { Db } from "../src/db/sql";
 import { chargeUploadJob } from "../src/domain/media";
 import { REBUILD_LEASE_MS, REBUILD_SETTLE_MS } from "../src/domain/media-rebuild";
+import { stillActivationProbe } from "../src/mastodon/media-activation";
 import { MAX_BUILDS_PER_CALL, rebuildMedia, type RebuildStep } from "../src/mastodon/media-rebuild";
 import { MAX_AV_BUILDS_PER_CALL, PROBE_RETRY_MS, REBUILD_AV_MS } from "../src/mastodon/media-rebuild-av";
 import type { StillMaker, StillOutcome } from "../src/platform/media-transcoder";
@@ -149,6 +150,7 @@ function maker(options: { answer?: StillOutcome; probe?: StillOutcome; onStill?:
       expect(await bytesOf(key)).toEqual(stills.probeInput);
       return options.probe ?? { ok: true, png: STILL, image: "media@sha256:test" };
     },
+    remote: () => Promise.reject(new Error("no remote still in the rebuild")),
     probeInput: new Uint8Array([1, 2, 3, 4]),
   };
   return { stills, calls };
@@ -1153,6 +1155,52 @@ describe("the still probe's one claim, shared with the generic probe (W-P, P-RBQ
     expect(await claimGeneric(store)).toEqual({ status: "cooldown", retryAt: attempt!.at + 5 * 60 * 1000 });
     await ageProbe(store, 5 * 60 * 1000);
     expect((await claimGeneric(store)).status).toBe("claimed");
+  });
+
+  // (7), the other direction (#1828 PR5-2): the generic still probe (the probe round's and the CLI's,
+  // stillActivationProbe) meets the probe object busy, its rebuild-held stop not yet confirmed: no result, the profile
+  // held PROBE_CLAIM_MS only, then the rebuild claims and probes.
+  it("records no generic result for a probe object the rebuild left busy, holding the profile PROBE_CLAIM_MS (7)", async () => {
+    const store = await setup();
+    await addAv(store, "video");
+    await maintenance(store, false);
+    const busy = maker({ probe: { ok: false, failure: "busy", image: null } });
+    const probed = await stillActivationProbe(
+      { build: BUILD, store, bucket: env.MEDIA, stills: busy.stills, images: new TestCodec(), now: () => Date.now() },
+      true,
+    );
+    expect(probed).toMatchObject({ status: "not_started", verdict: { outcome: "no-verdict", reason: "busy" } });
+    expect(probes(busy.calls)).toHaveLength(1);
+    const { attempt, record } = await records(store);
+    expect(attempt).not.toHaveProperty("result");
+    expect(record).toBeNull();
+    await maintenance(store, true);
+    const cooled = maker();
+    await run(store, { stills: cooled.stills });
+    expect(probes(cooled.calls)).toEqual([]);
+    await ageProbe(store, 5 * 60 * 1000);
+    const after = maker();
+    expect(await run(store, { stills: after.stills })).toMatchObject({ counts: { built: 1 } });
+    expect(probes(after.calls)).toHaveLength(1);
+  });
+
+  // (7) once for an unpublished import, which has no settle period: the rebuild's probe meets the object busy and
+  // records no result.
+  it("records no rebuild result for a busy probe object in an unpublished import (7)", async () => {
+    const store = await setup();
+    await addAv(store, "video");
+    await maintenance(store, false);
+    await sql(
+      store,
+      "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('unpublished', ?)",
+      JSON.stringify({ at: NOW, import: "i" }),
+    );
+    const busy = maker({ probe: { ok: false, failure: "busy", image: null } });
+    expect(await run(store, { stills: busy.stills })).toMatchObject({ stopped: "retry" });
+    expect(probes(busy.calls)).toHaveLength(1);
+    const { attempt, record } = await records(store);
+    expect(attempt).not.toHaveProperty("result");
+    expect(record).toBeNull();
   });
 
   it("takes no verdict older than its last claim for the claim's cooldown", async () => {

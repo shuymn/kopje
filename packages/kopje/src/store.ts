@@ -449,8 +449,16 @@ export class Store extends DurableObject<Env> {
     );
   }
 
-  // Remote video stills (domain/remote-media-stills.ts), each at the Store's own time, the restore marker read where a
-  // restore changes the answer (#marked). No production caller passes the `stills` input yet (#1828 PR5-1).
+  // PITR validation's heads (domain/remote-media.ts recordRemoteMediaValidation): applied only for the batch of the
+  // restore the marker records, read once the walk's restore matches the batch's (markedRun).
+  recordRemoteMediaValidation(callerBuild: string, input: MarkedInput<typeof remoteMedia.recordRemoteMediaValidation>) {
+    return markedRun(this.#kernel, callerBuild, remoteMedia.recordRemoteMediaValidation, input, () =>
+      this.#restoredAt(),
+    );
+  }
+
+  // Remote video stills (domain/remote-media-stills.ts; their round, jobs/remote-stills.ts), each at the Store's own
+  // time, the restore marker read where a restore changes the answer (markedRun).
   claimRemoteStill(callerBuild: string, input: MarkedInput<typeof remoteStills.claimRemoteStill>) {
     return markedRun(this.#kernel, callerBuild, remoteStills.claimRemoteStill, input, () => this.#restoredAt());
   }

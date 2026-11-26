@@ -278,24 +278,27 @@ export async function gate(store: StoreStub, name: keyof typeof GATES, on: boole
   }
 }
 
-// A PITR bookmark of the tables a restore rewinds that these tests read, and the restore to it: the tables put back as
-// they were and the restore marker written at the Store's time `at`, as pitrToBookmark records it.
-type Bookmark = Record<string, Record<string, SqlStorageValue>[]>;
-const REWOUND = ["media_av_slots", "media_processing", "media_attachments", "kopje_state"] as const;
+// A PITR bookmark of `tables` (every row as it was), and the tables put back to it: emptied in `deletes` order, then
+// filled in `inserts` order, each suite giving the order its foreign keys need. The restore marker is the suite's.
+export type Bookmark = Record<string, Record<string, SqlStorageValue>[]>;
 
-export async function bookmark(store: StoreStub): Promise<Bookmark> {
+export async function snapshotTables(store: StoreStub, tables: readonly string[]): Promise<Bookmark> {
   const taken: Bookmark = {};
-  for (const table of REWOUND) {
+  for (const table of tables) {
     taken[table] = await sql(store, `SELECT * FROM ${table}`);
   }
   return taken;
 }
 
-export async function restore(store: StoreStub, taken: Bookmark, at: number): Promise<void> {
-  for (const table of REWOUND) {
+export async function putTablesBack(
+  store: StoreStub,
+  taken: Bookmark,
+  order: { deletes: readonly string[]; inserts: readonly string[] },
+): Promise<void> {
+  for (const table of order.deletes) {
     await sql(store, `DELETE FROM ${table}`);
   }
-  for (const table of REWOUND.toReversed()) {
+  for (const table of order.inserts) {
     for (const row of taken[table] ?? []) {
       const columns = Object.keys(row);
       await sql(
@@ -305,6 +308,18 @@ export async function restore(store: StoreStub, taken: Bookmark, at: number): Pr
       );
     }
   }
+}
+
+// The tables a restore rewinds that the upload tests read, and the restore to a bookmark of them: the tables put back
+// as they were and the restore marker written at the Store's time `at`, as pitrToBookmark records it.
+const REWOUND = ["media_av_slots", "media_processing", "media_attachments", "kopje_state"] as const;
+
+export function bookmark(store: StoreStub): Promise<Bookmark> {
+  return snapshotTables(store, REWOUND);
+}
+
+export async function restore(store: StoreStub, taken: Bookmark, at: number): Promise<void> {
+  await putTablesBack(store, taken, { deletes: REWOUND, inserts: REWOUND.toReversed() });
   await env.MEDIA.put(restoreMarkerKey(store.id.toString()), JSON.stringify({ at }));
 }
 

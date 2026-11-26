@@ -93,7 +93,7 @@ so a change made only in the dashboard does not last.
 | `kopje.media.upload.run_failed`          | Starting a queued upload's processing failed; the cron's dispatch round starts it                                                                                     | [media-processor.md](media-processor.md)           |
 | `kopje.media.upload.input_delete_failed` | The route's delete of a refused upload's input failed; the hourly `incoming/` pass removes it                                                                         | [media-processor.md](media-processor.md)           |
 | `kopje.media.upload.abandon_failed`      | The route could not release a refused upload's reservation; the sweep removes it                                                                                      | [media-processor.md](media-processor.md)           |
-| `kopje.media.probe.verdict`              | The activation probe of `normalize@standard-4` did not pass (`outcome` `fail` or `no-verdict`, and `reason`)                                                          | [media-processor.md](media-processor.md)           |
+| `kopje.media.probe.verdict`              | A profile's activation probe did not pass (`profile`, `outcome` `fail` or `no-verdict`, and `reason`)                                                                 | [media-processor.md](media-processor.md)           |
 | `kopje.media.probe.copy_failed`          | A probe's copy of the clip could not be deleted (`step`), its delete failing or passing `PROBE_COPY_MS`; the orphan pass removes it                                   | [media-processor.md](media-processor.md)           |
 | `kopje.media.probe.unconfirmed`          | A probe request's claim or record did not answer by its step's end (`step`): the request answers `unconfirmed`, and a late record still commits under its claim       | [media-processor.md](media-processor.md)           |
 | `kopje.media.images_quota`               | The month's Images transformations are used up; uploads are refused                                                                                                   | [setup.md](setup.md), "Before you start"           |
@@ -171,6 +171,16 @@ the restore's check of the file tried again, three times at most before the file
 `kopje.remote_media.maintenance_failed` and `kopje.scheduled.remote_media_failed` (level error) record a Store call or a
 round that failed; its claims are taken again after their hold. None carries a URL, a header or an error message from
 the remote host.
+
+The remote stills' round ([media-processor.md](media-processor.md), "Remote stills") logs
+`kopje.media.still.remote_recorded` (level log, `bytes`) for a still it recorded, and `kopje.media.still.remote_failed`
+(level warn) for an attempt that failed: `outcome` (`retry` or `park`), `reason` (the container's failure code,
+`verify`, `images:<reason>`, `admission`, `put`, `record` or `budget`) and `settled` (the Store's answer: `settled`,
+`doomed`, `stale`, or `unconfirmed` when it did not answer in time). `kopje.media.still.remote_call_failed`,
+`kopje.media.still.remote_put_failed` and `kopje.media.still.remote_settle_failed` (level warn) record a call to the
+processor, the media bucket or the Store that threw; `kopje.media.still.remote_unconfirmed` (level warn) a record whose
+answer did not come in time (committed or not, the next round finds out); `kopje.scheduled.remote_stills_failed`
+(level error) a round that failed. None carries a URL or a key.
 
 `kopje.annual_reports.capped` (level warn, nothing to fix) records an annual report not made because the account's
 year passed a cap: `cap` (`statuses`, `hashtag_uses`, `hashtag_bytes` or `followers`) and `call` (`state` or

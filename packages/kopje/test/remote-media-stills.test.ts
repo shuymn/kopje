@@ -46,7 +46,7 @@ import { BUILD, rejectionOf } from "./helpers";
 import { dumpViaRpc } from "./ops-helpers";
 import { plannedRun, type PlannedStatement, staleStatistics } from "./read-helpers";
 import { mp4 } from "./remote-media-fixtures";
-import { claimWith, fence, mediaWorld, type MediaWorld } from "./remote-media-helpers";
+import { auditBehind, claimWith, fence, mediaWorld, type MediaWorld } from "./remote-media-helpers";
 
 // Remote video stills, the Store's side (#1828 PR5-1; domain/remote-media-stills.ts and the cache's own transitions in
 // domain/remote-media.ts): the queue in the cache's record, the claim, admission, record and failure, each charge move
@@ -184,20 +184,7 @@ const admit = (w: MediaWorld, t: string, attempt: string, marker: Restore = null
   marked(w, admitRemoteStill, { token: t, attempt }, marker);
 
 // Charge totals: the ledger's sums equal the usage row, and the audit, started before the change with every token
-// behind its cursor, completes after it without drift (chargeObject's accumulator kept the change).
-async function auditBehind(w: MediaWorld): Promise<void> {
-  const [sums] = await sql<{ bytes: number; doomed: number }>(
-    w.t.store,
-    `SELECT coalesce(sum(charge), 0) AS bytes, coalesce(sum(CASE state WHEN 'doomed' THEN charge ELSE 0 END), 0) AS doomed
-			FROM remote_media_objects`,
-  );
-  await sql(
-    w.t.store,
-    "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('remote_media_audit', ?)",
-    JSON.stringify({ cursor: "z".repeat(64), ...sums }),
-  );
-}
-
+// behind its cursor (auditBehind), completes after it without drift (chargeObject's accumulator kept the change).
 async function totalsAgree(w: MediaWorld): Promise<void> {
   await w.exact();
   const done = await w.op(maintainRemoteMedia, { now: w.clock.now, restoredAt: null, cap: CAP, retentionDays: 0 });
@@ -935,15 +922,23 @@ describe("the failure (P19c, the Store's part)", () => {
     await w.exact();
   });
 
-  it("leaves the lease alone on a doomed object's failure", async () => {
+  it("releases the lease on a doomed object's failure after a confirmed stop, settling nothing", async () => {
     const w = await mediaWorld();
     await passStill(w);
     const v = await video(w, { stills: STILLS });
     const { attempt } = (await claim(w)).out as { attempt: string };
     const held = await leaseOf(w);
     await w.db((d) => dropAttachmentFiles(d, v.media, w.clock.now));
-    expect(await failStill(w, v.token, attempt, "retry", false)).toEqual({ out: { status: "doomed" }, reads: 1 });
+    const before = await stillOf(w, v.token);
+    const charge = await chargeOf(w, v.token);
+    // A stop not known keeps it.
+    expect(await failStill(w, v.token, attempt, "retry", true)).toEqual({ out: { status: "doomed" }, reads: 1 });
     expect(await leaseOf(w)).toEqual(held);
+    expect(await failStill(w, v.token, attempt, "retry", false)).toEqual({ out: { status: "doomed" }, reads: 1 });
+    expect(await leaseOf(w)).toBeNull();
+    expect(await stillOf(w, v.token)).toEqual(before);
+    expect(await chargeOf(w, v.token)).toBe(charge);
+    await w.exact();
   });
 
   it("releases the lease only for its holder: a stale release after a newer lease changes nothing", async () => {
@@ -1209,7 +1204,12 @@ describe("slot writers clear a named still (P21b)", () => {
     const started = await w.op(maintainRemoteMedia, { now: w.clock.now, restoredAt, cap: CAP, retentionDays: 0 });
     expect(started.validation.map((b) => b.token)).toContain(v.token);
     const { recordRemoteMediaValidation } = await import("../src/domain/remote-media");
-    await w.op(recordRemoteMediaValidation, { results: [{ token: v.token, missing: true }], now: w.clock.now });
+    await w.op(recordRemoteMediaValidation, {
+      restore: restoredAt,
+      restoredAt,
+      results: [{ token: v.token, heads: [{ variant: "full", head: "missing" }] }],
+      now: w.clock.now,
+    });
     expect(await slotOf(w, v.slot)).toEqual({ token: null, still_ext: null, still_key: null, still_blurhash: null });
   });
 });
@@ -1290,7 +1290,7 @@ describe("presentation (P21a, P21c)", () => {
   });
 });
 
-describe("PR5-1 leaves remote stills unreachable (P18c, P-PITR1)", () => {
+describe("the real round without the processor's binding (P18c, P-PITR1)", () => {
   // A remote video the real round caches, with a `still@standard-1` pass recorded through the generic probe claim.
   async function cachedVideo(w: MediaWorld) {
     const claimed = await w.t.store.claimMediaProbe(BUILD, { profile: "still@standard-1", build: BUILD, due: false });
@@ -1314,13 +1314,13 @@ describe("PR5-1 leaves remote stills unreachable (P18c, P-PITR1)", () => {
     return { media, token: object!.token };
   }
 
-  it("queues no still from the real round, with a pass and stills otherwise possible", async () => {
+  it("queues no still from the real round without the binding, with a pass for the build", async () => {
     const w = await mediaWorld();
     await cachedVideo(w);
     expect(await stillRows(w)).toEqual([]);
   });
 
-  it("validates a restored full-only video as main does: it stays cached and served", async () => {
+  it("validates a restored video without a named still by its `full` alone: it stays cached and served", async () => {
     const w = await mediaWorld();
     const { token: t } = await cachedVideo(w);
     const restoredAt = w.clock.now;

@@ -17,13 +17,18 @@ import {
   T_STILL,
   transferCut,
 } from "../domain/media-processing";
-import { activationProbe, type ContainerControl, pngSize } from "../mastodon/media-activation";
+import { activationProbe, type ContainerControl, pngSize, stillActivationProbe } from "../mastodon/media-activation";
 import { avVerifier, verifyStill } from "../platform/av-bytes";
 import { inTime } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { type ImageCodec, type Size, stillPreview } from "../platform/images";
 import { fileKey, incomingKey, originalKey } from "../platform/media-files";
-import { type NormalizeResult, TranscoderUnavailable, type UploadProcessor } from "../platform/media-transcoder";
+import {
+  type NormalizeResult,
+  type StillMaker,
+  TranscoderUnavailable,
+  type UploadProcessor,
+} from "../platform/media-transcoder";
 import type { StoreStub } from "../platform/store-client";
 
 // The media processor's upload work and rounds (#1828; the PR4 plan's section 1.3 and section 3 "PR4-2").
@@ -505,11 +510,15 @@ export type MediaRoundDeps = {
   processor: UploadProcessor | null;
   // MEDIA_UPLOAD_MONTHLY_JOBS.
   budget: number;
+  // The still maker (null without the binding), Images for its probe's still, and MEDIA_STILL_MONTHLY_JOBS.
+  stills: Pick<StillMaker, "probe" | "probeInput"> | null;
+  images: ImageCodec;
+  stillsBudget: number;
 };
 
 // The dispatch round (S12 with S13): the Store's transitions, then a `run` for each pending upload it hands back
 // (under the same object name, with its teardown_id). Without the binding the Store's transitions still run.
-export async function mediaDispatchRound(deps: MediaRoundDeps): Promise<void> {
+export async function mediaDispatchRound(deps: Pick<MediaRoundDeps, "build" | "store" | "processor">): Promise<void> {
   const round = await deps.store.mediaDispatchRound(deps.build);
   if ("status" in round) {
     return;
@@ -523,14 +532,27 @@ export async function mediaDispatchRound(deps: MediaRoundDeps): Promise<void> {
   }
 }
 
-// The probe round: the activation probe when the profile needs one for this build (the claim decides: no pass for
-// it, an infrastructure failure since, or an unverified pass past PROBE_RETRY_MS), only with the binding and a
-// positive budget, so an instance that has not turned uploads on starts no container.
+// The probe round: each profile's activation probe when it needs one for this build (the claim decides: no pass for
+// it, an infrastructure failure since, or an unverified pass past PROBE_RETRY_MS), only with the binding and that
+// profile's own budget positive (normalize@standard-4 MEDIA_UPLOAD_MONTHLY_JOBS, still@standard-1
+// MEDIA_STILL_MONTHLY_JOBS), so an instance that has not turned a kind on starts no container for it. One profile's
+// probe that throws does not keep the other's from running; the round then throws the first error.
 export async function mediaProbeRound(deps: MediaRoundDeps): Promise<void> {
-  if (deps.processor === null || deps.budget <= 0) {
-    return;
+  const probes: (() => Promise<unknown>)[] = [];
+  const { processor, stills } = deps;
+  if (processor !== null && deps.budget > 0) {
+    probes.push(() => activationProbe({ ...deps, processor }, true));
   }
-  await activationProbe({ ...deps, processor: deps.processor }, true);
+  if (stills !== null && deps.stillsBudget > 0) {
+    probes.push(() => stillActivationProbe({ ...deps, stills }, true));
+  }
+  const failures: unknown[] = [];
+  for (const probe of probes) {
+    await probe().catch((error: unknown) => void failures.push(error));
+  }
+  if (failures.length > 0) {
+    throw failures[0];
+  }
 }
 
 // One R2 list page of incoming/.

@@ -5,7 +5,6 @@ import { Db } from "../src/db/sql";
 import { PURGE_BATCH, PURGED_ACCOUNT_REFERENCES, purgeBatch } from "../src/domain/inbox";
 import { claimRemoteMedia, LANE0_CLAIMS, LANE1_CLAIMS } from "../src/domain/remote-media";
 import {
-  admitted,
   MAINTENANCE_MS,
   outstandingRemoteMediaCalls,
   PUT_MS,
@@ -13,6 +12,7 @@ import {
   REMOTE_MEDIA_OWN_STORE_CALLS,
   REMOTE_MEDIA_PUTS,
 } from "../src/federation/remote-media";
+import { admitted } from "../src/platform/deadline";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
 import { BUILD, deferred } from "./helpers";

@@ -110,7 +110,7 @@ against their own instance. TLS is assumed between all parties.
 | Streaming API `/api/v1/streaming` (WebSocket)                               | R2–R4                | bearer token or subprotocol (VIS-26)                                                                        | main: `src/mastodon/streaming.ts`, `src/stream-hub.ts`, `src/domain/streaming.ts`                                                                                                                                                                                                                            |
 | Queue consumer, alarms, cron                                                | internal             | —                                                                                                           | main: `src/jobs/queue.ts`, `src/platform/store-kernel.ts`                                                                                                                                                                                                                                                    |
 | Delivery doorbell and cron (`src/jobs/deliver.ts`)                          | internal             | —                                                                                                           | main: `src/jobs/deliver.ts`                                                                                                                                                                                                                                                                                  |
-| Media processor alarm, probe and still RPC                                  | internal; R9 answers | the Durable Object name of one unit of work, and the Store's `start_id`, grants and `teardown_id` (MEDIA-8) | main: `src/media-processor.ts`, `src/jobs/media-jobs.ts`, `src/mastodon/media-activation.ts` (MEDIA-2, MEDIA-8, MEDIA-9)                                                                                                                                                                                     |
+| Media processor alarm, probe and still RPC                                  | internal; R9 answers | the Durable Object name of one unit of work, and the Store's `start_id`, grants and `teardown_id` (MEDIA-8) | main: `src/media-processor.ts`, `src/jobs/media-jobs.ts`, `src/jobs/remote-stills.ts`, `src/mastodon/media-activation.ts` (MEDIA-2, MEDIA-8, MEDIA-9)                                                                                                                                                        |
 | Dump import, backup restore, cutover tools                                  | R5, R8               | admin authority, then digest chain and manifest                                                             | main: `src/platform/store-import.ts`, `cli/lib/commands.js`, `cli/lib/cutover/*`, `src/app/cutover.ts` (import, `backup-verify`, `convert`, `verify-conversion`, `cutover-preflight`, `maintenance-worker`, `fingerprint`, `cutover`: DATA-10 to DATA-16, OPS-4, OPS-7 to OPS-10); Planned (restore: DATA-8) |
 | Cutover maintenance worker (the legacy Pages routes, step 3)                | R1, R2               | none; inbox requests as above, on replay (OPS-1)                                                            | main: `src/maintenance.ts` (OPS-6, OPS-7)                                                                                                                                                                                                                                                                    |
 | Backup bucket (S3-compatible, outside Cloudflare) and its cron              | R5, R8               | SigV4 credentials scoped to the prefix (DATA-9)                                                             | main: `src/jobs/backup.ts`                                                                                                                                                                                                                                                                                   |
@@ -3186,10 +3186,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`remoteMediaOrphans` in `src/domain/remote-media.ts`); since every token is reserved before its put, such a key is
   one a restore or an import left behind. A remote still's key, `remote/<token>/s<attempt>` (one per attempt, #1828),
   of a token the ledger holds is deleted once no slot names it, its attempt can no longer record on the Store's clock,
-  and it was uploaded more than `LATE_PUT_MS` (75 minutes) before; a key a slot names is kept at any age
-  (`test/remote-media-stills.test.ts` ("keeps a named key at any age, deletes an unnamed one only past LATE_PUT_MS, and
-  keeps main's rule elsewhere", "keeps a key whose attempt can still record on the Store's clock, whatever its
-  uploaded time")). A due sweep's whole budget is kept from that round's other maintenance, and
+  and it was uploaded more than `LATE_PUT_MS` (75 minutes) before; one of a token the ledger does not hold is eligible
+  at 24 hours or more after its upload, as above, counted from the upload and not from the token leaving the ledger. An
+  eligible key is removed when a sweep page that lists it succeeds, with no wall-clock bound: a failed page keeps the
+  cursor and holds back the pages after it. Between restores at most one such key is written a cron tick; a restore can
+  unname at once every still recorded after its bookmark, a backlog removed at the sweep's pace. A key a slot names is
+  kept at any age (`test/remote-media-stills.test.ts` ("keeps a named key at any age, deletes an unnamed one only past
+  LATE_PUT_MS, and keeps main's rule elsewhere", "keeps a key whose attempt can still record on the Store's clock,
+  whatever its uploaded time")). A due sweep's whole budget is kept from that round's other maintenance, and
   its page cursor moves only after the page's delete returned (`remoteMediaSwept`), so a page whose delete failed is
   listed again an hour later and a sweep that keeps failing costs one round an hour. `test/remote-media.test.ts`
   ("sweeps only unknown objects older than a day, once an hour"), `test/remote-media-serving.test.ts` ("serves the
@@ -3452,16 +3456,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **MEDIA-6: a cached remote file is verified bytes.** A remote file is cached only as the bytes the Worker recognized
   by their signature and walked whole within its kind's cap (NET-3), with metadata stripped and no non-identity
   orientation; its type is the recognized one, never the remote Content-Type, and a still is remuxed from it, never
-  decoded. A video or audio file is cached only as a container the Worker recognized from its first 1 MiB (MP4 and
-  M4A without HEIF or QuickTime brands, WebM, MP3, FLAC, WAV; Ogg is not cached), exactly its declared length, its
-  bytes as served (no metadata is stripped from it, and nothing of it is decoded). _Enforced (main)_ for avatars,
-  headers and custom emoji (PNG, GIF and WebP only), attachments' icons and images (JPEG, PNG, GIF, WebP and AVIF) and
-  attachments' video and audio: the round puts only `fetchRemoteFile`'s output
-  (`src/federation/remote-file.ts`, `src/platform/remote-media-bytes.ts`, `src/platform/image-still.ts`) and the
-  Store records only a type of the served set (`src/platform/stored-bounds.ts`, migration `0077_remote_media`);
-  `test/remote-media-bytes.test.ts` ("accepts every image type with its real structure", "refuses orientation"),
-  `test/remote-media.test.ts` ("fails a file the sink or the verification refuses"), `test/remote-file.test.ts`
-  ("refuses Ogg, a category mismatch and an image from the prefix, cancelling the rest unread").
+  decoded. A video or audio file is cached only as a container the Worker recognized from its first 1 MiB (MP4 and M4A
+  without HEIF or QuickTime brands, WebM, MP3, FLAC, WAV; Ogg is not cached), exactly its declared length, its bytes as
+  served (no metadata is stripped from it, and nothing of it is decoded). _Enforced (main)_ for avatars, headers and
+  custom emoji (PNG, GIF and WebP only), attachments' icons and images (JPEG, PNG, GIF, WebP and AVIF) and attachments'
+  video and audio: the round puts only `fetchRemoteFile`'s output (`src/federation/remote-file.ts`,
+  `src/platform/remote-media-bytes.ts`, `src/platform/image-still.ts`) and the Store records only a type of the served
+  set (`src/platform/stored-bounds.ts`, migration `0077_remote_media`); `test/remote-media-bytes.test.ts` ("accepts
+  every image type with its real structure", "refuses orientation"), `test/remote-media.test.ts` ("fails a file the sink
+  or the verification refuses"), `test/remote-file.test.ts` ("refuses Ogg, a category mismatch and an image from the
+  prefix, cancelling the rest unread"). A remote video's or gifv's still (`remote/<token>/s<attempt>`, #1828) is made by
+  the media processor from the cached file, never by the Worker, which decodes nothing: its PNG is accepted by
+  `verifyStill` before any Images call, and Images' WebP by `stillWebpSize` (a still WebP, no metadata, at most
+  `STILL_LONG_EDGE` on its long edge, within `STILL_OUTPUT_LIMIT`) before any put, which writes it as `image/webp`.
+  _Enforced (main)_ for remote stills: `src/jobs/remote-stills.ts`; `test/remote-stills-round.test.ts` ("each outcome of
+  the PR5 plan's 1.4 (P19c, design 4.14)", "parks a WebP that stillWebpSize refuses, with no put", "puts the WebP at
+  remote/<token>/s<attempt> as image/webp after its admission, and the route serves it").
 - **MEDIA-7: the remote media cache is bounded and disposable.** It holds no original: every cached file can be
   fetched again or replaced by its remote URL. _Enforced (main)_ for avatars, headers, custom emoji and attachments'
   files and icons (`src/domain/remote-media.ts`, `src/federation/remote-media.ts`, migration `0077_remote_media`):
@@ -3540,19 +3550,35 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
     resumes after it", "does not let an object whose heads fail every time hold back the walk", "after a restore during
     a held delete, confirms nothing restored and fetches the missing file again"), `src/platform/dump-catalog.ts`,
     `test-node/schema-coverage.test.ts`.
-  - Remote stills, the Store's part (#1828, migration `0122_remote_media_stills`, `src/domain/remote-media-stills.ts`;
-    no round makes one yet and nothing queues one): a still is queued, in the transaction that records its video, only
-    for a cached remote video or gifv with no preview of its own while `still@standard-1` passed for the running build.
-    A claim reserves `STILL_OUTPUT_LIMIT` (2 MiB) on the object, ledger and usage together with one delta, and is
-    admitted only within the cap less `LANE1_HEADROOM`, deferred otherwise; reclamation never dooms anything for a
-    still. Each claim names a fresh attempt, the still's key `remote/<token>/s<attempt>` (never a stable key), takes a
-    unit of the month's stills budget and a lease, and a video gets at most `STILL_CLAIMS` (3) between restores. The put
-    is admitted only for the lease's attempt, and the record only before the claim's `STILL_ROUND_MS`, under the same
-    fence; it names the key on the slot and moves the charge to the still's bytes. A failure or a dropped row releases
-    the reservation. A doomed video waits `LATE_PUT_MS` after its still's claim, and its deletion deletes the named key;
-    a key no slot names is never charged and is left to the sweep (MEDIA-2). Every slot writer that clears a slot clears
-    its named still. Every operation reads the restore marker where a restore changes its answer, refusing on an unknown
-    one. `test/remote-media-stills.test.ts`.
+  - Remote stills (#1828, migration `0122_remote_media_stills`, `src/domain/remote-media-stills.ts`, the round
+    `src/jobs/remote-stills.ts`): a still is queued, in the transaction that records its video, only for a cached remote
+    video or gifv with no preview of its own while the processor is bound, `MEDIA_STILL_MONTHLY_JOBS` is positive and
+    `still@standard-1` passed for the running build (`src/federation/remote-media.ts` passes them). A claim reserves
+    `STILL_OUTPUT_LIMIT` (2 MiB) on the object, ledger and usage together with one delta, and is admitted only within
+    the cap less `LANE1_HEADROOM`, deferred otherwise; reclamation never dooms anything for a still. Each claim names a
+    fresh attempt, the still's key `remote/<token>/s<attempt>` (never a stable key), takes a unit of the month's stills
+    budget and a lease, and a video gets at most `STILL_CLAIMS` (3) between restores. The put is admitted only for the
+    lease's attempt, and the record only before the claim's `STILL_ROUND_MS`, under the same fence; it names the key on
+    the slot and moves the charge to the still's bytes. A failure or a dropped row releases the reservation. A doomed
+    video waits `LATE_PUT_MS` after its still's claim, and its deletion deletes the named key; a key no slot names is
+    never charged and is left to the sweep (MEDIA-2). Every slot writer that clears a slot clears its named still. Every
+    operation reads the restore marker where a restore changes its answer, refusing on an unknown one. The round settles
+    each failed attempt once (retry or park, design 4.14), its reservation released, and starts a put only within
+    `STILL_PUT_GRANT_MS` (2 s) of its reading before the admission and with the env's maintenance still off; a put after
+    a timely grant whose record the Store then refuses lands under a key no row names. Such a key, and any key a round
+    gave up, is never charged, kept while its attempt can still record on the Store's clock, and eligible for the sweep
+    once uploaded more than `LATE_PUT_MS` (75 minutes) before while its token is known, 24 hours or more before once it
+    is not, removed when a sweep page listing it succeeds (MEDIA-2). After a restore, validation heads a still only
+    where a stored row names one, each variant reported present, missing or unknown, and applies a result only when the
+    marker's restore and the walk's are the batch's: a named still missing, or unknown `VALIDATION_FAILURES` times,
+    takes the still-only reset, fenced on the attempt the batch named (the slot names no still, its charge is released,
+    the row is queued again with its claims back to 0, the video kept cached and playable); a still result never dooms
+    `full`; claims wait for the walk to end, and a new still is made once they resume with budget left and stills
+    active. This assumes a delete outstanding at the restore has landed or failed before validation heads the restored
+    keys, which the restore's settle period (`REMOTE_SETTLE_MS`, 20 minutes, before any maintenance) provides in
+    practice: R2 states no completion bound, and a delete landing after its head leaves the restored still answering 404
+    with no reset. `test/remote-media-stills.test.ts`, `test/remote-stills-round.test.ts`,
+    `test/remote-media-stills-pitr.test.ts`, `test/remote-media-stills-interleavings.test.ts`.
   - Walks across rounds: each records the progress it completed, and an item that fails every time holds back
     none behind it: the claims (a file that fails is retried later while the others are fetched), the backfill (an
     account whose URL is refused gets no slot, and the cursor moves past accounts already processed), the audit, the
@@ -3603,20 +3629,34 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   through one race that cleans up a late result (its input and reply at the work deadline, its output's transfer and
   multipart creations at the transfer's cut, its optional still, the poster's charge and preview at the preview's cut,
   the activation probe at its one deadline), after which the requests are aborted, the container stopped and the job
-  failed `timeout`. The remote stills of PR5 are not built. `test/media-processor-steps.test.ts` (every step of table
-  1.3, killed after it, recovered through the armed alarm; "the stop and its confirmation"; "table 1.3 D3: every wait on
-  the container ends at its cut"), `test/media-job-concurrency.test.ts` ("the start rule"), `test/media-job.test.ts`
-  ("records unavailable and reports the stop unconfirmed when the container does not stop"),
-  `test/media-processor.test.ts` ("sets the alarm past the probe's deadline and destroy before the start, and ends the
-  stages at the deadline").
-- **MEDIA-9: no processor output is published unverified.** Nothing reaches `originals/`, `files/` or
-  `remote/<token>/still` unless Kopje's walker accepted the stream that is written, and every stored fact comes from
-  the walker. _Enforced (main)_ for uploads: the output streams through `avVerifier`, held to the duration the container
-  declared, into two multipart uploads whose parts are written and not completed until the verifier passes the whole
-  stream; a refusal, an early end or a length that differs from the declared one completes neither, and completion
-  (`completeAvUpload`) takes the verifier's facts. The activation probe holds its output to the same verifier
-  (`src/mastodon/media-activation.ts`). `test/media-job.test.ts` ("runUpload (P12)"), `test/media-probe-run.test.ts`
-  ("the activation probe's outcomes (P4, P5)").
+  failed `timeout`. `test/media-processor-steps.test.ts` (every step of table 1.3, killed after it, recovered through
+  the armed alarm; "the stop and its confirmation"; "table 1.3 D3: every wait on the container ends at its cut"),
+  `test/media-job-concurrency.test.ts` ("the start rule"), `test/media-job.test.ts` ("records unavailable and reports
+  the stop unconfirmed when the container does not stop"), `test/media-processor.test.ts` ("sets the alarm past the
+  probe's deadline and destroy before the start, and ends the stages at the deadline"). _Enforced (main)_ for remote
+  stills: each runs on a fresh object named for its token and attempt (`s:<token>:<attempt>`), reads
+  `remote/<token>/full` once as the request body, and answers a still only once its container is destroyed (when the
+  destroy does not finish by its deadline it answers `pending`, the container left to the object's alarm, and the round
+  keeps the lease); its cut is the input's while the input has not drained into the request body, the operation's after.
+  The round's lease (`remote_still_lease`, `STILL_LEASE_MS` 600 s) is taken with the claim and released early only by
+  its holder on an outcome showing no start or a confirmed stop; it is an admission hold, not a bound on the container:
+  past it a destroy that keeps failing is the object's alarm's, and one more still container may start (accepted, as
+  PR4's uploads past `HARD_HOLD_MS`). `test/media-processor.test.ts` ("runs a remote still on s:<token>:<attempt>,
+  reading remote/<token>/full once, destroyed before it answers", "labels a cut input-deadline while the input's body
+  stalls, and operation-deadline once it drained", "answers by its deadline when its destroy never answers, and the
+  alarm stops the container later"), `test/remote-stills-round.test.ts` ("keeps the lease past the next tick after a
+  lost answer, then claims once it expires").
+- **MEDIA-9: no processor output is published unverified.** Nothing reaches `originals/`, `files/`,
+  `remote/<token>/still` or `remote/<token>/s<attempt>` unless Kopje's walker accepted the stream that is written, and
+  every stored fact comes from the walker. _Enforced (main)_ for uploads: the output streams through `avVerifier`, held
+  to the duration the container declared, into two multipart uploads whose parts are written and not completed until the
+  verifier passes the whole stream; a refusal, an early end or a length that differs from the declared one completes
+  neither, and completion (`completeAvUpload`) takes the verifier's facts. The activation probe holds its output to the
+  same verifier (`src/mastodon/media-activation.ts`). `test/media-job.test.ts` ("runUpload (P12)"),
+  `test/media-probe-run.test.ts` ("the activation probe's outcomes (P4, P5)"). _Enforced (main)_ for remote stills: the
+  PNG passes `verifyStill` before Images sees it, the WebP `stillWebpSize` before it is put, and the record takes the
+  WebP's bytes and Images' blurhash only (`src/jobs/remote-stills.ts`); `test/remote-stills-round.test.ts` (MEDIA-6's
+  cases).
 
 ### Web Push and polls (PUSH, POLL)
 
@@ -5027,6 +5067,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (ChargeOnce)", "S4 with less than T_MIN_ENCODE left after the remaining fixed parts fails the job timeout"),
   `test/media-processing.test.ts` ("the allocation (P8)"), `test/media.test.ts` ("the active path's reservation
   (Q1)").
+  _Enforced (main)_ for remote stills (#1828): the cron's stills round claims at most one still a tick, each claim
+  charged one unit of `MEDIA_STILL_MONTHLY_JOBS` (per UTC month of the Store's clock, covering its container and its at
+  most two Images transformations and one metadata call, which `IMAGES_MONTHLY_TRANSFORMS` does not count), at most
+  `STILL_CLAIMS` (3) a video between restores; a PITR restore rewinds the counters and the claims to its bookmark.
+  Without the binding or with the budget at 0 the round makes no Store call, and each of its steps starts only when its
+  budget fits what is left of `STILL_ROUND_MS`. `test/remote-stills-round.test.ts` ("the round's bounds (P-RND, G1,
+  RES-6)"), `test/remote-media-stills.test.ts` (the claims).
   Delivery: _Enforced (main):_ an activity's targets are expanded 100 at a time, oldest activity first, in the recording
   transaction and then in each claim; a claim reads at most 16 lane heads (only heads are due); an unavailable host's
   drain (`drainStep`, RES-5) runs first in each claim, and in the operator's stop, and shares the claim's 100 rows
@@ -6999,6 +7046,8 @@ OWASP, html5sec and sanitize-html vectors in `test/fixtures/` (`test/html.test.t
 | A remote account's `avatar_static` and `header_static` equal `avatar` and `header` until its image is cached, and after when no still could be remuxed within the still cap; so do a local one's for images uploaded before still renditions were made, so such an animated image stays animated where a client asked for a still one                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Stills are remuxed, never decoded (MEDIA-6), and a rebuild never changes an account                                                                                                                                                                                                                                                                                                                                                                                                         | clients need stills of every image                                                                                       |
 | A cached file is served with a one-year immutable `Cache-Control`, so a client or a cache may keep it after the cache deleted it (a new URL, a suspension, a purge)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Its capability URL is never shown again once its slot changes (MEDIA-7)                                                                                                                                                                                                                                                                                                                                                                                                                     | deleted profile images must be withdrawn from clients                                                                    |
 | After a PITR restore, a cached URL the restored Store shows may answer 404 until validation reaches it (at most 100 a round)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Validation resets a missing file to be fetched again; the presenter cannot check R2                                                                                                                                                                                                                                                                                                                                                                                                         | restores happen while users browse                                                                                       |
+| After a PITR restore, a remote still the restored Store names may answer 404 until validation reaches its video (its key swept before the restore, or a sweep's delete issued before it landing during it, before validation heads it), which then shows the poster and queues the still again, made anew once claims resume with budget left                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Validation does the still-only reset, keeping the video cached and playable; the presenter cannot check R2                                                                                                                                                                                                                                                                                                                                                                                  | restores happen while users browse                                                                                       |
+| After a PITR restore that forgot a recorded remote still, a viewer holding its URL gets 404 once the sweep deletes it, and a new still is made for the video under a new URL once claims resume with budget left                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | A key per attempt (F9-A) leaves no stable key to adopt; the video is unaffected and no Mastodon API answer differs outside a restore                                                                                                                                                                                                                                                                                                                                                        | operators restore often                                                                                                  |
 | After an unlock, a request from an unavailable requester, or from one the account blocks or whose domain it blocks, stays pending                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Accepting it would make a follower R1 or R21 refuses; the account can still reject it                                                                                                                                                                                                                                                                                                                                                                                                       | Mastodon's handling of such requests is matched                                                                          |
 | Video and audio payload bits (slice data, AAC raw data blocks, MP3 frame data) are not proven free of hidden data                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Every container-level and codec-configuration field is fixed or bounded and checked (MEDIA-9), so an honest file is served without its metadata; data can hide in the payload only if the input itself exploits ffmpeg, and the exploited process sees only that input (MEDIA-8), so it carries only bytes of the file the uploader chose to publish                                                                                                                                        | —                                                                                                                        |
 | A hostile but allowlisted MP4 an exploited encoder shaped can reach viewers' native decoders                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | A remote server can already serve any MP4 to the same viewers through the cache (MEDIA-6), so uploads add no capability against them; files are served `nosniff` with a `sandbox` CSP (MEDIA-4, WEB-5)                                                                                                                                                                                                                                                                                      | —                                                                                                                        |

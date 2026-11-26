@@ -27,6 +27,8 @@ export type { ProbeProfile };
 
 // The profile an upload runs on, whose pass admits video and audio uploads (design 4.15).
 export const NORMALIZE_PROFILE: ProbeProfile = "normalize@standard-4";
+// The profile a remote still runs on, whose pass admits remote stills (remote-media.ts stillsActive).
+export const STILL_PROFILE: ProbeProfile = "still@standard-1";
 
 // How soon a profile is claimed again for the same build (design 4.15), once its claim recorded a result.
 export const PROBE_RETRY_MS = 60 * 60 * 1000;
