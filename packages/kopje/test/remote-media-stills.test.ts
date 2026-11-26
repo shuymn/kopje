@@ -935,15 +935,23 @@ describe("the failure (P19c, the Store's part)", () => {
     await w.exact();
   });
 
-  it("leaves the lease alone on a doomed object's failure", async () => {
+  it("releases the lease on a doomed object's failure after a confirmed stop, settling nothing", async () => {
     const w = await mediaWorld();
     await passStill(w);
     const v = await video(w, { stills: STILLS });
     const { attempt } = (await claim(w)).out as { attempt: string };
     const held = await leaseOf(w);
     await w.db((d) => dropAttachmentFiles(d, v.media, w.clock.now));
-    expect(await failStill(w, v.token, attempt, "retry", false)).toEqual({ out: { status: "doomed" }, reads: 1 });
+    const before = await stillOf(w, v.token);
+    const charge = await chargeOf(w, v.token);
+    // A stop not known keeps it.
+    expect(await failStill(w, v.token, attempt, "retry", true)).toEqual({ out: { status: "doomed" }, reads: 1 });
     expect(await leaseOf(w)).toEqual(held);
+    expect(await failStill(w, v.token, attempt, "retry", false)).toEqual({ out: { status: "doomed" }, reads: 1 });
+    expect(await leaseOf(w)).toBeNull();
+    expect(await stillOf(w, v.token)).toEqual(before);
+    expect(await chargeOf(w, v.token)).toBe(charge);
+    await w.exact();
   });
 
   it("releases the lease only for its holder: a stale release after a newer lease changes nothing", async () => {
