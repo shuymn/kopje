@@ -8,8 +8,8 @@ import { type Link, linkTo } from "./link";
 // image, or null when it has none: the presenter stands an image's or an unknown file's url in for a missing preview,
 // which for an unknown file need be no image, so a preview equal to the url is none, and gives a video without a
 // preview image this server's VIDEO_POSTER, which a page does not show. `alt` is its description, or '' when it has
-// none (the page shows no marker for that). Sizes come from the small variant when it has them. `link` opens the file
-// itself (through linkTo: another host's is marked).
+// none (the page shows no marker for that). Sizes come from the small variant when it has them, a video's from its
+// original. `link` opens the file itself (through linkTo: another host's is marked).
 type MediaKind = "image" | "video" | "gifv" | "audio" | "unknown";
 
 export type MediaView = {
@@ -34,7 +34,15 @@ export function mediaView(media: MediaAttachment, domain: string): MediaView | n
     previewUrl === null || (previewUrl.host === domain && previewUrl.pathname === VIDEO_POSTER)
       ? undefined
       : previewUrl.href;
-  const size = media.meta?.small;
+  // A video's box is the video's own (meta.original): its small variant may be a custom thumbnail's, which is only its
+  // poster (#1828 PR6).
+  const original = media.meta?.original;
+  const size =
+    (media.type === "video" || media.type === "gifv") &&
+    typeof original?.width === "number" &&
+    typeof original.height === "number"
+      ? { width: original.width, height: original.height }
+      : media.meta?.small;
   return {
     kind: KINDS.includes(media.type) ? (media.type as MediaKind) : "unknown",
     full,

@@ -604,6 +604,32 @@ describe("presenting a thumbnail (T6, T7)", () => {
     expect(await getOwn(w, parent.id)).toMatchObject({ media: { preview_url: PREVIEW(child.token), blurhash: null } });
   });
 
+  it("shows a current thumbnail on the public page as the video's poster only, its box the video's own", async () => {
+    const w = await avWorld();
+    const parent = await completed(w);
+    const posted = await w.h.request(
+      "/api/v1/statuses",
+      bearer(w.h.users.alice.token, json({ status: "with a video", media_ids: [parent.id], visibility: "public" })),
+    );
+    expect(posted.status).toBe(200);
+    const status = await posted.json<{ url: string }>();
+    const box = async () => {
+      const html = await (await w.h.request(new URL(status.url).pathname)).text();
+      const tag = /<video[^>]*>/.exec(html)?.[0] ?? "";
+      return {
+        width: /\swidth="(\d+)"/.exec(tag)?.[1],
+        height: /\sheight="(\d+)"/.exec(tag)?.[1],
+        poster: /\sposter="([^"]+)"/.exec(tag)?.[1],
+      };
+    };
+    const own = { width: "1280", height: "720" };
+    expect(await box()).toEqual({ ...own, poster: PREVIEW(parent.token) });
+    // The parent is attached, so the link is made in the Store, as an import or an earlier link leaves it.
+    const child = await imageChild(w);
+    await sql(w.store, "UPDATE media_attachments SET thumbnail_of = ?, gc_at = NULL WHERE id = ?", parent.id, child.id);
+    expect(await box()).toEqual({ ...own, poster: PREVIEW(child.token) });
+  });
+
   it("federates a current thumbnail as the Document's icon with its blurhash, and none it would not show (T9)", async () => {
     const w = await avWorld();
     const { parent, child } = await thumbnailed(w);
