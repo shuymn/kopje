@@ -262,6 +262,41 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     expect(await files(unfinished)).toEqual([false, false]);
   });
 
+  // G6-4 (#1828 PR6 T13): after an import into a bucket holding only originals, a video's current thumbnail is an image
+  // row like any other, and its files are remade; a replaced one (url '') is not, and its URLs stay gone.
+  it("remakes a current thumbnail's files, not a replaced one's, and a second run changes nothing", async () => {
+    const h = await setup();
+    const parent = mediaId();
+    await sql(
+      h.store,
+      `INSERT INTO media_attachments (id, account_id, type, url, file_token, content_type, processed)
+			VALUES (?, ?, 'video', 'https://kopje.test/media/v/full.mp4', ?, 'video/mp4', 1)`,
+      parent,
+      ACCOUNT,
+      randomToken(),
+    );
+    const current = await addRow(h.store);
+    const replaced = await addRow(h.store);
+    await sql(h.store, "UPDATE media_attachments SET thumbnail_of = ? WHERE id = ?", parent, current.id);
+    await sql(
+      h.store,
+      "UPDATE media_attachments SET thumbnail_of = ?, url = '', gc_at = ? WHERE id = ?",
+      parent,
+      new Date(NOW + 86_400_000).toISOString(),
+      replaced.id,
+    );
+    const first = await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>();
+    expect(first.problems.filter((p) => p.id !== parent)).toEqual([]);
+    expect(await files(current)).toEqual([true, true]);
+    expect(await files(replaced)).toEqual([false, false]);
+    expect((await h.request(`/media/${current.token}/small.png`)).status).toBe(200);
+    expect((await h.request(`/media/${replaced.token}/small.png`)).status).toBe(404);
+    const calls = h.codec.calls;
+    const second = await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>();
+    expect(second.counts).toMatchObject({ built: 0 });
+    expect(h.codec.calls).toBe(calls);
+  });
+
   it("reports a missing original and a type mismatch, and builds the rest", async () => {
     const h = await setup();
     const missing = await addRow(h.store, { original: null });

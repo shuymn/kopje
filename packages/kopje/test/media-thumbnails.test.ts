@@ -336,6 +336,18 @@ describe("one current thumbnail a parent (T4), and removal", () => {
     expect(await updateThumbnail(w, parent, null)).toMatchObject({ status: "ok" });
     expect(await allMedia(w)).toEqual(before);
   });
+
+  it("applies a description with null on an image upload as a plain update, not blank, retiring nothing", async () => {
+    const w = await avWorld();
+    const { child } = await thumbnailed(w);
+    const image = await imageChild(w);
+    const before = await childRow(w.store, child.id);
+    expect(await updateThumbnail(w, image, null, "alice", { description: "a photo" })).toMatchObject({
+      status: "ok",
+      media: { id: image.id, type: "image", description: "a photo" },
+    });
+    expect(await childRow(w.store, child.id)).toEqual(before);
+  });
 });
 
 describe("thumbnail rows are never the owner's media (T2, MEDIA-1)", () => {
