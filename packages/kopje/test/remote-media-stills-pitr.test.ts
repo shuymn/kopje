@@ -312,6 +312,102 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
     }
   });
 
+  // Failed heads alternating between the paths (a failed `full` skips the still's head) still end the wait: each path
+  // keeps its own count across the other's failures.
+  it("finishes validation when full HEAD errors interrupt a failing still HEAD", async () => {
+    const w = await mediaWorld();
+    const v = await cachedVideo(w);
+    const restore = await mark(w);
+    const full = `remote/${v.token}/full`;
+    let failing = v.key!;
+    const bucket = bucketWith({
+      head: (key, real) => (key === failing ? Promise.reject(new Error("HEAD failed")) : real()),
+    });
+    try {
+      const start = restore + REMOTE_SETTLE_MS;
+      for (let tick = 0; tick < 2 * VALIDATION_FAILURES - 1; tick++) {
+        at(w, start + tick * 5 * 60_000);
+        failing = tick % 2 === 0 ? v.key! : full;
+        await w.round({ bucket: () => bucket }, VARS);
+      }
+      expect(await slotStill(w, v.slot)).toEqual({ token: v.token, still_key: null, still_ext: null });
+      expect(await stillRow(w, v.token)).toMatchObject({ state: "queued", claims: 0 });
+      expect((await w.objects()).find((o) => o.token === v.token)?.state).toBe("stored");
+    } finally {
+      await unmark(w);
+    }
+  });
+
+  // Two still failures, then failures of `full` only: the still's count is kept while its head is skipped, and the
+  // decision comes on the path that reaches VALIDATION_FAILURES (the still's reset, or the object's doom), never the
+  // other's.
+  it.each([
+    ["the still's third failure resets the still", ["still", "still", "full", "full", "still"], "still"],
+    ["the object's third failure dooms the video", ["still", "still", "full", "full", "full"], "object"],
+    ["a still failure observed `full`: the object's count starts again", ["full", "full", "still", "full"], "none"],
+  ] as const)("%s", async (_name, ticks, decided) => {
+    const w = await mediaWorld();
+    const v = await cachedVideo(w);
+    const restore = await mark(w);
+    const full = `remote/${v.token}/full`;
+    let failing = v.key!;
+    const bucket = bucketWith({
+      head: (key, real) => (key === failing ? Promise.reject(new Error("HEAD failed")) : real()),
+    });
+    try {
+      const start = restore + REMOTE_SETTLE_MS;
+      for (const [n, path] of ticks.entries()) {
+        at(w, start + n * 5 * 60_000);
+        failing = path === "still" ? v.key! : full;
+        await w.round({ bucket: () => bucket }, VARS);
+        if (n < ticks.length - 1) {
+          expect(await slotStill(w, v.slot)).toMatchObject({ still_key: `s${v.attempt}` });
+          expect((await w.objects()).find((o) => o.token === v.token)?.state).toBe("stored");
+        }
+      }
+      const object = (await w.objects()).find((o) => o.token === v.token);
+      if (decided === "still") {
+        expect(object?.state).toBe("stored");
+        expect(await stillRow(w, v.token)).toMatchObject({ state: "queued", claims: 0 });
+      } else if (decided === "none") {
+        expect(object?.state).toBe("stored");
+        expect(await slotStill(w, v.slot)).toMatchObject({ still_key: `s${v.attempt}` });
+      } else {
+        expect(object?.state).toBe("doomed");
+      }
+    } finally {
+      await unmark(w);
+    }
+  });
+
+  it("drops the still's count when the attempt it named is no longer the row's", async () => {
+    const w = await mediaWorld();
+    const v = await cachedVideo(w);
+    const restore = await mark(w);
+    const later = "d".repeat(32);
+    const laterKey = `remote/${v.token}/s${later}`;
+    await env.MEDIA.put(laterKey, new Uint8Array([1]));
+    const failing = bucketWith({
+      head: (key, real) => (key === v.key || key === laterKey ? Promise.reject(new Error("HEAD failed")) : real()),
+    });
+    try {
+      const start = restore + REMOTE_SETTLE_MS;
+      for (let n = 0; n < VALIDATION_FAILURES - 1; n++) {
+        at(w, start + n * 5 * 60_000);
+        await w.round({ bucket: () => failing }, VARS);
+      }
+      // The row now names another attempt: its first failure is its first.
+      await sql(w.t.store, "UPDATE remote_media_stills SET attempt = ? WHERE token = ?", later, v.token);
+      await sql(w.t.store, "UPDATE remote_media SET still_key = ? WHERE id = ?", `s${later}`, v.slot);
+      at(w, start + VALIDATION_FAILURES * 5 * 60_000);
+      await w.round({ bucket: () => failing }, VARS);
+      expect(await slotStill(w, v.slot)).toMatchObject({ still_key: `s${later}` });
+      expect(await stillRow(w, v.token)).toMatchObject({ state: "stored", attempt: later });
+    } finally {
+      await unmark(w);
+    }
+  });
+
   it("heads no still for a row that names none, and the sweep deletes a forgotten key past its bound", async () => {
     const w = await mediaWorld();
     const v = await cachedVideo(w, false);

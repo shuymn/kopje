@@ -1589,28 +1589,31 @@ function validationCursor(db: Db): {
   restore: number | null;
   cursor: string;
   failedToken: string | null;
-  failedVariant: string;
   failures: number;
+  stillVariant: string | null;
+  stillFailures: number;
 } {
   const stored = json<{
     restore?: unknown;
     cursor?: unknown;
     failedToken?: unknown;
-    failedVariant?: unknown;
     failures?: unknown;
+    stillVariant?: unknown;
+    stillFailures?: unknown;
   }>(db, STATE.validation);
   return {
     restore: isTime(stored.restore) ? stored.restore : null,
     cursor: typeof stored.cursor === "string" && FILE_TOKEN.test(stored.cursor) ? stored.cursor : "",
     failedToken:
       typeof stored.failedToken === "string" && FILE_TOKEN.test(stored.failedToken) ? stored.failedToken : null,
-    // The variant whose heads failed: `full` for the object's own (and a count an earlier release saved, which
-    // counted only those), or a named still's.
-    failedVariant:
-      typeof stored.failedVariant === "string" && REMOTE_VARIANT.test(stored.failedVariant)
-        ? stored.failedVariant
-        : "full",
+    // Two counts for the token at the cursor: the failed heads of the object's own variants (`full` and the legacy
+    // still; all an earlier release counted), and those of its named still `stillVariant` (s<attempt>).
     failures: isTime(stored.failures) ? stored.failures : 0,
+    stillVariant:
+      typeof stored.stillVariant === "string" && /^s[0-9a-f]{32}$/.test(stored.stillVariant)
+        ? stored.stillVariant
+        : null,
+    stillFailures: isTime(stored.stillFailures) ? stored.stillFailures : 0,
   };
 }
 
@@ -1776,7 +1779,10 @@ export type ValidationResult = { token: string; heads: readonly { variant: strin
 //     VALIDATION_FAILURES times in a row, the still-only reset (resetNamedStill), fenced on the attempt the batch named
 //     (a result for another attempt is stale: it counts toward nothing): the video stays cached and playable, and the
 //     still is queued again. A still result never dooms `full`.
-// Failures are counted per token and variant, so a named still's never spend the allowance of `full`.
+// The token at the cursor keeps two counts, each its path's own: the object's (cleared by a head that observed `full`
+// and the legacy still), and its named still's (kept while a failed `full` skips the still's head, dropped when the
+// attempt named changes), so a named still's failures never spend the allowance of `full` and failures that alternate
+// between the two paths still end the walk's wait at the VALIDATION_FAILURES-th of either.
 // The walk's cursor moves past each object decided. The pass ends when the maintenance finds no object past the cursor
 // (remote_media_validated_at).
 export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
@@ -1790,7 +1796,13 @@ export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
   let reset = 0;
   let stills = 0;
   let last = progress.cursor;
-  let failures = { token: progress.failedToken, variant: progress.failedVariant, count: progress.failures };
+  let failures = {
+    token: progress.failedToken,
+    object: progress.failures,
+    stillVariant: progress.stillVariant,
+    still: progress.stillFailures,
+  };
+  const none = { token: null, object: 0, stillVariant: null, still: 0 };
   const missing = (token: string) => {
     const slot = db.first<{ id: string; url: string; host: string }>(
       `SELECT CAST(r.id AS TEXT) AS id, r.url, r.host FROM remote_media_objects o CROSS JOIN remote_media r ON r.id = o.slot_id
@@ -1808,12 +1820,18 @@ export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
     }
     reset++;
   };
-  // Whether the failed head of `variant` of `token` is the VALIDATION_FAILURES-th in a row (else the walk stops at
-  // it): counted per variant, so a named still's failures never spend the allowance of the object's own (`full`).
+  // Whether the failed head of `token` is its path's VALIDATION_FAILURES-th (else the walk stops at it): `object`, the
+  // object's (`full` or the legacy still), the other path's count kept; or the named still `variant`'s, the object's cleared
+  // (its heads were observed), a count of another attempt dropped.
   const failedOut = (token: string, variant: string): boolean => {
-    const count = failures.token === token && failures.variant === variant ? failures.count + 1 : 1;
-    failures = { token, variant, count };
-    return count >= VALIDATION_FAILURES;
+    const held = failures.token === token ? failures : { ...none, token };
+    if (variant === "object") {
+      failures = { ...held, object: held.object + 1 };
+      return failures.object >= VALIDATION_FAILURES;
+    }
+    const still = held.stillVariant === variant ? held.still + 1 : 1;
+    failures = { ...held, object: 0, stillVariant: variant, still };
+    return still >= VALIDATION_FAILURES;
   };
   for (const result of listOf(results).slice(0, VALIDATION_HEADS)) {
     const token = result?.token;
@@ -1837,7 +1855,7 @@ export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
     // A failed head of the object's own variants counts before a missing one, as an earlier release counted any
     // failed head of the object first.
     if (full === "unknown" || legacy === "unknown") {
-      if (!failedOut(token, "full")) {
+      if (!failedOut(token, "object")) {
         break;
       }
       missing(token);
@@ -1857,7 +1875,7 @@ export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
       }
     }
     last = token;
-    failures = { token: null, variant: "full", count: 0 };
+    failures = none;
   }
   setState(
     db,
@@ -1866,8 +1884,9 @@ export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
       restore,
       cursor: last,
       failedToken: failures.token,
-      failedVariant: failures.variant,
-      failures: failures.count,
+      failures: failures.object,
+      stillVariant: failures.stillVariant,
+      stillFailures: failures.still,
     }),
   );
   return { status: "recorded", reset, stills };
