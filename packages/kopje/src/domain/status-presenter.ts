@@ -1178,9 +1178,16 @@ export function presentMedia(row: MediaRow, origin: string | null = null): Media
 
 const isVideo = (type: string) => type === "video" || type === "gifv";
 
-// `preview` when it is an image other than the file itself (playablePreview's rule), else null.
+// `preview` when it is an image other than the file itself (otherFile, playablePreview's rule), else null.
 function distinct(preview: string | null, url: string | null, remoteUrl: string | null): string | null {
-  return preview !== null && playablePreview("video", url, preview, remoteUrl, null) === preview ? preview : null;
+  return otherFile(preview, url, remoteUrl) ? preview : null;
+}
+
+// Whether `preview` is a file other than the attachment's own: neither its url nor its remote url, either without its
+// fragment, which names a part of the same file.
+function otherFile(preview: string | null, url: string | null, remoteUrl: string | null): preview is string {
+  const file = (value: string | null) => value?.split("#", 1)[0];
+  return preview !== null && file(preview) !== file(url) && file(preview) !== file(remoteUrl);
 }
 
 // A playable attachment: a video, gifv or audio file, whose own file is no image.
@@ -1199,8 +1206,7 @@ export function playablePreview(
   remoteUrl: string | null,
   origin: string | null,
 ): string | null {
-  const file = (value: string | null) => value?.split("#", 1)[0];
-  if (preview !== null && file(preview) !== file(url) && file(preview) !== file(remoteUrl)) {
+  if (otherFile(preview, url, remoteUrl)) {
     return preview;
   }
   return type === "audio" || origin === null ? null : `${origin}${VIDEO_POSTER}`;
