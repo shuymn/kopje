@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { profileUploadReady, SWEEP_BATCH } from "../src/domain/media";
-import { THUMBNAIL_KEEP_MS } from "../src/domain/media-thumbnails";
+import { BACKUP_HOLD_RECHECK_MS, THUMBNAIL_KEEP_MS } from "../src/domain/media-thumbnails";
 import { restoreMarkerKey } from "../src/platform/media-files";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { bearer, json, sql } from "./api-helpers";
@@ -791,5 +791,53 @@ describe("the sweep and a thumbnail (T5, T5r, T13k)", () => {
     expect(await childRow(w.store, a.id)).toBeUndefined();
     expect(await objects(a)).toEqual({ original: false, full: false, small: false });
     expect(await sql(w.store, "SELECT * FROM media_orphans WHERE media_id = ?", a.id)).toEqual([]);
+  });
+
+  it("holds a doomed thumbnail the copying backup run holds pending, moving it back, until the run leaves (T12h)", async () => {
+    const w = await avWorld();
+    const { parent, child } = await thumbnailed(w);
+    // A doomed upload behind the child, which the second call takes.
+    const other = await imageChild(w);
+    await updateThumbnail(w, parent, null);
+    const now = Date.now();
+    await sql(
+      w.store,
+      "UPDATE media_attachments SET gc_at = ? WHERE id = ?",
+      new Date(now - 2).toISOString(),
+      child.id,
+    );
+    await sql(
+      w.store,
+      "UPDATE media_attachments SET gc_at = ? WHERE id = ?",
+      new Date(now - 1).toISOString(),
+      other.id,
+    );
+    const run = (stage: string) =>
+      sql(
+        w.store,
+        "INSERT INTO kopje_state (name, value) VALUES ('backup', ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+        JSON.stringify({ run: { id: "run-1", stage } }),
+      );
+    await run("media");
+    await sql(
+      w.store,
+      "INSERT INTO backup_media (source, required_run, state) VALUES (?, 'run-1', 'pending')",
+      `originals/${child.id}`,
+    );
+    const expired = async () => (await w.store.expiredMedia(BUILD, { limit: 1 })).map((row) => row.id);
+    expect(await expired()).toEqual([]);
+    const [moved] = await sql(w.store, "SELECT gc_at FROM media_attachments WHERE id = ?", child.id);
+    expect(Date.parse(moved!.gc_at as string)).toBeGreaterThanOrEqual(now + BACKUP_HOLD_RECHECK_MS);
+    // The held row left the front of the queue: the next call reaches the upload behind it.
+    expect(await expired()).toEqual([other.id]);
+    // Once the run has left its copy stage, the child is taken at its due time.
+    await run("done");
+    await sql(
+      w.store,
+      "UPDATE media_attachments SET gc_at = ? WHERE id = ?",
+      new Date(now - 3).toISOString(),
+      child.id,
+    );
+    expect(await expired()).toEqual([child.id]);
   });
 });

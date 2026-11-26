@@ -816,7 +816,7 @@ export const expiredMedia = mediaDeleteOperation.atStoreTime("now")<{ now: numbe
   const held = due.filter((row) => row.held === 1).map((row) => row.id);
   if (held.length > 0) {
     db.run(
-      "UPDATE media_attachments SET gc_at = ? WHERE id IN (SELECT value FROM json_each(?))",
+      `UPDATE media_attachments INDEXED BY ${MEDIA_ID_INDEX} SET gc_at = ? WHERE id IN (SELECT value FROM json_each(?))`,
       iso(now + BACKUP_HOLD_RECHECK_MS),
       JSON.stringify(held),
     );
