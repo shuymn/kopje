@@ -992,6 +992,31 @@ describe("the sweep's rule for keys no row names (P20f)", () => {
     ).toEqual({ orphans: [`remote/${gone}/s${attempt}`, `remote/${gone}/still`] });
   });
 
+  it("reads no ledger row for a fresh page: a `full` or `still` key within a day, a still's within LATE_PUT_MS", async () => {
+    const w = await mediaWorld();
+    const v = await video(w);
+    const fresh = [
+      ...Array.from({ length: 998 }, (_, i) => ({
+        key: `remote/${i.toString(16).padStart(43, "b")}/${i % 2 === 0 ? "full" : "still"}`,
+        uploaded: w.clock.now - 60_000,
+      })),
+      { key: `remote/${v.token}/full`, uploaded: w.clock.now - 24 * 60 * 60 * 1000 + 1 },
+      { key: `remote/${v.token}/s${"a".repeat(32)}`, uploaded: w.clock.now - LATE_PUT_MS },
+    ];
+    const lookups = /FROM remote_media_objects WHERE token = \?1|FROM remote_media_stills WHERE token = \?1/;
+    const quiet = await plannedRun(w.t, lookups, remoteMediaOrphans, { keys: fresh, cursor: null, now: w.clock.now });
+    expect(quiet.result).toEqual({ orphans: [] });
+    expect(quiet.plans).toEqual([]);
+    // Past their ages, each is read once (a still's key twice: the ledger, then the still).
+    const old = [
+      { key: `remote/${"c".repeat(43)}/full`, uploaded: w.clock.now - 24 * 60 * 60 * 1000 },
+      { key: `remote/${v.token}/s${"a".repeat(32)}`, uploaded: w.clock.now - LATE_PUT_MS - 1 },
+    ];
+    const read = await plannedRun(w.t, lookups, remoteMediaOrphans, { keys: old, cursor: null, now: w.clock.now });
+    expect(read.result).toEqual({ orphans: old.map((k) => k.key) });
+    expect(read.plans).toHaveLength(3);
+  });
+
   it("keeps a key whose attempt can still record on the Store's clock, whatever its uploaded time", async () => {
     const w = await mediaWorld();
     await passStill(w);

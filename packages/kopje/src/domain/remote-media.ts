@@ -1776,10 +1776,16 @@ export const remoteMediaOrphans = writeOperation.atStoreTime("now")<
     if (match === null || !REMOTE_VARIANT.test(variant) || !isTime(entry.uploaded) || !isTime(now)) {
       continue;
     }
+    // Too young for any rule, decided before the ledger is read: a `full` or `still` key within ORPHAN_GRACE_MS of its
+    // upload, a still's within LATE_PUT_MS.
+    const still = variant !== "full" && variant !== "still";
+    if (still ? entry.uploaded >= now - LATE_PUT_MS : entry.uploaded > now - ORPHAN_GRACE_MS) {
+      continue;
+    }
     const token = match[1] ?? "";
     const held = db.first("SELECT 1 AS x FROM remote_media_objects WHERE token = ?1", token) !== undefined;
-    if (held && variant !== "full" && variant !== "still") {
-      if (!stillKeyKept(db, token, variant.slice(1), now) && entry.uploaded < now - LATE_PUT_MS) {
+    if (held && still) {
+      if (!stillKeyKept(db, token, variant.slice(1), now)) {
         orphans.push(entry.key);
       }
     } else if (!held && entry.uploaded <= now - ORPHAN_GRACE_MS) {
