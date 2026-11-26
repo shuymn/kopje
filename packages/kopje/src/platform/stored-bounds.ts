@@ -671,11 +671,15 @@ export function mediaSlotOwnsSql(r: string, m: string): string {
 			ELSE 0 END)`;
 }
 
-// The cached copy of the remote attachment row `m`'s `kind` (its file, or its icon) as a packed object
-// (token:ext:still_ext, at most 74 bytes), or NULL: its slot through remote_media_owner, one seek, while it is the
-// current one (mediaSlotOwnsSql) and holds a stored file. Read with the row (status-rows.ts STATUS_MEDIA_COLUMN_MAP).
+// The cached copy of the remote attachment row `m`'s `kind` (its file, or its icon) as a packed object, or NULL: its
+// slot through remote_media_owner, one seek, while it is the current one (mediaSlotOwnsSql) and holds a stored file.
+// An icon packs token:ext:still_ext (remote-media.ts cachedImageUrls); a file with a named still also its variant and
+// blurhash, token:ext:still_ext:still_key and a space before the blurhash (remote-media.ts cachedMediaUrls,
+// CACHED_MEDIA_BYTES). Read with the row (status-rows.ts STATUS_MEDIA_COLUMN_MAP).
 export function mediaCacheSql(m: string, kind: "attachment" | "thumbnail"): string {
-  return `(SELECT rc.token || ':' || rc.ext || ':' || COALESCE(rc.still_ext, '') FROM remote_media rc
+  const still =
+    kind === "attachment" ? ` || COALESCE(':' || rc.still_key || ' ' || COALESCE(rc.still_blurhash, ''), '')` : "";
+  return `(SELECT rc.token || ':' || rc.ext || ':' || COALESCE(rc.still_ext, '')${still} FROM remote_media rc
 		INDEXED BY ${REMOTE_MEDIA_OWNER_INDEX} WHERE rc.owner_id = ${m}.id AND rc.kind = '${kind}' AND rc.token IS NOT NULL
 			AND ${mediaSlotOwnsSql("rc", m)})`;
 }
@@ -2364,7 +2368,9 @@ function remoteTypePastSql(value: string): string {
 
 // True when the row `row` of remote_media holds a value past its stored bound, column by column in order (id is
 // SQLite's rowid, which a BEFORE INSERT trigger reads as -1 before it is assigned), then the invariants: an emoji slot has no owner and a domain, any other an owner and an account; a slot points at its stored
-// object (token, ext, stored_at) only while it is neither due nor failed, and a still extension only with it.
+// object (token, ext, stored_at) only while it is neither due nor failed, and a still extension only with it; then
+// 0122's columns: a named still's variant (stillKeyPastSql) only with a still extension, and its blurhash
+// (blurhashPastBoundSql) only with a named still.
 export function remoteMediaSlotPastBoundSql(row: string): string {
   const c = (name: string) => `${row}.${name}`;
   return `CASE WHEN typeof(${c("kind")}) <> 'text' OR ${c("kind")} NOT IN ${sqlList(REMOTE_MEDIA_KINDS)} THEN 1
@@ -2393,6 +2399,55 @@ export function remoteMediaSlotPastBoundSql(row: string): string {
 	WHEN ${c("token")} IS NOT NULL AND (${c("due_at")} IS NOT NULL OR ${c("failed_at")} IS NOT NULL) THEN 1
 	WHEN ${c("still_ext")} IS NOT NULL AND ${c("token")} IS NULL THEN 1
 	WHEN ${c("failed_at")} IS NOT NULL AND ${c("due_at")} IS NOT NULL THEN 1
+	WHEN ${stillKeyPastSql(c("still_key"))} THEN 1
+	WHEN ${blurhashPastBoundSql(c("still_blurhash"))} THEN 1
+	WHEN ${c("still_key")} IS NOT NULL AND ${c("still_ext")} IS NULL THEN 1
+	WHEN ${c("still_blurhash")} IS NOT NULL AND ${c("still_key")} IS NULL THEN 1
+	ELSE 0 END`;
+}
+
+// A remote video still's attempt nonce (#1828 PR5, domain/remote-media-stills.ts): 32 lowercase hex digits, the hex of
+// a UUID the Store draws. Its key's variant is `s` and the nonce (platform/media-files.ts STILL_VARIANT).
+export const STILL_ATTEMPT = /^[0-9a-f]{32}$/;
+
+// True when `value` is neither NULL nor an attempt nonce (STILL_ATTEMPT), judged in order: the storage class, the
+// bytes, then the digits (which also refuses NUL).
+export function stillAttemptPastSql(value: string): string {
+  return `CASE WHEN ${value} IS NULL THEN 0
+	WHEN typeof(${value}) <> 'text' THEN 1
+	WHEN length(CAST(${value} AS BLOB)) <> 32 THEN 1
+	WHEN ${value} GLOB '*[^0-9a-f]*' THEN 1
+	ELSE 0 END`;
+}
+
+// True when `value` is neither NULL nor a named still's variant: `s` and an attempt nonce (STILL_VARIANT).
+export function stillKeyPastSql(value: string): string {
+  return `CASE WHEN ${value} IS NULL THEN 0
+	WHEN typeof(${value}) <> 'text' THEN 1
+	WHEN length(CAST(${value} AS BLOB)) <> 33 THEN 1
+	WHEN substr(${value}, 1, 1) <> 's' THEN 1
+	WHEN substr(${value}, 2) GLOB '*[^0-9a-f]*' THEN 1
+	ELSE 0 END`;
+}
+
+// The most claims of one remote still between restores, and its reservation's bound (av-bytes.ts STILL_OUTPUT_LIMIT,
+// which test/remote-media-stills.test.ts holds equal).
+export const STILL_CLAIMS = 3;
+export const STILL_CHARGE_MAX = 2 * 1024 * 1024;
+
+// True when the row `row` of remote_media_stills (migration 0122) holds a value past its stored bound, column by column
+// in order: the token, the state, the claims, the times, the attempt, the outcome and the charge. Its invariants are the
+// table's CHECKs.
+export function remoteMediaStillPastBoundSql(row: string): string {
+  const c = (name: string) => `${row}.${name}`;
+  return `CASE WHEN ${c("token")} IS NULL OR ${cardImageTokenPastSql(c("token"))} THEN 1
+	WHEN typeof(${c("state")}) <> 'text' OR ${c("state")} NOT IN ('queued', 'stored') THEN 1
+	${cardCountCase(c("claims"), false, STILL_CLAIMS)}
+	${cardCountCase(c("due_at"), true, SAFE_INTEGER_MAX)}
+	${cardCountCase(c("claimed_at"), true, SAFE_INTEGER_MAX)}
+	WHEN ${stillAttemptPastSql(c("attempt"))} THEN 1
+	WHEN ${c("outcome")} IS NOT NULL AND (typeof(${c("outcome")}) <> 'text' OR ${c("outcome")} NOT IN ('retry', 'park')) THEN 1
+	${cardCountCase(c("still_charge"), false, STILL_CHARGE_MAX)}
 	ELSE 0 END`;
 }
 

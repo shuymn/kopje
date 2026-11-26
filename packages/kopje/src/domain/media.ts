@@ -340,38 +340,53 @@ export function chargeInstanceTransforms(db: Db, count: number, limit: number, n
   return true;
 }
 
-// The media processor's upload units spent per UTC month (#1828 design 4.12, MEDIA_UPLOAD_MONTHLY_JOBS): one per
-// container job that budget pays for: an upload's processing (domain/media-processing.ts queueNormalize) and the media
-// rebuild's stills (domain/media-rebuild.ts).
-// Kept and pruned as the transformation counters are.
-const UPLOAD_JOBS = "media_upload_jobs:";
+// The media processor's units spent per UTC month (#1828 design 4.12), one counter a kind: `upload`
+// (MEDIA_UPLOAD_MONTHLY_JOBS), one per container job that budget pays for: an upload's processing
+// (domain/media-processing.ts queueNormalize) and the media rebuild's stills (domain/media-rebuild.ts); `still`
+// (MEDIA_STILL_MONTHLY_JOBS), one per claim of a remote video's still (domain/remote-media-stills.ts), covering its
+// container and its at most two Images calls. Kept and pruned as the transformation counters are.
+const JOB_COUNTERS = { upload: "media_upload_jobs:", still: "media_still_jobs:" } as const;
+export type JobKind = keyof typeof JOB_COUNTERS;
 
-function uploadJobsName(now: number): string {
-  return `${UPLOAD_JOBS}${iso(now).slice(0, 7)}`;
+function jobsName(kind: JobKind, now: number): string {
+  return `${JOB_COUNTERS[kind]}${iso(now).slice(0, 7)}`;
 }
 
-// The upload units spent in the month `now` is in.
-export function uploadJobsSpent(db: Db, now: number): number {
-  return Number(state(db, uploadJobsName(now)) ?? "0");
+// The units of `kind` spent in the month `now` is in.
+export function jobsSpent(db: Db, kind: JobKind, now: number): number {
+  return Number(state(db, jobsName(kind, now)) ?? "0");
 }
 
-// Whether one more upload unit fits `limit` in the month `now` is in (0 admits nothing).
-export function uploadJobFits(db: Db, limit: number, now: number): boolean {
-  return uploadJobsSpent(db, now) + 1 <= limit;
+// Whether one more unit of `kind` fits `limit` in the month `now` is in (0 admits nothing).
+export function jobFits(db: Db, kind: JobKind, limit: number, now: number): boolean {
+  return jobsSpent(db, kind, now) + 1 <= limit;
 }
 
-// Charges one upload unit to the month `now` is in, pruning months before the previous one. False, and nothing
-// charged, when it does not fit `limit`.
-export function chargeUploadJob(db: Db, limit: number, now: number): boolean {
-  const name = uploadJobsName(now);
+// Charges one unit of `kind` to the month `now` is in, pruning that kind's months before the previous one. False, and
+// nothing charged, when it does not fit `limit`.
+export function chargeJob(db: Db, kind: JobKind, limit: number, now: number): boolean {
+  const name = jobsName(kind, now);
   const used = Number(state(db, name) ?? "0");
   if (used + 1 > limit) {
     return false;
   }
   // A range of the primary key: every counter name is the prefix and a YYYY-MM, which sort as their months do.
-  db.run("DELETE FROM kopje_state WHERE name > ?1 AND name < ?2", UPLOAD_JOBS, `${UPLOAD_JOBS}${previousMonth(now)}`);
+  const prefix = JOB_COUNTERS[kind];
+  db.run("DELETE FROM kopje_state WHERE name > ?1 AND name < ?2", prefix, `${prefix}${previousMonth(now)}`);
   setState(db, name, String(used + 1));
   return true;
+}
+
+export function uploadJobsSpent(db: Db, now: number): number {
+  return jobsSpent(db, "upload", now);
+}
+
+export function uploadJobFits(db: Db, limit: number, now: number): boolean {
+  return jobFits(db, "upload", limit, now);
+}
+
+export function chargeUploadJob(db: Db, limit: number, now: number): boolean {
+  return chargeJob(db, "upload", limit, now);
 }
 
 export type Started =

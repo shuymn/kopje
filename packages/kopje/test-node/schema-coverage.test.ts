@@ -25,6 +25,7 @@ const NOT_DUMPED: Record<string, string> = {
   remote_media: "a cache of remote files; an imported or restored Store starts it empty and fills it again",
   remote_media_objects: "the cache's R2 ledger; remote/ is not backed up, and an empty ledger's orphans are swept",
   remote_media_usage: "the cache's sums, one row the migration inserts; an empty cache counts nothing",
+  remote_media_stills: "the cache's video stills; an imported or restored Store's empty ledger has none to make",
   reply_walk_cursors:
     "where a replies walk's next scan of a status starts; a restored Store scans from the first reply",
   reply_walk_debts: "the work replies walks had no room for; a restored Store owes it again at the walk that cuts it",
@@ -120,6 +121,7 @@ const NOT_CARRIED: Record<string, string> = {
   remote_media: "Kopje's cache of remote files; legacy Wildebeest has none, and a converted Store fills it again",
   remote_media_objects: "the cache's R2 ledger; legacy Wildebeest has none",
   remote_media_usage: "the cache's sums; the migration inserts the one row a converted Store starts from",
+  remote_media_stills: "the cache's video stills; legacy Wildebeest has none",
   reply_walk_cursors: "the scans of replies walks; work Kopje asks for, legacy has none, and they are not dumped",
   reply_walk_debts: "the work replies walks owe; work Kopje asks for, legacy has none, and they are not dumped",
   reply_walk_nodes: "the statuses of a walk of replies collections; work Kopje asks for, and legacy has none",

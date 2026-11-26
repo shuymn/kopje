@@ -12,6 +12,7 @@ import * as mediaProcessing from "./domain/media-processing";
 import * as mediaRebuild from "./domain/media-rebuild";
 import * as remoteActors from "./domain/remote-actors";
 import * as remoteMedia from "./domain/remote-media";
+import * as remoteStills from "./domain/remote-media-stills";
 import * as scheduled from "./domain/scheduled-statuses";
 import { UNLOCK_ACCEPTS_PER_ROUND, unlockAcceptStep } from "./domain/unlock-accepts";
 import {
@@ -446,6 +447,24 @@ export class Store extends DurableObject<Env> {
     return this.#marked((restoredAt) =>
       this.#kernel.execute(callerBuild, remoteMedia.maintainRemoteMedia, { ...input, restoredAt }),
     );
+  }
+
+  // Remote video stills (domain/remote-media-stills.ts), each at the Store's own time, the restore marker read where a
+  // restore changes the answer (#marked). No production caller passes the `stills` input yet (#1828 PR5-1).
+  claimRemoteStill(callerBuild: string, input: MarkedInput<typeof remoteStills.claimRemoteStill>) {
+    return markedRun(this.#kernel, callerBuild, remoteStills.claimRemoteStill, input, () => this.#restoredAt());
+  }
+
+  admitRemoteStill(callerBuild: string, input: MarkedInput<typeof remoteStills.admitRemoteStill>) {
+    return markedRun(this.#kernel, callerBuild, remoteStills.admitRemoteStill, input, () => this.#restoredAt());
+  }
+
+  recordRemoteStill(callerBuild: string, input: MarkedInput<typeof remoteStills.recordRemoteStill>) {
+    return markedRun(this.#kernel, callerBuild, remoteStills.recordRemoteStill, input, () => this.#restoredAt());
+  }
+
+  failRemoteStill(callerBuild: string, input: MarkedInput<typeof remoteStills.failRemoteStill>) {
+    return markedRun(this.#kernel, callerBuild, remoteStills.failRemoteStill, input, () => this.#restoredAt());
   }
 
   // What an inbound request is judged on before it is verified (federation/inbox.ts processInbox), in one read, with

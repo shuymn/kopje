@@ -54,6 +54,7 @@ function excluded(name: string): boolean {
     name === "remote_media" ||
     name === "remote_media_objects" ||
     name === "remote_media_usage" ||
+    name === "remote_media_stills" ||
     name === "backup_media" ||
     name.startsWith("reply_walk") ||
     name.startsWith("stream_") ||

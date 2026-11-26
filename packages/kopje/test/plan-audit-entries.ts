@@ -1324,6 +1324,30 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-media.ts#<anonymous> in maintainRemoteMedia); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
+    id: "26383ec040af8d9f",
+    scans: ["remote_media: SCAN r USING INDEX remote_media_owner"],
+    site: "src/domain/remote-media.ts#queueStill < src/domain/remote-media.ts#<anonymous>",
+    disposition: "background",
+    reason:
+      'a job or round traversal (remote-media.ts#<anonymous> in recordRemoteMedia, the slot it records); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
+  },
+  {
+    id: "2938936fede8bc57",
+    scans: ["remote_media: SCAN r USING INDEX remote_media_owner"],
+    site: "src/domain/remote-media-stills.ts#<anonymous>",
+    disposition: "background",
+    reason:
+      'a job or round traversal (remote-media-stills.ts, one still claim a cron tick); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
+  },
+  {
+    id: "c5ba187b2ab7a81f",
+    scans: ["remote_media: SCAN r USING INDEX remote_media_owner"],
+    site: "src/domain/remote-media-stills.ts#slotHolds < src/domain/remote-media-stills.ts#<anonymous>",
+    disposition: "background",
+    reason:
+      'a job or round traversal (remote-media-stills.ts, one still claim a cron tick); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
+  },
+  {
     id: "e3baadedab9c6595",
     scans: ["remote_media: SCAN r USING INDEX remote_media_expiry"],
     site: "src/domain/remote-media.ts#fenced < src/domain/remote-media.ts#<anonymous> in admitRemoteMedia",
@@ -1418,7 +1442,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:267 and :537), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:52) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:227), one per month it ran",
   },
   {
-    id: "879665e68a674394",
+    id: "ab846f5f94d75e18",
     scans: ["?: SCAN c", "local_accounts: SCAN l"],
     site: "src/domain/status-presenter.ts#statusRowBounds < src/domain/status-presenter.ts#plannedChunks < src/domain/status-presenter.ts#statusStream",
     disposition: "deliberate",

@@ -119,6 +119,7 @@ import m0118 from "../../migrations/0118_feature_grant_guard.sql";
 import m0119 from "../../migrations/0119_answer_retractions.sql";
 import m0120 from "../../migrations/0120_tagged_collections.sql";
 import m0121 from "../../migrations/0121_media_processing.sql";
+import m0122 from "../../migrations/0122_remote_media_stills.sql";
 
 // Store migrations in apply order. Append only: an applied file is recorded by name and checksum and must
 // never change. Each file runs in its own transaction, must finish well under 30 seconds, and must be pure SQL with no
@@ -246,4 +247,5 @@ export const MIGRATIONS: readonly { name: string; sql: string; foreignKeys?: "un
   { name: "0119_answer_retractions", sql: m0119, foreignKeys: "unchanged" },
   { name: "0120_tagged_collections", sql: m0120 },
   { name: "0121_media_processing", sql: m0121 },
+  { name: "0122_remote_media_stills", sql: m0122 },
 ];
