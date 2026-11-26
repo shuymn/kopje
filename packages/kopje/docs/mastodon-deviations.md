@@ -26,44 +26,42 @@ Other documents point here rather than repeat the release.
     and gaps under "Collections": clients list any account's collections, open them and let a member revoke its item;
   - 11, the image descriptions of `update_credentials` (`mastodon#39574`); from 11 Tuba also edits the profile's
     display settings through `/api/v1/profile`.
-- **Streaming.** Kopje serves the streaming API of the reference release over WebSocket only (MD-8), with bounds on
-  the subscriptions a socket and an account hold, past which a subscription is refused (`src/mastodon/streaming.ts`,
-  `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7). An event whose payload, encoded as the streaming
-  API sends it, passes 254 KiB (`STREAM_LIMITS.payloadBytes`) is not sent and is logged
-  (`kopje.stream.payload-skipped`, with its kind): the `update`, `status.update`, `notification`, `conversation` or
-  `announcement` frame is missing, and the status, notification, conversation or announcement is there on the next
-  REST read (its timeline, the notifications list, `GET /api/v1/conversations`, `GET /api/v1/announcements`). Mastodon
-  sends every event. The payload is the event's media descriptions and everything else it shows, both as encoded: a
-  description's character takes 1 byte (ASCII) to 4 (characters past U+FFFF, such as most emoji, and `"` and `\`), and
-  at most 7, for the control characters written as `\u00XX`, such as U+0001 (a tab, newline, carriage return,
-  backspace or form feed takes 3); the rest expands with formatted text (a link is written twice, in its address and
-  its shown text, with `&` as `&amp;`; profile fields and poll choices likewise). An event whose rest takes R bytes is
-  sent while its descriptions take at most 260,096 − R. Beside plain text, a poll and profiles at their limits, a post
-  and its quote with eight descriptions of 10,000 ASCII characters (80,000 bytes) are sent (R about 141,000, and
-  179,000 for their boost), and skipped with eight descriptions of emoji (320,000) or beside three long links in each
-  post (R about 281,000); a post without a quote is sent with four descriptions of emoji (160,000, R about 70,000) while
-  its boost is not (R about 108,000), and skipped with four of U+0001 (280,000). A moderation warning whose account has
-  its fields and texts at their limits (about 336,000 bytes) and an announcement near its derived maximum (497,996)
-  are skipped too, as are events whose statuses are near their stored bounds (remote statuses, or content filled by
-  mentions). The figures are pinned by `test/streaming/public.test.ts` and `test/status-bounds.test.ts`, the skips of a
-  notification and an announcement with their REST reads by `test/streaming/public.test.ts` and
-  `test/streaming/announcements.test.ts`. Accepted, 2026-11-15, and at 254 KiB, 2026-11-17.
+- **Streaming.** Kopje serves the streaming API of the reference release over WebSocket only (MD-8), with bounds on the
+  subscriptions a socket and an account hold, past which a subscription is refused (`src/mastodon/streaming.ts`,
+  `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7). An event whose payload, encoded as the streaming API
+  sends it, passes 254 KiB (`STREAM_LIMITS.payloadBytes`) is not sent and is logged (`kopje.stream.payload-skipped`,
+  with its kind): the `update`, `status.update`, `notification`, `conversation` or `announcement` frame is missing, and
+  the status, notification, conversation or announcement is there on the next REST read (its timeline, the notifications
+  list, `GET /api/v1/conversations`, `GET /api/v1/announcements`). Mastodon sends every event. The payload is the
+  event's media descriptions and everything else it shows, both as encoded: a description's character takes 1 byte
+  (ASCII) to 4 (characters past U+FFFF, such as most emoji, and `"` and `\`), and at most 7, for the control characters
+  written as `\u00XX`, such as U+0001 (a tab, newline, carriage return, backspace or form feed takes 3); the rest
+  expands with formatted text (a link is written twice, in its address and its shown text, with `&` as `&amp;`; profile
+  fields and poll choices likewise). An event whose rest takes R bytes is sent while its descriptions take at most
+  260,096 − R. Beside plain text, a poll and profiles at their limits, a post and its quote with eight descriptions of
+  10,000 ASCII characters (80,000 bytes) are sent (R about 141,000, and 179,000 for their boost), and skipped with eight
+  descriptions of emoji (320,000) or beside three long links in each post (R about 281,000); a post without a quote is
+  sent with four descriptions of emoji (160,000, R about 70,000) while its boost is not (R about 108,000), and skipped
+  with four of U+0001 (280,000). A moderation warning whose account has its fields and texts at their limits (about
+  336,000 bytes) and an announcement near its derived maximum (497,996) are skipped too, as are events whose statuses
+  are near their stored bounds (remote statuses, or content filled by mentions). The figures are pinned by
+  `test/streaming/public.test.ts` and `test/status-bounds.test.ts`, the skips of a notification and an announcement with
+  their REST reads by `test/streaming/public.test.ts` and `test/streaming/announcements.test.ts`. Accepted, 2026-11-17.
 - **Streaming output.** Kopje cannot see whether a client reads what it is sent (the runtime gives no signal of unsent
   output and cannot ping), so it charges each connection everything it hands it, with the runtime's overhead per frame,
   until the connection ends. Before an event or an error reply would take a connection past `STREAM_OUTPUT.socketBytes`
   (5 MiB), or all connections together past `instanceBytes` (16 MiB), it closes that connection with 1013, after every
   frame sent before; while the instance's allowance is full it refuses new connections (503): at the shipped caps it
   holds 212 fresh connections, fewer as output is held, so the limit of 256 connections is reached only if it allows.
-  After an upgrade it
-  streams nothing and refuses new connections until the previous release's connections have ended. A connection that
-  reads is closed after 491 to 800 frames of 4 to 2 KB (figures from the shipped caps). masto.js 7.12 reconnects after
-  1 s (it clears its backoff when an open socket closes). Mastodon's web client (`@gamestdio/websocket` 0.3.2) waits
-  `floor(random × 2^n × 100)` ms after the nth close in the page's life, a count no successful open resets (a median of
-  13.65 minutes at the 14th), meanwhile polling home and notifications every 20 to 40 s; on reconnect it fetches the
-  statuses newer than the newest it holds in home, local, federated and lists, so it keeps showing a status edited or
-  deleted while it was away, or in the event that closed it, until the page is reloaded, and hashtag and direct columns
-  miss what passed until reloaded. Mastodon closes no connection for its volume: it ends one that does not answer its
-  pings within a minute. `src/stream-hub.ts`, `src/stream-output.ts`; `test/streaming/output.test.ts`,
+  After an upgrade it streams nothing and refuses new connections until the previous release's connections have ended. A
+  connection that reads is closed after 491 to 800 frames of 4 to 2 KB (figures from the shipped caps). masto.js 7.12
+  reconnects after 1 s (it clears its backoff when an open socket closes). Mastodon's web client (`@gamestdio/websocket`
+  0.3.2) waits `floor(random × 2^n × 100)` ms after the nth close in the page's life, a count no successful open resets
+  (a median of 13.65 minutes at the 14th), meanwhile polling home and notifications every 20 to 40 s; on reconnect it
+  fetches the statuses newer than the newest it holds in home, local, federated and lists, so it keeps showing a status
+  edited or deleted while it was away, or in the event that closed it, until the page is reloaded, and hashtag and
+  direct columns miss what passed until reloaded. Mastodon closes no connection for its volume: it ends one that does
+  not answer its pings within a minute. `src/stream-hub.ts`, `src/stream-output.ts`; `test/streaming/output.test.ts`,
   `test-node/stream-output.test.ts`. Accepted, 2026-11-17.
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
@@ -131,25 +129,25 @@ A pull request that fixes a gap removes the exceptions that cite it.
   until its vacuum, answers 401. To the OAuth admin, domain allows, IP, email domain and canonical email blocks, link
   publishers and admin tags answer 403 or 404, as Mastodon answers a role without the permission; dimensions and
   retention answer `[]`, retention after its 400 for a missing `start_at` or `end_at` and 422 for an invalid date, as
-  Mastodon 4.7.5 does. Kopje has no sign-ups, recorded IPs or allowlist mode.
-  Trends review through the Mastodon admin API (approve, reject) answers 403; the Access admin reviews trends
-  (`kopje-admin trends`). Accepted, 2026-10-16. Of the measures (`POST /api/v1/admin/measures`), `active_users` (Kopje
-  keeps login days only for the instance activity, from the upgrade that added them and for today, the 184 days before
-  it and tomorrow, plus an imported backlog until the prune reaches it (RES-4 in `docs/threat-model.md`), where the
-  measure takes any range), `interactions` (no count of replies, boosts, follows, votes and favourites by day survives
-  their undo), `tag_accounts`, `tag_uses` and `tag_servers` (no hashtag history over an arbitrary range, and a hashtag's
-  API id names no stored row) and `instance_statuses` (a server's statuses stay stored while their deletion runs) answer
-  422 `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.7.5's 400 for
-  a missing `keys` or object and 422 for an invalid date come first. Accepted, 2026-10-22. Kopje does not offer
-  silencing or memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs
-  relationships writes no `severed_relationships` notification, so an Account's `limited` and `memorial` and a
-  notification's `event` are never sent. Accepted, 2026-11-15.
-- **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation and the admin domain allows
-  list answer empty or 404 until the feature is built; the backlog tracks them. Donation
-  campaigns answer as with no campaign source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in
-  user. E-mail subscriptions answer as with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions`
-  answers 404 (`Record not found` for an id that names no local account, an empty body otherwise), and Account has no
-  `email_subscriptions`. Accepted, 2026-10-20; donation campaigns and e-mail subscriptions, 2026-11-15.
+  Mastodon 4.7.5 does. Kopje has no sign-ups, recorded IPs or allowlist mode. Trends review through the Mastodon admin
+  API (approve, reject) answers 403; the Access admin reviews trends (`kopje-admin trends`). Accepted, 2026-10-16. Of
+  the measures (`POST /api/v1/admin/measures`), `active_users` (Kopje keeps login days only for the instance activity,
+  from the upgrade that added them and for today, the 184 days before it and tomorrow, plus an imported backlog until
+  the prune reaches it (RES-4 in `docs/threat-model.md`), where the measure takes any range), `interactions` (no count
+  of replies, boosts, follows, votes and favourites by day survives their undo), `tag_accounts`, `tag_uses` and
+  `tag_servers` (no hashtag history over an arbitrary range, and a hashtag's API id names no stored row) and
+  `instance_statuses` (a server's statuses stay stored while their deletion runs) answer 422
+  `measure <key> is not served` to the OAuth admin, the whole request; to the OAuth admin, Mastodon 4.7.5's 400 for a
+  missing `keys` or object and 422 for an invalid date come first. Accepted, 2026-10-22. Kopje does not offer silencing
+  or memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs relationships
+  writes no `severed_relationships` notification, so an Account's `limited` and `memorial` and a notification's `event`
+  are never sent. Accepted, 2026-11-15.
+- **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation and the admin domain allows list
+  answer empty or 404 until the feature is built; the backlog tracks them. Donation campaigns answer as with no campaign
+  source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in user. E-mail subscriptions answer as
+  with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions` answers 404 (`Record not found` for an
+  id that names no local account, an empty body otherwise), and Account has no `email_subscriptions`. Accepted,
+  2026-10-20; donation campaigns and e-mail subscriptions, 2026-11-15.
 - **MD-4: Announcements differ in what they embed and when they change.** `statuses` is always `[]`: Mastodon embeds the
   statuses the text links, each up to a whole quote, in a list with no paging; the links stay in `content`. At most 16
   mentions (of available accounts, among the first 64 references, each the account that holds the handle when the
@@ -182,17 +180,15 @@ A pull request that fixes a gap removes the exceptions that cite it.
   whose title, description and provider name present as text is the one shown, and a link none of whose cards presents
   is not listed; a link whose stored texts were imported malformed can take one of the 400 candidate places without
   being shown. Its `history` counts at most its 200 newest public posts of the 7 days and 200 of their boosts (20 per
-  post), so it may undercount. The hashtags' rules above apply to links too: 200 allowed and 50 awaiting review are
-  kept, an offset of 200 or more answers `[]`, `limit=0` answers `[]` without a Link, links are ordered by
-  `Accept-Language`, reviews are the Access admin's (a link's own, else its publisher's by the longest reviewed domain
-  suffix; no `trendable_by_default`, as Mastodon) and take effect at once, and no e-mail is sent.
-  `GET /api/v1/timelines/link` answers for a link listed and allowed now, as Mastodon's; while trends are off it answers
-  404 at once (Mastodon keeps serving it until its trends are cleared), and the next round clears link trends. It shows
-  the public posts whose card has the link as its URL after redirects, each page read from a window of the link's public
-  cards (an empty page cut at its window links on, as Kopje's other timelines); `local` and `remote` are not read, since
-  Mastodon reads them only to require a user when a topic feed is not public. Its answer may be cached publicly only
-  when no token was sent: as Mastodon, any request with an `Authorization` header gets a private answer (WEB-7).
-  Accepted, 2026-10-20; the link rules, 2026-10-24.
+  post), so it may undercount. The hashtags' list rules above (the caps, offsets, `limit=0`, ordering, reviews and
+  e-mail) apply to links too; a link's review is its own, else its publisher's by the longest reviewed domain suffix (no
+  `trendable_by_default`, as Mastodon). `GET /api/v1/timelines/link` answers for a link listed and allowed now, as
+  Mastodon's; while trends are off it answers 404 at once (Mastodon keeps serving it until its trends are cleared), and
+  the next round clears link trends. It shows the public posts whose card has the link as its URL after redirects, each
+  page read from a window of the link's public cards (an empty page cut at its window links on, as Kopje's other
+  timelines); `local` and `remote` are not read, since Mastodon reads them only to require a user when a topic feed is
+  not public. Its answer may be cached publicly only when no token was sent: as Mastodon, any request with an
+  `Authorization` header gets a private answer (WEB-7). Accepted, 2026-10-20; the link rules, 2026-10-24.
 - **MD-6: Media have no short link.** MediaAttachment `text_url` is always null. Mastodon shows it only for a local
   attachment with a shortcode, and has assigned no shortcode to new media since v3.5.0, so only its older local media
   show one; Kopje assigns none and serves no short link route. Accepted, 2026-10-22.
@@ -201,14 +197,14 @@ A pull request that fixes a gap removes the exceptions that cite it.
   Service Providers) answer 404. Kopje has no Mastodon web app: its pages are its own ([web-pages.md](web-pages.md)),
   and clients use `/api/v1/push/subscription` and `/api/oembed`. Kopje uses no FASP for search or discovery.
   Accepted, 2026-11-15.
-- **MD-8: Streaming is WebSocket only.** Kopje serves the streaming API at `/api/v1/streaming` and any path below it
-  as a WebSocket only: a request that is not an upgrade answers 404, so Server-Sent Events are not served. The one
-  exception is `/api/v1/streaming/health`, which answers 200 `OK` as Mastodon's streaming server does. The token is
-  read from the `Authorization` header or `Sec-WebSocket-Protocol`, never from the `access_token` query parameter
+- **MD-8: Streaming is WebSocket only.** Kopje serves the streaming API at `/api/v1/streaming` and any path below it as
+  a WebSocket only: a request that is not an upgrade answers 404, so Server-Sent Events are not served. The one
+  exception is `/api/v1/streaming/health`, which answers 200 `OK` as Mastodon's streaming server does. The token is read
+  from the `Authorization` header or `Sec-WebSocket-Protocol`, never from the `access_token` query parameter
   (`src/mastodon/streaming.ts`). Mastodon's streaming server serves SSE and reads the query token too. From v4.5.11 to
-  v4.7.5 it changed how it parses the request URL and how it ends an SSE heartbeat, and nothing a WebSocket client
-  sees. No surveyed client uses SSE, and a token in a URL would reach the platform's invocation logs wherever they are
-  enabled without query-string redaction; the shipped configuration records neither (DATA-5 in
+  v4.7.5 it changed how it parses the request URL and how it ends an SSE heartbeat, and nothing a WebSocket client sees.
+  No surveyed client uses SSE, and a token in a URL would reach the platform's invocation logs wherever they are enabled
+  without query-string redaction; the shipped configuration records neither (DATA-5 in
   [threat-model.md](threat-model.md)). Accepted, 2026-11-15.
 - **MD-9: Annual reports have no share page.** An annual report's `share_url` is always null, and Kopje serves no
   `/@:username/wrapstodon/:year/:share_key` page. No notification carries an `annual_report`: Mastodon 4.7.5 writes
@@ -270,21 +266,21 @@ settings page):
   old or more (`ACCOUNT_STALE_MS`). Accepted, 2026-11-17.
 - A remote account's profile URL is chosen from its actor's `url` as Mastodon 4.7.5 chooses it
   (`process_account_service.rb:454-465`, `json_ld_helper.rb:46-61`): one candidate, kept only when it begins with
-  `http://` or `https://` and is on the actor id's host, whatever its scheme and port, and no later candidate once it
-  is refused; an account without one shows its actor id. Kopje compares hosts as the URL parser reads them, where
-  Mastodon compares Addressable's raw host ASCII case-insensitively, so a host spelled with a percent escape, in
-  Unicode where the id's is in punycode or the reverse, or with non-ASCII capitals is kept where Mastodon keeps none; a
-  URL the URL parser does not read (a port past 65535) or past 2,048 bytes once serialized is none, where Mastodon
-  stores it; a kept URL is stored as the URL parser serializes it. Where Mastodon raises and stores no account (a `url`
-  that is a number or `true`, a `Link` whose `href` is neither a string nor null, an array that reaches a value
-  neither a `Link` nor a string before the one it takes, a URL Addressable cannot parse), Kopje stores the account with
-  no profile URL, or with the URL parser's reading of the URL (a tab in the host, which it drops).
-  `test/fixtures/profile-url/urls.json` holds Mastodon's answer for each form. A stored profile URL Kopje does not
-  show, which only an import holds (one that is not http(s), where Mastodon's `url_for` gives none, or one past 2,048
-  bytes once serialized, where it gives the URL), gives the actor id instead in mentions, announcements, notification
-  fallbacks and the link-card mention test, as the account shows it, and a link to that stored URL is an ordinary
-  link; an actor id that is not http(s), or past 2,048 bytes as JSON writes it, shows a `/@username` page instead, as
-  for a local account, where Mastodon shows the id. Accepted, 2026-11-17.
+  `http://` or `https://` and is on the actor id's host, whatever its scheme and port, and no later candidate once it is
+  refused; an account without one shows its actor id. Kopje compares hosts as the URL parser reads them, where Mastodon
+  compares Addressable's raw host ASCII case-insensitively, so a host spelled with a percent escape, in Unicode where
+  the id's is in punycode or the reverse, or with non-ASCII capitals is kept where Mastodon keeps none; a URL the URL
+  parser does not read (a port past 65535) or past 2,048 bytes once serialized is none, where Mastodon stores it; a kept
+  URL is stored as the URL parser serializes it. Where Mastodon raises and stores no account (a `url` that is a number
+  or `true`, a `Link` whose `href` is neither a string nor null, an array that reaches a value neither a `Link` nor a
+  string before the one it takes, a URL Addressable cannot parse), Kopje stores the account with no profile URL, or with
+  the URL parser's reading of the URL (a tab in the host, which it drops). `test/fixtures/profile-url/urls.json` holds
+  Mastodon's answer for each form. A stored profile URL Kopje does not show, which only an import holds (one that is not
+  http(s), where Mastodon's `url_for` gives none, or one past 2,048 bytes once serialized, where it gives the URL),
+  gives the actor id instead in mentions, announcements, notification fallbacks and the link-card mention test, as the
+  account shows it, and a link to that stored URL is an ordinary link; an actor id that is not http(s), or past 2,048
+  bytes as JSON writes it, shows a `/@username` page instead, as for a local account, where Mastodon shows the id.
+  Accepted, 2026-11-17.
 - A new remote account's `created_at` is its actor's `published` as Mastodon assigns it
   (`process_account_service.rb:231`, ActiveRecord's time-zone-aware cast in UTC) on the forms `railsTime` in
   `src/federation/json-shapes.ts` reads: a date, then optionally a time, its seconds and fraction, and a zone (`Z`,
@@ -294,18 +290,13 @@ settings page):
   is cut to milliseconds, where Mastodon keeps microseconds. Any other value is none and the account is created at the
   Store's time, a value past 128 characters included, where Mastodon fails the actor: its first save stores the row,
   then the update every resolve runs (`process_account_service.rb:77,219`) writes nil into the `NOT NULL` column, so the
-  resolve answers 500 and leaves a row with no name or key. Accepted, 2026-11-17. Mastodon reads more forms
-  (`test/fixtures/rails-time.json` lists each with its value), and stores their time where Kopje stores its own: a
-  day-first or named date (`01/02/2020` is 1 February, `Jan 2 2020`, RFC 2822), `20200105T100000Z`, fields of one digit
-  (`2020-1-5`, `T1:00`), a signed, longer or `BC` year (`2020-01-05 BC` is the year -2019), text after the date or time,
-  week and ordinal dates (read against the current day), an hour alone (`T10Z` is midnight), `infinity`, an offset it
-  ignores (`+24:00`, `+09:60`) or reads otherwise (`+9`, `+090` as +01:30, `+0960` as +10:00, `+09:00:30`, a zone name
-  such as `UTC` or `JST`), a zone after a date alone (`2020-01-05+09:00` is 09:00 UTC, `2020-01-05Z` midnight), a `.`
-  with no digits or a fraction after the minutes (ignored), and other spacing (two spaces or a tab before the time or
-  the zone, spaces around a colon, a Unicode space); and it assigns a JSON number as it is. A known account's
-  `created_at` stays the first one Kopje stored and is never later than the time it was stored, where Mastodon assigns
-  `published` on every update, a future time included; so an update whose `published` it cannot cast is applied here,
-  where Mastodon writes nil into the `NOT NULL` column and drops the update.
+  resolve answers 500 and leaves a row with no name or key. Accepted, 2026-11-17. Mastodon reads more forms and stores
+  their time where Kopje stores its own: day-first and named dates, compact and one-digit fields, signed, longer or `BC`
+  years, week and ordinal dates, zone names and offsets it ignores or reads otherwise, other spacing, and a JSON number
+  as it is (`test/fixtures/rails-time.json` lists each form with Mastodon's value). A known account's `created_at` stays
+  the first one Kopje stored and is never later than the time it was stored, where Mastodon assigns `published` on every
+  update, a future time included; so an update whose `published` it cannot cast is applied here, where Mastodon writes
+  nil into the `NOT NULL` column and drops the update.
 - A remote account's `show_featured`, `show_media` and `show_media_replies` change only when its actor's
   `showFeatured`, `showMedia` or `showRepliesInMedia` is a JSON boolean, and keep their stored values otherwise, as
   when the key is absent (`process_account_service.rb:258-260`). Mastodon casts any other value as a form value (a
@@ -324,8 +315,8 @@ settings page):
   1,022 bytes is left out, and a list past 102,302 bytes in all (100 such domains pass it) is shown as none. Accepted,
   2026-11-15.
 - A refusal lists at most 100 invalid attribution domains, in `error` and in `details`, before the count's error;
-  Mastodon lists every one. Each listed domain is written twice, so the cap bounds the answer
-  (`test/accounts.test.ts` derives its maximum). Accepted, 2026-11-16.
+  Mastodon lists every one. Each listed domain is written twice, so the cap bounds the answer (`test/accounts.test.ts`
+  derives its maximum). Accepted, 2026-11-16.
 - An unknown `source[privacy]`, `source[quote_policy]` or `source[language]` is refused with 422, an error of
   `privacy`, `quote_policy` or `language` after the account's own, and nothing is saved; Mastodon saves the account's
   other changes and answers 500. Accepted, 2026-11-16.
@@ -556,16 +547,15 @@ Accounts (the `Account` and credential account entities):
   WebFinger answers alternate stop taking the handle from each other, the last one invalidated staying so until its
   own document, a search or the next day's invalidation refreshes it.
 - A remote account's shared inbox is read as Mastodon 4.7.5 reads it (`endpoints.sharedInbox` when `endpoints` is an
-  object, else the document's `sharedInbox`; an array's first value, an object's `id`;
-  `process_account_service.rb:225`, `:235-245`) and kept only when it is spelled so that Kopje and Mastodon send to the
-  same URL: lower-case `http` or `https` and `//`, a host of ASCII letters, digits and hyphens whose labels are not
-  empty and whose last label begins with a letter, no userinfo, a port of 1 to 65535, a path of RFC 3986's `pchar`
-  literals and upper-case `%HH` escapes below `%80` that encode no such literal, no dot segment, no query and no
-  fragment (`sharedInboxUri` in `src/federation/remote-actor.ts`). Any other spelling is none and the account's
-  personal inbox is used, where Mastodon delivers to its normalized form (`Addressable::URI#normalize`, `request.rb:97`,
-  `:212-214`): a port `0`, a trailing dot in the host, a backslash, tab or line break in the path, an escape Mastodon
-  decodes or re-cases, a query among them (`test/fixtures/shared-inbox/spellings.json` lists Mastodon's destination
-  for each). Accepted, 2026-11-16.
+  object, else the document's `sharedInbox`; an array's first value, an object's `id`; `process_account_service.rb:225`,
+  `:235-245`) and kept only when it is spelled so that Kopje and Mastodon send to the same URL: lower-case `http` or
+  `https` and `//`, a host of ASCII letters, digits and hyphens whose labels are not empty and whose last label begins
+  with a letter, no userinfo, a port of 1 to 65535, a path of RFC 3986's `pchar` literals and upper-case `%HH` escapes
+  below `%80` that encode no such literal, no dot segment, no query and no fragment (`sharedInboxUri` in
+  `src/federation/remote-actor.ts`). Any other spelling is none and the account's personal inbox is used, where Mastodon
+  delivers to its normalized form (`Addressable::URI#normalize`, `request.rb:97`, `:212-214`): a port `0`, a trailing
+  dot in the host, a backslash, tab or line break in the path, an escape Mastodon decodes or re-cases, a query among
+  them (`test/fixtures/shared-inbox/spellings.json` lists Mastodon's destination for each). Accepted, 2026-11-16.
 - A remote account its `Delete` removes stays stored, unavailable (R1 in `docs/visibility.md`), while its purge runs;
   Mastodon destroys it after purging its content in the Delete handler (`app/services/delete_account_service.rb`).
   Meanwhile `GET /api/v1/accounts/:id`, every `/api/v1/accounts/:id/...` route and lookup answer 404 for it, and
@@ -586,13 +576,13 @@ Accounts (the `Account` and credential account entities):
 - `moved` is the latest of two writes: every stored actor document sets it from its `movedTo` or clears it, and a
   verified `Move` sets it when Kopje first processes it; a replay of a known `Move` writes nothing. A `movedTo` naming
   an account Kopje does not know reads as none: it is not fetched (Mastodon fetches it,
-  `process_account_service.rb:310-314`). Mastodon processes a `Move` once per source account for 7 days
-  (`move.rb:38`), Kopje once per activity id while its job is kept (30 days). Mastodon refreshes an account on a
-  signature only after verification with the stored key fails (`signature_verification.rb:59-61`), and
-  `possibly_stale?` chooses a full refresh or one of the key alone, which leaves `movedTo` as it was
-  (`signature_verification.rb:123-127`, `process_account_service.rb:103`); Kopje stores every fresh document it
-  fetches, its `movedTo` included, unless a newer store superseded it (below). A local account never has one: Kopje
-  sends no `Move`. Followers move only on a verified `Move` whose target lists the source.
+  `process_account_service.rb:310-314`). Mastodon processes a `Move` once per source account for 7 days (`move.rb:38`),
+  Kopje once per activity id while its job is kept (30 days). Mastodon refreshes an account on a signature only after
+  verification with the stored key fails (`signature_verification.rb:59-61`), and `possibly_stale?` chooses a full
+  refresh or one of the key alone, which leaves `movedTo` as it was (`signature_verification.rb:123-127`,
+  `process_account_service.rb:103`); Kopje stores every fresh document it fetches, its `movedTo` included, unless a
+  newer store superseded it (below). A local account never has one: Kopje sends no `Move`. Followers move only on a
+  verified `Move` whose target lists the source.
 - A remote actor's document is stored only while the Store revision read before its fetch holds (ID-1 in
   `docs/threat-model.md`): a document fetched before another store of the actor committed is not stored. Mastodon
   serializes the processing of one account (`process_account_service.rb:30`) but stores whatever document it processes
@@ -602,18 +592,17 @@ Accounts (the `Account` and credential account entities):
 - An `Update(Person)` applies the profile, the handle (confirmed by WebFinger when it changes) and `movedTo` of the
   actor it embeds, as Mastodon's `ProcessAccountService` does (`update.rb:23-27`), but not its keys or inboxes, which
   stay those of the last document Kopje fetched; Mastodon takes both from the embedded actor
-  (`process_account_service.rb:222-232`, `:264-270`). A key rotation or inbox move sent only by `Update(Person)`
-  applies at Kopje's next fetch of the actor's document, which nothing schedules: the actor's first activity signed by
-  a key Kopje does not hold fresh (one it does not hold, one that fails, or one its last fetched document listed 24
-  hours ago or more), an `Update(Person)` that embeds no actor (its object the actor's URI, or not an actor), which is
-  fetched whatever its key, a stale-author refresh, a search for the actor, or a collection sync's refresh of it. An
-  actor that sends nothing keeps the old keys and inboxes until one of these happens (`test/inbox-actor-update.test.ts`,
-  "an inbox move sent only by an embedded actor", "an Update(Person) that embeds no actor"). Reason: a holder of a
-  still-trusted key could otherwise renew its trust and move the actor's deliveries without a fetch (ID-1 in
-  `docs/threat-model.md`). An embedded actor Kopje cannot read applies nothing, as Mastodon drops it. An
-  `Update(Person)` that carries an LD signature is read as received (Reading inbound activities, below): an embedded
-  actor whose `inbox` is `[null]` is read, where Mastodon's reading makes it `[]` and drops the update (#1680).
-  Accepted, 2026-11-16.
+  (`process_account_service.rb:222-232`, `:264-270`). A key rotation or inbox move sent only by `Update(Person)` applies
+  at Kopje's next fetch of the actor's document, which nothing schedules: the actor's first activity signed by a key
+  Kopje does not hold fresh (one it does not hold, one that fails, or one its last fetched document listed 24 hours ago
+  or more), an `Update(Person)` that embeds no actor (its object the actor's URI, or not an actor), which is fetched
+  whatever its key, a stale-author refresh, a search for the actor, or a collection sync's refresh of it. An actor that
+  sends nothing keeps the old keys and inboxes until one of these happens (`test/inbox-actor-update.test.ts`, "an inbox
+  move sent only by an embedded actor", "an Update(Person) that embeds no actor"). Reason: a holder of a still-trusted
+  key could otherwise renew its trust and move the actor's deliveries without a fetch (ID-1 in `docs/threat-model.md`).
+  An embedded actor Kopje cannot read applies nothing, as Mastodon drops it. An `Update(Person)` that carries an LD
+  signature is read as received (Reading inbound activities, below): an embedded actor whose `inbox` is `[null]` is
+  read, where Mastodon's reading makes it `[]` and drops the update. Accepted, 2026-11-16.
 - The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags, display
   settings and images, `note`, `avatar_description` and `header_description` `''` and `fields` `[]`, the display name
   cut at 100 code points, URLs and `uri` read as unset past 512 bytes, and only the emojis its display name references
@@ -770,22 +759,22 @@ in [threat-model.md](threat-model.md)):
   (`non_matching_uri_hosts?`): an item or document on the same host under another scheme or port is passed over.
   Accepted, 2026-11-16.
 - Once a node's replies collection has been read, a refresh also fetches the node's stored public replies of remote
-  authors the collection did not list, after its listed ones, as Mastodon's (`fetch_all_replies_service.rb:33-49`),
-  each skipped as Mastodon skips a listed one (published within 5 minutes, or refreshed within 15). Mastodon fetches
-  only those whose author has no local follower or a local follow newer than the reply's last update (`unsubscribed`,
+  authors the collection did not list, after its listed ones, as Mastodon's (`fetch_all_replies_service.rb:33-49`), each
+  skipped as Mastodon skips a listed one (published within 5 minutes, or refreshed within 15). Mastodon fetches only
+  those whose author has no local follower or a local follow newer than the reply's last update (`unsubscribed`,
   `fetch_replies_concern.rb:27-33`); Kopje fetches them whoever follows their authors, since it keeps neither a follow's
-  acceptance time nor a status's update time. Kopje examines at most 200 of a node's stored public replies a refresh,
-  in id order from where the node's last examination ended, whichever refresh it was, so a node with more is covered
-  over several refreshes; Mastodon examines all of them each time. A refresh holds 200 statuses where Mastodon's takes
-  up to 1,000: what a refresh had no room for (a stored reply it could not admit, the rest of a collection it could not
-  read) is done first at the thread's next refreshes, oldest first, a collection continuing where it stopped, so a
-  reply may wait a few refreshes where Mastodon fetches it at once, and a thread wider than a refresh is covered over
-  several. Depth is a limit: a post's refreshes fetch replies at most 199 links below it, since a refresh holds 200
-  posts and stores a reply only with its whole chain to the post; Mastodon's takes up to 1,000
-  (`fetch_all_replies_worker.rb:15-17,33-44`), so a chain of 201 replies below a post gets its last two from that
-  post's refreshes in Mastodon and not in Kopje, where only the refreshes of a reply within 199 links of them (its
-  context read) fetch them. Private stored replies are not fetched (they answer the refresh's signer 404 and change
-  nothing in Mastodon). Accepted, 2026-11-16.
+  acceptance time nor a status's update time. Kopje examines at most 200 of a node's stored public replies a refresh, in
+  id order from where the node's last examination ended, whichever refresh it was, so a node with more is covered over
+  several refreshes; Mastodon examines all of them each time. A refresh holds 200 statuses where Mastodon's takes up to
+  1,000: what a refresh had no room for (a stored reply it could not admit, the rest of a collection it could not read)
+  is done first at the thread's next refreshes, oldest first, a collection continuing where it stopped, so a reply may
+  wait a few refreshes where Mastodon fetches it at once, and a thread wider than a refresh is covered over several.
+  Depth is a limit: a post's refreshes fetch replies at most 199 links below it, since a refresh holds 200 posts and
+  stores a reply only with its whole chain to the post; Mastodon's takes up to 1,000
+  (`fetch_all_replies_worker.rb:15-17,33-44`), so a chain of 201 replies below a post gets its last two from that post's
+  refreshes in Mastodon and not in Kopje, where only the refreshes of a reply within 199 links of them (its context
+  read) fetch them. Private stored replies are not fetched (they answer the refresh's signer 404 and change nothing in
+  Mastodon). Accepted, 2026-11-16.
 
 Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-9):
 
@@ -831,11 +820,11 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - An `Accept` of a feature request changes only a pending membership; a late one after a removal, rejection or
   revocation is ignored, where Mastodon marks the item accepted whatever its state. A member's `Delete` of its
   authorization that arrives before the `Accept` naming it is kept for 30 days, as every retraction, and that `Accept`
-  or a check of that authorization then ends the membership as revoked, where Mastodon ignores the `Delete` and
-  accepts; an `Accept` that follows a deletion of another
-  authorization waits for a check of its own against the member's server before the membership is shown. Kopje's
-  `FeatureRequest` names the owner as its `actor`, where Mastodon's carries none, and the removal of a remote member
-  still pending sends no `Remove`, where Mastodon sends one that no server holds an item for. Accepted, 2026-11-18.
+  or a check of that authorization then ends the membership as revoked, where Mastodon ignores the `Delete` and accepts;
+  an `Accept` that follows a deletion of another authorization waits for a check of its own against the member's server
+  before the membership is shown. Kopje's `FeatureRequest` names the owner as its `actor`, where Mastodon's carries
+  none, and the removal of a remote member still pending sends no `Remove`, where Mastodon sends one that no server
+  holds an item for. Accepted, 2026-11-18.
 - A post tags only collections Kopje stores: a link to a remote collection Kopje has not stored, and a remote post's
   tag naming one, are neither resolved nor fetched, where Mastodon fetches them, and a remote post's tag never stores
   the collection it embeds, the author's own included; such a post shows the tag only after its author edits it once
@@ -921,16 +910,16 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   for 30 days, so the check of a membership the owner lists with that authorization later (for the first time, or
   again after changing it) ends it as revoked, though the member's server may still serve the authorization from its
   cache. Accepted, 2026-11-17.
-- A local member's revocation in a remote collection is sent to the collection's owner and the member's followers,
-  where Mastodon sends it to the owner and the collection's reach. A revocation by a block, and the `Delete` answering
-  an owner's listing (below), are sent to the owner's personal inbox alone without an LD signature: Mastodon applies
-  such a `Delete` from its HTTP signer (`delete.rb:6`, `:68-81`), and LD-signs it only in
-  `RevokeCollectionItemService`. A `FeatureRequest` that names no actor (as Mastodon sends it) is taken as its
-  signer's only when the signature's key id, without its fragment, is the signer's actor id. A feature request for a
-  member already in the collection is answered, naming that request: while the membership stands, an `Accept` with its
-  authorization, whatever the member's policy is then; for a revoked membership, a `Reject`. Mastodon answers nothing
-  while an item exists, unless its policy refuses: it re-checks its policy at every copy of a request
-  (`feature_request.rb:14-18`). A request when local members already fill 25 places is refused. Accepted, 2026-11-18.
+- A local member's revocation in a remote collection is sent to the collection's owner and the member's followers, where
+  Mastodon sends it to the owner and the collection's reach. A revocation by a block, and the `Delete` answering an
+  owner's listing (below), are sent to the owner's personal inbox alone without an LD signature: Mastodon applies such a
+  `Delete` from its HTTP signer (`delete.rb:6`, `:68-81`), and LD-signs it only in `RevokeCollectionItemService`. A
+  `FeatureRequest` that names no actor (as Mastodon sends it) is taken as its signer's only when the signature's key id,
+  without its fragment, is the signer's actor id. A feature request for a member already in the collection is answered,
+  naming that request: while the membership stands, an `Accept` with its authorization, whatever the member's policy is
+  then; for a revoked membership, a `Reject`. Mastodon answers nothing while an item exists, unless its policy refuses:
+  it re-checks its policy at every copy of a request (`feature_request.rb:14-18`). A request when local members already
+  fill 25 places is refused. Accepted, 2026-11-18.
 - A local account's membership of a remote collection is shown to the member at once, and to others once the owner
   lists it: by its `Add`, or in a read of its collections. An owner's `Remove` of the member's item, or a read that no
   longer lists it, hides the membership instead of ending it, and its authorization is still served until the member
@@ -1091,8 +1080,7 @@ OAuth (`/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, `/oauth/token/info`,
   caller (400). `invalid_client` carries Kopje's Basic challenge and text, as at `/oauth/token`.
 
 Expired and revoked tokens on routes that need none (`GET /api/v1/donation_campaigns`,
-`POST /api/v1/accounts/:account_id/email_subscriptions`; MD-3; AUTH-1 and AUTH-2 in
-[threat-model.md](threat-model.md)):
+`POST /api/v1/accounts/:account_id/email_subscriptions`; MD-3; AUTH-1 and AUTH-2 in [threat-model.md](threat-model.md)):
 
 - A token past its expiry, revoked or of an earlier credential epoch is answered as no token while its owner is
   available: donation campaigns answers 422 and e-mail subscriptions its 404. Mastodon reads these two routes' token
@@ -1132,10 +1120,10 @@ Remote interaction (`/authorize_interaction`, the subscribe template and the FEP
   Mastodon's web client asks the named server, from the browser, for its WebFinger answer (by handle, by URL, or
   `https://<server>` for a server name) and opens the FEP-3b86 intent of the action (`Follow`, `Announce`, `Like`;
   `Object` for a reply or a vote), else `Object`, else the subscribe template, else `/authorize_interaction?uri={uri}`
-  (Mastodon 4.6 and later).
-  Kopje's pages work without script and fetch nothing: the dialog's form names the server to a handoff page here,
-  which links to `https://<server>/authorize_interaction?uri=<uri>` and shows the handle or URL to paste into that
-  server's search, for a server whose template is another path. The server is accepted only as a bounded DNS name.
+  (Mastodon 4.6 and later). Kopje's pages work without script and fetch nothing: the dialog's form names the server to a
+  handoff page here, which links to `https://<server>/authorize_interaction?uri=<uri>` and shows the handle or URL to
+  paste into that server's search, for a server whose template is another path. The server is accepted only as a bounded
+  DNS name.
 - The status page's embed code is offered in a dialog with a copy button (Mastodon's web client: the post's menu,
   "Embed"); the code is the oEmbed `html`, the same as Mastodon's.
 
@@ -1182,7 +1170,7 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   `to_tsquery('simple')`) also splits at U+0085 and at the characters of emoji, and matches each word as the start of
   a word, so a query that wraps a username in them (`alice😀`) finds that account there, and in Kopje finds only an
   account whose display name holds the whole text. Splitting as Mastodon does inside Kopje's substring search would
-  change which accounts existing queries find and in what order, and so the pages of their results (#1767). Accepted,
+  change which accounts existing queries find and in what order, and so the pages of their results. Accepted,
   2026-11-18.
 - `/api/v2/search` finds no hashtag for a `q` that a hashtag's name normalizes to nothing (U+FEFF, an emoji). Mastodon
   4.7.5 without Elasticsearch finds every listable hashtag, up to `limit`: `Tag.matches_name` searches the names that
@@ -1342,7 +1330,6 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
   (`deleted_at` set, for its moderators alone).
 - A child `noop` block exempts the accounts of its subdomains from a parent's `suspend`; Mastodon suspends
   `Account.by_domain_and_subdomains` of the suspending block.
-- Severing writes no `severed_relationships` notification (Mastodon's `block_domain_service.rb` writes them).
 - Severity `silence` is refused with 422 on create and update.
 - A host is ruled and claimed without every trailing dot: the block of `blocked.example` covers an actor, an inbox or a
   fetch on `blocked.example..`, and an actor whose id is there claims `<username>@blocked.example`, stored once
@@ -1415,28 +1402,28 @@ Request parameters:
 
 - The query and a urlencoded or multipart body are each read as Rack and Rails nest them, in the order sent (a POST body
   without a media type as a urlencoded one, as Rack reads it; a `Content-Type` header sent empty is read the same way,
-  where Mastodon answers 406): a name nested as two kinds (`limit=1&limit[]=2`) answers
-  400, as Mastodon's does, and a later plain name replaces what an earlier one built under it (`limit[]=2&limit=1` reads
-  `limit` as 1). Kopje answers that 400 on the routes that read their parameters, after the token where the route checks
-  one; Mastodon answers it on every route, before the token, as Rack::Attack reads every request's parameters in a
-  middleware. The routes that read their query on their own do not refuse it: the account lookup, oEmbed and the peer
-  search, and Kopje's own pages, which read the first of a repeated name (the public pages' `max_id`, `min_id` and
-  `server`, `/login`, `/auth/callback`, `/settings` and the admin pages); nor do the routes that read no parameter. A
-  query or a urlencoded body past one of Rack's limits (more than 4,096 fields, more than 4 MiB), and a multipart body
-  of 4,096 parts or 128 file parts, are 400, where Mastodon answers 500; a part with an empty filename, which Rack
-  counts as a file part, counts as a text part. A multipart text part that is not UTF-8 is read with each bad sequence
-  replaced, where Rails answers 400, as Kopje does for the query and a urlencoded body; a multipart part with an empty
-  name answers 400, where Rack reads it under its filename or its content type and `[]` (`text/plain[]`).
+  where Mastodon answers 406): a name nested as two kinds (`limit=1&limit[]=2`) answers 400, as Mastodon's does, and a
+  later plain name replaces what an earlier one built under it (`limit[]=2&limit=1` reads `limit` as 1). Kopje answers
+  that 400 on the routes that read their parameters, after the token where the route checks one; Mastodon answers it on
+  every route, before the token, as Rack::Attack reads every request's parameters in a middleware. The routes that read
+  their query on their own do not refuse it: the account lookup, oEmbed and the peer search, and Kopje's own pages,
+  which read the first of a repeated name (the public pages' `max_id`, `min_id` and `server`, `/login`,
+  `/auth/callback`, `/settings` and the admin pages); nor do the routes that read no parameter. A query or a urlencoded
+  body past one of Rack's limits (more than 4,096 fields, more than 4 MiB), and a multipart body of 4,096 parts or 128
+  file parts, are 400, where Mastodon answers 500; a part with an empty filename, which Rack counts as a file part,
+  counts as a text part. A multipart text part that is not UTF-8 is read with each bad sequence replaced, where Rails
+  answers 400, as Kopje does for the query and a urlencoded body; a multipart part with an empty name answers 400, where
+  Rack reads it under its filename or its content type and `[]` (`text/plain[]`).
 - An array parameter's objects (`media_attributes`, `keywords_attributes`, `fields_attributes`) are read as Rails'
   strong parameters permit them, but for two kinds: a Hash with no index holding an object
-  (`keywords_attributes[id]=1&keywords_attributes[keyword]=a`, or its JSON) is read as no object, where Rails permits
-  it as one, whose values Mastodon then reads as the objects (answering 500 for a value that is not one) or, for
+  (`keywords_attributes[id]=1&keywords_attributes[keyword]=a`, or its JSON) is read as no object, where Rails permits it
+  as one, whose values Mastodon then reads as the objects (answering 500 for a value that is not one) or, for
   `keywords_attributes` holding an `id`, as the keyword to update; and a JSON body's objects under indexes
   (`{"fields_attributes":{"1":{…},"0":{…}}}`) are read in index order, where Mastodon reads them in the order sent, as
   Kopje does a form's.
 - Of repeated parts of a declared file parameter (`avatar`, `header`, `file`, `thumbnail`), text or file, the last is
-  the one read, as Rails assigns them; on `/api/v{1,2}/media` a file followed by a string answers 422 `File can't be
-  blank`, where Mastodon answers 400. While video and audio uploads are active
+  the one read, as Rails assigns them; on `/api/v{1,2}/media` a file followed by a string answers 422
+  `File can't be blank`, where Mastodon answers 400. While video and audio uploads are active
   ([media-processor.md](media-processor.md)), a request whose first `file` part is video or audio answers 422
   `Validation failed: File was sent more than once` to any later `file` part, file or text, where Mastodon takes the
   last.
@@ -1452,18 +1439,16 @@ Request parameters:
   (`"0b1_0\u0000junk"` is 2). Accepted, 2026-11-17.
 - A `limit` whose `to_i` is 0 (`0`, `-0`, `abc`) answers `[]` without a `Link` on the timelines and the notifications
   (v1 and v2), as Mastodon's do, and reads as 1 on the other lists paged by `max_id`, `since_id` and `min_id`: an
-  account's statuses, followers, following and endorsements, bookmarks, favourites, conversations, blocks, mutes,
-  domain blocks, follow requests, endorsements and a list's members (but `limit=0`, which answers every item, as
-  Mastodon's do), a status's favourites, boosts and quotes, scheduled statuses, followed hashtags, notification
-  requests, a notification group's accounts, and the admin reports, accounts and domain blocks. Mastodon 4.7.5 answers
-  500 on those, as `records_continue?` holds for the empty page and its cursor is read
-  (`Api::Pagination#pagination_max_id`).
-- A cursor (`max_id`, `since_id`, `min_id`, each the last value sent) is read only as 1 to 19 decimal digits
-  (`CURSOR` in `src/mastodon/pagination.ts`); any other value is ignored, as if absent, and a 19-digit value past a
-  signed 64-bit integer is a cursor like any other, with no range refusal of its own. Mastodon casts it on each path:
-  a list it reads from its database by ActiveModel's integer type (`Paginable`, so `5abc` reads as 5), the home and
-  list timelines by `String#to_i` (`Feed#get`, so `max_id=abc` reads as 0, an empty page, and any length is read
-  whole).
+  account's statuses, followers, following and endorsements, bookmarks, favourites, conversations, blocks, mutes, domain
+  blocks, follow requests, endorsements and a list's members (but `limit=0`, which answers every item, as Mastodon's
+  do), a status's favourites, boosts and quotes, scheduled statuses, followed hashtags, notification requests, a
+  notification group's accounts, and the admin reports, accounts and domain blocks. Mastodon 4.7.5 answers 500 on those,
+  as `records_continue?` holds for the empty page and its cursor is read (`Api::Pagination#pagination_max_id`).
+- A cursor (`max_id`, `since_id`, `min_id`, each the last value sent) is read only as 1 to 19 decimal digits (`CURSOR`
+  in `src/mastodon/pagination.ts`); any other value is ignored, as if absent, and a 19-digit value past a signed 64-bit
+  integer is a cursor like any other, with no range refusal of its own. Mastodon casts it on each path: a list it reads
+  from its database by ActiveModel's integer type (`Paginable`, so `5abc` reads as 5), the home and list timelines by
+  `String#to_i` (`Feed#get`, so `max_id=abc` reads as 0, an empty page, and any length is read whole).
   `test/pagination-params.test.ts` ("cursors"). Accepted, 2026-11-18.
 - The body of a `GET` (or `HEAD`) request is not read; Mastodon reads a `GET`'s JSON body as its parameters too, so
   `{"limit":1}` sent with a `GET` of a list limits its page there. Accepted, 2026-11-18.
@@ -1621,9 +1606,9 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
   attachments' files, which `kopje.remote_media.usage` reports for the whole cache.
 - An absent, null or empty `domain` counts 0. Mastodon's totals (`Account.where(domain: params[:domain])`) count the
   local accounts, and their follows, statuses, reports and media, for an absent or null one, and nothing for an empty
-  one (`domain = ''`). A `domain` is trimmed of
-  JavaScript's white space and normalized as a domain block's (lowercase, punycode); Mastodon reads it as sent
-  (`Account.where(domain: params[:domain])`), so a domain written in capitals or in Unicode counts no account there.
+  one (`domain = ''`). A `domain` is trimmed of JavaScript's white space and normalized as a domain block's (lowercase,
+  punycode); Mastodon reads it as sent (`Account.where(domain: params[:domain])`), so a domain written in capitals or in
+  Unicode counts no account there.
 - `include_subdomains` is read as Rails casts a boolean: empty, `0`, `f`, `F`, `false`, `FALSE`, `off` and `OFF` are
   false; Mastodon takes any value sent as true, `"false"` included. The series counts the domain itself only, as
   Mastodon 4.7.5 does.
@@ -1692,11 +1677,10 @@ Media (the `MediaAttachment` entity):
   again in a moment.` while two video or audio uploads are already processing, and a failed processing is not tried
   again by the server (Mastodon retries the job). An audio file has no artwork (`preview_url` null) unless it has a
   thumbnail, where Mastodon extracts the cover. While the processor is not accepting uploads, video and audio are
-  refused as before (422 `Validation failed: File content type is invalid`). So are they under a `Content-Type` outside
-  the plain form every
-  common client sends (`multipart/form-data`, then `;`-separated `name=token` or `name="quoted"` parameters with no
-  backslash, and exactly one `boundary` of RFC 2046's characters): the request is read whole, as an image's, with the
-  image path's limits and errors (a file over 16 MB is refused for its size before its type).
+  refused (422 `Validation failed: File content type is invalid`). So are they under a `Content-Type` outside the plain
+  form every common client sends (`multipart/form-data`, then `;`-separated `name=token` or `name="quoted"` parameters
+  with no backslash, and exactly one `boundary` of RFC 2046's characters): the request is read whole, as an image's,
+  with the image path's limits and errors (a file over 16 MB is refused for its size before its type).
 - A video or audio upload whose form has several errors may report another of them than Mastodon: a `thumbnail` sent
   before the `file` part is judged once the file is known to be video or audio, before any part after the file is read,
   so a description too long after the file is not the error reported, where Mastodon reports the description first. A
@@ -1751,22 +1735,21 @@ Media (the `MediaAttachment` entity):
   cron has fetched it, and its remote URL until then or when no copy can be made; `preview_url` is the cached copy of
   its icon, else for an image the still of its cached file (the file itself when it is still), else its remote icon,
   else `url` for an image or an unknown file. Mastodon shows its own copy and the `small` style it makes from every
-  image, video and gifv; Kopje makes no `small` style. Where the operator turns remote stills on, a video or gifv
-  cached after that, with no icon of its own (one that is not the file itself), shows a still frame Kopje made from its
-  cached file, at most 640 pixels on its long edge, and, when the attachment has no blurhash, the still's; otherwise,
-  and while its still is not made yet or cannot be made, it shows `/assets/video-poster.png`, a plain dark image.
-  Mastodon makes a frame from every video and gifv it stores. An audio file without an icon shows `null`, as
-  Mastodon's. An icon that is the file itself (its fragment aside) counts as
-  none. A video's preview is never the video file, which a client would fetch whole as an image, and in a status or its
-  history never `null`, which Mastodon for Android takes as an invalid attachment and drops; edit history applies the
-  same to versions recorded before, and the public pages show such a video without a poster. `remote_url` and
-  `preview_remote_url` stay the remote URLs, as in Mastodon. An attachment is cached only when it arrived within
-  `MEDIA_CACHE_RETENTION_DAYS` (default 14; 0 keeps every one), and its copy is deleted once stored longer, as
-  Mastodon's media cache retention deletes its copies. Images (JPEG, PNG, GIF, WebP and AVIF) below 16 MiB, at most
-  16,777,216 pixels, are cached with their metadata stripped, an animated one with a still below 2 MiB; video and audio
-  (MP4, M4A, WebM, MP3, FLAC and WAV) below 40 MiB with a declared length are cached as served; icons below 2 MiB. Ogg,
-  HEIC and HEIF, QuickTime and anything past a cap keep the remote URL (Mastodon takes 16 MB images and 99 MB video).
-  The cache's bytes are capped by `REMOTE_MEDIA_CACHE_BYTES` with the other remote media.
+  image, video and gifv; Kopje makes no `small` style. Where the operator turns remote stills on, a video or gifv cached
+  after that, with no icon of its own (one that is not the file itself), shows a still frame Kopje made from its cached
+  file, at most 640 pixels on its long edge, and, when the attachment has no blurhash, the still's; otherwise, and while
+  its still is not made yet or cannot be made, it shows `/assets/video-poster.png`, a plain dark image. Mastodon makes a
+  frame from every video and gifv it stores. An audio file without an icon shows `null`, as Mastodon's. An icon that is
+  the file itself (its fragment aside) counts as none. A video's preview is never the video file, which a client would
+  fetch whole as an image, and in a status or its history never `null`, which Mastodon for Android takes as an invalid
+  attachment and drops; edit history applies the same to versions recorded before, and the public pages show such a
+  video without a poster. `remote_url` and `preview_remote_url` stay the remote URLs, as in Mastodon. An attachment is
+  cached only when it arrived within `MEDIA_CACHE_RETENTION_DAYS` (default 14; 0 keeps every one), and its copy is
+  deleted once stored longer, as Mastodon's media cache retention deletes its copies. Images (JPEG, PNG, GIF, WebP and
+  AVIF) below 16 MiB, at most 16,777,216 pixels, are cached with their metadata stripped, an animated one with a still
+  below 2 MiB; video and audio (MP4, M4A, WebM, MP3, FLAC and WAV) below 40 MiB with a declared length are cached as
+  served; icons below 2 MiB. Ogg, HEIC and HEIF, QuickTime and anything past a cap keep the remote URL (Mastodon takes
+  16 MB images and 99 MB video). The cache's bytes are capped by `REMOTE_MEDIA_CACHE_BYTES` with the other remote media.
 - A domain block with `reject_media` caches nothing of the accounts it rules (their profile images and attachments)
   or of the emoji named for its domains, so they keep their remote URLs, where Mastodon shows `missing.png` for a
   profile image and, for an attachment, a link to its media proxy, which fetches nothing for such a domain. Its rule
@@ -1832,24 +1815,23 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   failure recorded. Mastodon cannot store such rows.
 - A post, an edit or a scheduled post whose media are a new set answers Mastodon's `not_ready` for a video or audio
   upload still processing or failed, and refuses a video or audio file beside other media, as Mastodon does. An edit
-  that keeps the set its status shows (in any order), and the publication of a scheduled status already held, keep
-  the outcome they had before these rules: a status the cutover converted with a video among images is edited and
-  published as before, where Mastodon refuses the edit. A redraft of such a status (a new post naming the media its
+  that keeps the set its status shows (in any order), and the publication of a scheduled status already held, are not
+  refused for mixing a video or audio file with other media: a status the cutover converted with a video among images is
+  edited and published, where Mastodon refuses the edit. A redraft of such a status (a new post naming the media its
   deletion detached) is a new set and is refused as Mastodon refuses it; for 24 hours after the deletion (the grace
-  period of detached media) the owner can still post the video alone and the images together. An image reservation
-  that never completed, and a video or audio upload whose request is still sending it, are not found (Mastodon's
-  processing has no such state).
+  period of detached media) the owner can still post the video alone and the images together. An image reservation that
+  never completed, and a video or audio upload whose request is still sending it, are not found (Mastodon's processing
+  has no such state).
 - A `scheduled_at` of white space alone (a space, U+0085, U+FEFF) answers 422 `Record invalid`, an empty one reads
   as absent. Mastodon's `String#to_datetime` (`PostStatusService`) reads a value blank to Rails (a space, U+0085) as
   absent, so the status is posted at once, and refuses U+FEFF. Accepted, 2026-11-18.
 - Text length (a blank text's length after its warning becomes the text, in the Store; on an edit after the media ids,
   as Mastodon), the poll, `scheduled_at` and the visibility are checked before the media ids and `allowed_mentions`;
   Mastodon checks the media first.
-- A scheduled post whose text is blank and whose content warning is not, and which quotes nothing, is scheduled with
-  the warning as its text, no warning and `sensitive` true, as an immediate post is written, and is published so.
-  Mastodon keeps the blank text and drops the warning from the stored parameters
-  (`PostStatusService#scheduled_options`), so its publication fails without media and posts the blank text without the
-  warning with media.
+- A scheduled post whose text is blank and whose content warning is not, and which quotes nothing, is scheduled with the
+  warning as its text, no warning and `sensitive` true, as an immediate post is written, and is published so. Mastodon
+  keeps the blank text and drops the warning from the stored parameters (`PostStatusService#scheduled_options`), so its
+  publication fails without media and posts the blank text without the warning with media.
 - `allowed_mentions[]` is compared with the mentions Kopje writes: accounts it already knows (nothing is fetched), not
   blocked by the author and not suspended. `unexpected_accounts` lists the accounts that fit the 8 MiB answer, in
   mention order. A scheduled post's parameters, the list included, must fit 128 KiB of JSON (`Record invalid`); the
@@ -1951,161 +1933,70 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   is. Mastodon reads it as its compaction under `full_context` (`JsonLdHelper#compact`), unless its JSON-LD limits
   (1,000 values; no `@graph`, `@included` or `@reverse`) or the compaction refuse it, patched toward the body as
   received (`JsonLdHelper#patch_for_forwarding!`): under each key the two share, a one-element array the compaction made
-  a single value is an array again, and `as:Public` is the public collection's IRI again. Checked against Mastodon
-  4.7.5's own pipeline and readers: what Mastodon 4.6.11 and 4.7.5 LD-sign (Create and Update of a Note and a Question,
-  Delete of a Note, Announce and its Undo, `Update(Person)`, Delete of an account, Add and Remove of a featured hashtag,
-  Move, QuoteRequest, FeatureRequest, and the Delete of a quote's and of a collection item's stamp) and Fedify 2.4.5's
-  Create of a Note and of a Question, `Update(Person)`, Follow, Like, Announce, Undo, Delete, Accept, Block and
-  EmojiReact, with and without an FEP-8b32 proof, Kopje reads as Mastodon reads them. Mastodon's reading of each is the
-  body as received but for Fedify's `votersCount` and `EmojiReact` without a proof, names Fedify's context defines
-  otherwise than `full_context`, which neither reads (below); a Fedify activity with a proof Mastodon reads as received,
-  and so does Kopje, which reads an `EmojiReact` as a favourite, as it does unsigned, where Mastodon has no reader for
-  one. The fixtures and their capture scripts are in `test/fixtures/ld-signed/` (`test/inbox-signed-forms.test.ts`). The
-  activity's `type` and its embedded object's (an `Undo`'s, a `Reject`'s or an `Accept`'s) given as an absolute IRI
-  (a compact one such as `as:Follow` is ignored, below) are read as the name the compaction gives them, as Mastodon
-  reads them, only in a body of a closed shape whose compaction Kopje can show succeeds: under the ActivityStreams
-  context, alone or with security/v1's,
-  and without a proof; at most 1,000 values as received, and at most 1,000 once compacted, counting `full_context` for
-  its context, its signature once as received, and three for each other value; every `id`, and every value of an
-  IRI-typed property but a null or an object, an http(s) IRI as written or over a prefix of the body's context; every
-  type such an IRI or a name other than `id` and `type` (which expand to keywords); every value of a language map
-  property itself a map of language tags to strings or nulls; and no array directly in another. Every other body's types
-  are read as given. Where Mastodon's limits or its JSON-LD processing refuse the body, it reads the body as received
-  too (each refusal is captured: too many values as received or once compacted, a `@graph` key, a data-integrity proof
-  that keeps something once JSON-LD expands it, an `id` or a type that is null or not a string, a type or an IRI over a
-  prefix only `full_context` defines, a proof's member JSON-LD refuses, a language map member that is not a string, an
-  object with a null `id` or type in an array given to a language map property, which JSON-LD reads as a node). Where
-  Mastodon compacts it all the same (an inline context, an array in an array, a proof, a blank node, a relative or
-  non-http(s) IRI (one whose http(s) scheme is upper-case or not followed by `//` included), a number or a boolean where
-  an IRI is expected (`cc: true`), a type naming `id` or `type`, a language map given as an array or of another shape, a
-  body whose compaction stays within the limit where the count of three per value passes it), such an activity applies
-  less than Mastodon's: a retraction so typed is missed (an `Undo` of a block leaves the block; #1717). A
-  retraction, a `Reject`, `Undo`, `Block` or `Delete` by the name its type is read as, is read as the compaction names
-  it in some of these too, each where Mastodon's library compacts it (`test/fixtures/ld-signed/forms.json`) and
-  jsonld.js compacts it alike: under an inline context of definitions Mastodon or Fedify write (below), each value of a
-  name it types `@id` held to the rule for an IRI-typed property's (one over a prefix only `full_context` defines makes
-  Mastodon's library raise; a datatype given as a compact IRI, `xsd:boolean`, it refuses and jsonld.js takes); with an
-  array directly in another, which JSON-LD flattens (an `actor` so given is read as its one element, as the compaction
-  writes it), but under a name with a `@list` container (a list of lists); with a proof whose keys are plain names,
-  which the ActivityStreams and security contexts leave undefined (its nodes held to the rules above, not a
-  data-integrity proof's `@graph`); with a number or a boolean where an IRI is expected (`cc: true`), which the
-  compaction writes under the property's IRI, but as its `object` or `actor` (an `actor: 5` Mastodon applies for the
-  request's signer, and Kopje refuses); with an `id`, or a value where an IRI is expected, that is a blank node, a
-  relative reference or an IRI of another scheme (`urn:…`, `HTTPS://…`), which the compaction, having no base, writes as
-  given, but one shaped like a keyword (`@foo`, dropped), a blank node with no label or one holding `_:` (labelled
-  anew), one over a prefix only `full_context` defines (`as://…`, which raises), and one jsonld.js writes otherwise
-  (empty, holding whitespace, or with a `.` or `..` segment before its first `?` or `#`, one either ends too, where a
-  query or a fragment is kept as given), or with `//` other than right after a scheme that is no name of `full_context`
-  (`//…`, `a//b`, `tag://…`); an activity's or its undone object's `id`
-  that is not on its actor's origin is then refused all the same (ID-6), where Mastodon's `Undo` of a block reads
-  neither; with a type naming `id` or `type`, which JSON-LD expands to the keyword and the compaction
-  writes as that alias again; with a string or an array of strings under a language map property, which JSON-LD reads
-  as values of the property (`content` for `contentMap`), or a map whose lower-case tag holds an array of strings, but
-  a number or a node there, an array in such an array (which jsonld.js refuses), or an upper-case tag holding one
-  (which jsonld.js lower-cases); and with more values than three for each allows, where its compaction stays within
-  1,000 as counted by what it writes under each name (a value under a name that means the same on both sides, with no
-  container, its own count; any other three), at most the values Mastodon's library and jsonld.js write. Kopje reads a
-  name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it, whatever the
-  body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
-  neither defines it (in a typed node, as the type's own context makes it mean on each side: the data-integrity
-  contexts' `DataIntegrityProof`, the Multikey and CID contexts' `Multikey`); a type's where the IRI the body's contexts
-  give it is the one `full_context` names so. A name `full_context` defines that the body's contexts leave undefined
-  (under the ActivityStreams and security contexts alone: `QuoteRequest`, `Hashtag`, `Emoji`, `PropertyValue`,
-  `sensitive`, `quote`, `atomUri`, `conversation`, `votersCount`, `focalPoint`, `blurhash`, an interaction policy,
-  `manuallyApprovesFollowers`, `discoverable`, `featured`, …) the compaction writes as a blank node's name
-  (`_:QuoteRequest`), and a member's name they define otherwise (a `quote` not typed `@id`, Misskey's `quoteUrl` as
-  `as:quoteUrl`, which `full_context` leaves undefined) as its IRI. So neither applies such a `QuoteRequest`, a `Delete`
-  naming its status by such an `atomUri`, or an `Add` of such a `Hashtag`, nor reads such a status's sensitivity,
-  hashtags, emojis, quote, conversation, poll voters or media focus and blurhash, or such an actor's fields, emojis or
-  settings, and a `QuoteRequest` cannot approve a quote neither reads; each is captured beside the same body with the
-  name defined, which both apply. Of a name read so, the compaction writes under it only the values its type takes, and
-  any other under its IRI, which neither reads: a boolean or a number where the name is typed `@id` (a `quote` given as
-  `true` leaves the Note's other quote a legacy one, an `automaticApproval` of `true` states no policy), an object where
-  it is typed with a datatype (a poll's `closed` given as an object leaves it open), a language map but a map that holds
-  a text (written under `content` for `contentMap`), a list holding any such value, and `expiration` whatever its value
-  (written `expires`). An `Accept` of our quote request is matched by its id whatever its type, as in Mastodon. Kopje
-  reads less than Mastodon where a name its context defines otherwise is given a value the compaction still writes under
-  the name (an object with an `id`, or an IRI where the context types the name `@id` and `full_context` does not), but
-  for `sensitive`: where the context defines it otherwise, Kopje reads it as true wherever Mastodon may mark the status
-  (an IRI or a value of a datatype, which the compaction writes as an object, a list, written as a `@list` object, an
-  array, an empty one too, and a float `0` (`0.0`), each of which Mastodon takes as true; not a lone `false` where it is
-  typed `@id`), and it marks the status where Mastodon does not in three cases: where the context types it `@id` and
-  gives it an integer `0`, which Kopje's JSON does not tell from a float one; where Mastodon's JSON-LD library refuses
-  that definition (a datatype given as a compact IRI over a prefix of the ActivityStreams context, `xsd:boolean`) and
-  Mastodon reads as received a value its sensitive column takes as false (`false`, `0`, `"false"`, `"0"`), and where the
-  context types it `@id` and gives it two equal values (`[false, false]`), which Mastodon's compaction makes one, so
-  that its patch stops and leaves `false`. It reads less too where Mastodon gives up the compaction of a body Kopje
-  cannot show it gives up: it reads as received a body Mastodon's JSON-LD limits refuse as received, and one whose
-  top-level proof, a `@graph` in the data-integrity contexts, keeps something once expanded, as jsonld.js expands it
-  with the preloaded contexts (a proof of a null value, of `@language` alone or beside members that expand to nothing,
-  or of an empty `@set` keeps nothing, and Mastodon reads the compaction; jsonld.js leaves an empty node of a `@set` of
-  nothing, which Kopje reads as Mastodon's library does, as nothing). It reads as named one whose expansion raises (a
-  keyword in a proof given a value of the wrong shape, a datatype given as such a compact IRI), one whose proof holds a
-  key that starts with `@` but those a node holds (a keyword of contexts or frames such as `@version`, `@vocab` or
-  `@none`, which Mastodon's library drops and jsonld.js keeps, or a string shaped like one), or a key a line of which
-  is shaped like one (`"x\n@abc"` defined in the body's context, which Mastodon's library drops, as it tests each line),
-  one whose proof Mastodon's
-  library keeps where jsonld.js drops it (an empty type list, a `@set` under `@nest`, a language map holding an array in
-  an array), one whose proof names a context a body may not, or an inline one the rules refuse (a keyword alias), one
-  whose body and proof give more than 32 contexts, types and values under keys whose definition carries a context (each
-  node of a language map's array counted), and one with a proof elsewhere than at the top (#1717). Otherwise
-  the readings differ only for forms none of these writes, and Kopje reads each as written: a status's or a mention's
-  `type` given as
-  an IRI is read as given, so such a status is refused and such a mention read as absent, where Mastodon reads the type
-  the compaction gives it. A one-element array both read as received, and each reader then reads it as it reads the same
-  body unsigned, but in a retraction (below): an `actor` given so is refused, where Mastodon applies the activity for
-  the request's signer; a text given so is read as empty, where Mastodon
-  stores the array's JSON; an `inReplyTo` given so is read as absent, where Mastodon's job raises and stores nothing; an
-  `object`, `target` or `instrument` given so is refused, and an `Undo`'s or a `Reject`'s read as absent, where
-  Mastodon's job raises too; a single poll option is a poll in both. The patch cannot put back an array the compaction
-  shortened (a `null` it left out): an embedded actor's `inbox: [null]` is read, where Mastodon's `[]` drops the update.
-  And it stops there, so the members after it in the same object keep the compaction's single values: an `object` given
-  as a one-element array after `to: [null]` is refused, where Mastodon applies the activity, but in a retraction. A
-  retraction, a `Reject`, `Undo`, `Block` or `Delete` by the name its type is read as, is read in these forms as the
-  compaction writes them, where Kopje shows the compaction succeeds (the closed shape above;
-  `test/fixtures/ld-signed/retractions.json` holds what Mastodon's own service hands its handler from each), each value
-  only where Kopje shows the compaction writes it as given, an http(s) IRI under no namespace of `full_context`'s
-  prefixes: its `actor` given as a one-element array of such an IRI or of a node whose `id` is one is read as that
-  element, as Mastodon tells a relay by it and applies the activity for its signer; and the member the patch stops at,
-  and, in each object the patch stops in, each member after it (its `object`, an embedded activity's `actor` or
-  `object`), given as an array under a name typed `@id` with no container whose values, the arrays in it flattened and
-  its `null`s dropped, are such IRIs or nodes whose `id`, if they have one, is one, is read as the compaction writes it,
-  those values, one as itself (`object: [null, a]` or `[[], a]` as `a`, `to: [null]` as `[]`), and so through the
-  objects in it; a `type` given there as an array of one is read as that type, as the compaction writes the name of its
-  IRI. Kopje tells where the patch stops only at an array under a name typed `@id` with no container whose values, the
-  arrays in it flattened, are `null`s and http(s) IRIs: it stops where they are fewer or more than its elements, as
-  JSON-LD's expansion flattens an array in another and drops a `null` (`to: [null]`, `cc: [a, a, null]`,
-  `object: [[a], []]`, `to: [[a, b]]`, `to: [[]]`; an array of equal values is not shortened and stops neither), and not
-  where they are as many, nor at an array of such IRIs and nodes. A member Kopje's readers read (the `id`, `type`,
-  `actor` or `object` of the activity, and so of each node it gives as one of them) that Kopje does not read as Mastodon
-  does makes the activity refused, where Kopje, reading it as received, would end what an `Undo` names by its id: after
-  the stop, one the compaction writes otherwise than as given (an IRI under such a namespace, which it writes as a
-  compact IRI, `as:Public`; one of another scheme, `tag:`; a node so identified); and after any other array, whose stop
-  Kopje does not tell (one holding a value the name does not take, `to: [5, a]`, or an IRI of another scheme beside a
-  `null`), or in an object holding a key shaped like an array index, whose order JavaScript does not keep, one the
-  patch would put back otherwise than the compaction writes it (an array, the public collection). Where Mastodon applies
-  such an `Undo` or a `Reject`, Kopje reads less (#1717). Any other member there, which no reader reads, is read as
-  received. A `Delete` typed by its plain name whose `object` is an array is read as received, and its array refused,
-  as Mastodon applies nothing: its inbox reads the `object` of a `Delete` or an `Update` so typed whose actor is present
-  before anything else (`inboxes_controller.rb` `unknown_affected_account?`, `value_or_id`), which raises on an array,
-  and answers 500 each time it is sent again; one typed as an IRI, which that check passes, and an `Undo` or a `Reject`
-  given so are applied by both. Such an `actor` of two values is refused, as Mastodon's job raises; one of a `null`
-  beside the signer is read as the signer's, as the patch stops at it; and one of `null` alone, which Mastodon's
-  compaction writes as `[]` and so applies for the signer, is refused too (Kopje reads less), as is one of an IRI Kopje
-  does not show the compaction writes as given (in a scheme of mixed case, or a namespace's own IRI), which Mastodon
-  reads as another actor than the signer. An `Undo` of a `Follow`, a `Block` or a `Like` whose undone activity's
-  `object` the patch gives back as an array (given as one, or as an array in another, which the compaction flattens) is
-  refused, as Mastodon's handler raises on it (`undo.rb` `target_uri`); where the patch stops at it or before it,
-  Mastodon reads the compaction's single value and applies it where it names an account, as Kopje does where it reads
-  the stop and that value as given. An `Undo` whose undone activity's type is an array of types is refused too, as
-  `undo.rb` takes no array as a type; an empty one both read as none in the compaction. An `Undo` Kopje does apply,
-  read so or as received (Mastodon's own fallback included), ends what an unsigned one does.
-  Each ends what its signer did or holds, or lifts its own block, so reading it so grants nothing its signer could not
-  send directly; every other type keeps the reading as received.
+  a single value is an array again, and `as:Public` is the public collection's IRI again. The forms below are captured
+  against Mastodon 4.7.5's own pipeline and readers in `test/fixtures/ld-signed/` (`forms.json`, `retractions.json`,
+  with their capture scripts; `test/inbox-signed-forms.test.ts`).
+  - **What senders write.** What Mastodon 4.6.11 and 4.7.5 LD-sign (Create and Update of a Note and a Question, Delete
+    of a Note, Announce and its Undo, `Update(Person)`, Delete of an account, Add and Remove of a featured hashtag,
+    Move, QuoteRequest, FeatureRequest, and the Delete of a quote's and of a collection item's stamp) and Fedify 2.4.5's
+    Create of a Note and of a Question, `Update(Person)`, Follow, Like, Announce, Undo, Delete, Accept, Block and
+    EmojiReact, with and without an FEP-8b32 proof, Kopje reads as Mastodon reads them. Mastodon's reading of each is
+    the body as received but for names Fedify's context defines otherwise than `full_context` (`votersCount`, and
+    `EmojiReact` without a proof), which neither reads; Kopje reads an `EmojiReact` as a favourite, as it does unsigned,
+    where Mastodon has no reader for one.
+  - **Types.** The activity's `type` and its embedded object's (an `Undo`'s, a `Reject`'s or an `Accept`'s) given as an
+    absolute IRI are read as the name the compaction gives them only in a body of a closed shape whose compaction Kopje
+    can show succeeds: under the ActivityStreams context, alone or with security/v1's, without a proof, at most 1,000
+    values as received and once compacted (counting three for each value), every `id` and IRI-typed value an http(s)
+    IRI, every type such an IRI or a plain name, every language map a map of tags to strings or nulls, and no array
+    directly in another. Every other body's types are read as given; a status's or a mention's `type` given as an IRI
+    there is read as given, so such a status is refused and such a mention read as absent.
+  - **Names.** Kopje reads a name, as a member or as a type, only where the compaction writes it so: where it means in
+    the body's contexts what it means in `full_context`, or neither defines it. A name `full_context` defines that the
+    body's contexts leave undefined (`QuoteRequest`, `Hashtag`, `Emoji`, `PropertyValue`, `sensitive`, `quote`,
+    `atomUri`, `votersCount`, `focalPoint`, `manuallyApprovesFollowers`, …), or define otherwise, is read by neither;
+    so is a value the compaction writes under the name's IRI because its type does not take it (a boolean where the
+    name is typed `@id`, an object where it has a datatype, `expiration` whatever its value). An `Accept` of our quote
+    request is matched by its id whatever its type, as in Mastodon.
+  - **`sensitive`.** Where the body's context defines it otherwise, Kopje reads it as true wherever Mastodon may mark
+    the status, and marks the status where Mastodon does not in three cases: an integer `0` typed `@id` (Kopje's JSON
+    does not tell it from a float one); a definition Mastodon's JSON-LD library refuses (a datatype given as a compact
+    IRI such as `xsd:boolean`), whose value Mastodon reads as received as false; and two equal values typed `@id`
+    (`[false, false]`), which Mastodon's compaction makes one, so that its patch stops and leaves `false`.
+  - **Reading less.** Where Mastodon compacts a body Kopje cannot show it compacts (an inline context, an array in an
+    array, a proof, a blank node, a relative or non-http(s) IRI, a number or a boolean where an IRI is expected, a body
+    within the limit only as compacted, a proof JSON-LD expands to something, more than 32 contexts, types and values
+    under keys whose definition carries a context, a proof elsewhere than at the top), Kopje reads the body as
+    received, and so applies less: a retraction so typed is missed (an `Undo` of a block leaves the block), but for the
+    retraction forms below.
+  - **One-element arrays.** Both read them as received, and each reader then reads it as it reads the same body
+    unsigned, but in a retraction (below): an `actor` given so is refused, where Mastodon applies the activity for the
+    request's signer; a text is read as empty, where Mastodon stores the array's JSON; an `inReplyTo` is read as absent
+    and an `object`, `target` or `instrument` refused, where Mastodon's job raises. The patch cannot put back an array
+    the compaction shortened (a `null` it left out), and stops there, so the members after it keep the compaction's
+    single values: an embedded actor's `inbox: [null]` is read, where Mastodon's `[]` drops the update.
+  - **Retractions.** A `Reject`, `Undo`, `Block` or `Delete`, by the name its type is read as, is also read as the
+    compaction writes it in the forms where Mastodon's library and jsonld.js compact it alike and Kopje shows the
+    compaction writes each value as given (an http(s) IRI under no namespace of `full_context`'s prefixes): an inline
+    context of definitions Mastodon or Fedify write, an array directly in another, a proof of plain names, an `id` that
+    is a blank node, a relative reference or another scheme, more values than the count of three allows, and the
+    members at and after the point the patch stops at (an `actor` of one such IRI is read as it, an `object: [null, a]`
+    as `a`, a one-element `type` as that type). An activity's or its undone object's `id` not on its actor's origin is
+    refused all the same (ID-6). A member Kopje's readers read (`id`, `type`, `actor`, `object`) that Kopje cannot read
+    as Mastodon does makes the activity refused, where Mastodon may apply it. An `actor` of two values, of `null` alone,
+    or of an IRI Kopje cannot show the compaction keeps, is refused; one of a `null` beside the signer is the signer's.
+    An `Undo` whose undone activity's `object` the patch gives back as an array, or whose type is an array of types, is
+    refused, as Mastodon's `undo.rb` raises on it. A `Delete` typed by its plain name whose `object` is an array is
+    refused, as Mastodon's inbox raises on it before anything else (`inboxes_controller.rb`
+    `unknown_affected_account?`) and answers 500 each time it is sent again. An `Undo` Kopje applies ends what an
+    unsigned one does: each ends what its signer did or holds, or lifts its own block, so reading it so grants nothing
+    its signer could not send directly; every other type keeps the reading as received.
+
   Compacting would add JSON-LD processing to every signed activity before its HTTP signature is verified, and its
   readers would read a form other than the one the author proof verifies. This is weighed again when a sender is seen
   writing one of these forms, or when the fixtures re-captured at a new reference release no longer read the same.
   Accepted, 2026-11-16.
+
 - An activity that carries a Linked Data signature is read only where nothing Kopje reads from it has another meaning in
   Mastodon's reading, and is otherwise ignored (answered 202): its contexts must give each ActivityStreams term and each
   property Mastodon's `full_context` defines that context's meaning, give no other property one of those meanings or a
@@ -2119,7 +2010,7 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   name both contexts type `@id` with no container (its `object`, `actor`, `target`, `to`, …), is read as its IRI where
   Kopje shows the compaction succeeds with it so and writes it so (an http(s) IRI under no namespace of a prefix of
   `full_context`), as Mastodon's compaction writes it and its handler reads it. Elsewhere such a retraction is ignored
-  and leaves in place the follow, the block or the status Mastodon's ends (#1717): the reference beside another key
+  and leaves in place the follow, the block or the status Mastodon's ends: the reference beside another key
   (its `type`: a `Delete`'s status stays; an `Undo` of a `Follow`, a `Block` or a `Like` so given ends nothing in
   Mastodon either, as its handler seeks what to end by the undone activity's own `object`, which such a reference
   lacks), under a name not typed `@id` (`content`), of an IRI the compaction writes as a compact IRI (`as:Public`), or
@@ -2143,15 +2034,14 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   proof for each key it signs with). Each form where Ruby's json-ld and jsonld.js part lies outside what those senders
   write, so none is read. Where Mastodon applies something of such an activity, Kopje applies nothing: one typed, or
   with its object typed, as a compact IRI (`as:Like`, `as:Undo`, `as:Block`, `as:Reject`, `as:Follow`, `as:Delete`,
-  `as:Accept`, `as:Note`, `as:Mention`), so such a retraction leaves the follow, the block or
-  the status Mastodon's ends (#1717); one whose context holds a definition another sender writes (Misskey's, whose
-  `featured` is untyped and which defines `Key`, `freeText`, `vcard` and its own `_misskey_*` names, so that Misskey's
-  LD-signed relay deliveries are ignored; an inline name of the sender's own given a key; a prefix named `https`); a
-  status whose context defines `sensitive` otherwise (typed `@id` or as a boolean), which is not stored; one whose
-  data-integrity proof names a context without ActivityStreams; and one naming a context URL twice or carrying more than
-  four proofs. Of the 147 LD-signed forms the captures hold, 50 are so ignored, and Mastodon applies something of 26;
-  every body Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes, and so does each release's actor
-  context from 3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
+  `as:Accept`, `as:Note`, `as:Mention`), so such a retraction leaves the follow, the block or the status Mastodon's
+  ends; one whose context holds a definition another sender writes (Misskey's, whose `featured` is untyped and which
+  defines `Key`, `freeText`, `vcard` and its own `_misskey_*` names, so that Misskey's LD-signed relay deliveries are
+  ignored; an inline name of the sender's own given a key; a prefix named `https`); a status whose context defines
+  `sensitive` otherwise (typed `@id` or as a boolean), which is not stored; one whose data-integrity proof names a
+  context without ActivityStreams; and one naming a context URL twice or carrying more than four proofs. Every body
+  Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes, and so does each release's actor context from
+  3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
 - A remote status's `url` is the first `Link` of its `url` whose `mediaType` is `text/html`, else its first value (a
   string, or a Link's `href`; `urlOf` in `src/federation/remote-status.ts`). Mastodon's `url_to_href`
   (`json_ld_helper.rb:46-61`) takes the first value of a list that begins with a string, and otherwise the first Link
@@ -2166,12 +2056,11 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   changes nothing of the status (its transaction rolls back). An `Update` that names no newer version (the implicit
   update, which assigns no `sensitive`) still applies what Kopje's implicit update applies, its poll's counts, voters
   and end, its quote, its quote policy and its untrusted counts, and a `Create` of a status already stored, or of a
-  vote, assigns none and is applied as without it. Which `Update` is
-  newer differs at one boundary, where Mastodon refuses an `Update` with `""` that Kopje applies as implicit (both
-  "Retractions and edits of remote statuses", below). In a
-  body read as received, a JSON number with a fraction or an exponent that equals zero (`0.0`, `0e0`) is read as not
-  sensitive, where Mastodon's Float marks the status: `JSON.parse` does not tell it from `0` (an LD-signed body whose
-  context types `sensitive` `@id` marks any number instead, above). Accepted, 2026-11-17.
+  vote, assigns none and is applied as without it. Which `Update` is newer differs at one boundary, where Mastodon
+  refuses an `Update` with `""` that Kopje applies as implicit (both "Retractions and edits of remote statuses", below).
+  In a body read as received, a JSON number with a fraction or an exponent that equals zero (`0.0`, `0e0`) is read as
+  not sensitive, where Mastodon's Float marks the status: `JSON.parse` does not tell it from `0` (an LD-signed body
+  whose context types `sensitive` `@id` marks any number instead, above). Accepted, 2026-11-17.
 - A JSON text from a remote server whose string token, a key or a value, holds an unpaired surrogate escape is refused
   as JSON that does not parse, wherever the token sits, a member a later duplicate key replaces included
   (`jsonTextMalformed` in `src/platform/json-bounds.ts`): an inbound activity (nothing is applied, on spool replay and
@@ -2252,12 +2141,12 @@ reaches; Mastodon's `Account.inboxes`, `app/models/account.rb:490-493`; NET-2 an
   (below). Accepted, 2026-11-17.
 - A local account's suspension and unsuspension `Update` (Mastodon's `AccountReachFinder`,
   `app/lib/account_reach_finder.rb`: its followers, reporters and recently mentioned, followed and requested accounts)
-  reads each account's inbox by the same rule as its audience is staged, and the job's staged rows by it too, so rows
-  an import or an earlier release staged outside it are dropped unsent. An account whose inbox is outside the rule,
-  which only an import or a restored dump holds, is sent neither that `Update` nor a block's collection `Remove`, where
+  reads each account's inbox by the same rule as its audience is staged, and the job's staged rows by it too, so rows an
+  import or an earlier release staged outside it are dropped unsent. An account whose inbox is outside the rule, which
+  only an import or a restored dump holds, is sent neither that `Update` nor a block's collection `Remove`, where
   Mastodon's reach finder and `Account.inboxes` take its inbox whatever its length. Such an inbox takes no place in a
-  capped source (the recently mentioned, followed and requested accounts, 2,000 inboxes each): the next account's
-  inbox is reached instead, so the source still reaches as many inboxes as Mastodon's, which refuses none. Accepted,
+  capped source (the recently mentioned, followed and requested accounts, 2,000 inboxes each): the next account's inbox
+  is reached instead, so the source still reaches as many inboxes as Mastodon's, which refuses none. Accepted,
   2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
