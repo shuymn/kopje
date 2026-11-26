@@ -22,8 +22,9 @@ import { harness } from "./app-helpers";
 import { BUILD } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { stillPng } from "./media-job-helpers";
+import { type Bookmark, forgetRestore, putTablesBack, snapshotTables } from "./media-processing-helpers";
 import { mp4 } from "./remote-media-fixtures";
-import { bucketWith, mediaWorld, type MediaWorld } from "./remote-media-helpers";
+import { auditBehind, bucketWith, mediaWorld, type MediaWorld } from "./remote-media-helpers";
 
 // PITR validation of remote stills (#1828 PR5-2, P-PITR2; domain/remote-media.ts validationBatch and
 // recordRemoteMediaValidation, federation/remote-media.ts validate): a still is headed only where a stored row names
@@ -111,32 +112,14 @@ const slotStill = async (w: MediaWorld, slot: string) =>
     )
   )[0];
 
-// A PITR bookmark of the tables these cases read, and the restore to it: the tables put back and the marker written.
-type Bookmark = Record<string, Record<string, SqlStorageValue>[]>;
+// A PITR bookmark of the tables these cases read, and the restore to it: the tables put back (children emptied first,
+// parents filled first) and the marker written.
 const REWOUND = ["remote_media", "remote_media_objects", "remote_media_stills", "remote_media_usage", "kopje_state"];
 
-async function bookmark(w: MediaWorld): Promise<Bookmark> {
-  const taken: Bookmark = {};
-  for (const table of REWOUND) {
-    taken[table] = await sql(w.t.store, `SELECT * FROM ${table}`);
-  }
-  return taken;
-}
+const bookmark = (w: MediaWorld): Promise<Bookmark> => snapshotTables(w.t.store, REWOUND);
 
 async function restoreTo(w: MediaWorld, taken: Bookmark): Promise<number> {
-  for (const table of REWOUND.toReversed()) {
-    await sql(w.t.store, `DELETE FROM ${table}`);
-  }
-  for (const table of REWOUND) {
-    for (const row of taken[table] ?? []) {
-      const columns = Object.keys(row);
-      await sql(
-        w.t.store,
-        `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
-        ...columns.map((c) => row[c] ?? null),
-      );
-    }
-  }
+  await putTablesBack(w.t.store, taken, { deletes: REWOUND.toReversed(), inserts: REWOUND });
   return mark(w);
 }
 
@@ -147,7 +130,7 @@ async function mark(w: MediaWorld): Promise<number> {
   return restoredAt;
 }
 
-const unmark = (w: MediaWorld) => env.MEDIA.delete(restoreMarkerKey(w.t.store.id.toString()));
+const unmark = (w: MediaWorld) => forgetRestore(w.t.store);
 
 const served = async (w: MediaWorld, token: string, variant: RemoteVariant, type: string) =>
   (
@@ -210,7 +193,7 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
     }
   });
 
-  // r4 M5c and P21b: the reset releases the still's charge through the ledger, usage and an audit already past the
+  // P21b: the reset releases the still's charge through the ledger, usage and an audit already past the
   // token, and clears every still field of the slot, its blurhash included.
   it("releases the still's charge through an audit past its token, and clears the slot's still and blurhash", async () => {
     const w = await mediaWorld();
@@ -222,16 +205,7 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
     try {
       at(w, restoredAt + REMOTE_SETTLE_MS);
       await w.op(maintainRemoteMedia, { now: Date.now(), restoredAt, cap: CAP, retentionDays: 14 });
-      const [sums] = await sql<{ bytes: number; doomed: number }>(
-        w.t.store,
-        `SELECT coalesce(sum(charge), 0) AS bytes,
-					coalesce(sum(CASE state WHEN 'doomed' THEN charge ELSE 0 END), 0) AS doomed FROM remote_media_objects`,
-      );
-      await sql(
-        w.t.store,
-        "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('remote_media_audit', ?)",
-        JSON.stringify({ cursor: "z".repeat(64), ...sums }),
-      );
+      await auditBehind(w);
       const answer = await w.op(recordRemoteMediaValidation, {
         restore: restoredAt,
         restoredAt,
@@ -282,33 +256,6 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
     }
   });
 
-  it("counts a named still's head failures apart: they never spend the allowance of `full`", async () => {
-    const w = await mediaWorld();
-    const v = await cachedVideo(w);
-    const restoredAt = await mark(w);
-    const full = `remote/${v.token}/full`;
-    let failing = v.key!;
-    const bucket = bucketWith({
-      head: (key, real) => (key === failing ? Promise.reject(new Error("head failed")) : real()),
-    });
-    try {
-      at(w, restoredAt + REMOTE_SETTLE_MS);
-      for (let n = 1; n < VALIDATION_FAILURES; n++) {
-        expect((await w.round({ bucket: () => bucket }, VARS)).validated).toBe(0);
-      }
-      failing = full;
-      for (let n = 1; n < VALIDATION_FAILURES; n++) {
-        expect((await w.round({ bucket: () => bucket }, VARS)).validated).toBe(0);
-        expect(await w.objects()).toMatchObject([{ token: v.token, state: "stored" }]);
-      }
-      // The VALIDATION_FAILURES-th failure of `full` itself dooms the object.
-      expect((await w.round({ bucket: () => bucket }, VARS)).validated).toBe(0);
-      expect((await w.objects()).find((o) => o.token === v.token)).toMatchObject({ state: "doomed" });
-    } finally {
-      await unmark(w);
-    }
-  });
-
   // Failed heads alternating between the paths (a failed `full` skips the still's head) still end the wait: each path
   // keeps its own count across the other's failures.
   it("finishes validation when full HEAD errors interrupt a failing still HEAD", async () => {
@@ -335,13 +282,27 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
     }
   });
 
-  // Two still failures, then failures of `full` only: the still's count is kept while its head is skipped, and the
-  // decision comes on the path that reaches VALIDATION_FAILURES (the still's reset, or the object's doom), never the
-  // other's.
+  // Failed heads of one path, then of the other: each path keeps its own count (a named still's never spend the
+  // allowance of `full`, and the still's is kept while a failed `full` skips its head), and the decision comes on the
+  // path that reaches VALIDATION_FAILURES (the still's reset, or the object's doom), never the other's.
+  const times = (n: number, path: "still" | "full") => Array.from({ length: n }, () => path);
+  const below = VALIDATION_FAILURES - 1;
   it.each([
-    ["the still's third failure resets the still", ["still", "still", "full", "full", "still"], "still"],
-    ["the object's third failure dooms the video", ["still", "still", "full", "full", "full"], "object"],
-    ["a still failure observed `full`: the object's count starts again", ["full", "full", "still", "full"], "none"],
+    [
+      "the still's last failure resets the still",
+      [...times(below, "still"), ...times(below, "full"), "still"],
+      "still",
+    ],
+    [
+      "the object's last failure dooms the video, the still's failures before it spending none of its allowance",
+      [...times(below, "still"), ...times(VALIDATION_FAILURES, "full")],
+      "object",
+    ],
+    [
+      "a still failure observed `full`: the object's count starts again",
+      [...times(below, "full"), "still", "full"],
+      "none",
+    ],
   ] as const)("%s", async (_name, ticks, decided) => {
     const w = await mediaWorld();
     const v = await cachedVideo(w);
@@ -356,7 +317,8 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
       for (const [n, path] of ticks.entries()) {
         at(w, start + n * 5 * 60_000);
         failing = path === "still" ? v.key! : full;
-        await w.round({ bucket: () => bucket }, VARS);
+        // A failed head validates nothing; only the decision moves the walk on.
+        expect((await w.round({ bucket: () => bucket }, VARS)).validated).toBe(0);
         if (n < ticks.length - 1) {
           expect(await slotStill(w, v.slot)).toMatchObject({ still_key: `s${v.attempt}` });
           expect((await w.objects()).find((o) => o.token === v.token)?.state).toBe("stored");
@@ -497,7 +459,7 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
     }
   });
 
-  // r4 M5b: an old still result naming attempt k while the token's stored row names a later attempt, marker and cursor
+  // An old still result naming attempt k while the token's stored row names a later attempt, marker and cursor
   // valid: the reset's attempt fence holds.
   it("resets nothing for a result naming an attempt the stored row no longer names", async () => {
     const w = await mediaWorld();
@@ -622,7 +584,7 @@ describe("a stale attempt's result", () => {
 
 // The second accepted limitation of the PR5 plan's 1.6 (main's cached-URL exception, docs/threat-model.md): after a
 // restore, a named still whose key is gone answers 404 until validation reaches its token, then the still-only reset.
-describe("a named still lost across a restore (codex r4 H1)", () => {
+describe("a named still lost across a restore", () => {
   it("a sweep delete classified before a restore and landing after it: 404 until validation, then the reset", async () => {
     const w = await mediaWorld();
     const v = await cachedVideo(w);

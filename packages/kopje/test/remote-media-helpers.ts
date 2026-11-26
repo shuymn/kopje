@@ -291,3 +291,18 @@ export const snapshot = (...urls: string[]) => JSON.stringify(urls.map((url, i) 
 // The emoji of `value` noted for `domain`, as a writer notes them (remote-media.ts noteEmojiSnapshot).
 export const noteEmoji = (w: MediaWorld, value: string | null, domain: string | null) =>
   w.db((d) => noteEmojiSnapshot(d, value, domain, w.clock.now));
+
+// An audit pass started with every token of the ledger behind its cursor, its sums the ledger's now: a charge change
+// after it is the accumulator's (chargeObject) to keep, which the pass's end checks.
+export async function auditBehind(w: MediaWorld): Promise<void> {
+  const [sums] = await sql<{ bytes: number; doomed: number }>(
+    w.t.store,
+    `SELECT coalesce(sum(charge), 0) AS bytes, coalesce(sum(CASE state WHEN 'doomed' THEN charge ELSE 0 END), 0) AS doomed
+			FROM remote_media_objects`,
+  );
+  await sql(
+    w.t.store,
+    "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('remote_media_audit', ?)",
+    JSON.stringify({ cursor: "z".repeat(64), ...sums }),
+  );
+}

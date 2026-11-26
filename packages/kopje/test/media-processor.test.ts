@@ -957,7 +957,7 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     expect(state.cleared()).toBe(1);
   });
 
-  // r3 M5: the cut is labelled by whether the input drained into the request body, not by whether its read answered:
+  // The cut is labelled by whether the input drained into the request body, not by whether its read answered:
   // a body that stalls after the read answered is the input's deadline, a drained input whose processor stalls the
   // operation's.
   it("labels a cut input-deadline while the input's body stalls, and operation-deadline once it drained", async () => {
@@ -1192,7 +1192,7 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
       "originals/140000000000000013",
       60_000,
     );
-    // Cut before the input drained into the request body: the input's deadline (r3 M5), not the operation's.
+    // Cut before the input drained into the request body: the input's deadline, not the operation's.
     expect(outcome).toMatchObject({ ok: false, failure: "input-deadline" });
     expect(cancelled).toBe(true);
     expect(fake.calls).not.toContain("POST /still");
@@ -1528,12 +1528,11 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     expect(await good.json()).toEqual({
       probe: { status: "recorded", verdict: { outcome: "pass", imagesVerified: true } },
     });
-    const [record] = await sql<{ value: string }>(
-      bound.store,
-      "SELECT value FROM kopje_state WHERE name = ?",
-      probeName("record", "still@standard-1"),
-    );
-    expect(JSON.parse(record!.value)).toMatchObject({ version: BUILD, ok: true, imagesVerified: true });
+    expect((await bound.store.mediaProbeRecords(BUILD, { profile: "still@standard-1" })).record).toMatchObject({
+      version: BUILD,
+      ok: true,
+      imagesVerified: true,
+    });
     expect(passes).toHaveBeenCalledOnce();
     expect(await copies()).toEqual(before);
 
@@ -1570,12 +1569,10 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     const failed = await still.cli(["media-processor", "probe", "still@standard-1"]);
     expect(failed.code).toBe(1);
     expect(failed.out).toContain('"outcome": "fail"');
-    const [verdict] = await sql<{ value: string }>(
-      still.store,
-      "SELECT value FROM kopje_state WHERE name = ?",
-      probeName("record", "still@standard-1"),
-    );
-    expect(JSON.parse(verdict!.value)).toMatchObject({ version: BUILD, ok: false });
+    expect((await still.store.mediaProbeRecords(BUILD, { profile: "still@standard-1" })).record).toMatchObject({
+      version: BUILD,
+      ok: false,
+    });
     // A type P27 did not choose is no profile.
     expect((await one.cli(["media-processor", "probe", "normalize@standard-3"])).code).toBe(2);
     expect((await one.cli(["media-processor", "probe", "normalize@standard-2"])).code).toBe(2);

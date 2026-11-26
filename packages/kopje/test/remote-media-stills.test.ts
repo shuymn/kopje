@@ -46,7 +46,7 @@ import { BUILD, rejectionOf } from "./helpers";
 import { dumpViaRpc } from "./ops-helpers";
 import { plannedRun, type PlannedStatement, staleStatistics } from "./read-helpers";
 import { mp4 } from "./remote-media-fixtures";
-import { claimWith, fence, mediaWorld, type MediaWorld } from "./remote-media-helpers";
+import { auditBehind, claimWith, fence, mediaWorld, type MediaWorld } from "./remote-media-helpers";
 
 // Remote video stills, the Store's side (#1828 PR5-1; domain/remote-media-stills.ts and the cache's own transitions in
 // domain/remote-media.ts): the queue in the cache's record, the claim, admission, record and failure, each charge move
@@ -184,20 +184,7 @@ const admit = (w: MediaWorld, t: string, attempt: string, marker: Restore = null
   marked(w, admitRemoteStill, { token: t, attempt }, marker);
 
 // Charge totals: the ledger's sums equal the usage row, and the audit, started before the change with every token
-// behind its cursor, completes after it without drift (chargeObject's accumulator kept the change).
-async function auditBehind(w: MediaWorld): Promise<void> {
-  const [sums] = await sql<{ bytes: number; doomed: number }>(
-    w.t.store,
-    `SELECT coalesce(sum(charge), 0) AS bytes, coalesce(sum(CASE state WHEN 'doomed' THEN charge ELSE 0 END), 0) AS doomed
-			FROM remote_media_objects`,
-  );
-  await sql(
-    w.t.store,
-    "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('remote_media_audit', ?)",
-    JSON.stringify({ cursor: "z".repeat(64), ...sums }),
-  );
-}
-
+// behind its cursor (auditBehind), completes after it without drift (chargeObject's accumulator kept the change).
 async function totalsAgree(w: MediaWorld): Promise<void> {
   await w.exact();
   const done = await w.op(maintainRemoteMedia, { now: w.clock.now, restoredAt: null, cap: CAP, retentionDays: 0 });

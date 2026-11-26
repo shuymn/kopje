@@ -18,7 +18,7 @@ import { BUILD, deferred } from "./helpers";
 import { TestCodec } from "./media-helpers";
 import { stillPng } from "./media-job-helpers";
 import { gate } from "./media-processing-helpers";
-import { claimWith, fence, mediaWorld, type MediaWorld } from "./remote-media-helpers";
+import { bucketWith, claimWith, fence, mediaWorld, type MediaWorld } from "./remote-media-helpers";
 
 // The remote stills' windows (#1828 PR5 plan, section 4) through the production round and Store, each actor held at an
 // explicit gate while the other commits, the safety checks asserted after every step: the ledger, usage and audit
@@ -176,14 +176,14 @@ describe("the remote stills' windows (PR5 plan, section 4)", () => {
     const putEntered = deferred();
     let landed: string | null = null;
     const k = round(w, maker().stills, {
-      bucket: {
-        put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+      bucket: bucketWith({
+        put: async (key, real) => {
           putEntered.resolve();
           await putHeld.promise;
           landed = key;
-          return env.MEDIA.put(key, value, options);
+          return real();
         },
-      },
+      }),
     });
     await putEntered.promise;
     const start = Date.now();

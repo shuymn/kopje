@@ -26,6 +26,7 @@ import { stillPng } from "./media-job-helpers";
 import { gate } from "./media-processing-helpers";
 import { mp4 } from "./remote-media-fixtures";
 import { claimWith, fence, mediaWorld, type MediaWorld } from "./remote-media-helpers";
+import { encodeWebp } from "./webp-fixtures";
 
 // The remote stills' round (#1828 PR5-2; jobs/remote-stills.ts) over the production Store: a fake StillMaker answers as
 // the processor's object would, TestCodec stands in for Images, and the media bucket is the real one. Each case states
@@ -192,7 +193,7 @@ describe("the round makes, checks, puts and records one still (P20a, P20c, P22, 
     // One container call on the claim's token and attempt, within the processor's own bound.
     expect(calls).toEqual([{ token: v.token, attempt, ms: STILL_CALL_MS }]);
     expect(puts).toEqual([{ key: `remote/${v.token}/s${attempt}`, type: "image/webp" }]);
-    // A plain put: no condition (onlyIf), nothing adopted (Gemini r3 M1).
+    // A plain put: no condition (onlyIf), nothing adopted.
     expect(options).toEqual([{ httpMetadata: { contentType: "image/webp" } }]);
     // Two Images transformations (the WebP and its RGBA) and one metadata call (the WebP's info), none charged to the
     // Images budgets (P20c, P22).
@@ -250,7 +251,7 @@ describe("each outcome of the PR5 plan's 1.4 (P19c, design 4.14)", () => {
   // [case, the container's answer, outcome, infrastructure failure, lease kept]
   const cases: [string, () => Promise<StillOutcome> | StillOutcome, "retry" | "park", boolean, boolean][] = [
     ["an input refusal", () => failed("still:no_video", { input: "no_video" }), "park", false, false],
-    ["500 still_failed (r3 L2)", () => failed("still:still_failed"), "park", false, false],
+    ["500 still_failed", () => failed("still:still_failed"), "park", false, false],
     ["operation-deadline: cut after the input drained", () => failed("operation-deadline"), "park", false, false],
     ["input-deadline: cut before the input drained", () => failed("input-deadline"), "retry", false, false],
     ["input-missing", () => failed("input-missing"), "retry", false, false],
@@ -314,8 +315,9 @@ describe("each outcome of the PR5 plan's 1.4 (P19c, design 4.14)", () => {
     await passStill(w);
     const v = await video(w);
     const codec = new TestCodec();
-    // Images' WebP answered at the PNG's own edges, past the still's long edge.
-    codec.encodeResponder = (options) => (options.format === "image/webp" ? WIDE_WEBP : null);
+    // Images' WebP answered at 1000x10, past the still's long edge.
+    const wide = await encodeWebp(1000, 10, { fill: "flat" });
+    codec.encodeResponder = (options) => (options.format === "image/webp" ? wide : null);
     const { puts, bucket } = recordingBucket();
     const round = await remoteStillsRound(deps(w, maker(made).stills, { bucket, images: codec }));
     expect(round).toMatchObject({ status: "failed", disposition: { outcome: "park", infrastructure: false } });
@@ -357,30 +359,6 @@ describe("each outcome of the PR5 plan's 1.4 (P19c, design 4.14)", () => {
     ]);
   });
 });
-
-// A still WebP of 1000x10, past STILL_LONG_EDGE (640): a VP8L bitstream header with those edges.
-const WIDE_WEBP = (() => {
-  const width = 1000 - 1;
-  const height = 10 - 1;
-  const vp8l = new Uint8Array([
-    0x2f,
-    width & 0xff,
-    ((width >> 8) & 0x3f) | ((height & 0x03) << 6),
-    (height >> 2) & 0xff,
-    (height >> 10) & 0x0f,
-    0,
-  ]);
-  const chunk = new Uint8Array(8 + vp8l.length);
-  chunk.set(new TextEncoder().encode("VP8L"), 0);
-  new DataView(chunk.buffer).setUint32(4, vp8l.length, true);
-  chunk.set(vp8l, 8);
-  const out = new Uint8Array(12 + chunk.length);
-  out.set(new TextEncoder().encode("RIFF"), 0);
-  new DataView(out.buffer).setUint32(4, 4 + chunk.length, true);
-  out.set(new TextEncoder().encode("WEBP"), 8);
-  out.set(chunk, 12);
-  return out;
-})();
 
 describe("put admission (P19d, W-S7, W-S10)", () => {
   // The extraction held while the change happens: admission refuses, so nothing is put, and the attempt is retried.
@@ -533,7 +511,7 @@ describe("put admission (P19d, W-S7, W-S10)", () => {
     expect(puts).toHaveLength(1);
   });
 
-  // r3 L1: a timely grant then a Store-only gate change (reject_media) with the env unchanged: the put happens, its
+  // A timely grant then a Store-only gate change (reject_media) with the env unchanged: the put happens, its
   // record is refused, and its key, which no row names, is swept past its bound.
   it("puts after a timely grant when only the Store's gate changed, refuses the record, and the sweep takes the key", async () => {
     const w = await mediaWorld();
