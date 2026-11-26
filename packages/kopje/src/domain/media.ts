@@ -346,7 +346,7 @@ export function chargeInstanceTransforms(db: Db, count: number, limit: number, n
 // (MEDIA_STILL_MONTHLY_JOBS), one per claim of a remote video's still (domain/remote-media-stills.ts), covering its
 // container and its at most two Images calls. Kept and pruned as the transformation counters are.
 const JOB_COUNTERS = { upload: "media_upload_jobs:", still: "media_still_jobs:" } as const;
-export type JobKind = keyof typeof JOB_COUNTERS;
+type JobKind = keyof typeof JOB_COUNTERS;
 
 function jobsName(kind: JobKind, now: number): string {
   return `${JOB_COUNTERS[kind]}${iso(now).slice(0, 7)}`;

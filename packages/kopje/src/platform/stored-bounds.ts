@@ -2412,7 +2412,7 @@ export const STILL_ATTEMPT = /^[0-9a-f]{32}$/;
 
 // True when `value` is neither NULL nor an attempt nonce (STILL_ATTEMPT), judged in order: the storage class, the
 // bytes, an embedded NUL (where GLOB stops reading), then the digits.
-export function stillAttemptPastSql(value: string): string {
+function stillAttemptPastSql(value: string): string {
   return `CASE WHEN ${value} IS NULL THEN 0
 	WHEN typeof(${value}) <> 'text' THEN 1
 	WHEN length(CAST(${value} AS BLOB)) <> 32 THEN 1
@@ -2423,7 +2423,7 @@ export function stillAttemptPastSql(value: string): string {
 
 // True when `value` is neither NULL nor a named still's variant: `s` and an attempt nonce (platform/media-files.ts
 // REMOTE_VARIANT).
-export function stillKeyPastSql(value: string): string {
+function stillKeyPastSql(value: string): string {
   return `CASE WHEN ${value} IS NULL THEN 0
 	WHEN typeof(${value}) <> 'text' THEN 1
 	WHEN length(CAST(${value} AS BLOB)) <> 33 THEN 1
