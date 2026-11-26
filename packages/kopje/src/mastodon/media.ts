@@ -784,10 +784,14 @@ async function updateThumbnail(
     throw new Error("a text thumbnail is refused above");
   }
   if (thumbnail === null) {
-    const removed = await replyOf(update(null));
-    // A removal whose reply was lost may have committed: the sweep runs whatever the answer.
-    sweepSoon(c, deps);
-    return removed === LOST ? mastodonError(503, UNAVAILABLE) : updatedAnswer(c, authorized(removed));
+    // A removal that failed in any way may have committed (a lost reply, an overloaded object's error after it): the
+    // sweep runs whatever the outcome.
+    try {
+      const removed = await replyOf(update(null));
+      return removed === LOST ? mastodonError(503, UNAVAILABLE) : updatedAnswer(c, authorized(removed));
+    } finally {
+      sweepSoon(c, deps);
+    }
   }
   const made = await storeThumbnail(c, deps, credential, new Uint8Array(await thumbnail.arrayBuffer()));
   if (!made.ok) {

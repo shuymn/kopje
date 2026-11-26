@@ -3873,22 +3873,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the staging's time only, as before #1828 PR6; what is held is bounded as above.
   The custom thumbnail of a video or audio upload (#1828 PR6, "Multipart" and "POST timing" of its plan): once the file
   is sniffed as video or audio, one sent `thumbnail` part is taken (a second answers 422, a file after the file at its
-  head, none of its bytes read; empty text is none); one before the file is judged (text, size and signature) before S1,
-  one after it once the form is. The file's last part is sent, and its buffer released, before a trailing thumbnail file
-  is collected, so the two are never held together; without one it is sent once the form is judged, as before #1828 PR6.
-  The allocation peaks, each under the 128 MB isolate: before S1, the kept chunks, the collected parts and the part
-  being collected, each at most the prefix ceiling C, about 3C + one read (54 MB); during the staging, a thumbnail sent
-  before the file (at most 16 MiB) beside the part buffer (`PART_BYTES`) and one read; after the file, the trailing
-  thumbnail's chunks and its built body (2 × 16 MiB); while it is made, the image path's peak (the thumbnail, Images'
-  two outputs and the preview's RGBA) with no part buffer left. The thumbnail is made after the staging and before S3,
-  by the staging's end (`end`: the staging time S1 answered and, on v1, the route's cut): no step starts at or past it,
-  and every Images call (the inspection's `info()`, each encode's `output()`, every read of its output, started inside
-  the guard, and its `info()`) is given up at it on the route's clock (`ProcessOptions` `guard` in
-  `src/platform/images.ts`), the preview's RGBA output at its own shorter end (`RGBA_CALL_MS`, the blurhash's `guard`).
-  The route awaits it no later than `end`, then takes the staging exit (503, S2), and a thumbnail made later is
-  discarded in the cleanup once the making's own writes have settled. `PUT`/`PATCH /api/v1/media/:id` checks the token
-  before a multipart body is read (`checkCredential`, as `credentialsUpdate`) and again, with the time then, before
-  answering a body it cannot parse (`refuseAfterAuth`, as `withParams`), and reads a `thumbnail` file of up to
+  head, none of its bytes read, text by its first byte; empty text is none); one before the file is judged (text, size
+  and signature) before S1, one after it once the form is. The file's last part is sent, and its buffer released, before
+  a trailing thumbnail file is collected, so the two are never held together; without one it is sent once the form is
+  judged, as before #1828 PR6. The allocation peaks, each under the 128 MB isolate: before S1, the kept chunks, the
+  collected parts and the part being collected, each at most the prefix ceiling C, about 3C + one read (54 MB); during
+  the staging, a thumbnail sent before the file (at most 16 MiB) beside the part buffer (`PART_BYTES`) and one read;
+  after the file, the trailing thumbnail's chunks and its built body (2 × 16 MiB); while it is made, the image path's
+  peak (the thumbnail, Images' two outputs and the preview's RGBA) with no part buffer left. The thumbnail is made after
+  the staging and before S3, by the staging's end (`end`: the staging time S1 answered and, on v1, the route's cut): no
+  step starts at or past it, and every Images call (the inspection's `info()`, each encode's `output()`, every read of
+  its output, started inside the guard, and its `info()`) is given up at it on the route's clock (`ProcessOptions`
+  `guard` in `src/platform/images.ts`), the preview's RGBA output at its own shorter end (`RGBA_CALL_MS`, the blurhash's
+  `guard`). The route awaits it no later than `end`, then takes the staging exit (503, S2), and a thumbnail made later
+  is discarded in the cleanup once the making's own writes have settled. `PUT`/`PATCH /api/v1/media/:id` checks the
+  token before a multipart body is read (`checkCredential`, as `credentialsUpdate`) and again, with the time then,
+  before answering a body it cannot parse (`refuseAfterAuth`, as `withParams`), and reads a `thumbnail` file of up to
   `IMAGE_SIZE_LIMIT` beside at most `API_BODY_LIMIT` + `FILE_PART_SLACK` bytes of anything else (`FileRule` `outside` in
   `src/mastodon/params.ts`; a malformed body past that answers 413 as before). `test/media-av-thumbnails.test.ts`
   ("refuses a second thumbnail part after the file at its head, its bytes unread (D-9)", "keeps main's prefix ceiling

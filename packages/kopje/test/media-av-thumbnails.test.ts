@@ -127,6 +127,25 @@ function showsChild(child: Child | undefined): unknown {
   });
 }
 
+// The thumbnail's three facts as an answer shows them, and as its row stores them (C51: an answer's are the row's).
+function factsOf(body: unknown): { preview_url: unknown; blurhash: unknown; small: unknown } {
+  const { preview_url, blurhash, meta } = body as {
+    preview_url: unknown;
+    blurhash: unknown;
+    meta: { small?: { width?: unknown; height?: unknown } } | null;
+  };
+  return { preview_url, blurhash, small: { width: meta?.small?.width, height: meta?.small?.height } };
+}
+
+async function storedFacts(w: RouteWorld, id: string): Promise<ReturnType<typeof factsOf>> {
+  const [row] = await sql<{ preview_url: string; blurhash: string; meta: string }>(
+    w.store,
+    "SELECT preview_url, blurhash, meta FROM media_attachments WHERE id = ?",
+    id,
+  );
+  return factsOf({ ...row, meta: JSON.parse(row?.meta ?? "null") as unknown });
+}
+
 describe("a video or audio upload with a thumbnail (T15)", () => {
   it.each([
     ["before", (file: Part) => [thumbPart(), file]],
@@ -224,6 +243,30 @@ describe("a video or audio upload with a thumbnail (T15)", () => {
     const [child] = await children(w);
     expect(child).toMatchObject({ thumbnail_of: await parentId(w), gc_at: null });
     expect(response).toEqual({ status: 202, body: showsChild(child) });
+  });
+
+  // The thumbnail D-9 picks (the one sent) is the one judged: an empty field beside non-empty text hides nothing
+  // (code review r2).
+  it.each([
+    ["after the file", () => [videoPart(), { name: "thumbnail", data: "x" }, { name: "thumbnail", data: "" }]],
+    ["before the file", () => [{ name: "thumbnail", data: "x" }, { name: "thumbnail", data: "" }, videoPart()]],
+  ])("refuses non-empty thumbnail text followed by an empty field %s (D-3), charging nothing", async (_, parts) => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody(parts()));
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Thumbnail content type is invalid" },
+    });
+    expect(await charged(w.store)).toBe(0);
+  });
+
+  it("refuses a second non-empty thumbnail text as D-9 before collecting it, past the text limit (r2)", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(
+      w,
+      multipartBody([videoPart(), thumbPart(), { name: "thumbnail", data: "x".repeat(API_BODY_LIMIT + 1) }]),
+    );
+    expect(await answerOf(response)).toEqual({ status: 422, body: REPEATED });
   });
 
   it("refuses a second thumbnail part after the file at its head, its bytes unread (D-9)", async () => {
@@ -523,7 +566,9 @@ describe("a video or audio upload with a thumbnail (T15)", () => {
     w.gate.fails.set("getMedia", 1);
     repeat.resolve();
     const [child] = await children(w);
-    expect(await answerOf(await response)).toEqual({ status: 202, body: showsChild(child) });
+    const answered = await answerOf(await response);
+    expect(answered).toEqual({ status: 202, body: showsChild(child) });
+    expect(factsOf(answered.body)).toEqual(await storedFacts(w, child?.id ?? ""));
     expect(w.gate.calls).toContain("getMedia");
   });
 

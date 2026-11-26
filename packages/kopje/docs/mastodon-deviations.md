@@ -1703,12 +1703,13 @@ Media (the `MediaAttachment` entity):
   `thumbnail` file after the file past 16 MB answers 422 `Validation failed: Thumbnail file size must be less than 16
   MB` before the description is judged. A `thumbnail` after the file within its size, a malformed query and the other
   orders answer as for an image. A video or audio upload takes one `thumbnail` part that is sent (a file, or text that
-  is not empty): a second answers 422 `Validation failed: Thumbnail was sent more than once`, a file after the file at
-  its part's head, where Rails reads the last. An empty text `thumbnail` is absent and is not counted, so a file beside
-  it is the thumbnail even when the empty text comes last, where Rails reads that last part as none. Before an image
-  `file`, the image path's answers hold: the last `thumbnail` counts, and one sent is `Thumbnail must be blank`. Parts
-  before the `file` part are read up to 16 MB plus 64 KiB, or 17,956,864 bytes once a `thumbnail` file is among them,
-  and past it answer 422 `Validation failed: File file size must be less than 16 MB`.
+  is not empty): a second answers 422 `Validation failed: Thumbnail was sent more than once`, after the file at its
+  part's head, where Rails reads the last. An empty text `thumbnail` is absent and is not counted, so the part sent
+  beside it is the thumbnail even when the empty text comes last (a file is taken; text answers `Thumbnail content type
+  is invalid`), where Rails reads that last part as none. Before an image `file`, the image path's answers hold: the
+  last `thumbnail` counts, and one sent is `Thumbnail must be blank`. Parts before the `file` part are read up to 16 MB
+  plus 64 KiB, or 17,956,864 bytes once a `thumbnail` file is among them, and past it answer 422 `Validation failed:
+  File file size must be less than 16 MB`.
 - A video's or audio file's custom `thumbnail` (on upload and on `PUT`/`PATCH /api/v1/media/:id`, as Mastodon takes it)
   is made by Images as an image upload is: JPEG, PNG, GIF, WebP or AVIF by its signature, served as PNG for a PNG and
   WebP for the rest, its preview at most 640 pixels an edge (Mastodon's is 230,400 pixels), at most 16,777,216 pixels,

@@ -81,6 +81,7 @@ const GATED = new Set([
   "updateMedia",
   "mediaUpdateTarget",
   "deleteMedia",
+  "expiredMedia",
 ]);
 
 // A Store whose calls by name can be held (each call awaits the test's release, before or after the Store answers) or

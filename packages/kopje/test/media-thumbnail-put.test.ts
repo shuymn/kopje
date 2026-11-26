@@ -393,6 +393,8 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     }
     expect((await response).status).toBe(403);
     expect(w.gate.calls).toContain("abandonMedia");
+    // The sweep is run after the response too (its first Store call), whatever the refused discard left for it.
+    expect(w.gate.calls).toContain("expiredMedia");
   });
 
   it("runs the sweep after a removal whose reply is lost: the retired thumbnail's files are released (r1 LOW 2)", async () => {
@@ -405,6 +407,19 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     expect(await current(w, parent.id)).toBeUndefined();
     expect(await has(fileKey(a?.token ?? "", "small"))).toBe(false);
     expect(await has(originalKey(a?.id ?? ""))).toBe(true);
+  });
+
+  it("runs the sweep after a committed removal whose reply is an overloaded object's error (r2 LOW 2)", async () => {
+    const w = await routeWorld();
+    const parent = await completed(w);
+    expect((await send(w, method, parent.id, multipartBody([thumbPart()]))).status).toBe(200);
+    const a = await current(w, parent.id);
+    expect(await has(fileKey(a?.token ?? "", "small"))).toBe(true);
+    w.gate.drops.set("updateMedia", 1);
+    w.gate.overloadedDrops.add("updateMedia");
+    expect((await send(w, method, parent.id, jsonBody({ thumbnail: null }))).status).toBe(503);
+    expect(await current(w, parent.id)).toBeUndefined();
+    expect(await has(fileKey(a?.token ?? "", "small"))).toBe(false);
   });
 
   it("runs the sweep after a thumbnail whose completion committed with both replies lost (r1 LOW 3)", async () => {

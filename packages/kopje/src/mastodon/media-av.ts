@@ -832,7 +832,8 @@ class AvUpload {
         // (empty text is none, G1); one file is kept within IMAGE_SIZE_LIMIT, its head weighed and its body not.
         const repeated = head.name === "thumbnail" && this.#texts.some(sentThumbnail);
         const thumbnail = head.name === "thumbnail" && head.file;
-        if (repeated && thumbnail) {
+        // A repeated text is judged by its first byte, before its body is collected.
+        if (repeated && (thumbnail || (await this.#reader.peek(1)).byteLength > 0)) {
           throw new StagingRefusal(422, REPEATED_THUMBNAIL);
         }
         if (thumbnail && fill > 0) {
@@ -843,9 +844,6 @@ class AvUpload {
         const body = thumbnail
           ? await collected(this.#reader, IMAGE_SIZE_LIMIT, () => new StagingRefusal(422, THUMBNAIL_TOO_LARGE))
           : await collected(this.#reader, API_BODY_LIMIT);
-        if (repeated && body.byteLength > 0) {
-          throw new StagingRefusal(422, REPEATED_THUMBNAIL);
-        }
         weighed += weight({ head, body: thumbnail ? new Uint8Array() : body });
         if (weighed > API_BODY_LIMIT || this.#texts.length >= MULTIPART_PARTS) {
           throw new StagingRefusal(413, "Request body is too large");
@@ -929,7 +927,12 @@ class AvUpload {
     if ("error" in params) {
       return params;
     }
-    const problem = mediaProblem(params, params.get("description"), true);
+    // The form is judged as the image path judges it, then the thumbnail D-9 took (the one part sent): text is refused
+    // (D-3) even when an empty field after it is the form's last value.
+    const taken = this.#texts.find(sentThumbnail);
+    const problem =
+      mediaProblem(params, params.get("description"), true) ??
+      (taken !== undefined && !taken.head.file ? THUMBNAIL_INVALID_TYPE : undefined);
     return problem === undefined ? params : { error: problem };
   }
 
