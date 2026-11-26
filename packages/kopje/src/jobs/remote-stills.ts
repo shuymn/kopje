@@ -22,7 +22,8 @@ import type { StoreStub } from "../platform/store-client";
 //               calls, IMAGES_MS, uncounted by IMAGES_MONTHLY_TRANSFORMS: the claim's unit covers them), the WebP held to
 //               stillWebpSize inside it before any put (MEDIA-6)
 //   admission   admitRemoteStill, the Worker's clock read before the call: its grant starts one put only within
-//               STILL_PUT_GRANT_MS of that reading and with the env's maintenance still off
+//               STILL_PUT_GRANT_MS of that reading, read again at the put's start, and with the invocation's env
+//               not in maintenance
 //   put         remote/<token>/s<attempt>, image/webp, a plain put (a key per attempt: nothing is adopted), within PUT_MS
 //   record      recordRemoteStill, the slot naming the still
 // and a failure settled once, with the disposition `disposition` gives (design 4.14), the lease kept only when the
@@ -53,7 +54,8 @@ export type RemoteStillsDeps = {
   // MEDIA_STILL_MONTHLY_JOBS and REMOTE_MEDIA_CACHE_BYTES.
   budget: number;
   cap: number;
-  // The Worker's env holds it in maintenance: rechecked right before the put.
+  // The invocation's env holds it in maintenance (its snapshot, jobs/scheduled.ts remoteStillsDeps): rechecked right
+  // before the put.
   maintenance: () => boolean;
   now: () => number;
 };
@@ -250,13 +252,18 @@ export async function remoteStillsRound(deps: RemoteStillsDeps): Promise<RemoteS
   } catch {
     granted = false;
   }
-  if (!granted || now() - asked > STILL_PUT_GRANT_MS || deps.maintenance()) {
+  if (!granted || deps.maintenance()) {
+    return retried("admission");
+  }
+  // The grant is read last, at the put's own start: no check after it can let a put start past STILL_PUT_GRANT_MS.
+  const putAt = now();
+  if (putAt - asked > STILL_PUT_GRANT_MS) {
     return retried("admission");
   }
   try {
     await inTime(
       () => deps.bucket.put(remoteFileKey(token, `s${attempt}`), webp, { httpMetadata: { contentType: "image/webp" } }),
-      Math.min(now() + PUT_MS, workEnd),
+      Math.min(putAt + PUT_MS, workEnd),
       now,
     );
   } catch (error) {

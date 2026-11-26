@@ -14,7 +14,7 @@ import { callStore } from "../platform/store-client";
 import type { StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { incomingOrphans, mediaDispatchRound, mediaProbeRound } from "./media-jobs";
-import { remoteStillsRound } from "./remote-stills";
+import { remoteStillsRound, type RemoteStillsDeps } from "./remote-stills";
 
 // The 5-minute cron (wrangler.jsonc). Nothing runs while the env sets maintenance (or is invalid), as for the queue; in
 // the Store's own maintenance its writes are refused and each task waits for the next run.
@@ -161,29 +161,34 @@ export type RemoteStillsRoundDeps = {
   now: () => number;
 };
 
-export async function scheduledRemoteStills(env: Env, deps: RemoteStillsRoundDeps): Promise<void> {
+// The round's dependencies from the invocation's env, or null for an invalid configuration. The maintenance recheck
+// before the put reads the env as the invocation was given it: Workers hand each invocation a fixed env, and readConfig
+// memoizes it, so a change of MAINTENANCE takes effect from the next invocation; the Store's own gates are read at the
+// admission.
+export function remoteStillsDeps(env: Env, deps: RemoteStillsRoundDeps): RemoteStillsDeps | null {
   const config = readConfig(env);
   if (!config.ok) {
+    return null;
+  }
+  return {
+    build: deps.build(env),
+    store: deps.store(env),
+    bucket: env.MEDIA,
+    stills: deps.stills(env),
+    images: deps.images(env),
+    budget: config.config.MEDIA_STILL_MONTHLY_JOBS,
+    cap: config.config.REMOTE_MEDIA_CACHE_BYTES,
+    maintenance: () => envInMaintenance(env),
+    now: deps.now,
+  };
+}
+
+export async function scheduledRemoteStills(env: Env, deps: RemoteStillsRoundDeps): Promise<void> {
+  const round = remoteStillsDeps(env, deps);
+  if (round === null) {
     return;
   }
-  const stills = deps.stills(env);
-  const budget = config.config.MEDIA_STILL_MONTHLY_JOBS;
-  await cronRound(
-    env,
-    () =>
-      remoteStillsRound({
-        build: deps.build(env),
-        store: deps.store(env),
-        bucket: env.MEDIA,
-        stills,
-        images: deps.images(env),
-        budget,
-        cap: config.config.REMOTE_MEDIA_CACHE_BYTES,
-        maintenance: () => envInMaintenance(env),
-        now: deps.now,
-      }),
-    "kopje.scheduled.remote_stills_failed",
-  );
+  await cronRound(env, () => remoteStillsRound(round), "kopje.scheduled.remote_stills_failed");
 }
 
 // One step of the cron, its own error boundary: a failure is logged as `event` and stops no later step. A Store

@@ -11,7 +11,7 @@ import {
   type RemoteStillsDeps,
   STILL_PUT_GRANT_MS,
 } from "../src/jobs/remote-stills";
-import { scheduledRemoteStills } from "../src/jobs/scheduled";
+import { remoteStillsDeps, scheduledRemoteStills } from "../src/jobs/scheduled";
 import { STILL_CALL_MS } from "../src/media-processor";
 import { readConfig } from "../src/platform/config";
 import { remoteMediaPath, restoreMarkerKey } from "../src/platform/media-files";
@@ -194,9 +194,10 @@ describe("the round makes, checks, puts and records one still (P20a, P20c, P22, 
     expect(calls).toEqual([{ token: v.token, attempt, ms: REMOTE_STILL_CALL_MS }]);
     expect(REMOTE_STILL_CALL_MS).toBe(STILL_CALL_MS);
     expect(puts).toEqual([{ key: `remote/${v.token}/s${attempt}`, type: "image/webp" }]);
-    // At most two Images calls (the WebP and its RGBA), and none charged to the Images budgets (P22).
-    expect(codec.encodeCalls.length).toBeLessThanOrEqual(2);
+    // Two Images transformations (the WebP and its RGBA) and one metadata call (the WebP's info), none charged to the
+    // Images budgets (P20c, P22).
     expect(codec.encodeCalls.map((call) => call.format)).toEqual(["image/webp", "rgba"]);
+    expect(codec.infoCalls).toBe(1);
     expect(await sql(w.t.store, "SELECT name FROM kopje_state WHERE name LIKE '%transform%'")).toEqual([]);
     expect(await sql(w.t.store, "SELECT value FROM kopje_state WHERE name LIKE 'media_still_jobs:%'")).toEqual([
       { value: "1" },
@@ -321,6 +322,40 @@ describe("each outcome of the PR5 plan's 1.4 (P19c, design 4.14)", () => {
     expect(await stillOf(w, v.token)).toMatchObject({ outcome: "park" });
     expect(puts).toEqual([]);
   });
+
+  it("settles a retry when R2 refuses a timely put, the lease released", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w);
+    const bucket = { put: () => Promise.reject(new Error("R2 refused the put")) };
+    const round = await remoteStillsRound(deps(w, maker(made).stills, { bucket }));
+    expect(round).toMatchObject({
+      status: "failed",
+      disposition: { outcome: "retry", reason: "put", keepLease: false },
+      settled: { status: "settled", outcome: "retry" },
+    });
+    expect(await stillOf(w, v.token)).toMatchObject({ state: "queued", outcome: "retry", still_charge: 0 });
+    expect(await leaseOf(w)).toBeNull();
+  });
+
+  it("answers unconfirmed when the record's reply is lost, the committed record kept", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w);
+    const lost = storeWith(w.t.store, {
+      recordRemoteStill: () => {
+        throw new Error("the reply was lost");
+      },
+    });
+    const round = await remoteStillsRound(deps(w, maker(made).stills, { store: lost.store }));
+    expect(round).toMatchObject({ status: "unconfirmed", token: v.token });
+    const attempt = (round as { attempt: string }).attempt;
+    expect(lost.calls).not.toContain("failRemoteStill");
+    expect(await stillOf(w, v.token)).toMatchObject({ state: "stored", attempt });
+    expect(await sql(w.t.store, "SELECT still_key FROM remote_media WHERE id = ?", v.slot)).toEqual([
+      { still_key: `s${attempt}` },
+    ]);
+  });
 });
 
 // A still WebP of 1000x10, past STILL_LONG_EDGE (640): a VP8L bitstream header with those edges.
@@ -406,6 +441,29 @@ describe("put admission (P19d, W-S7, W-S10)", () => {
     expect(puts).toEqual([]);
   });
 
+  it("puts nothing when the grant expires during the last check before the put", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    await video(w);
+    const edge = storeWith(w.t.store, {
+      admitRemoteStill: () => void vi.setSystemTime(Date.now() + STILL_PUT_GRANT_MS),
+    });
+    const { puts, bucket } = recordingBucket();
+    const round = await remoteStillsRound(
+      deps(w, maker(made).stills, {
+        bucket,
+        store: edge.store,
+        maintenance: () => {
+          vi.setSystemTime(Date.now() + 1);
+          return false;
+        },
+      }),
+    );
+    expect(edge.calls).toContain("admitRemoteStill");
+    expect(round).toMatchObject({ status: "failed", disposition: { reason: "admission" } });
+    expect(puts).toEqual([]);
+  });
+
   it("puts nothing on a timely grant when the env's maintenance is set before the put", async () => {
     const w = await mediaWorld();
     await passStill(w);
@@ -419,6 +477,35 @@ describe("put admission (P19d, W-S7, W-S10)", () => {
     expect(granted.calls).toContain("admitRemoteStill");
     expect(round).toMatchObject({ status: "failed", disposition: { reason: "admission" } });
     expect(puts).toEqual([]);
+  });
+
+  // The cron's recheck reads the invocation's env snapshot through the config reader (remoteStillsDeps): an env in
+  // maintenance refuses the put after a timely grant.
+  it("puts nothing after a timely grant when the invocation's env snapshot is in maintenance", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    await video(w);
+    await video(w);
+    const { puts, bucket } = recordingBucket();
+    const cron = (maintenance: string) =>
+      remoteStillsDeps(
+        { ...env, MEDIA: bucket, MEDIA_STILL_MONTHLY_JOBS: "5", MAINTENANCE: maintenance } as unknown as Env,
+        {
+          build: () => BUILD,
+          store: () => w.t.store,
+          stills: () => maker(made).stills,
+          images: () => new TestCodec(),
+          now: () => Date.now(),
+        },
+      )!;
+    expect(await remoteStillsRound(cron("readonly"))).toMatchObject({
+      status: "failed",
+      disposition: { reason: "admission" },
+    });
+    expect(puts).toEqual([]);
+    // The guarded branch: the same env out of maintenance puts.
+    expect(await remoteStillsRound(cron("off"))).toMatchObject({ status: "recorded" });
+    expect(puts).toHaveLength(1);
   });
 
   // r3 L1: a timely grant then a Store-only gate change (reject_media) with the env unchanged: the put happens, its
@@ -474,6 +561,35 @@ describe("the round's bounds (P-RND, G1, RES-6)", () => {
     // The guarded branch: with both, the cron claims.
     await cron(maker(made).stills, "5");
     expect(counted.calls[0]).toBe("claimRemoteStill");
+  });
+
+  // The claim committed and its reply lost: the round starts nothing, and the claim recovers as after a round that
+  // died after it (W-S2): the lease lapses and the row is due again LATE_PUT_MS after its claim.
+  it("starts nothing when the claim's reply is lost, and the next claim after its retry time records", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w);
+    const lost = storeWith(w.t.store, {
+      claimRemoteStill: () => {
+        throw new Error("the reply was lost");
+      },
+    });
+    const { stills, calls } = maker(made);
+    const { puts, bucket } = recordingBucket();
+    await expect(remoteStillsRound(deps(w, stills, { store: lost.store, bucket }))).rejects.toThrow("lost");
+    expect(lost.calls).toEqual(["claimRemoteStill"]);
+    expect(calls).toEqual([]);
+    expect(puts).toEqual([]);
+    expect(await stillOf(w, v.token)).toMatchObject({ state: "queued", claims: 1 });
+    const start = Date.now();
+    at(w, start + STILL_LEASE_MS);
+    expect(await remoteStillsRound(deps(w, stills))).toEqual({
+      status: "unclaimed",
+      claim: { status: "idle", reason: "none" },
+    });
+    at(w, start + LATE_PUT_MS);
+    expect(await remoteStillsRound(deps(w, stills))).toMatchObject({ status: "recorded", token: v.token });
+    expect(await stillOf(w, v.token)).toMatchObject({ state: "stored", claims: 2 });
   });
 
   it("claims one still a tick", async () => {
