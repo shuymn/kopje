@@ -15,7 +15,6 @@ import { bindAll, LiteralError, quoteIdentifier, readColumn, textLiteral, valueL
 import { hasRows, type ScannedRow } from "./dump-scan";
 import { errorMessage } from "./error-message";
 import { LOCAL_USERNAME_SEEK_SQL, localUsernameIsDomain } from "./identity-bounds";
-import type { RowCheck } from "./store-dump";
 
 // Checks the shape of a header that came from a caller. The catalog and migrations are compared separately.
 export function parseHeader(value: unknown): DumpHeader {
@@ -261,19 +260,6 @@ export class ThumbnailLinkCheck {
     return refused.length === 0
       ? null
       : `thumbnail-link-invalid: media_attachments ${literal} is a thumbnail whose link Kopje never stores (a current one of no local video or audio upload of its account, or a replaced one that keeps its url or never completed); this dump cannot be restored`;
-  };
-}
-
-// The row checks of verification, in order: the first problem refuses the import.
-export function rowChecks(...checks: RowCheck[]): RowCheck {
-  return (spec, row) => {
-    for (const check of checks) {
-      const problem = check(spec, row);
-      if (problem !== null) {
-        return problem;
-      }
-    }
-    return null;
   };
 }
 

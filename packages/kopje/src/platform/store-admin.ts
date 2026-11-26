@@ -72,7 +72,6 @@ import {
   parseTrailer,
   QUOTE_COUNTS_DONE,
   rowBytes,
-  rowChecks,
   ThumbnailLinkCheck,
   type VerifyReport,
 } from "./store-import";
@@ -897,12 +896,15 @@ export class StoreAdmin {
             return { ok: true as const, done: false, report: null, progress: progressOf(next) };
           }
         }
+        // The row checks, in order: the first problem refuses the import.
+        const boosts = new BoostChainCheck(this.#sql).check;
+        const thumbnails = new ThumbnailLinkCheck(this.#sql).check;
         const step = checksumStep(
           this.#sql,
           record.header.tables,
           verify.position,
           budget,
-          rowChecks(new BoostChainCheck(this.#sql).check, new ThumbnailLinkCheck(this.#sql).check),
+          (spec, row) => boosts(spec, row) ?? thumbnails(spec, row),
         );
         const results = [...verify.results, ...step.finished];
         if (step.refused !== null) {
