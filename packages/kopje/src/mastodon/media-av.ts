@@ -16,11 +16,13 @@ import {
   V1_POLL_MS,
   V1_TIME_MS,
 } from "../domain/media-processing";
-import { presentMedia, processingMedia } from "../domain/status-presenter";
+import { presentMedia, processingMedia, type ThumbnailFacts } from "../domain/status-presenter";
 import { sniffAvUpload } from "../platform/av-bytes";
 import { readConfig } from "../platform/config";
+import { DeadlinePassed } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { sniffImageType } from "../platform/image-bytes";
+import { IMAGE_SIZE_LIMIT } from "../platform/images";
 import { incomingKey } from "../platform/media-files";
 import { MultipartRefused, MultipartStream, multipartBoundary, type PartHead } from "../platform/multipart-stream";
 import { storedMediaDescription } from "../platform/stored-bounds";
@@ -34,11 +36,18 @@ import {
   INVALID_TYPE,
   MEDIA_BODY_LIMIT,
   mediaProblem,
+  type ProfileUpload,
   receiveImageUpload,
+  RECEIVE_TOO_LONG,
   refusedForm,
   reserve,
-  THUMBNAIL_MUST_BE_BLANK,
+  storeThumbnail,
+  sweepSoon,
+  THUMBNAIL_INVALID_TYPE,
+  THUMBNAIL_TOO_LARGE,
+  thumbnailFileProblem,
   TOO_LARGE,
+  UNAVAILABLE,
   type Upload,
   type UploadOutcome,
   uploadParams,
@@ -129,7 +138,7 @@ async function receiveCandidate(
 ): Promise<Response> {
   const cut = r.endpoint === "v1" ? r.arrival + V1_TIME_MS - T_REPLY : Infinity;
   const giveUp = r.endpoint === "v1" ? r.arrival + V1_TIME_MS : Infinity;
-  const reserving = reserve(c, deps, () => userCredential(c, deps), { build: r.activation.build });
+  const reserving = reserve(c, deps, () => userCredential(c, deps), { avCandidate: { build: r.activation.build } });
   const reserved = await by(deps, () => reserving, cut);
   if (reserved === CUT) {
     r.cleanup.late(reserving, STORE_CALL_MS, (late) => {
@@ -159,14 +168,19 @@ function cancelBody(request: Request): void {
 // ---- Messages (design 4.7, 4.11, 4.14)
 
 const BUSY = "Media processing is busy. Try again in a moment.";
-const RECEIVE_TOO_LONG = "Media processing took too long to receive. Try again.";
 const PROCESS_TOO_LONG = "Media processing took too long. Try a shorter file.";
-const UNAVAILABLE = "Media processing is unavailable. Try again later.";
 const AV_TOO_LARGE = "Validation failed: File file size must be less than 90 MB";
 const OUTSIDE_ENVELOPE = "Validation failed: File is too long or too large to process";
 const PROCESSING_ERROR = "Error processing thumbnail for uploaded media";
 // A second `file` part after a video or audio one (Mastodon reads the last: docs/mastodon-deviations.md).
 const REPEATED_FILE = "Validation failed: File was sent more than once";
+// A second `thumbnail` part of a video or audio upload (#1828 PR6 D-9; Mastodon reads the last).
+const REPEATED_THUMBNAIL = "Validation failed: Thumbnail was sent more than once";
+
+// The ceiling on the bytes pulled before the file part once a `thumbnail` file part comes before it (#1828 PR6,
+// "Multipart"): room for a thumbnail past IMAGE_SIZE_LIMIT (judged after the sniff), the text parts' API_BODY_LIMIT
+// and the sniff. Without such a part the ceiling stays MEDIA_BODY_LIMIT, as the image pipeline's body.
+export const PREFIX_THUMBNAIL_LIMIT = MEDIA_BODY_LIMIT + API_BODY_LIMIT + SNIFF_BYTES;
 
 // ---- Timing
 
@@ -298,6 +312,20 @@ class Cleanup {
     );
   }
 
+  // A thumbnail the request made (#1828 PR6) and no S3 linked: doomed unless linked (media.ts discard, `doom`; a linked
+  // one is no upload of the owner's, so nothing happens to it), then the sweep after the response deletes its keys.
+  // Added only once the making has settled, so it never races the making's own writes.
+  discardThumbnail(child: ProfileUpload): void {
+    this.step(
+      2 * STORE_CALL_MS + R2_CALL_MS,
+      async () => {
+        await discard(this.#c, this.#deps, child);
+        sweepSoon(this.#c, this.#deps);
+      },
+      (fields) => console.warn({ event: "kopje.media.upload.abandon_failed", ...fields }),
+    );
+  }
+
   close(): void {
     this.#closed.resolve();
   }
@@ -377,19 +405,28 @@ async function firstFile(
     if (head.name === "file" && head.file) {
       return { prefix: await reader.peek(SNIFF_BYTES), texts, file: head };
     }
-    // The reader's ceiling (MEDIA_BODY_LIMIT) bounds these parts.
+    // The reader's ceiling (MEDIA_BODY_LIMIT, or PREFIX_THUMBNAIL_LIMIT once a thumbnail file is sent) bounds these
+    // parts. Nothing is refused here: the file's kind decides how they are judged (AvUpload #beforeSlot, or the image
+    // pipeline the body is replayed to).
+    if (head.name === "thumbnail" && head.file) {
+      reader.limit = Math.max(reader.limit, PREFIX_THUMBNAIL_LIMIT);
+    }
     texts.push({ head, body: await collected(reader) });
   }
 }
 
-// The current part's body, within `limit` bytes when given (StagingRefusal 413 past it).
-async function collected(reader: MultipartStream, limit = Infinity): Promise<Uint8Array> {
+// The current part's body, within `limit` bytes when given (`refusal` past it, by default 413).
+async function collected(
+  reader: MultipartStream,
+  limit = Infinity,
+  refusal = () => new StagingRefusal(413, "Request body is too large"),
+): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let size = 0;
   await reader.body((chunk) => {
     size += chunk.byteLength;
     if (size > limit) {
-      throw new StagingRefusal(413, "Request body is too large");
+      throw refusal();
     }
     chunks.push(chunk.slice());
   });
@@ -486,7 +523,8 @@ class StagingRefusal extends Error {
 }
 
 // S3's refusal, its input deleted (design 4.14): the budget's 429, today's type refusal for a probe verdict revoked
-// meanwhile (design 4.14, "Not active"), else 503.
+// meanwhile (design 4.14, "Not active"), else 503; a thumbnail no longer linkable (#1828 PR6, made invalid between its
+// making and S3) is a transient failure the client may send again.
 function queueRefusal(reason: QueueRefusal): Response {
   switch (reason) {
     case "spent":
@@ -497,10 +535,8 @@ function queueRefusal(reason: QueueRefusal): Response {
     case "staging_deadline":
       return mastodonError(503, RECEIVE_TOO_LONG);
     case "restored":
-      return mastodonError(503, UNAVAILABLE);
     case "thumbnail":
-      // S3 refuses a thumbnail only when sent one, which this route does not send.
-      throw new Error("queueNormalize refused a thumbnail that was not sent");
+      return mastodonError(503, UNAVAILABLE);
   }
 }
 
@@ -510,9 +546,11 @@ class AvUpload {
   readonly #a: Active;
   readonly #reader: MultipartStream;
   readonly #kind: AvKind;
-  // The parts other than the streamed file, in order: the texts before it, then the parts after it (a thumbnail file
-  // with its body dropped once weighed).
+  // The parts other than the streamed file, in order: the texts before it, then the parts after it (a file part with
+  // its body dropped: once weighed, or, the thumbnail's, once kept in #thumbnail).
   readonly #texts: Text[];
+  // The one `thumbnail` file part's body (#1828 PR6, D-9), made into the upload's thumbnail after the staging.
+  #thumbnail: Uint8Array | null = null;
   // The streamed file's head and its place among #texts, for #params' zero-byte placeholder.
   readonly #file: { head: PartHead; at: number };
   // The body's multipart boundary, as the reader read it, and whether the header quoted it.
@@ -615,11 +653,63 @@ class AvUpload {
       return this.#slotRefusal(taken === UNKNOWN ? "unknown" : taken.status);
     }
     this.#reader.forget();
-    const staged = await this.#stage(Math.min(readBefore + taken.stagingMs, this.#cut), query.params);
+    const end = Math.min(readBefore + taken.stagingMs, this.#cut);
+    const staged = await this.#stage(end, query.params);
     if ("refusal" in staged) {
       return this.#exit(taken.stagedAt, staged.refusal);
     }
-    return this.#queue(taken.stagedAt, staged);
+    const thumbnail = this.#thumbnail;
+    this.#thumbnail = null;
+    if (thumbnail === null) {
+      return this.#queue(taken.stagedAt, staged, null);
+    }
+    const made = await this.#make(taken.stagedAt, thumbnail, end);
+    if ("refusal" in made) {
+      return this.#exit(taken.stagedAt, made.refusal);
+    }
+    return this.#queue(taken.stagedAt, staged, made.child);
+  }
+
+  // The thumbnail made from `bytes` after the staging and before S3 (#1828 PR6, "POST timing"), by `end`: the staging
+  // time S1 answered and v1's cut. The making is awaited no later than `end`: at `end`, or on its failure, the staging
+  // exits at once (S2 depends on nothing the making holds), and a thumbnail still being made is discarded by the
+  // request's cleanup once the making settles, after its own writes (storeThumbnail discards one it failed itself).
+  async #make(
+    stagedAt: number,
+    bytes: Uint8Array,
+    end: number,
+  ): Promise<{ child: ProfileUpload } | { refusal: StagingRefusal }> {
+    const making = storeThumbnail(this.#c, this.#deps, () => this.#a.upload.credential(), bytes, {
+      end,
+      parent: { id: this.#id, token: this.#token, stagedAt },
+    });
+    making.catch(() => {});
+    let made: Awaited<typeof making> | typeof CUT;
+    try {
+      made = await by(this.#deps, () => making, end);
+    } catch (error) {
+      if (error instanceof HTTPException) {
+        this.#release(stagedAt);
+        throw error;
+      }
+      if (!(error instanceof DeadlinePassed)) {
+        console.error({ event: "kopje.media.upload.thumbnail_failed", ...errorFields(error) });
+      }
+      return {
+        refusal: new StagingRefusal(503, error instanceof DeadlinePassed ? RECEIVE_TOO_LONG : UNAVAILABLE),
+      };
+    }
+    if (made === CUT) {
+      this.#a.cleanup.hold(
+        making.then((late) => {
+          if (late.ok) {
+            this.#a.cleanup.discardThumbnail(late.upload);
+          }
+        }),
+      );
+      return { refusal: new StagingRefusal(503, RECEIVE_TOO_LONG) };
+    }
+    return made.ok ? { child: made.upload } : { refusal: new StagingRefusal(made.status, made.error) };
   }
 
   // A refusal before any slot is taken: the body cancelled and the reservation abandoned.
@@ -629,14 +719,28 @@ class AvUpload {
     return mastodonError(refused.status, refused.answer);
   }
 
-  // The refusals the parts before the file part decide, before any slot is taken (P7).
+  // The refusals the parts before the file part decide, before any slot is taken (P7), now that the file is known to be
+  // video or audio (#1828 PR6, "Multipart"): one `thumbnail` part (D-9), not text (D-3: empty text is none), and a file
+  // within IMAGE_SIZE_LIMIT and of an image type by its signature, whose body is then kept apart and weighs nothing.
   #beforeSlot(): StagingRefusal | null {
     if (this.#texts.some((t) => t.head.name === "file")) {
       return new StagingRefusal(422, REPEATED_FILE);
     }
-    // A thumbnail as the image path counts one (thumbnailSent: a file part, or text that is not empty).
-    if (this.#texts.some((t) => t.head.name === "thumbnail" && (t.head.file || t.body.byteLength > 0))) {
-      return new StagingRefusal(422, THUMBNAIL_MUST_BE_BLANK);
+    const thumbnails = this.#texts.filter((t) => t.head.name === "thumbnail");
+    if (thumbnails.length > 1) {
+      return new StagingRefusal(422, REPEATED_THUMBNAIL);
+    }
+    const [thumbnail] = thumbnails;
+    if (thumbnail !== undefined && !thumbnail.head.file && thumbnail.body.byteLength > 0) {
+      return new StagingRefusal(422, THUMBNAIL_INVALID_TYPE);
+    }
+    if (thumbnail?.head.file === true) {
+      const problem = thumbnailFileProblem(thumbnail.body.byteLength, thumbnail.body);
+      if (problem !== undefined) {
+        return new StagingRefusal(422, problem);
+      }
+      this.#thumbnail = thumbnail.body;
+      thumbnail.body = new Uint8Array();
     }
     if (this.#texts.reduce((sum, t) => sum + weight(t), 0) > API_BODY_LIMIT) {
       return new StagingRefusal(413, "Request body is too large");
@@ -682,14 +786,15 @@ class AvUpload {
       upload = created;
       const multipart = upload;
       const parts: R2UploadedPart[] = [];
-      let buffer = new Uint8Array(PART_BYTES);
+      // One part's buffer, allocated when a byte is to go in and released once sent.
+      let buffer: Uint8Array | null = null;
       let fill = 0;
       let bytes = 0;
       const flush = async () => {
-        const part = buffer.subarray(0, fill);
-        parts.push(await write(() => multipart.uploadPart(parts.length + 1, part)));
-        buffer = new Uint8Array(PART_BYTES);
+        const part = (buffer ?? new Uint8Array()).subarray(0, fill);
+        buffer = null;
         fill = 0;
+        parts.push(await write(() => multipart.uploadPart(parts.length + 1, part)));
       };
       await this.#reader.body(async (chunk) => {
         bytes += chunk.byteLength;
@@ -697,6 +802,7 @@ class AvUpload {
           throw new StagingRefusal(422, AV_TOO_LARGE);
         }
         for (let at = 0; at < chunk.byteLength;) {
+          buffer ??= new Uint8Array(PART_BYTES);
           const n = Math.min(PART_BYTES - fill, chunk.byteLength - at);
           buffer.set(chunk.subarray(at, at + n), fill);
           fill += n;
@@ -706,6 +812,11 @@ class AvUpload {
           }
         }
       });
+      // The file's last part is sent, and its buffer released, before the next part's head is read (#1828 PR6), so a
+      // trailing thumbnail is never held beside a part buffer.
+      if (fill > 0) {
+        await flush();
+      }
       let weighed = this.#texts.reduce((sum, t) => sum + weight(t), 0);
       for (;;) {
         const head = await this.#reader.next();
@@ -715,21 +826,36 @@ class AvUpload {
         if (head.name === "file") {
           throw new StagingRefusal(422, REPEATED_FILE);
         }
-        const text = { head, body: await collected(this.#reader, API_BODY_LIMIT) };
-        weighed += weight(text);
+        // D-9: a second thumbnail is refused at its head, none of its bytes read; one file is kept within
+        // IMAGE_SIZE_LIMIT, its head weighed and its body not.
+        if (head.name === "thumbnail" && this.#texts.some((t) => t.head.name === "thumbnail")) {
+          throw new StagingRefusal(422, REPEATED_THUMBNAIL);
+        }
+        const thumbnail = head.name === "thumbnail" && head.file;
+        const body = thumbnail
+          ? await collected(this.#reader, IMAGE_SIZE_LIMIT, () => new StagingRefusal(422, THUMBNAIL_TOO_LARGE))
+          : await collected(this.#reader, API_BODY_LIMIT);
+        weighed += weight({ head, body: thumbnail ? new Uint8Array() : body });
         if (weighed > API_BODY_LIMIT || this.#texts.length >= MULTIPART_PARTS) {
           throw new StagingRefusal(413, "Request body is too large");
         }
-        // A file part's bytes, past the weight's bound (RES-1), are not kept: #params reads it as a zero-byte file.
-        this.#texts.push(head.file ? { head, body: new Uint8Array() } : text);
+        if (thumbnail) {
+          this.#thumbnail = body;
+        }
+        // A file part's bytes, past the weight's bound (RES-1), are not kept here: #params reads it as a zero-byte file.
+        this.#texts.push(head.file ? { head, body: new Uint8Array() } : { head, body });
       }
       await this.#reader.cancel();
       const params = await this.#params(query);
       if ("error" in params) {
         throw new StagingRefusal(params.status ?? 422, params.error);
       }
-      if (fill > 0) {
-        await flush();
+      // A thumbnail file after the file is judged once the form is (the description first, as the image path orders
+      // them); one before it was judged before the slot.
+      const problem =
+        this.#thumbnail === null ? undefined : thumbnailFileProblem(this.#thumbnail.byteLength, this.#thumbnail);
+      if (problem !== undefined) {
+        throw new StagingRefusal(422, problem);
       }
       await write(() => multipart.complete(parts));
       upload = null;
@@ -789,7 +915,7 @@ class AvUpload {
     if ("error" in params) {
       return params;
     }
-    const problem = mediaProblem(params, params.get("description"));
+    const problem = mediaProblem(params, params.get("description"), true);
     return problem === undefined ? params : { error: problem };
   }
 
@@ -797,6 +923,12 @@ class AvUpload {
   // order, S2 awaited at most STORE_CALL_MS, the input deleted only on a `released` received within it (an authorized
   // delete before the abandonment, so a held abandonment cannot hold it up), and the reservation abandoned.
   #exit(stagedAt: number, refusal: StagingRefusal): Response {
+    this.#release(stagedAt);
+    return mastodonError(refusal.status, refusal.answer);
+  }
+
+  // A staging exit's cleanup (#exit), for an answer given otherwise too (an HTTP answer of the Store's, passed on).
+  #release(stagedAt: number): void {
     this.#a.cleanup.add(async () => {
       const released = await bounded(
         this.#deps,
@@ -811,12 +943,30 @@ class AvUpload {
       }
     });
     this.#abandon();
-    return mastodonError(refusal.status, refusal.answer);
   }
 
-  async #queue(stagedAt: number, staged: { bytes: number; params: Params }): Promise<Response> {
+  // S3 with the validated text and the thumbnail `child` the request made, if any, which S3 links in its own
+  // transaction (#1828 PR6, "POST link"): a committed S3 has it, whatever becomes of the reply. On every other outcome,
+  // a final unknown included, the child is discarded (a no-op for a child S3 linked).
+  async #queue(
+    stagedAt: number,
+    staged: { bytes: number; params: Params },
+    child: ProfileUpload | null,
+  ): Promise<Response> {
+    const answer = await this.#queued(stagedAt, staged, child);
+    if (child !== null && !answer.kept) {
+      this.#a.cleanup.discardThumbnail(child);
+    }
+    return answer.response;
+  }
+
+  async #queued(
+    stagedAt: number,
+    staged: { bytes: number; params: Params },
+    child: ProfileUpload | null,
+  ): Promise<{ response: Response | Promise<Response>; kept: boolean }> {
     if (this.#answered) {
-      return mastodonError(503, PROCESS_TOO_LONG);
+      return { response: mastodonError(503, PROCESS_TOO_LONG), kept: false };
     }
     const text: UploadText = {
       description: staged.params.get("description") ?? "",
@@ -833,31 +983,38 @@ class AvUpload {
             bytes: staged.bytes,
             text,
             activation: this.#a.activation,
+            ...(child === null ? {} : { thumbnail: { id: child.id, token: child.token } }),
           }),
         ),
       this.#a.endpoint,
       this.#cut,
     );
     if (queued === CUT) {
-      return this.#decide();
+      return { response: this.#decide(), kept: false };
     }
     if (queued === UNKNOWN) {
-      return mastodonError(503, UNAVAILABLE);
+      return { response: mastodonError(503, UNAVAILABLE), kept: false };
     }
     switch (queued.status) {
       case "queued":
         this.#dispatch(queued.teardownId);
-        return this.#a.endpoint === "v2" ? this.#accepted(text) : this.#wait();
+        return {
+          response: this.#a.endpoint === "v2" ? this.#accepted(text, queued.thumbnail) : this.#wait(),
+          kept: true,
+        };
       case "settled":
-        return this.#a.endpoint === "v2" ? this.#settled(text) : this.#wait();
+        return {
+          response: this.#a.endpoint === "v2" ? this.#settled(text, queued.thumbnail) : this.#wait(),
+          kept: true,
+        };
       case "refused_cleanup_yours":
         this.#deleteInput();
         this.#abandon();
-        return queueRefusal(queued.reason);
+        return { response: queueRefusal(queued.reason), kept: false };
       case "maintenance":
-        return maintenanceError();
+        return { response: maintenanceError(), kept: false };
       case "gone":
-        return mastodonError(503, UNAVAILABLE);
+        return { response: mastodonError(503, UNAVAILABLE), kept: false };
     }
   }
 
@@ -877,8 +1034,8 @@ class AvUpload {
 
   // v2's 202 for a repeat S3 found already queued (the spec's RouteReact: 202 as for `queued`), with the upload as its
   // owner's GET shows it now: masked while it processes, completed once it is; a failure, or a read
-  // not received, the masked entity, the owner's next GET showing the failure.
-  async #settled(text: UploadText): Promise<Response> {
+  // not received, the masked entity with the thumbnail S3's reply showed, the owner's next GET showing the failure.
+  async #settled(text: UploadText, thumbnail: ThumbnailFacts | null): Promise<Response> {
     const shown = await by(
       this.#deps,
       () =>
@@ -897,12 +1054,13 @@ class AvUpload {
     ) {
       return this.#c.json(shown.value.media, 202);
     }
-    return this.#accepted(text);
+    return this.#accepted(text, thumbnail);
   }
 
-  // v2's 202: the upload as its owner's GET shows it while it processes (url, preview_url, meta and blurhash null).
-  #accepted(text: UploadText): Response {
-    const media = processingMedia(
+  // v2's 202: the upload as its owner's GET shows it while it processes (url, preview_url, meta and blurhash null), with
+  // its current thumbnail as S3 answered it (#1828 PR6 D-5: its preview_url, meta.small and blurhash).
+  #accepted(text: UploadText, thumbnail: ThumbnailFacts | null): Response {
+    const masked = processingMedia(
       presentMedia({
         id: this.#id,
         type: this.#kind,
@@ -918,6 +1076,15 @@ class AvUpload {
         cached_preview: null,
       }),
     );
+    const media =
+      thumbnail === null
+        ? masked
+        : {
+            ...masked,
+            preview_url: thumbnail.preview_url,
+            meta: thumbnail.small === null ? null : { small: thumbnail.small },
+            blurhash: thumbnail.blurhash,
+          };
     return this.#c.json(media, 202);
   }
 
