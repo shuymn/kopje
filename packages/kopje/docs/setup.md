@@ -73,9 +73,10 @@ Some things cannot be done from the wizard. Do these in the Cloudflare dashboard
    media processor may make each UTC month. Above 0, with the processor's block and a passed probe of
    `still@standard-1`, a remote video or gifv cached from then on without a preview of its own gets a still, each
    claim spending one job ([media-processor.md](media-processor.md), "Remote stills"). Each job may also start two
-   Images transformations that `IMAGES_MONTHLY_TRANSFORMS` does not count: keep the Images ceilings plus 2 ×
-   `MEDIA_STILL_MONTHLY_JOBS` within what the account's Images allowance covers. At 0, or without the processor's block,
-   such a video shows the plain poster.
+   Images transformations (and one metadata call) that `IMAGES_MONTHLY_TRANSFORMS` does not count: keep the Images
+   ceilings plus 2 × `MEDIA_STILL_MONTHLY_JOBS` within what the account's Images allowance covers. At 0, or without the
+   processor's block, such a video shows the plain poster. A value that is not a whole number of 0 or more is a
+   configuration error, as for the other budgets.
 
    Remote accounts' avatars and headers, remote custom emoji, and remote posts' attachments are cached in the media
    bucket under `remote/` and served from the instance, so clients do not load them from other servers. Nothing needs

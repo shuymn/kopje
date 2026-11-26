@@ -58,12 +58,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Remote videos and gifvs without a preview of their own can show a still frame made by the media processor, turned
   on by `MEDIA_STILL_MONTHLY_JOBS` (default 0) with the processor's block
   ([docs/media-processor.md](docs/media-processor.md), "Remote stills"): the cron probes `still@standard-1` and claims
-  at most one still a tick, each spending one job of that budget and up to two Images transformations that
-  `IMAGES_MONTHLY_TRANSFORMS` does not count (keep the Images ceilings plus twice the budget within the account's
-  allowance, [docs/setup.md](docs/setup.md)). Only videos cached after it is turned on get one; until then, and when
-  none can be made, the plain poster stays. The health report's `mediaProcessor` check covers the profiles both
-  budgets need: the worst state of them, each profile's under `profiles`, and `stills` with the month's spent jobs
-  and budget; a positive budget without the binding is `disabled` with `reason: "binding"`.
+  at most one still a tick, each spending one job of that budget and up to two Images transformations (and one metadata
+  call) that `IMAGES_MONTHLY_TRANSFORMS` does not count (keep the Images ceilings plus twice the budget within the
+  account's allowance, [docs/setup.md](docs/setup.md)). Only videos cached after it is turned on get one; until then,
+  and when none can be made, the plain poster stays. The health report's `mediaProcessor` check covers the profiles both
+  budgets need: the worst state of them, each profile's under `profiles`, and `stills` with the month's spent jobs and
+  budget, so a positive stills budget with no verdict yet is `provisioned` (`never`) even while
+  `MEDIA_UPLOAD_MONTHLY_JOBS` is 0; a positive budget without the binding is `disabled` with `reason: "binding"`. An
+  invalid `MEDIA_STILL_MONTHLY_JOBS` (not a whole number of 0 or more) is a configuration error, as for the other
+  budgets, even without the processor's block. `kopje-admin media-processor probe` records the verdict of
+  `still@standard-1` as for `normalize@standard-4`, whatever the budgets, and a profile probed within its cooldown
+  prints `cooldown` and exits 1.
 - Video and audio uploads on `/api/v1/media` and `/api/v2/media`, once the media processor is added, its probe of
   `normalize@standard-4` passed and `MEDIA_UPLOAD_MONTHLY_JOBS` is above 0
   ([docs/media-processor.md](docs/media-processor.md), "Uploads"). The file, at most 90 MiB, is streamed into R2 while

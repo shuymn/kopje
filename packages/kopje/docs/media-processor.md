@@ -68,11 +68,12 @@ showing an image that does not speak the protocol (a 404 or 405), `verifyStill` 
 as input.
 
 `kopje-admin media-processor probe` runs the same probes on request (one profile, or every profile by default) and
-records each verdict for the deployed version under the profile's claim, as the cron does.
-The still takes a `/healthz` without the version as ready, since `/still` is unchanged since the image before it: a
-Worker that activates before its image keeps the media rebuild's still. Both start a container and write a probe copy to
-the media bucket, so they are refused while the instance is in maintenance or its Store is read-only, and the CLI prints
-that refusal.
+records each verdict for the deployed version under the profile's claim, as the cron does, even while that profile's
+budget is 0. A profile whose probe was claimed within its cooldown is not run again: it prints `cooldown` and the CLI
+exits 1, as it does for any profile whose verdict is not a recorded pass. The still takes a `/healthz` without the
+version as ready, since `/still` is unchanged since the image before it: a Worker that activates before its image keeps
+the media rebuild's still. Both start a container and write a probe copy to the media bucket, so they are refused while
+the instance is in maintenance or its Store is read-only, and the CLI prints that refusal.
 
 The request has one deadline, `PROBE_ROUTE_MS` (290 s, 10 s under the 300 s the CLI's fetch waits for the response's
 headers), from its arrival, before its credential is checked. Each step ends at its cut, the earlier of that deadline
@@ -214,13 +215,14 @@ most 640 pixels on its long edge, served at `/media/r/<token>/s<attempt>.webp`.
 
 When the cache records such a video, the Store queues its still. The cron's stills round (every 5 minutes, on its own)
 claims at most one a tick: the claim charges one job of `MEDIA_STILL_MONTHLY_JOBS`, which covers the container and its
-at most two Images calls (the WebP and its blurhash; `IMAGES_MONTHLY_TRANSFORMS` does not count them), and reserves 2
-MiB of `REMOTE_MEDIA_CACHE_BYTES` until the still is recorded (its real size then) or its attempt fails. A claim waits
-while the cache has less room than that below the cap less its 96 MiB headroom: reclamation never evicts anything for
-a still, so near the cap the poster stays until ordinary reclamation, retention or eviction makes room. The round makes
-the still on a fresh `standard-1` container from the cached file, checks the PNG before Images sees it and Images'
-WebP before it is written, and writes it under a key of its own for each attempt, after a Store admission whose grant
-lasts 2 s. A video gets at most three claims between restores:
+at most two Images transformations and one metadata call (the WebP, its `info()` and the blurhash's RGBA;
+`IMAGES_MONTHLY_TRANSFORMS` does not count them), and reserves 2 MiB of `REMOTE_MEDIA_CACHE_BYTES` until the still is
+recorded (its real size then) or its attempt fails. A claim waits while the cache has less room than that below the cap
+less its 96 MiB headroom: reclamation never evicts anything for a still, so near the cap the poster stays until ordinary
+reclamation, retention or eviction makes room. The round makes the still on a fresh `standard-1` container from the
+cached file, checks the PNG before Images sees it and Images' WebP before it is written, and writes it under a key of
+its own for each attempt, after a Store admission whose grant lasts 2 s. A video gets at most three claims between
+restores:
 
 | Outcome                                                                                                                 | Disposition                                                               |
 | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -241,12 +243,12 @@ its object's alarm, and one more still container may then start beside it. In ma
 read-only nothing is claimed.
 
 A still that was written but never recorded (its round gave up, or the Store refused its record) is charged nothing and
-named by no video. It becomes eligible for the hourly orphan sweep once uploaded more than 75 minutes earlier while its
-video is cached, or 24 hours or more earlier once it is not (counted from the upload, not from the video leaving the
-cache), and is deleted when a sweep page listing it succeeds; a failed page is listed again an hour later, so no time
-bounds its removal. Between restores each such still is at most 2 MiB and at most one is written a cron tick; a
-restore's backlog is below. A doomed video's deletion waits 75 minutes after a still's claim, and deletes the video's
-recorded still with it.
+named by no video. It becomes eligible for the hourly orphan sweep once uploaded more than 75 minutes earlier while the
+cache's ledger holds its token (the video cached, or doomed and awaiting deletion), or 24 hours or more earlier once it
+does not (counted from the upload, not from the token leaving the ledger), and is deleted when a sweep page listing it
+succeeds; a failed page is listed again an hour later, so no time bounds its removal. Between restores each such still
+is at most 2 MiB and at most one is written a cron tick; a restore's backlog is below. A doomed video's deletion waits
+75 minutes after a still's claim, and deletes the video's recorded still with it.
 
 Cost (an estimate from the design, to be replaced by the den-test measurement): a still runs one `standard-1`
 container for a few seconds, about 16 GiB-s of memory and 32 GB-s of disk, and two Images transformations; 200 stills a

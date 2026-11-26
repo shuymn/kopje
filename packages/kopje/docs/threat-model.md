@@ -3635,15 +3635,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the stop unconfirmed when the container does not stop"), `test/media-processor.test.ts` ("sets the alarm past the
   probe's deadline and destroy before the start, and ends the stages at the deadline"). _Enforced (main)_ for remote
   stills: each runs on a fresh object named for its token and attempt (`s:<token>:<attempt>`), reads
-  `remote/<token>/full` once as the request body, and answers only once its container is destroyed; its cut is the
-  input's while the input has not drained into the request body, the operation's after. The round's lease
-  (`remote_still_lease`, `STILL_LEASE_MS` 600 s) is taken with the claim and released early only by its holder on an
-  outcome showing no start or a confirmed stop; it is an admission hold, not a bound on the container: past it a destroy
-  that keeps failing is the object's alarm's, and one more still container may start (accepted, as PR4's uploads past
-  `HARD_HOLD_MS`). `test/media-processor.test.ts` ("runs a remote still on s:<token>:<attempt>, reading
-  remote/<token>/full once, destroyed before it answers", "labels a cut input-deadline while the input's body stalls,
-  and operation-deadline once it drained"), `test/remote-stills-round.test.ts` ("keeps the lease past the next tick
-  after a lost answer, then claims once it expires").
+  `remote/<token>/full` once as the request body, and answers a still only once its container is destroyed (when the
+  destroy does not finish by its deadline it answers `pending`, the container left to the object's alarm, and the round
+  keeps the lease); its cut is the input's while the input has not drained into the request body, the operation's after.
+  The round's lease (`remote_still_lease`, `STILL_LEASE_MS` 600 s) is taken with the claim and released early only by
+  its holder on an outcome showing no start or a confirmed stop; it is an admission hold, not a bound on the container:
+  past it a destroy that keeps failing is the object's alarm's, and one more still container may start (accepted, as
+  PR4's uploads past `HARD_HOLD_MS`). `test/media-processor.test.ts` ("runs a remote still on s:<token>:<attempt>,
+  reading remote/<token>/full once, destroyed before it answers", "labels a cut input-deadline while the input's body
+  stalls, and operation-deadline once it drained", "answers by its deadline when its destroy never answers, and the
+  alarm stops the container later"), `test/remote-stills-round.test.ts` ("keeps the lease past the next tick after a
+  lost answer, then claims once it expires").
 - **MEDIA-9: no processor output is published unverified.** Nothing reaches `originals/`, `files/`,
   `remote/<token>/still` or `remote/<token>/s<attempt>` unless Kopje's walker accepted the stream that is written, and
   every stored fact comes from the walker. _Enforced (main)_ for uploads: the output streams through `avVerifier`, held
@@ -5067,11 +5069,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (Q1)").
   _Enforced (main)_ for remote stills (#1828): the cron's stills round claims at most one still a tick, each claim
   charged one unit of `MEDIA_STILL_MONTHLY_JOBS` (per UTC month of the Store's clock, covering its container and its at
-  most two Images calls, which `IMAGES_MONTHLY_TRANSFORMS` does not count), at most `STILL_CLAIMS` (3) a video between
-  restores; a PITR restore rewinds the counters and the claims to its bookmark. Without the binding or with the budget
-  at 0 the round makes no Store call, and each of its steps starts only when its budget fits what is left of
-  `STILL_ROUND_MS`. `test/remote-stills-round.test.ts` ("the round's bounds (P-RND, G1, RES-6)"),
-  `test/remote-media-stills.test.ts` (the claims).
+  most two Images transformations and one metadata call, which `IMAGES_MONTHLY_TRANSFORMS` does not count), at most
+  `STILL_CLAIMS` (3) a video between restores; a PITR restore rewinds the counters and the claims to its bookmark.
+  Without the binding or with the budget at 0 the round makes no Store call, and each of its steps starts only when its
+  budget fits what is left of `STILL_ROUND_MS`. `test/remote-stills-round.test.ts` ("the round's bounds (P-RND, G1,
+  RES-6)"), `test/remote-media-stills.test.ts` (the claims).
   Delivery: _Enforced (main):_ an activity's targets are expanded 100 at a time, oldest activity first, in the recording
   transaction and then in each claim; a claim reads at most 16 lane heads (only heads are due); an unavailable host's
   drain (`drainStep`, RES-5) runs first in each claim, and in the operator's stop, and shares the claim's 100 rows
