@@ -10,7 +10,16 @@ import { PNG_PLAIN, WEBP_PLAIN } from "./fixtures/images";
 import { BUILD } from "./helpers";
 import { bytes, TestCodec } from "./media-helpers";
 import { AUDIO, avWorld, completed, failed, queued, type Up, VIDEO } from "./media-processing-helpers";
-import { mp4, multipartBody, type Part, type RouteWorld, routeWorld, SlowBody } from "./media-route-helpers";
+import {
+  answerOf,
+  mp4,
+  multipartBody,
+  type Part,
+  postMedia,
+  type RouteWorld,
+  routeWorld,
+  SlowBody,
+} from "./media-route-helpers";
 
 // PUT and PATCH /api/v1/media/:id with a video's or audio file's custom thumbnail (#1828 PR6 plan, "PUT order", T14,
 // T17, T18, T19): the token before a multipart body, the body's bounds, the lookup, the description and the thumbnail
@@ -40,10 +49,6 @@ function send(w: RouteWorld, method: Method, id: string, body: Body, query = "",
 }
 
 const jsonBody = (value: unknown): Body => ({ body: JSON.stringify(value), contentType: "application/json" });
-
-async function answer(response: Response): Promise<{ status: number; body: Record<string, unknown> }> {
-  return { status: response.status, body: await response.json<Record<string, unknown>>() };
-}
 
 // The counts a refusal must leave unchanged: alice's upload attempts and the Images charges (instance and account).
 async function counters(w: RouteWorld): Promise<{ attempts: number; transforms: string[] }> {
@@ -102,7 +107,7 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     const audio = await scheduledParent(w);
     const before = await counters(w);
     for (const [n, id] of [video, audio].entries()) {
-      const response = await answer(
+      const response = await answerOf<Record<string, unknown>>(
         await send(w, method, id, multipartBody([thumbPart(), { name: "description", data: `d${n}` }])),
       );
       const child = await current(w, id);
@@ -129,7 +134,9 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
   it("answers a processing video 206 with the thumbnail's preview, url still masked (D-5)", async () => {
     const w = await routeWorld();
     const parent = await queued(w);
-    const response = await answer(await send(w, method, parent.id, multipartBody([thumbPart()])));
+    const response = await answerOf<Record<string, unknown>>(
+      await send(w, method, parent.id, multipartBody([thumbPart()])),
+    );
     const child = await current(w, parent.id);
     expect(response.status).toBe(206);
     expect(response.body).toMatchObject({
@@ -156,7 +163,7 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     const w = await routeWorld();
     const parent = await completed(w);
     const big = new Uint8Array(2 * 1024 * 1024);
-    const other = await answer(
+    const other = await answerOf<Record<string, unknown>>(
       await send(
         w,
         method,
@@ -172,11 +179,13 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
       body: new Uint8Array(size).fill(0x78),
       contentType: "multipart/form-data; boundary=b",
     });
-    expect(await answer(await send(w, method, parent.id, malformed(2 * 1024 * 1024)))).toEqual({
+    expect(
+      await answerOf<Record<string, unknown>>(await send(w, method, parent.id, malformed(2 * 1024 * 1024))),
+    ).toEqual({
       status: 413,
       body: { error: "Request body is too large" },
     });
-    expect(await answer(await send(w, method, parent.id, malformed(1024)))).toEqual({
+    expect(await answerOf<Record<string, unknown>>(await send(w, method, parent.id, malformed(1024)))).toEqual({
       status: 400,
       body: { error: "Malformed request body" },
     });
@@ -251,7 +260,7 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
       ],
     ];
     for (const [label, id, body, status, error] of refusals) {
-      const response = await answer(await send(w, method, id, body));
+      const response = await answerOf<Record<string, unknown>>(await send(w, method, id, body));
       expect([label, response]).toEqual([label, { status, body: { error } }]);
     }
     expect(await counters(w)).toEqual(before);
@@ -274,7 +283,10 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     expect(await has(fileKey(child?.file_token ?? "", "small"))).toBe(true);
     expect((await w.store.deleteMedia(BUILD, { credential: w.alice, id: parent.id })).status).toBe("ok");
     link.resolve();
-    expect(await answer(await put)).toEqual({ status: 404, body: { error: "Record not found" } });
+    expect(await answerOf<Record<string, unknown>>(await put)).toEqual({
+      status: 404,
+      body: { error: "Record not found" },
+    });
     const after = await counters(w);
     expect(after.attempts).toBe(before.attempts + 1);
     expect(after.transforms).toEqual(charge(TRANSFORMS_PER_UPLOAD));
@@ -288,7 +300,9 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     const w = await routeWorld();
     const parent = await completed(w);
     w.gate.drops.set("updateMedia", 1);
-    const response = await answer(await send(w, method, parent.id, multipartBody([thumbPart()])));
+    const response = await answerOf<Record<string, unknown>>(
+      await send(w, method, parent.id, multipartBody([thumbPart()])),
+    );
     const child = await current(w, parent.id);
     expect(response.status).toBe(200);
     expect(response.body["preview_url"]).toContain(`/media/${child?.token}/small.`);
@@ -301,7 +315,9 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     const parent = await completed(w);
     w.gate.drops.set("updateMedia", 1);
     w.gate.retryableDrops.add("updateMedia");
-    const response = await answer(await send(w, method, parent.id, multipartBody([thumbPart()])));
+    const response = await answerOf<Record<string, unknown>>(
+      await send(w, method, parent.id, multipartBody([thumbPart()])),
+    );
     const child = await current(w, parent.id);
     expect(response.status).toBe(200);
     expect(response.body["preview_url"]).toContain(`/media/${child?.token}/small.`);
@@ -326,13 +342,15 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     const first = send(w, method, parent.id, multipartBody([thumbPart(), { name: "description", data: "first" }]));
     await reached;
     try {
-      const second = await answer(await send(w, method, parent.id, jsonBody({ description: "second" })));
+      const second = await answerOf<Record<string, unknown>>(
+        await send(w, method, parent.id, jsonBody({ description: "second" })),
+      );
       expect(second.body["description"]).toBe("second");
       w.gate.drops.set("updateMedia", 1);
     } finally {
       held.resolve();
     }
-    const repeated = await answer(await first);
+    const repeated = await answerOf<Record<string, unknown>>(await first);
     const child = await current(w, parent.id);
     expect(repeated).toEqual({
       status: 200,
@@ -342,7 +360,9 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
       }),
     });
     expect(w.gate.calls.filter((c) => c === "updateMedia")).toHaveLength(3);
-    expect((await answer(await send(w, method, parent.id, jsonBody({})))).body["description"]).toBe("second");
+    expect(
+      (await answerOf<Record<string, unknown>>(await send(w, method, parent.id, jsonBody({})))).body["description"],
+    ).toBe("second");
   });
 
   it("checks the token again before answering a multipart body it cannot parse (r1 M4)", async () => {
@@ -435,7 +455,9 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     const w = await routeWorld();
     const parent = await completed(w);
     w.gate.fails.set("updateMedia", 2);
-    expect(await answer(await send(w, method, parent.id, multipartBody([thumbPart()])))).toEqual({
+    expect(
+      await answerOf<Record<string, unknown>>(await send(w, method, parent.id, multipartBody([thumbPart()]))),
+    ).toEqual({
       status: 503,
       body: { error: "Media processing is unavailable. Try again later." },
     });
@@ -452,7 +474,9 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     expect((await send(w, method, parent.id, multipartBody([thumbPart()]))).status).toBe(200);
     const a = await current(w, parent.id);
     expect(await has(fileKey(a?.token ?? "", "small"))).toBe(true);
-    const replaced = await answer(await send(w, method, parent.id, multipartBody([thumbPart(bytes(WEBP_PLAIN))])));
+    const replaced = await answerOf<Record<string, unknown>>(
+      await send(w, method, parent.id, multipartBody([thumbPart(bytes(WEBP_PLAIN))])),
+    );
     const b = await current(w, parent.id);
     expect(b?.id).not.toBe(a?.id);
     expect(replaced.body["preview_url"]).toContain(`/media/${b?.token}/small.`);
@@ -490,14 +514,14 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
       expect((await send(w, method, parent.id, multipartBody([thumbPart()]))).status).toBe(200);
       const child = await current(w, parent.id);
       for (const unchanged of [jsonBody({ thumbnail: "" }), jsonBody({ description: "kept" })]) {
-        const response = await answer(await send(w, method, parent.id, unchanged));
+        const response = await answerOf<Record<string, unknown>>(await send(w, method, parent.id, unchanged));
         expect([label, response.status, response.body["preview_url"]]).toEqual([
           label,
           200,
           expect.stringContaining(child?.token ?? "?"),
         ]);
       }
-      const removed = await answer(await send(w, method, parent.id, body, query));
+      const removed = await answerOf<Record<string, unknown>>(await send(w, method, parent.id, body, query));
       expect([label, removed.status]).toEqual([label, 200]);
       expect(removed.body).toMatchObject({
         preview_url: expect.stringContaining(`/media/${parent.token}/small.`),
@@ -532,7 +556,7 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
       const b = await current(w, parent.id);
       w.gate.drops.set("updateMedia", 1);
       held.resolve();
-      expect(await answer(await removal)).toEqual({
+      expect(await answerOf<Record<string, unknown>>(await removal)).toEqual({
         status: 503,
         body: { error: "Media processing is unavailable. Try again later." },
       });
@@ -557,7 +581,7 @@ describe.each(["PUT", "PATCH"] as const)(
       async (_, body, query) => {
         const w = await routeWorld();
         const image = await imageUpload(w);
-        const response = await answer(await send(w, method, image, body, query));
+        const response = await answerOf<Record<string, unknown>>(await send(w, method, image, body, query));
         expect(response).toEqual({
           status: 200,
           body: expect.objectContaining({
@@ -599,15 +623,10 @@ describe("PUT /api/v1/media/:id with a thumbnail and no media processor bound (f
 // An image upload of alice's through the image pipeline, as before #1828 (uploads active, so a candidate reservation
 // that the image path takes).
 async function imageUpload(w: RouteWorld): Promise<string> {
-  const response = await w.h.request("/api/v2/media", {
-    method: "POST",
-    headers: { authorization: `Bearer ${w.h.users.alice.token}`, ...multipartHeaders() },
-    body: multipartBody([{ name: "file", data: bytes(PNG_PLAIN), filename: "a.png", type: "image/png" }]).body,
-  });
+  const response = await postMedia(
+    w,
+    multipartBody([{ name: "file", data: bytes(PNG_PLAIN), filename: "a.png", type: "image/png" }]),
+  );
   const body = await response.json<{ id: string }>();
   return body.id;
-}
-
-function multipartHeaders(): Record<string, string> {
-  return { "content-type": multipartBody([]).contentType };
 }

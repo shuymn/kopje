@@ -128,22 +128,32 @@ function showsChild(child: Child | undefined): unknown {
 }
 
 // The thumbnail's three facts as an answer shows them, and as its row stores them (C51: an answer's are the row's).
+// An answer's: the whole `meta.small` (size and aspect too).
 function factsOf(body: unknown): { preview_url: unknown; blurhash: unknown; small: unknown } {
   const { preview_url, blurhash, meta } = body as {
     preview_url: unknown;
     blurhash: unknown;
-    meta: { small?: { width?: unknown; height?: unknown } } | null;
+    meta: { small?: unknown };
   };
-  return { preview_url, blurhash, small: { width: meta?.small?.width, height: meta?.small?.height } };
+  return { preview_url, blurhash, small: meta?.small };
 }
 
-async function storedFacts(w: RouteWorld, id: string): Promise<ReturnType<typeof factsOf>> {
+// The row's: its preview, blurhash and the preview's stored width and height.
+async function storedFacts(
+  w: RouteWorld,
+  id: string,
+): Promise<{ preview_url: unknown; blurhash: unknown; small: unknown }> {
   const [row] = await sql<{ preview_url: string; blurhash: string; meta: string }>(
     w.store,
     "SELECT preview_url, blurhash, meta FROM media_attachments WHERE id = ?",
     id,
   );
-  return factsOf({ ...row, meta: JSON.parse(row?.meta ?? "null") as unknown });
+  const small = (JSON.parse(row?.meta ?? "{}") as { small?: { width?: unknown; height?: unknown } }).small;
+  return {
+    preview_url: row?.preview_url,
+    blurhash: row?.blurhash,
+    small: { width: small?.width, height: small?.height },
+  };
 }
 
 describe("a video or audio upload with a thumbnail (T15)", () => {
@@ -170,28 +180,10 @@ describe("a video or audio upload with a thumbnail (T15)", () => {
     const response = await answerOf(await postMedia(w, multipartBody([videoPart(), thumbPart()])));
     const id = await parentId(w);
     const [child] = await children(w);
-    const [stored] = await sql<{ preview_url: string; blurhash: string; meta: string }>(
-      w.store,
-      "SELECT preview_url, blurhash, meta FROM media_attachments WHERE id = ?",
-      child?.id ?? "",
-    );
-    const small = (JSON.parse(stored?.meta ?? "{}") as { small?: Record<string, unknown> }).small;
-    expect(response.body).toMatchObject({
-      preview_url: stored?.preview_url,
-      blurhash: stored?.blurhash,
-      meta: { small: expect.objectContaining({ width: small?.["width"], height: small?.["height"] }) },
-    });
+    expect(factsOf(response.body)).toMatchObject(await storedFacts(w, child?.id ?? ""));
     await complete(w, id);
     const later = await getOwn(w, id);
-    const fields = (body: unknown) => {
-      const { preview_url, blurhash, meta } = body as {
-        preview_url: unknown;
-        blurhash: unknown;
-        meta: { small: unknown };
-      };
-      return { preview_url, blurhash, small: meta.small };
-    };
-    expect(fields(response.body)).toEqual(fields(later.body));
+    expect(factsOf(response.body)).toEqual(factsOf(later.body));
   });
 
   it.each(["before", "after"] as const)("v1: links a thumbnail sent %s the file, shown by S10's 200", async (where) => {
@@ -568,7 +560,9 @@ describe("a video or audio upload with a thumbnail (T15)", () => {
     const [child] = await children(w);
     const answered = await answerOf(await response);
     expect(answered).toEqual({ status: 202, body: showsChild(child) });
-    expect(factsOf(answered.body)).toEqual(await storedFacts(w, child?.id ?? ""));
+    expect(factsOf(answered.body)).toMatchObject(await storedFacts(w, child?.id ?? ""));
+    // The whole `meta.small` (size and aspect too) is the owner's GET's (206 while processing).
+    expect(factsOf(answered.body)).toEqual(factsOf((await getOwn(w, id)).body));
     expect(w.gate.calls).toContain("getMedia");
   });
 

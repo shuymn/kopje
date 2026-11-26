@@ -330,8 +330,8 @@ export function postMedia(
   });
 }
 
-export async function answerOf(response: Response): Promise<{ status: number; body: unknown }> {
-  return { status: response.status, body: await response.json() };
+export async function answerOf<T = unknown>(response: Response): Promise<{ status: number; body: T }> {
+  return { status: response.status, body: await response.json<T>() };
 }
 
 // The staged input of upload `id`, or null.
