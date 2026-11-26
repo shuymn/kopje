@@ -188,7 +188,7 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     expect(await current(w, parent.id)).toBeUndefined();
   });
 
-  it("judges in Mastodon's order, charging nothing: lookup, description, thumbnail against type, failed state", async () => {
+  it("judges in Kopje's order, the form before the failed state, charging nothing: lookup, description, thumbnail against type, failed state", async () => {
     const w = await routeWorld();
     const image = await imageUpload(w);
     const video = (await completed(w)).id;
@@ -449,6 +449,20 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     expect((await w.h.request(new URL(String(replaced.body["preview_url"])).pathname)).status).toBe(200);
   });
 
+  it("removes it by JSON null: the removed thumbnail's served files answer 404 from the origin, its original kept (T18)", async () => {
+    const w = await routeWorld();
+    const parent = await completed(w);
+    expect((await send(w, method, parent.id, multipartBody([thumbPart()]))).status).toBe(200);
+    const a = await current(w, parent.id);
+    expect((await w.h.request(`/media/${a?.token}/small.png`)).status).toBe(200);
+    expect((await send(w, method, parent.id, jsonBody({ thumbnail: null }))).status).toBe(200);
+    // Released by the sweep the PUT ran after its response.
+    for (const variant of ["small.png", "full.png"]) {
+      expect((await w.h.request(`/media/${a?.token}/${variant}`)).status).toBe(404);
+    }
+    expect(await has(originalKey(a?.id ?? ""))).toBe(true);
+  });
+
   it("removes it by JSON null, a bare query key or a bare form key; empty text or none changes nothing (T19, D-7)", async () => {
     const w = await routeWorld();
     const parent = await completed(w);
@@ -485,26 +499,62 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     }
   });
 
-  it("sends a removal once: its lost reply answers 503, and a thumbnail linked meanwhile stays current (T19)", async () => {
-    const w = await routeWorld();
-    const parent = await completed(w);
-    expect((await send(w, method, parent.id, multipartBody([thumbPart()]))).status).toBe(200);
-    const held = w.gate.hold("updateMedia", "after");
-    const reached = w.gate.reached("updateMedia");
-    const removal = send(w, method, parent.id, jsonBody({ thumbnail: null }));
-    await reached;
-    expect((await send(w, method, parent.id, multipartBody([thumbPart(bytes(WEBP_PLAIN))]))).status).toBe(200);
-    const b = await current(w, parent.id);
-    w.gate.drops.set("updateMedia", 1);
-    held.resolve();
-    expect(await answer(await removal)).toEqual({
-      status: 503,
-      body: { error: "Media processing is unavailable. Try again later." },
-    });
-    expect(await current(w, parent.id)).toEqual(b);
-    expect((await w.h.request(`/media/${b?.token}/small.webp`)).status).toBe(200);
-  });
+  it.each([
+    ["JSON null", jsonBody({ thumbnail: null }), ""],
+    ["a bare query key", jsonBody({}), "?thumbnail"],
+    ["a bare form key", { body: "thumbnail", contentType: "application/x-www-form-urlencoded" }, ""],
+  ] as [string, Body, string][])(
+    "sends a removal once (%s): its lost reply answers 503, and a thumbnail linked meanwhile stays current (T19)",
+    async (_, body, query) => {
+      const w = await routeWorld();
+      const parent = await completed(w);
+      expect((await send(w, method, parent.id, multipartBody([thumbPart()]))).status).toBe(200);
+      const held = w.gate.hold("updateMedia", "after");
+      const reached = w.gate.reached("updateMedia");
+      const removal = send(w, method, parent.id, body, query);
+      await reached;
+      expect((await send(w, method, parent.id, multipartBody([thumbPart(bytes(WEBP_PLAIN))]))).status).toBe(200);
+      const b = await current(w, parent.id);
+      w.gate.drops.set("updateMedia", 1);
+      held.resolve();
+      expect(await answer(await removal)).toEqual({
+        status: 503,
+        body: { error: "Media processing is unavailable. Try again later." },
+      });
+      expect(await current(w, parent.id)).toEqual(b);
+      expect((await w.h.request(`/media/${b?.token}/small.webp`)).status).toBe(200);
+    },
+  );
 });
+
+describe.each(["PUT", "PATCH"] as const)(
+  "%s /api/v1/media/:id of an image with a bare thumbnail key (C66)",
+  (method) => {
+    it.each([
+      ["the query", jsonBody({ description: "described", focus: "0.5,-0.25" }), "?thumbnail"],
+      [
+        "a form body",
+        { body: "thumbnail&description=described&focus=0.5,-0.25", contentType: "application/x-www-form-urlencoded" },
+        "",
+      ],
+    ] as [string, Body, string][])(
+      "applies the description and focus, the bare key in %s no thumbnail (200)",
+      async (_, body, query) => {
+        const w = await routeWorld();
+        const image = await imageUpload(w);
+        const response = await answer(await send(w, method, image, body, query));
+        expect(response).toEqual({
+          status: 200,
+          body: expect.objectContaining({
+            id: image,
+            description: "described",
+            meta: expect.objectContaining({ focus: { x: 0.5, y: -0.25 } }),
+          }),
+        });
+      },
+    );
+  },
+);
 
 describe("PUT /api/v1/media/:id with a thumbnail and no media processor bound (fork c)", () => {
   it("makes and links it", async () => {
@@ -520,6 +570,14 @@ describe("PUT /api/v1/media/:id with a thumbnail and no media processor bound (f
     });
     expect(response.status).toBe(200);
     expect(codec.encodeCalls.length).toBeGreaterThan(0);
+    const [child] = await sql<{ file_token: string }>(
+      w.store,
+      "SELECT file_token FROM media_attachments WHERE thumbnail_of = ? AND gc_at IS NULL",
+      parent.id,
+    );
+    expect(child).toBeDefined();
+    const shown = await response.json<Record<string, unknown>>();
+    expect(shown["preview_url"]).toContain(`/media/${child?.file_token ?? "?"}/small.`);
   });
 });
 

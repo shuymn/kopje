@@ -146,6 +146,35 @@ describe("a video or audio upload with a thumbnail (T15)", () => {
     expect(await getOwn(w, id)).toEqual({ status: 200, body: showsChild(child) });
   });
 
+  it("shows on the 202 exactly the thumbnail's stored preview, geometry and blurhash, as the later GET does (C51)", async () => {
+    const w = await routeWorld();
+    const response = await answerOf(await postMedia(w, multipartBody([videoPart(), thumbPart()])));
+    const id = await parentId(w);
+    const [child] = await children(w);
+    const [stored] = await sql<{ preview_url: string; blurhash: string; meta: string }>(
+      w.store,
+      "SELECT preview_url, blurhash, meta FROM media_attachments WHERE id = ?",
+      child?.id ?? "",
+    );
+    const small = (JSON.parse(stored?.meta ?? "{}") as { small?: Record<string, unknown> }).small;
+    expect(response.body).toMatchObject({
+      preview_url: stored?.preview_url,
+      blurhash: stored?.blurhash,
+      meta: { small: expect.objectContaining({ width: small?.["width"], height: small?.["height"] }) },
+    });
+    await complete(w, id);
+    const later = await getOwn(w, id);
+    const fields = (body: unknown) => {
+      const { preview_url, blurhash, meta } = body as {
+        preview_url: unknown;
+        blurhash: unknown;
+        meta: { small: unknown };
+      };
+      return { preview_url, blurhash, small: meta.small };
+    };
+    expect(fields(response.body)).toEqual(fields(later.body));
+  });
+
   it.each(["before", "after"] as const)("v1: links a thumbnail sent %s the file, shown by S10's 200", async (where) => {
     const w = await routeWorld();
     const polled = w.timers.waitFor(V1_POLL_MS);
@@ -379,6 +408,15 @@ describe("a video or audio upload with a thumbnail (T15)", () => {
       expect(await env.MEDIA.head(originalKey(child?.id ?? ""))).toBeNull();
     },
   );
+
+  it("discards the thumbnail when S3 is never reached (a final unknown before it commits): 503, no child left (C52)", async () => {
+    const w = await routeWorld();
+    w.gate.fails.set("queueNormalize", 2);
+    const post = postWatched(w, multipartBody([videoPart(), thumbPart()]));
+    expect(await answerOf(await post.answered)).toEqual({ status: 503, body: UNAVAILABLE });
+    await post.done;
+    expect(await children(w)).toEqual([]);
+  });
 
   // The atomicity witnesses: S3 commits the link, so no reply is needed for the upload to keep its thumbnail.
   it("keeps the thumbnail of an upload whose S3 replies are both lost, dispatched by S12 and completed", async () => {
