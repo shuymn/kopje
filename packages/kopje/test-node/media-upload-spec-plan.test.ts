@@ -82,6 +82,12 @@ describe("the plan of spec/media-upload", () => {
     }
   });
 
+  it("pins the trace length of every safety mutation and of no liveness mutation", () => {
+    expect(plan.variants.filter((v) => (v.trace === undefined) !== (v.liveness === true)).map((v) => v.name)).toEqual(
+      [],
+    );
+  });
+
   it("breaks every named property with a mutation", () => {
     const named = [...defined("Safety."), ...defined("Liveness (LSpec).")].filter((name) => !HELPERS.has(name));
     const broken = new Set(plan.variants.map((v) => v.property));

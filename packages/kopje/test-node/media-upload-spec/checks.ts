@@ -1,7 +1,9 @@
 // Checks spec/media-upload/, the TLA+ specification of a video or audio upload's lifecycle (#1828 PR4), with tla-ts:
 // every check of checks.json gives its expected outcome (scripts/media-upload-plan.mjs lists the kinds). A scenario's
 // distinct-state count and depth are fixed: a change means the state space changed, which the commit that changes
-// checks.json explains. Each check logs its time and the process's RSS.
+// checks.json explains. A liveness mutation is compared by its status and property only, and its trace must be
+// non-empty: the counterexample's length differs between machines. Each check logs its name when it starts, so a job
+// cancelled at its time limit shows the check that stalled, and its time and the process's RSS.
 //
 // The checks are split over the parts PARTS numbers, part n in checks-<n>.test.ts beside this module, so that CI's test
 // shards share them: `vitest --shard` deals out whole files, and each of CI's four shards holds two parts' files
@@ -113,6 +115,7 @@ export function tlaTsChecks(file: string): void {
   describe("spec/media-upload under tla-ts", () => {
     for (const c of checks(plan).filter((c) => partOf(`${c.kind} ${c.name}`) === part)) {
       it(`${c.kind} ${c.name}`, { timeout: CHECK_TIMEOUT_MS }, async () => {
+        console.log(`${c.kind} ${c.name}: start`);
         const start = performance.now();
         const result = await check({ source: readModule(c.module) ?? "", config: c.config, loadModule: readModule });
         const ms = Math.round(performance.now() - start);
@@ -125,7 +128,11 @@ export function tlaTsChecks(file: string): void {
         const got =
           c.expected.status === "success"
             ? { status: result.status, distinct: result.distinctStates, depth: result.depth }
-            : { status: result.status, property: result.violation?.name, trace: result.violation?.trace.length };
+            : c.expected.status === "liveness-violation"
+              ? { status: result.status, property: result.violation?.name }
+              : { status: result.status, property: result.violation?.name, trace: result.violation?.trace.length };
+        if (c.expected.status === "liveness-violation")
+          expect(result.violation?.trace.length).toBeGreaterThanOrEqual(1);
         expect(got).toEqual(c.expected);
       });
     }
