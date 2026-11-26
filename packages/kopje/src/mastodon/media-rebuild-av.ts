@@ -96,7 +96,7 @@ export type AvCall = {
   holder: string;
   monthlyTransforms: number;
   monthlyUploads: number;
-  stills: StillMaker | null;
+  stills: Omit<StillMaker, "remote"> | null;
   // `--stills`: video rows without a preview are given one.
   publish: boolean;
   // A step without a lasting effect, given up at `end` or the call's deadline, whichever is first.
@@ -489,7 +489,11 @@ async function make(
 // stands (a failure falls back, a pass Images did not verify stops as its quota, none stops the call); otherwise the
 // probe runs once and its verdict is recorded under the claim. A probe object that refused before it started a
 // container (busy, its alarm's write) records nothing, so the claim holds the profile for PROBE_CLAIM_MS only.
-async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => number): Promise<boolean | AvOutcome> {
+async function probe(
+  call: AvCall,
+  stills: Pick<StillMaker, "probe" | "probeInput">,
+  stage: (ms: number) => number,
+): Promise<boolean | AvOutcome> {
   const claimed = await call.bounded<RebuildProbeClaim>(
     async () =>
       await call.store.claimMediaRebuildProbe(call.build, {

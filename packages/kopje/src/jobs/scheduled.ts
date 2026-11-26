@@ -9,7 +9,7 @@ import { envInMaintenance, readConfig } from "../platform/config";
 import { DeadlinePassed } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import type { ImageCodec } from "../platform/images";
-import type { MediaProcessorClient, StillMaker } from "../platform/media-transcoder";
+import type { MediaProcessorClient, RemoteStillMaker } from "../platform/media-transcoder";
 import { callStore } from "../platform/store-client";
 import type { StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
@@ -153,10 +153,10 @@ export async function scheduledMedia(env: Env, deps: MediaRoundsDeps): Promise<v
 // tick, outside the env's maintenance; without the processor's binding, with MEDIA_STILL_MONTHLY_JOBS 0 or an invalid
 // configuration it makes no Store call, and in the Store's maintenance the claim is refused before any container
 // starts.
-export type RemoteStillsRoundDeps = {
+type RemoteStillsRoundDeps = {
   build: (env: Env) => string;
   store: StoreResolver;
-  stills: (env: Env) => StillMaker | null;
+  stills: (env: Env) => RemoteStillMaker | null;
   images: (env: Env) => ImageCodec;
   now: () => number;
 };

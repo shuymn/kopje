@@ -120,17 +120,21 @@ async function mediaProcessorCheck(
   }
   const profiles = Object.fromEntries(needed.map(([profile, probe]) => [profile, profileState(build, probe)]));
   const states = Object.values(profiles);
-  const state = (["degraded", "provisioned", "ready"] as const).find((s) => states.some((p) => p.state === s))!;
-  const provisioned = states.filter((p) => p.state === "provisioned");
-  const ready = states.filter((p) => p.state === "ready");
+  // The worst state: degraded, then provisioned, then ready.
+  const state = states.some((p) => p.state === "degraded")
+    ? "degraded"
+    : states.some((p) => p.state === "provisioned")
+      ? "provisioned"
+      : "ready";
   return {
     ok: state !== "degraded",
     state,
     ...(state === "provisioned"
-      ? { lastProbe: provisioned.some((p) => p.lastProbe === "unavailable") ? "unavailable" : "never" }
+      ? { lastProbe: states.some((p) => p.lastProbe === "unavailable") ? "unavailable" : "never" }
       : {}),
-    ...(state === "ready" ? { imagesVerified: ready.every((p) => p.imagesVerified !== false) } : {}),
-    ...(ready.some((p) => p.infrastructureFailure === true) ? { infrastructureFailure: true } : {}),
+    ...(state === "ready" ? { imagesVerified: states.every((p) => p.imagesVerified !== false) } : {}),
+    // Only a ready profile carries one, whatever the check's state.
+    ...(states.some((p) => p.infrastructureFailure === true) ? { infrastructureFailure: true } : {}),
     ...usage,
     profiles,
   };

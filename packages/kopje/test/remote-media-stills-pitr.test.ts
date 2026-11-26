@@ -14,9 +14,9 @@ import {
 } from "../src/domain/remote-media";
 import { type MediaRow, presentMedia } from "../src/domain/status-presenter";
 import { STATUS_MEDIA_COLUMN_MAP } from "../src/domain/status-rows";
-import { remoteStillsRound, type RemoteStillsDeps } from "../src/jobs/remote-stills";
+import { remoteStillsRound } from "../src/jobs/remote-stills";
 import { type RemoteVariant, remoteMediaPath, restoreMarkerKey } from "../src/platform/media-files";
-import type { StillMaker } from "../src/platform/media-transcoder";
+import type { RemoteStillMaker } from "../src/platform/media-transcoder";
 import { sql } from "./api-helpers";
 import { harness } from "./app-helpers";
 import { BUILD } from "./helpers";
@@ -49,14 +49,11 @@ function at(w: MediaWorld, ms: number): void {
   vi.setSystemTime(ms);
 }
 
-const stills: StillMaker = {
-  still: () => Promise.reject(new Error("unused")),
-  probe: () => Promise.reject(new Error("unused")),
+const stills: RemoteStillMaker = {
   remote: async () => ({ ok: true, png: await stillPng(), image: null }),
-  probeInput: new Uint8Array(),
 };
 
-const stillsRound = (w: MediaWorld, extra: Partial<RemoteStillsDeps> = {}) =>
+const stillsRound = (w: MediaWorld) =>
   remoteStillsRound({
     build: BUILD,
     store: w.t.store,
@@ -67,7 +64,6 @@ const stillsRound = (w: MediaWorld, extra: Partial<RemoteStillsDeps> = {}) =>
     cap: CAP,
     maintenance: () => false,
     now: () => Date.now(),
-    ...extra,
   });
 
 // A remote video the real round caches with stills active, and (`record`) its still made and recorded by the stills'

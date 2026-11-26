@@ -145,7 +145,7 @@ export type RebuildDeps = {
   monthlyTransforms: number;
   // MEDIA_UPLOAD_MONTHLY_JOBS, and the media processor's stills (null without its binding): video rows' stills.
   monthlyUploads?: number;
-  stills?: StillMaker | null;
+  stills?: Omit<StillMaker, "remote"> | null;
   // The lease holder of this call (a fresh id by default), and the heartbeat while a write is pending.
   holder?: string;
   heartbeatMs?: number;

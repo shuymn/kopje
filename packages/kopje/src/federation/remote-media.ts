@@ -12,7 +12,7 @@ import {
   type ValidationResult,
 } from "../domain/remote-media";
 import { envInMaintenance, MEDIA_CACHE_RETENTION_DEFAULT_DAYS, readConfig } from "../platform/config";
-import { DeadlinePassed, inTime, releaseUnstarted, withinKept } from "../platform/deadline";
+import { admitted, DeadlinePassed, inTime, releaseUnstarted, withinKept } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { remoteFileKey } from "../platform/media-files";
 import { type StoreStub, storeRpc } from "../platform/store-client";
@@ -108,13 +108,6 @@ export function outstandingRemoteMediaCalls(): number {
 // `work` within `end`, a call given up kept in `running` until it settles.
 function bounded<T>(work: () => Promise<T>, end: number, now: () => number): Promise<T> {
   return withinKept(running, work, end, now);
-}
-
-// The end of an operation of `budget` ms started now within an allocation ending at `end`, or null when it does not
-// fit (it is not started).
-export function admitted(budget: number, end: number, now: () => number): number | null {
-  const at = now();
-  return at + budget <= end ? at + budget : null;
 }
 
 type ClaimResult = { outcome: RemoteMediaOutcome; step: string; host: string | null };

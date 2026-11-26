@@ -11,17 +11,11 @@ import {
   type StillsActivation,
 } from "../src/domain/remote-media";
 import { STILL_LEASE_MS } from "../src/domain/remote-media-stills";
-import {
-  REMOTE_STILL_CALL_MS,
-  remoteStillsRound,
-  type RemoteStillsDeps,
-  STILL_PUT_GRANT_MS,
-} from "../src/jobs/remote-stills";
+import { remoteStillsRound, type RemoteStillsDeps, STILL_PUT_GRANT_MS } from "../src/jobs/remote-stills";
 import { remoteStillsDeps, scheduledRemoteStills } from "../src/jobs/scheduled";
-import { STILL_CALL_MS } from "../src/media-processor";
 import { readConfig } from "../src/platform/config";
 import { remoteMediaPath, restoreMarkerKey } from "../src/platform/media-files";
-import type { StillMaker, StillOutcome } from "../src/platform/media-transcoder";
+import { type RemoteStillMaker, STILL_CALL_MS, type StillOutcome } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
 import { harness } from "./app-helpers";
@@ -123,14 +117,11 @@ const infraFailure = async (w: MediaWorld) =>
 // A still maker whose remote() answers `answer`, recording its calls.
 function maker(answer: (token: string, attempt: string) => StillOutcome | Promise<StillOutcome>) {
   const calls: { token: string; attempt: string; ms: number }[] = [];
-  const stills: StillMaker = {
-    still: () => Promise.reject(new Error("no rebuild still in the round")),
-    probe: () => Promise.reject(new Error("no probe in the round")),
+  const stills: RemoteStillMaker = {
     remote: async (t, attempt, ms) => {
       calls.push({ token: t, attempt, ms });
       return answer(t, attempt);
     },
-    probeInput: new Uint8Array(),
   };
   return { stills, calls };
 }
@@ -172,7 +163,7 @@ function storeWith(store: StoreStub, hooks: Record<string, (answer: unknown) => 
   return { store: proxy, calls };
 }
 
-function deps(w: MediaWorld, stills: StillMaker | null, extra: Partial<RemoteStillsDeps> = {}): RemoteStillsDeps {
+function deps(w: MediaWorld, stills: RemoteStillMaker | null, extra: Partial<RemoteStillsDeps> = {}): RemoteStillsDeps {
   return {
     build: BUILD,
     store: w.t.store,
@@ -199,8 +190,7 @@ describe("the round makes, checks, puts and records one still (P20a, P20c, P22, 
     expect(round).toMatchObject({ status: "recorded", token: v.token });
     const attempt = (round as { attempt: string }).attempt;
     // One container call on the claim's token and attempt, within the processor's own bound.
-    expect(calls).toEqual([{ token: v.token, attempt, ms: REMOTE_STILL_CALL_MS }]);
-    expect(REMOTE_STILL_CALL_MS).toBe(STILL_CALL_MS);
+    expect(calls).toEqual([{ token: v.token, attempt, ms: STILL_CALL_MS }]);
     expect(puts).toEqual([{ key: `remote/${v.token}/s${attempt}`, type: "image/webp" }]);
     // A plain put: no condition (onlyIf), nothing adopted (Gemini r3 M1).
     expect(options).toEqual([{ httpMetadata: { contentType: "image/webp" } }]);
@@ -582,7 +572,7 @@ describe("the round's bounds (P-RND, G1, RES-6)", () => {
     expect(await remoteStillsRound(deps(w, maker(made).stills, { store: counted.store, budget: 0 }))).toEqual({
       status: "off",
     });
-    const cron = (stills: StillMaker | null, budget: string) =>
+    const cron = (stills: RemoteStillMaker | null, budget: string) =>
       scheduledRemoteStills({ ...env, MEDIA_STILL_MONTHLY_JOBS: budget } as Env, {
         build: () => BUILD,
         store: () => counted.store,
@@ -706,7 +696,7 @@ describe("the round's bounds (P-RND, G1, RES-6)", () => {
     let skew = 0;
     const { puts, bucket } = recordingBucket();
     const { stills } = maker(async () => {
-      skew = REMOTE_STILL_CALL_MS + 5_000;
+      skew = STILL_CALL_MS + 5_000;
       return made();
     });
     const round = await remoteStillsRound(deps(w, stills, { bucket, now: () => Date.now() + skew }));

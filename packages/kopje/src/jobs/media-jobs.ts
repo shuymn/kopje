@@ -511,16 +511,14 @@ export type MediaRoundDeps = {
   // MEDIA_UPLOAD_MONTHLY_JOBS.
   budget: number;
   // The still maker (null without the binding), Images for its probe's still, and MEDIA_STILL_MONTHLY_JOBS.
-  stills: StillMaker | null;
+  stills: Pick<StillMaker, "probe" | "probeInput"> | null;
   images: ImageCodec;
   stillsBudget: number;
 };
 
 // The dispatch round (S12 with S13): the Store's transitions, then a `run` for each pending upload it hands back
 // (under the same object name, with its teardown_id). Without the binding the Store's transitions still run.
-export async function mediaDispatchRound(
-  deps: Pick<MediaRoundDeps, "build" | "store" | "bucket" | "processor" | "budget">,
-): Promise<void> {
+export async function mediaDispatchRound(deps: Pick<MediaRoundDeps, "build" | "store" | "processor">): Promise<void> {
   const round = await deps.store.mediaDispatchRound(deps.build);
   if ("status" in round) {
     return;

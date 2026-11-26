@@ -17,11 +17,11 @@ import {
   type ProbeDeps,
   processorClient,
   ProcessorUnit,
-  STILL_CALL_MS,
   STILL_TEARDOWN_MS,
   type UnitState,
 } from "../src/media-processor";
 import {
+  STILL_CALL_MS,
   PROBE_PROFILES,
   type ProbeProfile,
   type StillMaker,

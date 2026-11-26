@@ -12,7 +12,7 @@ import {
 } from "../src/domain/remote-media";
 import { STILL_LEASE_MS } from "../src/domain/remote-media-stills";
 import { remoteStillsRound, type RemoteStillsDeps } from "../src/jobs/remote-stills";
-import type { StillMaker, StillOutcome } from "../src/platform/media-transcoder";
+import type { RemoteStillMaker, StillOutcome } from "../src/platform/media-transcoder";
 import { sql } from "./api-helpers";
 import { BUILD, deferred } from "./helpers";
 import { TestCodec } from "./media-helpers";
@@ -75,21 +75,18 @@ async function video(w: MediaWorld) {
 // A still maker whose remote() waits for `gate` (when given) before answering a PNG, or answers `answer`.
 function maker(options: { gate?: Promise<void>; answer?: StillOutcome; entered?: () => void } = {}) {
   const calls: string[] = [];
-  const stills: StillMaker = {
-    still: () => Promise.reject(new Error("unused")),
-    probe: () => Promise.reject(new Error("unused")),
+  const stills: RemoteStillMaker = {
     remote: async (_t, attempt) => {
       calls.push(attempt);
       options.entered?.();
       await options.gate;
       return options.answer ?? { ok: true, png: await stillPng(), image: null };
     },
-    probeInput: new Uint8Array(),
   };
   return { stills, calls };
 }
 
-const round = (w: MediaWorld, stills: StillMaker, extra: Partial<RemoteStillsDeps> = {}) =>
+const round = (w: MediaWorld, stills: RemoteStillMaker, extra: Partial<RemoteStillsDeps> = {}) =>
   remoteStillsRound({
     build: BUILD,
     store: w.t.store,
@@ -271,7 +268,7 @@ describe("the remote stills' windows (PR5 plan, section 4)", () => {
     const before = await stillOf(w, v.token);
     const { stills, calls } = maker();
     expect(await round(w, stills, { budget: 0 })).toEqual({ status: "off" });
-    expect(await round(w, null as unknown as StillMaker)).toEqual({ status: "off" });
+    expect(await round(w, null as unknown as RemoteStillMaker)).toEqual({ status: "off" });
     expect(calls).toEqual([]);
     expect(await stillOf(w, v.token)).toEqual(before);
     expect(await round(w, stills)).toMatchObject({ status: "recorded", token: v.token });

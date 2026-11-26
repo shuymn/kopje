@@ -3,11 +3,11 @@ import { STILL_ROUND_MS } from "../domain/remote-media";
 import type { RemoteStillClaim, RemoteStillFailure } from "../domain/remote-media-stills";
 import { pngSize } from "../mastodon/media-activation";
 import { verifyStill } from "../platform/av-bytes";
-import { DeadlinePassed, inTime } from "../platform/deadline";
+import { admitted, DeadlinePassed, inTime } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { type ImageCodec, stillPreview } from "../platform/images";
 import { remoteFileKey } from "../platform/media-files";
-import type { StillMaker, StillOutcome } from "../platform/media-transcoder";
+import { type RemoteStillMaker, STILL_CALL_MS, type StillOutcome } from "../platform/media-transcoder";
 import type { StoreStub } from "../platform/store-client";
 
 // The remote stills' round (#1828 PR5; MEDIA-6, MEDIA-7, MEDIA-8 and RES-6 in docs/threat-model.md): at most one still a
@@ -34,8 +34,7 @@ import type { StoreStub } from "../platform/store-client";
 export const STILL_PUT_GRANT_MS = 2_000;
 // A Store call of the round: the claim, the admission, the record or the failure.
 const STORE_MS = 5_000;
-// The still's call: media-processor.ts STILL_CALL_MS (its object bounds it so), and its way back over the RPC.
-export const REMOTE_STILL_CALL_MS = 75_000;
+// The still's call is STILL_CALL_MS (its object bounds it so), plus its way back over the RPC.
 const CALL_WAY_MS = 5_000;
 // Images' two calls, 10 s each.
 const IMAGES_MS = 20_000;
@@ -49,7 +48,7 @@ export type RemoteStillsDeps = {
   store: StoreStub;
   bucket: Pick<R2Bucket, "put">;
   // null without the processor's binding.
-  stills: StillMaker | null;
+  stills: RemoteStillMaker | null;
   images: ImageCodec;
   // MEDIA_STILL_MONTHLY_JOBS and REMOTE_MEDIA_CACHE_BYTES.
   budget: number;
@@ -104,7 +103,7 @@ function disposition(out: Extract<StillOutcome, { ok: false }>): Disposition {
   return settle("retry");
 }
 
-export type RemoteStillsRound =
+type RemoteStillsRound =
   // No binding, or no budget: no Store call.
   | { status: "off" }
   | { status: "unclaimed"; claim: RemoteStillClaim }
@@ -120,12 +119,6 @@ export type RemoteStillsRound =
   // The record's answer did not come in time: committed or not, the Store decides (a repeat answers `recorded`).
   | { status: "unconfirmed"; token: string; attempt: string };
 
-// The end of an operation of `budget` ms started now within an allocation ending at `end`, or null when it does not fit.
-function fits(budget: number, end: number, now: () => number): number | null {
-  const at = now();
-  return at + budget <= end ? at + budget : null;
-}
-
 export async function remoteStillsRound(deps: RemoteStillsDeps): Promise<RemoteStillsRound> {
   const stills = deps.stills;
   if (stills === null || !Number.isSafeInteger(deps.budget) || deps.budget <= 0) {
@@ -137,7 +130,7 @@ export async function remoteStillsRound(deps: RemoteStillsDeps): Promise<RemoteS
   const recordEnd = end - STORE_MS;
   const workEnd = recordEnd - STORE_MS;
   const store = <T>(call: () => Promise<T>, until: number): Promise<T> => {
-    const by = fits(STORE_MS, until, now);
+    const by = admitted(STORE_MS, until, now);
     if (by === null) {
       return Promise.reject(new DeadlinePassed());
     }
@@ -196,13 +189,13 @@ export async function remoteStillsRound(deps: RemoteStillsDeps): Promise<RemoteS
   const retried = (reason: string) => fail({ outcome: "retry", keepLease: false, infrastructure: false, reason });
 
   // ---- make
-  const callEnd = fits(REMOTE_STILL_CALL_MS + CALL_WAY_MS, workEnd, now);
+  const callEnd = admitted(STILL_CALL_MS + CALL_WAY_MS, workEnd, now);
   if (callEnd === null) {
     return retried("budget");
   }
   let out: StillOutcome;
   try {
-    out = await inTime(() => stills.remote(token, attempt, REMOTE_STILL_CALL_MS), callEnd, now);
+    out = await inTime(() => stills.remote(token, attempt, STILL_CALL_MS), callEnd, now);
   } catch (error) {
     if (!(error instanceof DeadlinePassed)) {
       console.warn({ event: "kopje.media.still.remote_call_failed", ...errorFields(error) });
@@ -218,7 +211,7 @@ export async function remoteStillsRound(deps: RemoteStillsDeps): Promise<RemoteS
   if (verifyStill(png) !== null) {
     return fail({ outcome: "park", keepLease: false, infrastructure: true, reason: "verify" });
   }
-  const imagesEnd = fits(IMAGES_MS, workEnd, now);
+  const imagesEnd = admitted(IMAGES_MS, workEnd, now);
   if (imagesEnd === null) {
     return retried("budget");
   }
@@ -242,7 +235,7 @@ export async function remoteStillsRound(deps: RemoteStillsDeps): Promise<RemoteS
   const webp = made.small.bytes;
 
   // ---- admission, then the put within its grant
-  if (fits(STORE_MS + PUT_MS, workEnd, now) === null) {
+  if (admitted(STORE_MS + PUT_MS, workEnd, now) === null) {
     return retried("budget");
   }
   const asked = now();

@@ -5,6 +5,13 @@ import { errorFields } from "./error-message";
 
 export class DeadlinePassed extends Error {}
 
+// The end of an operation of `budget` ms started now within an allocation ending at `end`, or null when it does not
+// fit (it is not started): one clock read, the end itself included.
+export function admitted(budget: number, end: number, now: () => number): number | null {
+  const at = now();
+  return at + budget <= end ? at + budget : null;
+}
+
 // Runs work, given up once the clock reaches `end` (or not started at all past it).
 export async function within<T>(work: () => Promise<T>, end: number, now: () => number): Promise<T> {
   const left = end - now();

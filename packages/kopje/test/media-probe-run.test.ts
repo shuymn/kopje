@@ -266,8 +266,6 @@ describe("the activation probe's outcomes (P4, P5)", () => {
     const checked = await stillCheck({
       bucket: env.MEDIA,
       stills: {
-        still: () => Promise.reject(new Error("unused")),
-        remote: () => Promise.reject(new Error("unused")),
         probe: async () => ({ ok: true, png: await stillPng(), image: null }),
         probeInput: new Uint8Array([1, 2, 3]),
       },
@@ -351,8 +349,6 @@ describe("the still check of still@standard-1 (kopje-admin media-processor probe
     const verdict = await stillCheck({
       bucket: env.MEDIA,
       stills: {
-        still: () => Promise.reject(new Error("unused")),
-        remote: () => Promise.reject(new Error("unused")),
         probe: () => Promise.resolve(out),
         probeInput: new Uint8Array([1, 2, 3]),
       },
@@ -462,8 +458,6 @@ describe("the probes' copy I/O, bounded on the request path", () => {
           : stillCheck({
               bucket: h.bucket,
               stills: {
-                still: () => Promise.reject(new Error("unused")),
-                remote: () => Promise.reject(new Error("unused")),
                 probe: () => Promise.reject(new Error("unused")),
                 probeInput: new Uint8Array([1, 2, 3]),
               },
@@ -661,8 +655,6 @@ describe("the probes' copy I/O, bounded on the request path", () => {
     const checking = stillCheck({
       bucket: h.bucket,
       stills: {
-        still: () => Promise.reject(new Error("unused")),
-        remote: () => Promise.reject(new Error("unused")),
         probe: async () => ({ ok: true, png: await stillPng(), image: null }),
         probeInput: new Uint8Array([1, 2, 3]),
       },
@@ -699,8 +691,6 @@ describe("the probes' copy I/O, bounded on the request path", () => {
         void stillCheck({
           bucket: h.bucket,
           stills: {
-            still: () => Promise.reject(new Error("unused")),
-            remote: () => Promise.reject(new Error("unused")),
             probe: () => answered.promise,
             probeInput: input,
           },
@@ -774,8 +764,6 @@ describe("the probes' copy I/O, bounded on the request path", () => {
     const verdict = await stillCheck({
       bucket: h.bucket,
       stills: {
-        still: () => Promise.reject(new Error("unused")),
-        remote: () => Promise.reject(new Error("unused")),
         probe: () => {
           t = end - 1;
           return Promise.resolve({ ok: true as const, png, image: null });
@@ -918,9 +906,7 @@ describe("the probe round per budget (P4s, #1828 PR5-2)", () => {
       },
       probeInput: new Uint8Array([1, 2, 3]),
     };
-    const stills: StillMaker = {
-      still: () => Promise.reject(new Error("unused")),
-      remote: () => Promise.reject(new Error("unused")),
+    const stills: Pick<StillMaker, "probe" | "probeInput"> = {
       probe: async (key) => {
         stilled.push(key);
         return { ok: true, png: await stillPng(), image: null };

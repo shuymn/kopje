@@ -141,6 +141,11 @@ export type StillOutcome =
       evidence?: BuildEvidence;
     };
 
+// The most a still call is given, readiness included: the rebuild's still stage (mastodon/media-rebuild-av.ts), and the
+// remote stills' round's call (jobs/remote-stills.ts), which adds its way back over the RPC. The processor's object
+// clamps every still call to it (media-processor.ts).
+export const STILL_CALL_MS = 75_000;
+
 // What the media rebuild (design 4.16), the remote stills' round (jobs/remote-stills.ts) and the still probe use of the
 // processor: a still of an original, a still of a cached remote video, and the `still@standard-1` probe. Each runs on
 // standard-1 in the caller's invocation, reads its one input key from the media bucket once and streams it as the
@@ -157,3 +162,6 @@ export type StillMaker = {
   // The packaged probe clip (container/probe.mp4).
   readonly probeInput: Uint8Array;
 };
+
+// What the remote stills' round uses of it.
+export type RemoteStillMaker = Pick<StillMaker, "remote">;

@@ -240,7 +240,7 @@ type ProbeStore = Pick<StoreStub, "claimMediaProbe" | "recordMediaProbeResult">;
 // The probes run on an HTTP request (the CLI's) as well as in the cron, where no alarm or cron limit bounds them, so
 // the request has one deadline, PROBE_ROUTE_MS from its arrival (app/admin.ts, before the credential is checked), and
 // each of its steps ends at the earlier of that deadline and its own bound (probeSteps): reading the request body at
-// most PROBE_BODY_MS, a Store call (the credential check, the still check's health, the claim, the record) at most
+// most PROBE_BODY_MS, a Store call (the credential check, the claim, the record) at most
 // PROBE_STORE_MS, the still check's Images at most what is left of STILL_CHECK_MS, the clip's
 // copy put or delete in R2 at most PROBE_COPY_MS (a copy whose delete never answers is the orphan pass's; one whose put
 // answers late is deleted then), and the call to the probe object at most its own deadline and destroy
@@ -395,7 +395,7 @@ export function activationProbe(deps: ProbeDeps & { processor: UploadProcessor }
 // recorded under the claim, so the probe round, the CLI and the media rebuild share one attempt, cooldown and
 // classifier (media-probes.ts claimProbeIn). Its pass for the running build is what admits remote stills.
 export function stillActivationProbe(
-  deps: ProbeDeps & { stills: StillMaker; images: ImageCodec },
+  deps: ProbeDeps & { stills: Pick<StillMaker, "probe" | "probeInput">; images: ImageCodec },
   due: boolean,
 ): Promise<ProbeRun> {
   const now = deps.now ?? Date.now;
@@ -476,7 +476,7 @@ const STILL_CHECK_MS = 75_000;
 // failing its checks among them).
 export async function stillCheck(deps: {
   bucket: Pick<R2Bucket, "put" | "delete">;
-  stills: StillMaker;
+  stills: Pick<StillMaker, "probe" | "probeInput">;
   images: ImageCodec;
   now: () => number;
   wait?: Wait;

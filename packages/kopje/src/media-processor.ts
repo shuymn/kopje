@@ -51,6 +51,7 @@ import {
   type NormalizeResult,
   type ProbeProfile,
   type ProbeVerdict,
+  STILL_CALL_MS,
   STILL_INPUT_REFUSALS,
   type StillInputRefusal,
   type StillOutcome,
@@ -114,8 +115,6 @@ export const CLEANUP_RETRY_MS = 60_000;
 export const DESTROY_MS = 30_000;
 // The probe's one deadline, from before the start: readiness (READY_MS, 90 s), then the operation (120 s).
 export const PROBE_MS = 210_000;
-// The most a stillNow call is given, readiness included: the rebuild's still stage (mastodon/media-rebuild-av.ts).
-export const STILL_CALL_MS = 75_000;
 // Of a stillNow call's time, what is kept for the destroy after the operation, and of that, what is kept after the
 // destroy for removing the object's alarm and storage before the call answers.
 export const STILL_TEARDOWN_MS = 10_000;
