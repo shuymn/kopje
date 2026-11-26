@@ -1155,6 +1155,27 @@ describe("the still probe's one claim, shared with the generic probe (W-P, P-RBQ
     expect((await claimGeneric(store)).status).toBe("claimed");
   });
 
+  it("takes no verdict older than its last claim for the claim's cooldown", async () => {
+    const store = await setup();
+    await addAv(store, "video");
+    await run(store, { stills: maker().stills });
+    // An infrastructure failure after the pass makes the profile due; the rebuild's probe then meets a busy probe
+    // object and records nothing, so the verified pass before it does not stand for that claim.
+    await maintenance(store, false);
+    await store.recordMediaInfrastructureFailure(BUILD, { profile: STILL, build: BUILD });
+    await maintenance(store, true);
+    await ageProbe(store, PROBE_RETRY_MS);
+    const row = await addAv(store, "video");
+    const before = await rowOf(store, row.id);
+    const busy = maker({ probe: { ok: false, failure: "busy", image: null } });
+    expect(await run(store, { stills: busy.stills })).toMatchObject({ stopped: "retry" });
+    expect(probes(busy.calls)).toHaveLength(1);
+    const cooled = maker();
+    expect(await run(store, { stills: cooled.stills })).toMatchObject({ stopped: "retry" });
+    expect(cooled.calls).toEqual([]);
+    expect(await rowOf(store, row.id)).toEqual(before);
+  });
+
   it("classifies Images' own bad output as no verdict and 9422 as an unverified pass (8)", async () => {
     const store = await setup();
     await addAv(store, "video");

@@ -16005,6 +16005,23 @@ DROP TRIGGER remote_media_bounds_update;`;
         (columns: string, ...values: SqlStorageValue[]) =>
         () =>
           sql.exec(`UPDATE remote_media SET ${columns} WHERE id = 1`, ...values);
+      // The recreated insert trigger: the slot inserted again, refused with a still_key and no still_ext or a blurhash
+      // with no still_key, and accepted with the whole still.
+      const slot = sql.exec("SELECT * FROM remote_media WHERE id = 1").one();
+      sql.exec("DELETE FROM remote_media WHERE id = 1");
+      const insert = (over: Record<string, SqlStorageValue>) => () => {
+        const row = { ...slot, ...over };
+        const columns = Object.keys(row);
+        sql.exec(
+          `INSERT INTO remote_media (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+          ...Object.values(row),
+        );
+      };
+      expect(insert({ still_ext: null, still_key: `s${ATTEMPT}` })).toThrow(SLOT_REFUSED);
+      expect(insert({ still_ext: "webp", still_blurhash: BLURHASH })).toThrow(SLOT_REFUSED);
+      insert({ still_ext: "webp", still_key: `s${ATTEMPT}`, still_blurhash: BLURHASH })();
+      sql.exec("DELETE FROM remote_media WHERE id = 1");
+      insert({})();
       // Refused: a still_key not s and 32 lowercase hex digits; a still_key without a still_ext; a blurhash without a
       // still_key or past its bound.
       for (const refused of [
