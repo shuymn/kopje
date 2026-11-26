@@ -353,6 +353,28 @@ describe("one current thumbnail a parent (T4), and removal", () => {
 });
 
 describe("thumbnail rows are never the owner's media (T2, MEDIA-1)", () => {
+  it("refuses a child as media_ids of a scheduled post and of an edit", async () => {
+    const w = await avWorld();
+    const { child } = await thumbnailed(w);
+    const token = w.h.users.alice.token;
+    const scheduled = await w.h.request(
+      "/api/v1/statuses",
+      bearer(
+        token,
+        json({ status: "later", media_ids: [child.id], scheduled_at: new Date(Date.now() + 3_600_000).toISOString() }),
+      ),
+    );
+    expect(scheduled.status).toBe(422);
+    const posted = await w.h.request("/api/v1/statuses", bearer(token, json({ status: "first" })));
+    const { id } = await posted.json<{ id: string }>();
+    const edited = await w.h.request(
+      `/api/v1/statuses/${id}`,
+      bearer(token, json({ status: "edited", media_ids: [child.id] }, { method: "PUT" })),
+    );
+    expect(edited.status).toBe(422);
+    expect(await childRow(w.store, child.id)).toMatchObject({ gc_at: null, url: expect.stringMatching(/^https:/) });
+  });
+
   it("answers a current or retired child not found to GET, PUT, DELETE, a post's media_ids and a profile image", async () => {
     const w = await avWorld();
     const { parent, child } = await thumbnailed(w);
@@ -604,6 +626,26 @@ describe("presenting a thumbnail (T6, T7)", () => {
     expect(await getOwn(w, parent.id)).toMatchObject({ media: { preview_url: PREVIEW(child.token), blurhash: null } });
   });
 
+  it("shows a scheduled status's video with its current thumbnail", async () => {
+    const w = await avWorld();
+    const { parent, child } = await thumbnailed(w);
+    const token = w.h.users.alice.token;
+    const scheduled = await w.h.request(
+      "/api/v1/statuses",
+      bearer(
+        token,
+        json({ status: "later", media_ids: [parent.id], scheduled_at: new Date(Date.now() + 3_600_000).toISOString() }),
+      ),
+    );
+    expect(scheduled.status).toBe(200);
+    const { id } = await scheduled.json<{ id: string }>();
+    const read = await w.h.request(`/api/v1/scheduled_statuses/${id}`, bearer(token));
+    const shown = await read.json<{ media_attachments: { id: string; preview_url: string; blurhash: string }[] }>();
+    expect(shown.media_attachments).toMatchObject([
+      { id: parent.id, preview_url: PREVIEW(child.token), blurhash: THUMB_BLURHASH },
+    ]);
+  });
+
   it("shows a current thumbnail on the public page as the video's poster only, its box the video's own", async () => {
     const w = await avWorld();
     const parent = await completed(w);
@@ -709,6 +751,23 @@ describe("mediaUpdateTarget", () => {
 });
 
 describe("the sweep and a thumbnail (T5, T5r, T13k)", () => {
+  it("dooms the current child of a video its status deleted with delete_media", async () => {
+    const w = await avWorld();
+    const { parent, child } = await thumbnailed(w);
+    await putObjects(child);
+    const token = w.h.users.alice.token;
+    const posted = await w.h.request("/api/v1/statuses", bearer(token, json({ status: "v", media_ids: [parent.id] })));
+    const { id } = await posted.json<{ id: string }>();
+    const deleted = await w.h.request(`/api/v1/statuses/${id}?delete_media=true`, bearer(token, { method: "DELETE" }));
+    expect(deleted.status).toBe(200);
+    // The sweeps that follow purge the parent, which dooms the child, and then take it.
+    await sweep(w.store);
+    await sweep(w.store);
+    expect(await childRow(w.store, parent.id)).toBeUndefined();
+    expect(await childRow(w.store, child.id)).toBeUndefined();
+    expect(await objects(child)).toEqual({ original: false, full: false, small: false });
+  });
+
   it("dooms the current child with its parent's purge and takes it at the next batch, with no tombstone", async () => {
     const w = await avWorld();
     const { parent, child } = await thumbnailed(w);
