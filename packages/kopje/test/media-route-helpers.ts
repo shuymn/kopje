@@ -76,7 +76,11 @@ const GATED = new Set([
   "v1Final",
   "abandonMedia",
   "startTransforms",
+  "completeMedia",
   "getMedia",
+  "updateMedia",
+  "mediaUpdateTarget",
+  "deleteMedia",
 ]);
 
 // A Store whose calls by name can be held (each call awaits the test's release, before or after the Store answers) or

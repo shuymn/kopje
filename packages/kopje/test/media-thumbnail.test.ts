@@ -22,8 +22,8 @@ import {
 import { community, getJson, outbound, post } from "./status-helpers";
 
 // `thumbnail` on image uploads, image updates and status edits: refused with MediaAttachment's validation error
-// (Mastodon v4.7.5 app/models/media_attachment.rb:210), before any work. A video's or audio file's thumbnail on PUT and
-// PATCH (#1828 PR6) is the last describe; on upload, test/media-av-thumbnails.test.ts.
+// (Mastodon v4.7.5 app/models/media_attachment.rb:210), before any work. A video's or audio file's thumbnail (#1828
+// PR6): on PUT and PATCH, test/media-thumbnail-put.test.ts; on upload, test/media-av-thumbnails.test.ts.
 
 const REFUSED = { error: "Validation failed: Thumbnail must be blank" };
 const DATA_URI = `data:image/png;base64,${PNG_PLAIN}`;
