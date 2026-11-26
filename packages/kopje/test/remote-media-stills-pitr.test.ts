@@ -213,6 +213,54 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
     }
   });
 
+  // r4 M5c and P21b: the reset releases the still's charge through the ledger, usage and an audit already past the
+  // token, and clears every still field of the slot, its blurhash included.
+  it("releases the still's charge through an audit past its token, and clears the slot's still and blurhash", async () => {
+    const w = await mediaWorld();
+    const v = await cachedVideo(w);
+    expect(await sql(w.t.store, "SELECT still_blurhash FROM remote_media WHERE id = ?", v.slot)).not.toEqual([
+      { still_blurhash: null },
+    ]);
+    const restoredAt = await mark(w);
+    try {
+      at(w, restoredAt + REMOTE_SETTLE_MS);
+      await w.op(maintainRemoteMedia, { now: Date.now(), restoredAt, cap: CAP, retentionDays: 14 });
+      const [sums] = await sql<{ bytes: number; doomed: number }>(
+        w.t.store,
+        `SELECT coalesce(sum(charge), 0) AS bytes,
+					coalesce(sum(CASE state WHEN 'doomed' THEN charge ELSE 0 END), 0) AS doomed FROM remote_media_objects`,
+      );
+      await sql(
+        w.t.store,
+        "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('remote_media_audit', ?)",
+        JSON.stringify({ cursor: "z".repeat(64), ...sums }),
+      );
+      const answer = await w.op(recordRemoteMediaValidation, {
+        restore: restoredAt,
+        restoredAt,
+        results: [
+          {
+            token: v.token,
+            heads: [
+              { variant: "full", head: "present" },
+              { variant: `s${v.attempt}`, head: "missing" },
+            ],
+          },
+        ],
+        now: Date.now(),
+      });
+      expect(answer).toEqual({ status: "recorded", reset: 0, stills: 1 });
+      expect(
+        await sql(w.t.store, "SELECT still_key, still_ext, still_blurhash FROM remote_media WHERE id = ?", v.slot),
+      ).toEqual([{ still_key: null, still_ext: null, still_blurhash: null }]);
+      await w.exact();
+      const done = await w.op(maintainRemoteMedia, { now: Date.now(), restoredAt: null, cap: CAP, retentionDays: 14 });
+      expect(done.drift).toBeNull();
+    } finally {
+      await unmark(w);
+    }
+  });
+
   it("resets a still whose heads fail VALIDATION_FAILURES times with `full` present, and keeps `full`", async () => {
     const w = await mediaWorld();
     const v = await cachedVideo(w);
@@ -232,6 +280,33 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
       expect(await env.MEDIA.head(`remote/${v.token}/full`)).not.toBeNull();
       expect(await w.objects()).toMatchObject([{ token: v.token, state: "stored" }]);
       await w.exact();
+    } finally {
+      await unmark(w);
+    }
+  });
+
+  it("counts a named still's head failures apart: they never spend the allowance of `full`", async () => {
+    const w = await mediaWorld();
+    const v = await cachedVideo(w);
+    const restoredAt = await mark(w);
+    const full = `remote/${v.token}/full`;
+    let failing = v.key!;
+    const bucket = bucketWith({
+      head: (key, real) => (key === failing ? Promise.reject(new Error("head failed")) : real()),
+    });
+    try {
+      at(w, restoredAt + REMOTE_SETTLE_MS);
+      for (let n = 1; n < VALIDATION_FAILURES; n++) {
+        expect((await w.round({ bucket: () => bucket }, VARS)).validated).toBe(0);
+      }
+      failing = full;
+      for (let n = 1; n < VALIDATION_FAILURES; n++) {
+        expect((await w.round({ bucket: () => bucket }, VARS)).validated).toBe(0);
+        expect(await w.objects()).toMatchObject([{ token: v.token, state: "stored" }]);
+      }
+      // The VALIDATION_FAILURES-th failure of `full` itself dooms the object.
+      expect((await w.round({ bucket: () => bucket }, VARS)).validated).toBe(0);
+      expect((await w.objects()).find((o) => o.token === v.token)).toMatchObject({ state: "doomed" });
     } finally {
       await unmark(w);
     }
@@ -291,7 +366,7 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
   });
 
   // A result of restore A's batch delivered after restore B rewound the walk to A's cursor: the walk's restore is A,
-  // the marker's B, so nothing applies.
+  // the marker's B, so nothing applies. Through the Store's RPC, which reads the marker itself.
   it("applies nothing from an earlier restore's batch once the marker names a later one", async () => {
     const w = await mediaWorld();
     const v = await cachedVideo(w);
@@ -300,8 +375,7 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
       at(w, a + REMOTE_SETTLE_MS);
       const batch = await w.op(maintainRemoteMedia, { now: Date.now(), restoredAt: a, cap: CAP, retentionDays: 14 });
       expect(batch.validationRestore).toBe(a);
-      const b = Date.now() + 1;
-      const result = {
+      const input = {
         restore: a,
         results: [
           {
@@ -312,13 +386,15 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
             ],
           },
         ],
-        now: b,
       };
-      expect(await w.op(recordRemoteMediaValidation, { ...result, restoredAt: b })).toEqual({ status: "stale" });
+      at(w, Date.now() + 1);
+      await mark(w);
+      expect(await w.t.store.recordRemoteMediaValidation(BUILD, input)).toEqual({ status: "stale" });
       expect(await slotStill(w, v.slot)).toMatchObject({ still_key: `s${v.attempt}` });
       expect(await stillRow(w, v.token)).toMatchObject({ state: "stored", attempt: v.attempt });
       // The guarded branch: the same result under A's marker resets the still.
-      expect(await w.op(recordRemoteMediaValidation, { ...result, restoredAt: a })).toEqual({
+      await env.MEDIA.put(restoreMarkerKey(w.t.store.id.toString()), JSON.stringify({ at: a }));
+      expect(await w.t.store.recordRemoteMediaValidation(BUILD, input)).toEqual({
         status: "recorded",
         reset: 0,
         stills: 1,
@@ -357,6 +433,42 @@ describe("validation of named stills after a restore (P-PITR2, W-S9)", () => {
       expect(answer).toEqual({ status: "recorded", reset: 0, stills: 0 });
       expect(await stillRow(w, v.token)).toMatchObject({ state: "stored", attempt: later });
       expect(await slotStill(w, v.slot)).toMatchObject({ still_key: `s${later}` });
+    } finally {
+      await unmark(w);
+    }
+  });
+});
+
+// A stale attempt's failed head counts toward neither allowance: the walk moves past the token.
+describe("a stale attempt's result", () => {
+  it("counts nothing for a failed head of an attempt the stored row no longer names, and the walk moves on", async () => {
+    const w = await mediaWorld();
+    const v = await cachedVideo(w);
+    const later = "d".repeat(32);
+    await sql(w.t.store, "UPDATE remote_media_stills SET attempt = ? WHERE token = ?", later, v.token);
+    await sql(w.t.store, "UPDATE remote_media SET still_key = ? WHERE id = ?", `s${later}`, v.slot);
+    const restoredAt = await mark(w);
+    try {
+      at(w, restoredAt + REMOTE_SETTLE_MS);
+      await w.op(maintainRemoteMedia, { now: Date.now(), restoredAt, cap: CAP, retentionDays: 14 });
+      const answer = await w.op(recordRemoteMediaValidation, {
+        restore: restoredAt,
+        restoredAt,
+        results: [
+          {
+            token: v.token,
+            heads: [
+              { variant: "full", head: "present" },
+              { variant: `s${v.attempt}`, head: "unknown" },
+            ],
+          },
+        ],
+        now: Date.now(),
+      });
+      expect(answer).toEqual({ status: "recorded", reset: 0, stills: 0 });
+      const next = await w.op(maintainRemoteMedia, { now: Date.now(), restoredAt, cap: CAP, retentionDays: 14 });
+      expect(next.validation).toEqual([]);
+      expect(await stillRow(w, v.token)).toMatchObject({ state: "stored", attempt: later });
     } finally {
       await unmark(w);
     }

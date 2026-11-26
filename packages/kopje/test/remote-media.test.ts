@@ -27,6 +27,7 @@ import {
   syncProfileFiles,
   type RemoteMediaClaim,
   type RemoteMediaOutcome,
+  VALIDATION_FAILURES,
 } from "../src/domain/remote-media";
 import { readConfig, REMOTE_MEDIA_CACHE_MIN_BYTES } from "../src/platform/config";
 import { SAFE_INTEGER_MAX } from "../src/platform/stored-bounds";
@@ -577,6 +578,42 @@ describe("maintenance (maintainRemoteMedia)", () => {
     expect(await sql(w.t.store, "SELECT value FROM kopje_state WHERE name = 'remote_media_validated_at'")).toEqual([
       { value: String(restoredAt) },
     ]);
+    await w.exact();
+  });
+
+  // As the release before the named stills counted any failed head of the object first: `full` missing with its
+  // legacy still's head failing is a failed batch, the object doomed only at the VALIDATION_FAILURES-th.
+  it("counts a failed legacy still head before a missing `full`, as main did", async () => {
+    const w = await mediaWorld();
+    await w.remote();
+    const [a] = (await claim(w)).claims;
+    await record(w, a!, stored(100, ["files.example"], "image/gif"));
+    const restoredAt = w.clock.now + 1;
+    w.clock.now = restoredAt + REMOTE_SETTLE_MS;
+    expect((await maintain(w, restoredAt)).validation).toEqual([
+      { token: a!.token, keys: [`remote/${a!.token}/full`, `remote/${a!.token}/still`] },
+    ]);
+    const result = () =>
+      w.op(recordRemoteMediaValidation, {
+        restore: restoredAt,
+        restoredAt,
+        results: [
+          {
+            token: a!.token,
+            heads: [
+              { variant: "full", head: "missing" },
+              { variant: "still", head: "unknown" },
+            ],
+          },
+        ],
+        now: w.clock.now,
+      });
+    for (let n = 1; n < VALIDATION_FAILURES; n++) {
+      expect(await result()).toEqual({ status: "recorded", reset: 0, stills: 0 });
+      expect((await w.objects()).find((o) => o.token === a!.token)).toMatchObject({ state: "stored" });
+    }
+    expect(await result()).toEqual({ status: "recorded", reset: 1, stills: 0 });
+    expect((await w.objects()).find((o) => o.token === a!.token)).toMatchObject({ state: "doomed" });
     await w.exact();
   });
 
