@@ -116,6 +116,13 @@ said `degraded`: without the template's block nothing was ever admitted, so noth
 uploads' month's spent jobs (`spent`), their budget and the capacity slots that count now (`slots`), and `stills` with
 the remote stills' spent jobs and budget. Only `degraded` fails the check.
 
+With both profiles needed, the top level carries each profile's qualifiers only as the worst state allows: `lastProbe`
+only when the check is `provisioned` (`unavailable` when either provisioned profile's is, else `never`),
+`imagesVerified` only when it is `ready` (false when either profile's is), and `infrastructureFailure: true` whenever
+a profile that is `ready` has one, whatever the check's state: a `degraded` normalize profile beside a `ready` still
+profile with a failure since its pass reports `degraded` with `infrastructureFailure: true` and no `imagesVerified`.
+`profiles` holds each profile's own.
+
 ## Uploads
 
 An upload's file is staged into R2 while the request is read (at most 90 MiB, `AV_UPLOAD_LIMIT`), then queued, which
