@@ -580,7 +580,6 @@ export const STORE_RPC = {
   completePush: push.completePush,
 
   // Media.
-  reserveMedia: media.reserveMedia,
   completeMedia: media.completeMedia,
   abandonMedia: media.abandonMedia,
   removeProfileImage: media.removeProfileImage,
@@ -588,6 +587,8 @@ export const STORE_RPC = {
   forgetOrphans: media.forgetOrphans,
   expiredMedia: media.expiredMedia,
   purgeMedia: media.purgeMedia,
+  releasedThumbnails: media.releasedThumbnails,
+  forgetThumbnailFiles: media.forgetThumbnailFiles,
 
   // The media rebuild (domain/media-rebuild.ts), from /admin/media/rebuild, its lease taken by the Store's own method
   // (mediaRebuildLease). Each runs at the Store's own time, never a

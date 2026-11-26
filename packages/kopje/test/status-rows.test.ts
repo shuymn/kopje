@@ -965,14 +965,20 @@ describe("the backstop (RES-3)", () => {
 // How many chunks statusStream plans for statuses of R `bounds`, in order: per window of 80, a chunk closes before the
 // status that would pass PAGE_CHUNKS' target.
 function packed(bounds: readonly number[]): number {
-  let chunks = 0;
+  return packedChunks(bounds).length;
+}
+
+// The chunks packed() counts, each as the positions in `bounds` it holds.
+function packedChunks(bounds: readonly number[]): number[][] {
+  const chunks: number[][] = [];
   for (let start = 0; start < bounds.length; start += 80) {
     let sum = Infinity;
-    for (const r of bounds.slice(start, start + 80)) {
+    for (const [i, r] of bounds.slice(start, start + 80).entries()) {
       if (sum + r > PAGE_CHUNKS.target) {
-        chunks++;
+        chunks.push([]);
         sum = 0;
       }
+      chunks.at(-1)!.push(start + i);
       sum += r;
     }
   }
@@ -1537,8 +1543,12 @@ describe("stale statistics (RES-7)", () => {
     // M's moved-to account, sought by its key.
     expect(bound).toContain("SEARCH m USING INDEX sqlite_autoindex_accounts_1 (id=?)");
     const moved = after.plans.filter((p) => p.query.includes(selectSql(MOVED_ACCOUNT_COLUMNS.columns)));
-    // One read of the moved-to accounts a chunk.
-    expect(moved).toHaveLength(chunks);
+    // One read of the moved-to accounts a chunk that holds a moved author (the first two of each kind's four).
+    const movedChunks = packedChunks(ids.map((id) => bounds.get(id)!)).filter((chunk) =>
+      chunk.some((i) => i % moves.length < 2),
+    );
+    expect(movedChunks.length).toBeGreaterThan(0);
+    expect(moved).toHaveLength(movedChunks.length);
     for (const { plan } of moved) {
       expect(plan).toContain("SEARCH m USING INDEX sqlite_autoindex_accounts_1 (id=?)");
     }

@@ -46,6 +46,7 @@ import {
   verifiedLinksPastBoundSql,
   warningStatusIdsPastBoundSql,
 } from "../platform/stored-bounds";
+import { THUMBNAIL_TRIGGERS } from "./media-thumbnails";
 import { heldFullSql, paramsPastBoundSql } from "./scheduled-statuses";
 import { pinsFullSql } from "./status-actions";
 
@@ -538,6 +539,8 @@ END;`,
     "past the per-collection bound",
     "",
   ),
+  // 0123_media_thumbnails: a thumbnail's link to its video or audio upload, and its doom with its parent row.
+  ...THUMBNAIL_TRIGGERS,
 ];
 
 // Each registered trigger's statement by its name.

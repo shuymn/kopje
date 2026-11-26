@@ -239,7 +239,8 @@ export async function reserve(
       }),
     ),
   );
-  if (reserved.status === "retry") {
+  // staging_gone answers only a thumbnail's reservation (thumbnailFor), which this request does not make.
+  if (reserved.status === "retry" || reserved.status === "staging_gone") {
     // The file token is taken (domain/media.ts mediaTokenTaken): nothing was reserved; the client may send it again.
     return { ok: false, status: 503, error: "The upload could not be reserved; try again" };
   }
@@ -523,10 +524,14 @@ export const updateMedia: ApiHandler = withParams(
       return found.status === "not_found" ? recordNotFound() : mastodonError(422, problem);
     }
     const changes: MediaChanges = { description, focus: parseFocus(p.get("focus")) };
-    return ownerAnswer(
-      c,
-      authorized(await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes }))),
+    const outcome = authorized(
+      await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes })),
     );
+    if (outcome.status === "blank" || outcome.status === "gone") {
+      // Answers to a thumbnail, which this route does not send.
+      throw new Error("updateMedia answered a thumbnail that was not sent");
+    }
+    return ownerAnswer(c, outcome);
   },
   { files: THUMBNAIL_FILE },
 );
@@ -549,7 +554,10 @@ export const deleteMedia: ApiHandler = async (c, deps) => {
 export type SweepDeps = { build: (env: Env) => string; store: StoreResolver };
 
 // Deletes doomed uploads: their R2 objects first, then their rows, one bounded batch (domain/media.ts). Returns how
-// many rows were deleted. In maintenance the Store refuses and the sweep waits for the next run.
+// many rows were deleted. In maintenance the Store refuses and the sweep waits for the next run. Then the release
+// (domain/media-thumbnails.ts): one bounded batch of retired thumbnails, their served files deleted, never their
+// originals, then marked released; a lost mark is redone by the next run, which deletes absent keys. Each runs whether
+// the other failed: the batch's failure is thrown after the release, and the release's is logged on its own.
 export async function sweepMedia(env: Env, deps: SweepDeps): Promise<number> {
   const store = deps.store(env);
   const build = deps.build(env);
@@ -566,6 +574,21 @@ export async function sweepMedia(env: Env, deps: SweepDeps): Promise<number> {
       return 0;
     }
     throw error;
+  } finally {
+    try {
+      const released = await callStore(() => store.releasedThumbnails(build, {}));
+      if (released.length > 0) {
+        await deleteKeys(
+          env.MEDIA,
+          released.flatMap((m) => [fileKey(m.token, "full"), fileKey(m.token, "small")]),
+        );
+        await callStore(() => store.forgetThumbnailFiles(build, { ids: released.map((m) => m.id) }));
+      }
+    } catch (error) {
+      if (!(error instanceof StoreUnavailableError)) {
+        console.error({ event: "kopje.media.thumbnail_release_failed", ...errorFields(error) });
+      }
+    }
   }
 }
 

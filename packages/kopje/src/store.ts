@@ -47,9 +47,10 @@ type MarkedInput<Op> = Omit<OperationInput<Op>, "restoredAt">;
 
 // Runs a timed operation in withMarker's two passes: the restore marker is read (`readMarker`) only when the operation
 // reaches a point where K3 changes its answer or its write, a first pass that leaves its transaction with nothing
-// written and so runs no after-commit hook; an unknown marker refuses the call there as transient (503). The image
-// path's start (domain/media.ts startTransforms) and the owner's GET, PUT and DELETE of an upload
-// (domain/media-processing.ts ownerMedia, updateOwnerMedia, deleteOwnerMedia) run through it.
+// written and so runs no after-commit hook; an unknown marker refuses the call there as transient (503). An upload's
+// reservation and the image path's start (domain/media.ts reserveMedia, startTransforms) and the owner's GET, PUT and
+// DELETE of an upload (domain/media-processing.ts ownerMedia, updateOwnerMedia, mediaUpdateTarget, deleteOwnerMedia)
+// run through it.
 export function markedRun<I extends { restoredAt: Marker }, O, C extends StoreClock>(
   kernel: StoreKernel,
   callerBuild: string,
@@ -542,6 +543,12 @@ export class Store extends DurableObject<Env> {
     );
   }
 
+  // An upload's reservation (markedRun), the restore marker read only for a thumbnail reserved for a staging upload
+  // (domain/media.ts reserveMedia's thumbnailFor).
+  reserveMedia(callerBuild: string, input: MarkedInput<typeof media.reserveMedia>) {
+    return markedRun(this.#kernel, callerBuild, media.reserveMedia, input, () => this.#restoredAt());
+  }
+
   // The image path's start (markedRun), the restore marker read only for a candidate.
   startTransforms(callerBuild: string, input: MarkedInput<typeof media.startTransforms>) {
     return markedRun(this.#kernel, callerBuild, media.startTransforms, input, () => this.#restoredAt());
@@ -619,6 +626,11 @@ export class Store extends DurableObject<Env> {
 
   updateMedia(callerBuild: string, input: MarkedInput<typeof mediaProcessing.updateOwnerMedia>) {
     return markedRun(this.#kernel, callerBuild, mediaProcessing.updateOwnerMedia, input, () => this.#restoredAt());
+  }
+
+  // What a PUT with a thumbnail judges it against (#1828 PR6): the marker read as the owner's GET reads it.
+  mediaUpdateTarget(callerBuild: string, input: MarkedInput<typeof mediaProcessing.mediaUpdateTarget>) {
+    return markedRun(this.#kernel, callerBuild, mediaProcessing.mediaUpdateTarget, input, () => this.#restoredAt());
   }
 
   deleteMedia(callerBuild: string, input: MarkedInput<typeof mediaProcessing.deleteOwnerMedia>) {

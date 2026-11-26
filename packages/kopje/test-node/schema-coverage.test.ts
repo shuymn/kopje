@@ -219,6 +219,7 @@ const NOT_CONVERTED: Record<string, string> = {
   "media_attachments.blurhash": "legacy keeps no BlurHash of an attachment: NULL, none sent",
   "media_attachments.gc_at": "converted media is kept: attached, or a profile or earlier-version image",
   "media_attachments.scheduled_status_id": "held by a scheduled status of Kopje; legacy has none",
+  "media_attachments.thumbnail_of": "a thumbnail of a Kopje video or audio upload; legacy has none: NULL",
   "mutes.expires_at": "legacy mutes never expire",
   "mutes.id": ASSIGNED,
   "notifications.filtered": "legacy never filtered a notification: carried ones are shown, as stored ones are in 0020",
@@ -328,6 +329,7 @@ const NOT_VERIFIED: Record<string, string> = {
   "media_attachments.id": ID,
   "media_attachments.processed": "always 1: converted media needs no processing",
   "media_attachments.scheduled_status_id": DEFAULT,
+  "media_attachments.thumbnail_of": DEFAULT,
   "media_attachments.type":
     "classified from an attachment's type and mediaType, which legacy kept no class of; URL and description are compared",
   "mutes.created_at": TIME,

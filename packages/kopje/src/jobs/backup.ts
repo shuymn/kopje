@@ -1,6 +1,7 @@
 import { type BackupConfig, readBackupConfig } from "../platform/backup-config";
 import { encryptBytes, encryptStream, sha256Of } from "../platform/backup-crypto";
 import {
+  BACKUP_RETRY_MS,
   type BackupRun,
   type BackupState,
   type Coverage,
@@ -80,7 +81,6 @@ export const STREAM_COPY_BYTES = 16 * MIB;
 // prefix, whatever those pages list; the lifecycle rule bounds what is left.
 export const MAX_STRAY_ABORTS = 100;
 export const MAX_STRAY_PAGES = 4;
-const RETRY_MS = 60 * 60 * 1000;
 // Invocations that may die holding one run before it is recorded as failed.
 const MAX_ATTEMPTS = 3;
 
@@ -421,7 +421,7 @@ class BackupJob {
       await this.#save(
         (s) => {
           s.lastFailure = { id: run?.id ?? null, at: now, stage: run?.stage ?? null, reason };
-          s.retryAt = now + RETRY_MS;
+          s.retryAt = now + BACKUP_RETRY_MS;
           if (s.run !== null) {
             s.run.attempts = 0;
           }

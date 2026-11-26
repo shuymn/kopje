@@ -1,5 +1,9 @@
 import { storeMaintenanceError } from "./store-errors";
 
+// How far back a point-in-time restore may go (store-admin.ts refuses an older bookmark; Durable Object SQLite keeps
+// 30 days).
+export const PITR_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
 // The restore marker (media-files.ts restoreMarkerKey) as every reader takes it, in three states: null, no restore
 // recorded (the R2 object is absent); a time, the restore the marker records ({ at } in epoch milliseconds, a
 // non-negative safe integer, as the restore writes it); `unknown`, a read that failed or a marker without such a time.

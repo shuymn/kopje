@@ -228,6 +228,41 @@ export class BoostChainCheck {
   };
 }
 
+// A thumbnail link (domain/media-thumbnails.ts, migration 0123_media_thumbnails) the Store's writers never leave, refused
+// at verification (`thumbnail-link-invalid`): a current child (gc_at NULL) whose parent, sought by its key, is missing,
+// of another account, not local (its file token) or not video or audio, which the insert trigger does not check so
+// that a child may come before its parent; and a linked child that is not current but keeps its URL, which only a
+// retirement or a doom leaves cleared, or never completed, which only a completed child is linked as. The parent test
+// is media-thumbnails.ts thumbnailParentSql, written out here (platform does not import domain). A retired child may
+// name a parent the sweep has deleted. Checked on each
+// media_attachments row the checksum scan reads, once every row is in: one seek of the row and one of its parent by
+// key.
+export class ThumbnailLinkCheck {
+  constructor(private readonly sql: SqlStorage) {}
+
+  readonly check = (spec: TableSpec, row: ScannedRow): string | null => {
+    // A Store before 0123 has no link to check.
+    const linked = spec.name === "media_attachments" ? row.literals[spec.columns.indexOf("thumbnail_of")] : undefined;
+    const literal = row.literals[spec.columns.indexOf("id")];
+    if (linked === undefined || linked === "NULL" || literal === undefined) {
+      return null;
+    }
+    const bound = bind([literal]);
+    const refused = this.sql
+      .exec(
+        `SELECT 1 AS x FROM media_attachments c WHERE c.id = ${bound.exprs[0]!} AND c.thumbnail_of IS NOT NULL
+				AND CASE WHEN c.gc_at IS NULL THEN NOT EXISTS (SELECT 1 FROM media_attachments p WHERE p.id = c.thumbnail_of
+					AND p.account_id = c.account_id AND p.file_token IS NOT NULL AND p.type IN ('video', 'audio'))
+				ELSE c.url <> '' OR c.processed IS NOT 1 END`,
+        ...bound.params,
+      )
+      .toArray();
+    return refused.length === 0
+      ? null
+      : `thumbnail-link-invalid: media_attachments ${literal} is a thumbnail whose link Kopje never stores (a current one of no local video or audio upload of its account, or a replaced one that keeps its url or never completed); this dump cannot be restored`;
+  };
+}
+
 // ID-5: the problem of a local account whose username is `domain` (localUsernameIsDomain), which would hold the
 // instance actor's WebFinger handle, or null. One seek of the unique accounts_local_username finds the one candidate;
 // the shared rule decides (a username that is not text, which no writer stores, is refused).

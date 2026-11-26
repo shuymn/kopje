@@ -10,16 +10,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Instance changes
 
-- Store schema: adds two migrations (0121, 0122), applied on the first request after the deploy. Until they are applied
-  the Store refuses every request, and it stays readonly until it is verified ([docs/upgrade.md](docs/upgrade.md), "What
-  the Store serves in each state"). A rollback to an earlier version needs the point-in-time restore described in
-  [docs/upgrade.md](docs/upgrade.md). Migration `0121_media_processing` creates two empty tables with their indexes
-  (`media_processing`, the state of a video or audio upload while the media processor works on it, and `media_av_slots`,
-  the processor's capacity) and reads no existing row; it creates a table that references `media_attachments`, so the
-  upgrade checks every reference of the Store. Neither table is in a dump. Migration `0122_remote_media_stills` creates
-  the empty table `remote_media_stills` (the stills of cached remote videos) with its index,
-  adds two nullable columns to `remote_media` (`still_key`, `still_blurhash`) and recreates that table's two bound
-  triggers over them; it rewrites no row, and the new table is not in a dump.
+- Store schema: adds three migrations (0121, 0122, 0123), applied on the first request after the deploy. Until they are
+  applied the Store refuses every request, and it stays readonly until it is verified
+  ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an earlier version needs
+  the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). Migration `0121_media_processing` creates
+  two empty tables with their indexes (`media_processing`, the state of a video or audio upload while the media
+  processor works on it, and `media_av_slots`, the processor's capacity) and reads no existing row; it creates a table
+  that references `media_attachments`, so the upgrade checks every reference of the Store. Neither table is in a dump.
+  Migration `0122_remote_media_stills` creates the empty table `remote_media_stills` (the stills of cached remote
+  videos) with its index, adds two nullable columns to `remote_media` (`still_key`, `still_blurhash`) and recreates that
+  table's two bound triggers over them; it rewrites no row, and the new table is not in a dump. Migration
+  `0123_media_thumbnails` adds a nullable column `thumbnail_of` to `media_attachments` (the video or audio upload whose
+  custom thumbnail an image upload is), two partial indexes (each built by one pass over the table) and three
+  triggers; it rewrites no existing row, and the column is in a dump. It adds a unique key to an existing table, so the
+  upgrade checks every reference of the Store.
 - `wrangler.jsonc`: no change.
 
 ### Added
@@ -80,10 +84,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
-- Answers that present statuses stop at 7,831,552 bytes of JSON (`STATUS_ANSWER_BYTES`), 544 KiB short of 8 MiB
-  instead of 536 KiB, to keep the Store's heap model within its spare once a cached remote video's still is read with
-  its attachment; a page that reaches it ends one whole item earlier at most, and its `Link` (or offset, or `more`)
-  continues after it.
+- Answers that present statuses stop at 7,815,168 bytes of JSON (`STATUS_ANSWER_BYTES`), 560 KiB short of 8 MiB instead
+  of 536 KiB, to keep the Store's heap model within its spare once a cached remote video's still, or a local video's
+  custom thumbnail, is read with its attachment; a page that reaches it ends one whole item earlier at most, and its
+  `Link` (or offset, or `more`) continues after it.
 - While video and audio uploads are active, `/api/v1/instance` and `/api/v2/instance` advertise their types and
   `video_size_limit` (94,371,840), `video_frame_rate_limit` (120) and `video_matrix_limit` (8,294,400) in
   `configuration.media_attachments`; otherwise they advertise images only, as before.

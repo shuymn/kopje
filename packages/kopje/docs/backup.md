@@ -30,7 +30,8 @@ The manifest (JSON, once decrypted) has:
 - `recipients`: the public keys it was encrypted to.
 
 The media index is complete, not incremental. It lists every original the dump references: completed local uploads,
-whose original is at `originals/<media id>` in R2. Each entry is one of these:
+whose original is at `originals/<media id>` in R2, except a video's or an audio file's replaced custom thumbnail, which
+the dump keeps but the index leaves out (only a current one is copied). Each entry is one of these:
 
 - `copied`, with the object holding it, its size and SHA-256 before and after encryption, and the run that copied it.
   That may be an earlier run: an original is copied once per bucket and recipient set.

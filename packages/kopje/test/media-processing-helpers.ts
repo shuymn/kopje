@@ -150,8 +150,9 @@ export async function staged(w: AvWorld, options: { v1?: boolean; at?: number; u
 
 export const TEXT = { description: "a clip", focus: { x: 0.25, y: -0.5 } };
 
-// S3 for the upload `up` under the staging identity `stagedAt`: 2 MB of input and TEXT, on the active path.
-export function queue(w: AvWorld, up: Up, stagedAt: number) {
+// S3 for the upload `up` under the staging identity `stagedAt`: 2 MB of input and TEXT, on the active path, linking
+// `thumbnail` when given.
+export function queue(w: AvWorld, up: Up, stagedAt: number, thumbnail?: Up) {
   return w.store.queueNormalize(BUILD, {
     id: up.id,
     token: up.token,
@@ -159,6 +160,7 @@ export function queue(w: AvWorld, up: Up, stagedAt: number) {
     bytes: 2_000_000,
     text: TEXT,
     activation: ACTIVE,
+    ...(thumbnail === undefined ? {} : { thumbnail: { id: thumbnail.id, token: thumbnail.token } }),
   });
 }
 

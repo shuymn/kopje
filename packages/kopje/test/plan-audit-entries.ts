@@ -1128,12 +1128,21 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "custom_emojis holds at most 1,000 enabled emoji, on every insert and re-enable, imports included (custom_emojis_enabled_insert, custom_emojis_enabled_update, migration 0055_local_custom_emojis)",
   },
   {
-    id: "b5da63de01aae6c5",
+    id: "dc2317c5fcc9d639",
     scans: ["media_attachments: SCAN media_attachments"],
     site: "src/domain/media.ts#<anonymous> in purgeMedia",
     disposition: "background",
     reason:
       'a job or round traversal (media.ts#<anonymous> in purgeMedia); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
+  },
+  {
+    id: "8264efbd90a604c5",
+    scans: ["media_attachments: SCAN media_attachments USING INDEX media_attachments_thumbnail_release"],
+    site: "src/domain/media.ts#<anonymous> in releasedThumbnails",
+    disposition: "deliberate",
+    reason:
+      "the release's work list: media_attachments_thumbnail_release holds only retired thumbnails whose files are still to be deleted (migration 0123_media_thumbnails), read in id order up to SWEEP_BATCH",
+    witness: "test/media-thumbnails.test.ts",
   },
   {
     id: "c9fe4d5856b6c794",
@@ -1418,7 +1427,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:267 and :537), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:52) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:227), one per month it ran",
   },
   {
-    id: "ab846f5f94d75e18",
+    id: "174a61d1f874ed8e",
     scans: ["?: SCAN c", "local_accounts: SCAN l"],
     site: "src/domain/status-presenter.ts#statusRowBounds < src/domain/status-presenter.ts#plannedChunks < src/domain/status-presenter.ts#statusStream",
     disposition: "deliberate",

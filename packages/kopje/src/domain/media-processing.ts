@@ -6,7 +6,7 @@ import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import { type Marker, restoreTime } from "../platform/restore-marker";
 import { storedBlurhash, storedMediaDescription, storedMediaMeta } from "../platform/stored-bounds";
-import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
+import { userMediaDeleteOperation, userReadOperation } from "./auth";
 import { instanceOrigin } from "./instance-domain";
 import { readState, writeState } from "./kopje-state";
 import {
@@ -15,12 +15,14 @@ import {
   chargePosterTransforms,
   chargeUploadJob,
   deleteOwnMedia,
+  fenced,
   DETACHED_GRACE_MS,
   DOOMED_AT,
   describeMedia,
   type MediaChanges,
   type MediaDeleted,
   liveMediaSql,
+  thumbnailLinkSql,
   type MonthlyTransforms,
   setUp,
   uploadJobFits,
@@ -30,8 +32,18 @@ import {
   WRITE_WINDOW_MS,
 } from "./media";
 import { NORMALIZE_PROFILE, probePassed, probeState, type ProbeState, STILL_PROFILE } from "./media-probes";
+import { THUMBNAIL_KEEP_MS } from "./media-thumbnails";
 import { mediaDeleteOperation, readOperation, writeOperation } from "./operation";
-import { isPlayable, type MediaAttachment, type MediaRow, presentMedia, processingMedia } from "./status-presenter";
+import {
+  isPlayable,
+  type MediaAttachment,
+  type MediaRow,
+  presentMedia,
+  presentMediaOf,
+  processingMedia,
+  type ThumbnailFacts,
+  thumbnailOverlay,
+} from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
 
 // The Store's side of a video or audio upload (#1828; the PR4 plan's section 1, and the TLA+ specification in
@@ -340,16 +352,6 @@ function avAttachment(att: Attachment | null): Attachment | null {
   return att !== null && avReservation(att) ? att : null;
 }
 
-// K3's fence: the attachment was reserved at or before the last restore. Asked only where K3 decides the answer or the
-// write, so the marker is read (and an unknown one refuses) only there (restoreTime).
-function fenced(att: Attachment | null, restoredAt: Marker): boolean {
-  if (att === null) {
-    return false;
-  }
-  const at = restoreTime(restoredAt);
-  return at !== null && Date.parse(att.created_at) <= at;
-}
-
 function deleteRow(db: Db, id: string): void {
   db.run("DELETE FROM media_processing WHERE media_id = ?", id);
 }
@@ -592,11 +594,12 @@ export const releaseStaging = writeOperation.atStoreTime("now")<
 
 // ---- S3 queueNormalize
 
-export type QueueRefusal = "restored" | "staging_deadline" | "inactive" | "spent" | "time";
+export type QueueRefusal = "restored" | "staging_deadline" | "inactive" | "spent" | "time" | "thumbnail";
 
+// `thumbnail`: the upload's current thumbnail as every surface shows it (status-presenter.ts thumbnailOverlay), or null.
 export type QueueNormalize =
-  | { status: "queued"; teardownId: string }
-  | { status: "settled"; outcome: "running" | "completed" | { failed: Failure } }
+  | { status: "queued"; teardownId: string; thumbnail: ThumbnailFacts | null }
+  | { status: "settled"; outcome: "running" | "completed" | { failed: Failure }; thumbnail: ThumbnailFacts | null }
   // The row and slot are deleted in this transaction: the input is the route's to delete.
   | { status: "refused_cleanup_yours"; reason: QueueRefusal }
   | { status: "gone" };
@@ -606,6 +609,12 @@ export type UploadText = { description: string; focus: { x: number; y: number } 
 // S3, before any 2xx: queues the staging upload of that stagedAt. Every deadline comes from one allocation; the upload
 // unit is charged once here; the text is stored on the attachment; the slot moves to processing with a teardown_id
 // drawn here, which S8 alone accepts. A repeat finds the row pending (`queued`, nothing charged) or settled.
+//
+// `thumbnail` (#1828 PR6, POST link): the image upload the request made as the upload's thumbnail, by its id and file
+// token. Before the unit is charged, it must pass the link predicate (media.ts thumbnailLinkSql), or S3 refuses
+// (`thumbnail`: the row and slot deleted, nothing charged); it is linked in the same transaction, so a committed S3
+// has its thumbnail, whatever becomes of the reply. Every `queued` and `settled` answer, a repeat's too, carries the
+// upload's current thumbnail as shown (thumbnailOf).
 export const queueNormalize = writeOperation.atStoreTime("now")<
   {
     id: string;
@@ -614,9 +623,10 @@ export const queueNormalize = writeOperation.atStoreTime("now")<
     bytes: number;
     text: UploadText;
     activation: ActivationInput;
+    thumbnail?: { id: string; token: string } | undefined;
   } & Fence,
   QueueNormalize
->((db, { id, token, stagedAt, bytes, text, activation, now, restoredAt }) => {
+>((db, { id, token, stagedAt, bytes, text, activation, thumbnail, now, restoredAt }) => {
   checkId(id);
   if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > AV_UPLOAD_LIMIT) {
     throw new Error("input bytes out of bounds");
@@ -656,6 +666,9 @@ export const queueNormalize = writeOperation.atStoreTime("now")<
     if (allocation.encodeMs < T_MIN_ENCODE) {
       return refused("time");
     }
+    if (thumbnail !== undefined && !linkThumbnail(db, id, thumbnail, now)) {
+      return refused("thumbnail");
+    }
     chargeUploadJob(db, activation.budget, now);
     db.run(
       `UPDATE media_processing SET state = 'pending', queued_at = ?, dispatched_at = ?, deadline_at = ?, input_bytes = ?
@@ -682,22 +695,72 @@ export const queueNormalize = writeOperation.atStoreTime("now")<
       text.focus === undefined ? 0 : 1,
       id,
     );
-    return { status: "queued", teardownId };
+    return { status: "queued", teardownId, thumbnail: thumbnailOf(db, id) };
   }
   if (row?.state === "pending") {
-    return slot?.teardown_id ? { status: "queued", teardownId: slot.teardown_id } : { status: "gone" };
+    return slot?.teardown_id
+      ? { status: "queued", teardownId: slot.teardown_id, thumbnail: thumbnailOf(db, id) }
+      : { status: "gone" };
   }
   if (row?.state === "running") {
-    return { status: "settled", outcome: "running" };
+    return { status: "settled", outcome: "running", thumbnail: thumbnailOf(db, id) };
   }
   if (row?.state === "failed") {
-    return { status: "settled", outcome: { failed: row.failure } };
+    return { status: "settled", outcome: { failed: row.failure }, thumbnail: thumbnailOf(db, id) };
   }
   if (row === null && attachmentState(att, token) === "done" && onAvPath(att)) {
-    return { status: "settled", outcome: "completed" };
+    return { status: "settled", outcome: "completed", thumbnail: thumbnailOf(db, id) };
   }
   return { status: "gone" };
 });
+
+// Links the image upload `child` (its id and file token) as the current thumbnail of the upload `parent`, when it
+// passes the link predicate at the Store's time `now` (media.ts thumbnailLinkSql): the parent's current thumbnail, if
+// any, is retired, and the child's thumbnail_of set and its gc_at cleared, since its parent's lifetime is now its own
+// (the trigger media_attachments_thumbnail_delete). False, and nothing written, otherwise.
+function linkThumbnail(db: Db, parent: string, child: { id: string; token: string }, now: number): boolean {
+  if (typeof child.id !== "string" || typeof child.token !== "string") {
+    throw new Error("not a thumbnail");
+  }
+  const linkable = db.first(
+    `SELECT 1 AS linkable FROM media_attachments c INDEXED BY ${MEDIA_ID_INDEX}
+			CROSS JOIN media_attachments p INDEXED BY ${MEDIA_ID_INDEX} ON p.id = ?1
+			WHERE c.id = ?2 AND c.file_token = ?3 AND ${thumbnailLinkSql("c", "p", "?4")}`,
+    parent,
+    child.id,
+    child.token,
+    iso(now),
+  );
+  if (linkable === undefined) {
+    return false;
+  }
+  retireThumbnail(db, parent, now);
+  db.run("UPDATE media_attachments SET thumbnail_of = ?, gc_at = NULL WHERE id = ?", parent, child.id);
+  return true;
+}
+
+// Retires the current thumbnail of the upload `parent`, if any (media-thumbnails.ts): its url cleared, so the release
+// deletes its served files and no rebuild remakes them, its preview_url kept for the release, and its gc_at
+// THUMBNAIL_KEEP_MS past the Store's time `now`, so its original outlives the point-in-time window.
+function retireThumbnail(db: Db, parent: string, now: number): void {
+  db.run(
+    `UPDATE media_attachments INDEXED BY media_attachments_thumbnail SET gc_at = ?, url = ''
+			WHERE thumbnail_of = ? AND gc_at IS NULL`,
+    iso(now + THUMBNAIL_KEEP_MS),
+    parent,
+  );
+}
+
+// The upload `id`'s current thumbnail as shown (status-presenter.ts thumbnailOverlay), or null: its row by its key.
+function thumbnailOf(db: Db, id: string): ThumbnailFacts | null {
+  const row = db.first<Parameters<typeof thumbnailOverlay>[0]>(
+    `SELECT m.type, m.url, ${MEDIA_COLUMN_MAP.thumbnail_preview} AS thumbnail_preview,
+				${MEDIA_COLUMN_MAP.thumbnail_meta} AS thumbnail_meta, ${MEDIA_COLUMN_MAP.thumbnail_blurhash} AS thumbnail_blurhash
+			FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} WHERE m.id = ?`,
+    id,
+  );
+  return row === undefined ? null : thumbnailOverlay(row);
+}
 
 // ---- S4 startNormalize
 
@@ -1198,8 +1261,10 @@ function shownOwn(db: Db, own: OwnerRow | undefined, state: "processing" | "fini
   if (own === undefined || (state === "finished" && own.own !== 1)) {
     return { status: "not_found" };
   }
-  const media = presentRow(db, own);
-  return state === "processing" ? { status: "processing", media: processingMedia(media) } : { status: "ok", media };
+  const shown = presentMediaOf(own, isPlayable(own.type) ? instanceOrigin(db) : null);
+  return state === "processing"
+    ? { status: "processing", media: processingMedia(shown.media, shown) }
+    : { status: "ok", media: shown.media };
 }
 
 // GET /api/v1/media/:id.
@@ -1212,19 +1277,78 @@ export const ownerMedia = userReadOperation.atStoreTime("now")<
   return state === "processing" || state === "finished" ? shownOwn(db, own, state) : { status: state };
 });
 
+// updateOwnerMedia's answers besides the owner's view: `blank`, a thumbnail sent for an upload that is not video or
+// audio (Mastodon's "Thumbnail must be blank"); `gone`, a thumbnail that fails the link predicate.
+export type UpdatedMedia = OwnerMedia | { status: "blank" } | { status: "gone" };
+
 // PUT /api/v1/media/:id: the description and focus of an upload still processing are written on its attachment (S6
 // leaves them) and it answers 206 as GET does; a failed one is refused (422) and nothing is written; a finished one is
 // updated as before.
-export const updateOwnerMedia = userWriteOperation.atStoreTime("now")<
-  { id: string; changes: MediaChanges; now: number; restoredAt: Marker },
-  OwnerMedia
->((db, { id, changes, now, restoredAt }, { accountId }) => {
-  const state = ownerState(db, ownerRow(db, accountId, id, now), now, restoredAt);
+//
+// `thumbnail` (#1828 PR6, D26), for a video or audio upload processing or finished: an image upload of the owner's,
+// by its id and file token, linked as the current thumbnail when it passes the link predicate (linkThumbnail, which
+// retires the one it replaces), else `gone` with nothing written; a repeat for the thumbnail already current is
+// answered as linked, its link unchanged; `null` retires the current one (Mastodon's thumbnail: nil). On any other
+// upload a thumbnail answers `blank`, and null is no thumbnail. A retirement leaves served files for the sweep to
+// delete, so this is a media-delete operation, refused while the media rebuild's lease is live (MEDIA-2). It reads the
+// restore marker only as ownerState does.
+export const updateOwnerMedia = userMediaDeleteOperation.atStoreTime("now")<
+  {
+    id: string;
+    changes: MediaChanges;
+    thumbnail?: { id: string; token: string } | null | undefined;
+    now: number;
+    restoredAt: Marker;
+  },
+  UpdatedMedia
+>((db, { id, changes, thumbnail, now, restoredAt }, { accountId }) => {
+  const own = ownerRow(db, accountId, id, now);
+  const state = ownerState(db, own, now, restoredAt);
   if (state !== "processing" && state !== "finished") {
     return { status: state };
   }
+  const playable = own?.type === "video" || own?.type === "audio";
+  if (thumbnail !== undefined && thumbnail !== null) {
+    if (!playable) {
+      return { status: "blank" };
+    }
+    if (!currentThumbnail(db, id, thumbnail) && !linkThumbnail(db, id, thumbnail, now)) {
+      return { status: "gone" };
+    }
+  } else if (thumbnail === null && playable) {
+    retireThumbnail(db, id, now);
+  }
   describeMedia(db, id, changes);
   return shownOwn(db, ownerRow(db, accountId, id, now), state);
+});
+
+// Whether `child` (its id and file token) is the upload `parent`'s current thumbnail: one key seek.
+function currentThumbnail(db: Db, parent: string, child: { id: string; token: string }): boolean {
+  return (
+    db.first(
+      `SELECT 1 AS current FROM media_attachments INDEXED BY ${MEDIA_ID_INDEX}
+			WHERE id = ? AND file_token = ? AND thumbnail_of = ? AND gc_at IS NULL`,
+      child.id,
+      child.token,
+      parent,
+    ) !== undefined
+  );
+}
+
+// What PUT /api/v1/media/:id with a thumbnail judges the thumbnail against before making it (#1828 PR6, PUT order):
+// `not_found` as the owner's GET answers it, else the upload's type and whether it failed. The marker is read as
+// ownerState reads it.
+export type MediaTarget = { status: "not_found" } | { status: "found"; type: string; failed: boolean };
+
+export const mediaUpdateTarget = userReadOperation.atStoreTime("now")<
+  { id: string; now: number; restoredAt: Marker },
+  MediaTarget
+>((db, { id, now, restoredAt }, { accountId }) => {
+  const own = ownerRow(db, accountId, id, now);
+  const state = ownerState(db, own, now, restoredAt);
+  return own === undefined || state === "not_found"
+    ? { status: "not_found" }
+    : { status: "found", type: own.type, failed: state === "failed" };
 });
 
 // DELETE /api/v1/media/:id: S11 (deleteAvUpload's rule), the marker read only where K3 changes the answer.
