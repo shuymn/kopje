@@ -22,7 +22,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   table's two bound triggers over them; it rewrites no row, and the new table is not in a dump. Migration
   `0123_media_thumbnails` adds a nullable column `thumbnail_of` to `media_attachments` (the video or audio upload whose
   custom thumbnail an image upload is), two partial indexes (built by one pass over the table) and three triggers; it
-  rewrites no existing row, and the column is in a dump.
+  rewrites no existing row, and the column is in a dump. It adds a unique key to an existing table, so the upgrade
+  checks every reference of the Store.
 - `wrangler.jsonc`: no change.
 
 ### Added

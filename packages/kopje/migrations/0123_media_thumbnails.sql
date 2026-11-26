@@ -25,7 +25,8 @@
 -- Cost: the column has no default and no CHECK, so adding it reads and rewrites no row (media_attachments is a parent
 -- table, so it is not recreated); each index is built by one pass over media_attachments and holds no row after it;
 -- the guards read no row unless thumbnail_of is set, and the delete trigger one seek of the empty index per deleted
--- row.
+-- row. It adds a unique key to an existing table, so the upgrade checks every reference of the Store
+-- (src/db/migrations.ts declares no foreignKeys).
 
 ALTER TABLE media_attachments ADD COLUMN thumbnail_of TEXT;
 
