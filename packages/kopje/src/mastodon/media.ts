@@ -561,38 +561,34 @@ export type SweepDeps = { build: (env: Env) => string; store: StoreResolver };
 export async function sweepMedia(env: Env, deps: SweepDeps): Promise<number> {
   const store = deps.store(env);
   const build = deps.build(env);
-  const batch = (async () => {
+  try {
     const expired = await callStore(() => store.expiredMedia(build, { limit: SWEEP_BATCH }));
     if (expired.length === 0) {
       return 0;
     }
     const keys = expired.flatMap((m) => (m.token === null ? [originalKey(m.id)] : sweptKeys(m.id, m.token)));
     await deleteKeys(env.MEDIA, keys);
-    return callStore(() => store.purgeMedia(build, { ids: expired.map((m) => m.id) }));
-  })();
-  // The release waits for the batch to settle, whatever its outcome.
-  await batch.catch(() => 0);
-  try {
-    const released = await callStore(() => store.releasedThumbnails(build, {}));
-    if (released.length > 0) {
-      await deleteKeys(
-        env.MEDIA,
-        released.flatMap((m) => [fileKey(m.token, "full"), fileKey(m.token, "small")]),
-      );
-      await callStore(() => store.forgetThumbnailFiles(build, { ids: released.map((m) => m.id) }));
-    }
-  } catch (error) {
-    if (!(error instanceof StoreUnavailableError)) {
-      console.error({ event: "kopje.media.thumbnail_release_failed", ...errorFields(error) });
-    }
-  }
-  try {
-    return await batch;
+    return await callStore(() => store.purgeMedia(build, { ids: expired.map((m) => m.id) }));
   } catch (error) {
     if (error instanceof StoreUnavailableError) {
       return 0;
     }
     throw error;
+  } finally {
+    try {
+      const released = await callStore(() => store.releasedThumbnails(build, {}));
+      if (released.length > 0) {
+        await deleteKeys(
+          env.MEDIA,
+          released.flatMap((m) => [fileKey(m.token, "full"), fileKey(m.token, "small")]),
+        );
+        await callStore(() => store.forgetThumbnailFiles(build, { ids: released.map((m) => m.id) }));
+      }
+    } catch (error) {
+      if (!(error instanceof StoreUnavailableError)) {
+        console.error({ event: "kopje.media.thumbnail_release_failed", ...errorFields(error) });
+      }
+    }
   }
 }
 
