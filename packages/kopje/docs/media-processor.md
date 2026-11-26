@@ -1,12 +1,13 @@
 # The media processor
 
-The media processor is the optional container that turns video and audio into the files Kopje serves (#1828). It is
-added by the deploy template's "Video and audio" block ([deploy/README.md](../../../deploy/README.md)). This page is
-for the operator: how it is activated, what an upload costs and answers, what its probes and health report, and how to
-turn it off. The mechanisms live in `src/media-processor.ts` (the Durable Object), `src/jobs/media-jobs.ts` (an
-upload's work and the rounds), `src/mastodon/media-av.ts` (the upload route) and `src/mastodon/media-activation.ts`
-(the activation probe); the rules are in the [threat model](threat-model.md) (MEDIA-2, MEDIA-4, MEDIA-8, RES-1,
-RES-6).
+The media processor is the optional container that turns video and audio into the files Kopje serves (#1828), and
+that makes still frames of cached remote videos. It is added by the deploy template's "Video and audio" block
+([deploy/README.md](../../../deploy/README.md)). This page is for the operator: how it is activated, what an upload and
+a remote still cost and answer, what its probes and health report, and how to turn it off. The mechanisms live in
+`src/media-processor.ts` (the Durable Object), `src/jobs/media-jobs.ts` (an upload's work and the rounds),
+`src/jobs/remote-stills.ts` (the remote stills' round), `src/domain/remote-media-stills.ts` (their Store side),
+`src/mastodon/media-av.ts` (the upload route) and `src/mastodon/media-activation.ts` (the activation probes); the rules
+are in the [threat model](threat-model.md) (MEDIA-2, MEDIA-4, MEDIA-6, MEDIA-7, MEDIA-8, MEDIA-9, RES-1, RES-6).
 
 ## Activation
 
@@ -19,25 +20,30 @@ them. Otherwise an upload of either answers 422 as an unsupported type, and the 
 - a passed activation probe of `normalize@standard-4` for that version.
 
 A budget without the binding is not a configuration error: it activates nothing, and health says so. A new version
-starts without a verdict, so it is image-only until its probe passes. The media rebuild's stills are activated
-separately, by their own probe of `still@standard-1`.
+starts without a verdict, so it is image-only until its probe passes.
+
+Remote stills ([below](#remote-stills)) are active, apart from uploads, when the binding is there,
+`MEDIA_STILL_MONTHLY_JOBS` is above 0 and the activation probe of `still@standard-1` passed for the deployed version.
+The media rebuild's stills use the same probe.
 
 ## The activation probe
 
-The cron (every 5 minutes) runs the probe of `normalize@standard-4` when the binding and a positive budget are present
-and the profile needs one: no verdict for the deployed version, an upload's infrastructure failure since the last pass,
-or a pass whose Images step could not be checked, an hour after it. One claim a profile is shared with
-`kopje-admin media-processor probe normalize@standard-4`, so the two never probe at once, and a claim for the same
-version is not given again within an hour (`PROBE_RETRY_MS`) of one that recorded an outcome, or within 5 minutes
-(`PROBE_CLAIM_MS`) of one that recorded none: its reply or its record lost, its request cut short, or the probe object
-busy with an earlier container and starting none.
+The cron (every 5 minutes) runs the probe of each profile whose own budget is positive, with the binding, when the
+profile needs one: `normalize@standard-4` for `MEDIA_UPLOAD_MONTHLY_JOBS`, `still@standard-1` for
+`MEDIA_STILL_MONTHLY_JOBS`. A profile needs one with no verdict for the deployed version, an infrastructure failure
+since the last pass (an upload's, or a remote still's), or a pass whose Images step could not be checked, an hour after
+it. One claim a profile is shared with `kopje-admin media-processor probe` and, for `still@standard-1`, with the media
+rebuild's own probe, so no two probe at once, and a claim for the same version is not given again within an hour
+(`PROBE_RETRY_MS`) of one that recorded an outcome, or within 5 minutes (`PROBE_CLAIM_MS`) of one that recorded none:
+its reply or its record lost, its request cut short, or the probe object busy with an earlier container and starting
+none.
 
-The probe copies the 2-second clip that ships in the package to `incoming/probe-<nonce>` in the media bucket, starts the
-container on standard-4 without Internet access, streams the copy through it, holds the output to Kopje's verifier with
-the duration the container declared, checks the still, stops the container, has Images re-encode the still, and deletes
-the copy. A copy left by a Worker that died is removed by the orphan pass below. The container's stop belongs to the
-probe object, after the probe's work settled or was given up, and Images sees the still only once that stop is
-confirmed, so a probe given up at its deadline cannot stop a later probe's container.
+The probe of `normalize@standard-4` copies the 2-second clip that ships in the package to `incoming/probe-<nonce>` in
+the media bucket, starts the container on standard-4 without Internet access, streams the copy through it, holds the
+output to Kopje's verifier with the duration the container declared, checks the still, stops the container, has Images
+re-encode the still, and deletes the copy. A copy left by a Worker that died is removed by the orphan pass below. The
+container's stop belongs to the probe object, after the probe's work settled or was given up, and Images sees the still
+only once that stop is confirmed, so a probe given up at its deadline cannot stop a later probe's container.
 
 The probe is sent only with enough time for the clip to say something of the build: at least `PROBE_FLOOR_MS` (6,568
 ms) left once the copy is read, twice the sum of the clip's envelope and its way in. The envelope, 2,284 ms, is the
@@ -56,11 +62,13 @@ An upload whose still Images refuses as input, though the verifier passed it, co
 records an infrastructure failure, which has the next cron probe again; it revokes nothing. A container answer that is
 a processing outcome of the input (a 500 such as `encode_failed`) is the upload's own failure, never the processor's.
 
-`kopje-admin media-processor probe` runs the same probe on request (`normalize@standard-4`, or every profile by
-default). For `still@standard-1` the command is a check: a still of the packaged clip on standard-1, its PNG through
-Kopje's checks and Images, with the same outcomes, and nothing recorded, because the media rebuild records its own probe
-of that profile under its lease, and its `fail` has the same evidence: its `/healthz` or `/still` answers showing an
-image that does not speak the protocol (a 404 or 405), `verifyStill` refusing the PNG, or Images refusing it as input.
+The probe of `still@standard-1` makes a still of the same clip's copy on standard-1, holds its PNG to `verifyStill` and
+has Images re-encode it, with the same outcomes; its `fail` has the same evidence: its `/healthz` or `/still` answers
+showing an image that does not speak the protocol (a 404 or 405), `verifyStill` refusing the PNG, or Images refusing it
+as input.
+
+`kopje-admin media-processor probe` runs the same probes on request (one profile, or every profile by default) and
+records each verdict for the deployed version under the profile's claim, as the cron does.
 The still takes a `/healthz` without the version as ready, since `/still` is unchanged since the image before it: a
 Worker that activates before its image keeps the media rebuild's still. Both start a container and write a probe copy to
 the media bucket, so they are refused while the instance is in maintenance or its Store is read-only, and the CLI prints
@@ -69,9 +77,9 @@ that refusal.
 The request has one deadline, `PROBE_ROUTE_MS` (290 s, 10 s under the 300 s the CLI's fetch waits for the response's
 headers), from its arrival, before its credential is checked. Each step ends at its cut, the earlier of that deadline
 and its own bound: the credential check (`adminGate` and the Access token) 10 s, the body 5 s, the Store calls (the
-check's health, the claim, the record) 10 s each, the copy's put and delete 5 s each, the probe object's call 245 s, and
-the still check's Images what is left of its 75 s. A step is not started past the deadline, and an answer at or past its
-cut, even one before its timer fires, starts no later step. A credential check, body or health past its cut answers 504;
+claim, the record) 10 s each, the copy's put and delete 5 s each, the probe object's call 245 s, and
+the still probe's Images what is left of its 75 s. A step is not started past the deadline, and an answer at or past its
+cut, even one before its timer fires, starts no later step. A credential check or body past its cut answers 504;
 a claim or record past its cut answers `unconfirmed`, as does a rejection past it. A probe the probe object refuses
 before it starts a container (busy) answers `not_started` and records nothing. A claim that records no result (its reply
 lost, or its request cut before its probe or its record) holds the profile for `PROBE_CLAIM_MS` (5 min, longer than any
@@ -84,22 +92,28 @@ What the Worker keeps past the response is explicit: the probe's work with the c
 delete, are handed to `waitUntil`, which outlives a client that disconnects by at most its grace (30 s); a copy left
 after that is the orphan pass's. The probe object's container does not depend on the request: its stop is attempted by
 its own deadline, `PROBE_MS` + `DESTROY_MS` (210 + 30 s) from its start for normalize and `STILL_CHECK_MS` (75 s, its
-teardown included) for the still check, and a destroy that has not answered by then is retried by the object's alarm,
+teardown included) for the still probe, and a destroy that has not answered by then is retried by the object's alarm,
 armed before the start for no later than that deadline, every `CLEANUP_RETRY_MS` until the container is gone.
 
 ## Health
 
 The detailed health report (`/admin/health`) has a `mediaProcessor` check, read from the Store without starting a
-container:
+container, over the profiles the positive budgets need: `normalize@standard-4` when `MEDIA_UPLOAD_MONTHLY_JOBS` is above
+0, `still@standard-1` when `MEDIA_STILL_MONTHLY_JOBS` is. Each needed profile is in one of the last three states below,
+and the check's state is the worst of them (`degraded`, then `provisioned`, then `ready`), with each profile's own under
+`profiles`:
 
-| State         | Meaning                                                                                                                                             |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `disabled`    | no binding, or `MEDIA_UPLOAD_MONTHLY_JOBS` is 0 (`reason`)                                                                                          |
-| `provisioned` | the binding and a budget, and no verdict for this version: `lastProbe` is `unavailable` when a probe reached none, `never` before the first         |
-| `ready`       | a pass for this version; `imagesVerified: false` notes a pass whose Images step answered 9422, `infrastructureFailure` an upload's failure since it |
-| `degraded`    | the probe failed for this version; uploads are refused                                                                                              |
+| State         | Meaning                                                                                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `disabled`    | no budget above 0 (`reason: "budget"`), or a budget above 0 without the binding (`reason: "binding"`, for either budget)                        |
+| `provisioned` | no verdict for this version: `lastProbe` is `unavailable` when a probe reached none, `never` before the first                                   |
+| `ready`       | a pass for this version; `imagesVerified: false` notes a pass whose Images step answered 9422, `infrastructureFailure` a job's failure since it |
+| `degraded`    | the probe failed for this version; its kind (uploads, or remote stills) is refused                                                              |
 
-Each state carries the month's spent jobs (`spent`), the budget and the capacity slots that count now (`slots`).
+A positive budget without the binding reports `disabled` with `reason: "binding"`, for either budget, where the design
+said `degraded`: without the template's block nothing was ever admitted, so nothing is refused. Each state carries the
+uploads' month's spent jobs (`spent`), their budget and the capacity slots that count now (`slots`), and `stills` with
+the remote stills' spent jobs and budget. Only `degraded` fails the check.
 
 ## Uploads
 
@@ -190,14 +204,70 @@ is normal. Each image Kopje builds is about 300 MB in the account's container re
 no deployed Worker uses (`npx wrangler containers images list`). A colour profile the encoder cannot use is dropped and
 the video is encoded under the BT.709 label (design #1828, A5).
 
+## Remote stills
+
+A remote video or gifv has a still frame of its own as its `preview_url` once Kopje has made one: Mastodon sends no
+preview for most videos, and without one Kopje shows `/assets/video-poster.png`. Only a video or gifv attachment whose
+file is cached after remote stills were turned on, and that has no preview of its own (none, or one that is the file
+itself), gets a still; when the attachment has no blurhash, the still's is shown with it. The still is a WebP of at
+most 640 pixels on its long edge, served at `/media/r/<token>/s<attempt>.webp`.
+
+When the cache records such a video, the Store queues its still. The cron's stills round (every 5 minutes, on its own)
+claims at most one a tick: the claim charges one job of `MEDIA_STILL_MONTHLY_JOBS`, which covers the container and its
+at most two Images calls (the WebP and its blurhash; `IMAGES_MONTHLY_TRANSFORMS` does not count them), and reserves 2
+MiB of `REMOTE_MEDIA_CACHE_BYTES` until the still is recorded (its real size then) or its attempt fails. A claim waits
+while the cache has less room than that below the cap less its 96 MiB headroom: reclamation never evicts anything for
+a still, so near the cap the poster stays until ordinary reclamation, retention or eviction makes room. The round makes
+the still on a fresh `standard-1` container from the cached file, checks the PNG before Images sees it and Images'
+WebP before it is written, and writes it under a key of its own for each attempt, after a Store admission whose grant
+lasts 2 s. A video gets at most three claims between restores:
+
+| Outcome                                                                                                                 | Disposition                                                               |
+| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| the container refuses the input, or fails to make a still of it (`still_failed`)                                        | parked: the poster stays                                                  |
+| the PNG fails Kopje's checks                                                                                            | parked, and the probe is due again (an infrastructure failure)            |
+| the still's work is cut after the input reached the container                                                           | parked                                                                    |
+| the input is cut before it reached the container, or is missing                                                         | retried                                                                   |
+| the container does not become ready, or answers outside the protocol                                                    | retried, and the probe is due again                                       |
+| the container dies, or the call is lost                                                                                 | retried                                                                   |
+| Images fails for the WebP, 9422 included, or its WebP fails Kopje's checks                                              | parked (Images refusing the PNG as input also makes the probe due)        |
+| Images fails only for the blurhash                                                                                      | recorded without a blurhash                                               |
+| the Store refuses the write (the video was removed or got a preview of its own, `reject_media`, maintenance, a restore) | retried; a claim that finds the video no longer qualifies drops its still |
+
+A retry is due again 75 minutes after its claim, or 10 minutes (after a first claim) or an hour (after a second) after a
+failure that came later; a parked still, or one past its third claim, keeps the poster. While the container's stop is
+unconfirmed, the round's lease holds the next claim off for up to 10 minutes; a stop that keeps failing is retried by
+its object's alarm, and one more still container may then start beside it. In maintenance or while the Store is
+read-only nothing is claimed.
+
+A still that was written but never recorded (its round gave up, or the Store refused its record) is charged nothing and
+named by no video: the hourly orphan sweep deletes it once it was uploaded more than 75 minutes earlier (24 hours once
+its video has left the cache) and the sweep's cursor reaches it, so each is at most 2 MiB and at most one is written a
+cron tick. A doomed video's deletion waits 75 minutes after a still's claim, and deletes the video's recorded still with
+it.
+
+Cost (an estimate from the design, to be replaced by the den-test measurement): a still runs one `standard-1`
+container for a few seconds, about 16 GiB-s of memory and 32 GB-s of disk, and two Images transformations; 200 stills a
+month are about 3,200 GiB-s, within the Workers Paid allowance. The Images allowance must cover the Images budgets and
+2 × `MEDIA_STILL_MONTHLY_JOBS` ([setup.md](setup.md)).
+
 ## Restoring the Store
 
 Before a point-in-time restore of the Store, set `MEDIA_UPLOAD_MONTHLY_JOBS` to 0 and wait until health shows no slot
 in use. After it, a restored slot can make uploads answer busy until its job's deadline, or for up to 24 hours if its
 job had started, until the processor confirms its stop ([backup.md](backup.md), "Media recovery guarantee").
 
+A restore rewinds the month's spent jobs and each video's claims to the bookmark, so the three claims a video and the
+monthly budgets hold between restores. No still is claimed until the restore's validation has walked the cache. A still
+the restore forgot (recorded after the bookmark) is named by no video: it is deleted as above, and the video gets a new
+still under a new URL, so a viewer holding the old one gets 404. As for every cached URL after a restore, a still the
+restored Store names may answer 404 until validation reaches its video (its file was deleted before or during the
+restore); validation then shows the poster, keeps the video cached and playable, and queues a new still.
+
 ## Turning it off
 
 Set `MEDIA_UPLOAD_MONTHLY_JOBS` to 0: uploads of video and audio are refused as an unsupported type, the instance stops
-advertising them, the probe round stops, and jobs already queued finish. To remove the processor, follow
+advertising them, the probe round stops probing `normalize@standard-4`, and jobs already queued finish. Set
+`MEDIA_STILL_MONTHLY_JOBS` to 0: no remote still is claimed, the queued ones wait, and stills already recorded stay
+shown; videos cached meanwhile get none, also once it is raised again. To remove the processor, follow
 [deploy/README.md](../../../deploy/README.md), "Video and audio".

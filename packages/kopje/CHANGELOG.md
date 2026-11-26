@@ -17,7 +17,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   (`media_processing`, the state of a video or audio upload while the media processor works on it, and `media_av_slots`,
   the processor's capacity) and reads no existing row; it creates a table that references `media_attachments`, so the
   upgrade checks every reference of the Store. Neither table is in a dump. Migration `0122_remote_media_stills` creates
-  the empty table `remote_media_stills` (the stills of cached remote videos, which no release makes yet) with its index,
+  the empty table `remote_media_stills` (the stills of cached remote videos) with its index,
   adds two nullable columns to `remote_media` (`still_key`, `still_blurhash`) and recreates that table's two bound
   triggers over them; it rewrites no row, and the new table is not in a dump.
 - `wrangler.jsonc`: no change.
@@ -26,9 +26,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 - The first part of video and audio support: the package ships the media processor's container (`container/`, a
   pinned ffmpeg build and a small server with fixed operations), the `MediaProcessor` Durable Object that runs it, and
-  `kopje-admin media-processor probe`: for `normalize@standard-4` it runs the activation probe and records its
-  verdict, and for `still@standard-1` it checks a still of the packaged clip (its PNG and Images) and records
-  nothing, the media rebuild recording its own probe of that profile. The instance template gains a
+  `kopje-admin media-processor probe`, which runs the activation probe of `normalize@standard-4` or of
+  `still@standard-1` (a still of the packaged clip, its PNG and Images) and records its verdict for the deployed
+  version. The instance template gains a
   commented, optional block that adds it (`deploy/README.md`, "Video and audio"); without the block nothing changes.
   An instance that adds it must also export `MediaProcessor` from `src/index.ts`
   (`export { default, MediaProcessor, Store } from "kopje"`), or `wrangler deploy` fails; the
@@ -55,6 +55,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   is cleared to the plain poster (counted as `fallback`). The new `--stills` option gives stills to videos without one
   later. A still costs one job of the new `MEDIA_UPLOAD_MONTHLY_JOBS` budget (default 0: none) and three Images
   transformations ([docs/backup.md](docs/backup.md), "Restore").
+- Remote videos and gifvs without a preview of their own can show a still frame made by the media processor, turned
+  on by `MEDIA_STILL_MONTHLY_JOBS` (default 0) with the processor's block
+  ([docs/media-processor.md](docs/media-processor.md), "Remote stills"): the cron probes `still@standard-1` and claims
+  at most one still a tick, each spending one job of that budget and up to two Images transformations that
+  `IMAGES_MONTHLY_TRANSFORMS` does not count (keep the Images ceilings plus twice the budget within the account's
+  allowance, [docs/setup.md](docs/setup.md)). Only videos cached after it is turned on get one; until then, and when
+  none can be made, the plain poster stays. The health report's `mediaProcessor` check covers the profiles both
+  budgets need: the worst state of them, each profile's under `profiles`, and `stills` with the month's spent jobs
+  and budget; a positive budget without the binding is `disabled` with `reason: "binding"`.
 - Video and audio uploads on `/api/v1/media` and `/api/v2/media`, once the media processor is added, its probe of
   `normalize@standard-4` passed and `MEDIA_UPLOAD_MONTHLY_JOBS` is above 0
   ([docs/media-processor.md](docs/media-processor.md), "Uploads"). The file, at most 90 MiB, is streamed into R2 while

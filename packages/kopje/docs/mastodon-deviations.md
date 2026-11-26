@@ -1723,9 +1723,12 @@ Media (the `MediaAttachment` entity):
   cron has fetched it, and its remote URL until then or when no copy can be made; `preview_url` is the cached copy of
   its icon, else for an image the still of its cached file (the file itself when it is still), else its remote icon,
   else `url` for an image or an unknown file. Mastodon shows its own copy and the `small` style it makes from every
-  image, video and gifv; Kopje makes no `small` style, so a video or gifv without an icon of its own (one that is not
-  the file itself) shows `/assets/video-poster.png`, a plain dark image, where Mastodon shows a frame of the video, and
-  an audio file without one shows `null`, as Mastodon's. An icon that is the file itself (its fragment aside) counts as
+  image, video and gifv; Kopje makes no `small` style. Where the operator turns remote stills on, a video or gifv
+  cached after that, with no icon of its own (one that is not the file itself), shows a still frame Kopje made from its
+  cached file, at most 640 pixels on its long edge, and, when the attachment has no blurhash, the still's; otherwise,
+  and while its still is not made yet or cannot be made, it shows `/assets/video-poster.png`, a plain dark image.
+  Mastodon makes a frame from every video and gifv it stores. An audio file without an icon shows `null`, as
+  Mastodon's. An icon that is the file itself (its fragment aside) counts as
   none. A video's preview is never the video file, which a client would fetch whole as an image, and in a status or its
   history never `null`, which Mastodon for Android takes as an invalid attachment and drops; edit history applies the
   same to versions recorded before, and the public pages show such a video without a poster. `remote_url` and
