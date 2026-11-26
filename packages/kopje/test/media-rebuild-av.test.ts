@@ -247,7 +247,7 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     // The probe's copy is gone, and its record names this build.
     expect((await env.MEDIA.list({ prefix: "incoming/" })).objects).toEqual([]);
     expect((await stateValue(store, "media_probe:")).map((v) => JSON.parse(v) as unknown)).toEqual([
-      { version: BUILD, imageTag: "media@sha256:test", at: expect.any(Number), ok: true },
+      { version: BUILD, imageTag: "media@sha256:test", at: expect.any(Number), ok: true, imagesVerified: true },
     ]);
     const metadata = await expectStill(store, row);
     expect(metadata).toMatchObject({ width: "320", height: "180" });
@@ -378,8 +378,8 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
 
   it.each([
     [
-      "a probe whose clip the container refused",
-      { probe: { ok: false, failure: "still:no_video", image: null, input: "no_video" } as StillOutcome },
+      "a probe whose container shows the build does not speak the protocol",
+      { probe: { ok: false, failure: "route", image: null, evidence: "route" } as StillOutcome },
       {},
     ],
     [
@@ -416,7 +416,7 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
   it("probes once per build: a pass is not probed again, a failure only after PROBE_RETRY_MS", async () => {
     const store = await setup();
     const first = await addAv(store, "video");
-    const failing = maker({ probe: { ok: false, failure: "still:format", image: null, input: "format" } });
+    const failing = maker({ probe: { ok: false, failure: "route", image: null, evidence: "route" } });
     expect(await run(store, { stills: failing.stills })).toMatchObject({ counts: { fallback: 1 } });
     expect(JSON.parse((await stateValue(store, "media_probe:"))[0]!)).toMatchObject({ ok: false, version: BUILD });
     // Within the cooldown a failed probe is not run again, however many calls come: the rows fall back.
@@ -511,13 +511,15 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     const codec = new TestCodec();
     codec.failEncode = 9422;
     expect(await run(store, { codec })).toMatchObject({ stopped: "quota", next: null });
-    // The probe's Images step refused for quota: no verdict.
-    expect(await stateValue(store, "media_probe:")).toEqual([]);
+    // The probe's Images step refused for quota: a pass Images did not verify (the probe's one classifier).
+    expect((await stateValue(store, "media_probe:")).map((v) => JSON.parse(v) as unknown)).toEqual([
+      { version: BUILD, imageTag: "media@sha256:test", at: expect.any(Number), ok: true, imagesVerified: false },
+    ]);
     expect(await rowOf(store, row.id)).toEqual(before);
     // With the probe passed, the still's own Images step.
     await sql(
       store,
-      "INSERT INTO kopje_state (name, value) VALUES ('media_probe:still@standard-1', ?)",
+      "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('media_probe:still@standard-1', ?)",
       JSON.stringify({ version: BUILD, imageTag: null, at: Date.now(), ok: true }),
     );
     expect(await run(store, { codec })).toMatchObject({ stopped: "quota", next: null });
@@ -642,10 +644,11 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     const row = await addAv(store, "video");
     const before = await rowOf(store, row.id);
     const codec = new TestCodec();
-    codec.failEncode = 9422;
+    // A failure of the service: no verdict.
+    codec.failEncode = 9500;
     const first = maker();
     expect(await run(store, { stills: first.stills, codec, transforms: 0, uploads: 0 })).toMatchObject({
-      stopped: "quota",
+      stopped: "retry",
     });
     expect(first.calls.filter((c) => c.startsWith("probe"))).toHaveLength(1);
     const encodes = codec.encodeCalls.length;

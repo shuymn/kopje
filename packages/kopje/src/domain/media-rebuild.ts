@@ -16,13 +16,13 @@ import {
   uploadMediaMeta,
 } from "./media";
 import {
-  type ProbeAttempt,
-  probeAttemptValid,
-  probeName,
+  claimProbeIn,
+  probeDue,
+  type ProbeProfile,
   type ProbeRecord,
-  probeRecordValid,
+  type ProbeResult,
   probeState,
-  writeProbeValue,
+  recordProbeResultIn,
 } from "./media-probes";
 import { mediaRebuildOperation, readOperation } from "./operation";
 
@@ -479,34 +479,25 @@ export const fallbackAvRebuild = mediaRebuildOperation.atStoreTime("now")<
   return changed === 0 ? { status: "gone" } : { status: "ok" };
 });
 
-// The rebuild's own probe of `still@standard-1` (design 4.15), over the shared probe records (domain/media-probes.ts),
-// under the rebuild's lease: its attempt is recorded before the probe runs and removes the verdict before it.
-type RecordedProfile = "still@standard-1";
+// The rebuild's own probe of `still@standard-1` (design 4.15), under its lease, over the shared probe records and their
+// one claim (domain/media-probes.ts claimProbeIn, recordProbeResultIn): the claim, its cooldown and its record are the
+// generic probe's, so a rebuild in maintenance and the probe round after it never both record, and each cools down as
+// the other's claim says.
+const STILL_PROFILE: ProbeProfile = "still@standard-1";
 
-// The verdict, the last attempt, and the Store's time, which their `at` is compared with. A stored value that is out of
-// bounds, not JSON or dated after the Store's time reads as none, so it never holds the probe back.
-export const probeRecord = readOperation.atStoreTime("now")<
-  { profile: RecordedProfile; now: number },
-  { record: ProbeRecord | null; attempt: ProbeAttempt | null; now: number }
->((db, { profile, now }) => {
-  const { record, attempt } = probeState(db, profile, now);
-  return { record, attempt, now };
-});
+export type RebuildProbeClaim =
+  | { status: "denied"; reason: string }
+  | { status: "lease-lost" }
+  // A pass for the build that needs no probe (media-probes.ts probeDue).
+  | { status: "passed" }
+  | { status: "claimed"; claim: string }
+  // Claimed for the build within its cooldown: the verdict of that claim, if it reached one, stands.
+  | { status: "cooldown"; record: ProbeRecord | null };
 
-// Records, under the rebuild's lease, the start of a probe (`ok` null: the attempt, before the probe runs, which
-// removes the verdict before it) or its verdict.
-export const recordProbe = mediaRebuildOperation.atStoreTime("now")<
-  {
-    authority: ImportAuthority;
-    holder: string;
-    profile: RecordedProfile;
-    version: string;
-    imageTag: string | null;
-    ok: boolean | null;
-    now: number;
-  },
-  { status: "ok" } | { status: "lease-lost" } | { status: "denied"; reason: string }
->((db, { authority, holder, profile, version, imageTag, ok, now }) => {
+export const claimRebuildProbe = mediaRebuildOperation.atStoreTime("now")<
+  { authority: ImportAuthority; holder: string; build: string; now: number },
+  RebuildProbeClaim
+>((db, { authority, holder, build, now }) => {
   const refused = adminRefused(db, authority);
   if (refused !== null) {
     return { status: "denied", reason: refused };
@@ -514,17 +505,33 @@ export const recordProbe = mediaRebuildOperation.atStoreTime("now")<
   if (!holds(db, holder, now)) {
     return { status: "lease-lost" };
   }
-  if (ok === null) {
-    const attempt = { version, at: now };
-    writeProbeValue(db, probeName("attempt", profile), attempt, probeAttemptValid(attempt, now));
-  } else {
-    const record = { version, imageTag, at: now, ok };
-    writeProbeValue(db, probeName("record", profile), record, probeRecordValid(record, now));
+  const state = probeState(db, STILL_PROFILE, now);
+  if (!probeDue(state, build)) {
+    return { status: "passed" };
   }
-  // A new attempt supersedes the verdict before it, in the same transaction: within its cooldown only its own verdict
-  // counts, so an older failure cannot stand for an attempt that reached none.
-  if (ok === null) {
-    db.run("DELETE FROM kopje_state WHERE name = ?", probeName("record", profile));
+  const claimed = claimProbeIn(db, STILL_PROFILE, build, false, now);
+  if (claimed.status === "claimed") {
+    return claimed;
   }
-  return { status: "ok" };
+  // The build's verdict stands only when it is the last claim's (recorded at or after it): an older one does not stand
+  // for a claim that recorded none, nor for one that reached no verdict.
+  const { record, attempt } = state;
+  const standing = record !== null && record.version === build && attempt !== null && record.at >= attempt.at;
+  return { status: "cooldown", record: standing ? record : null };
+});
+
+// The rebuild probe's outcome under its claim (media-probes.ts recordProbeResultIn): `stale` when another prober's
+// claim replaced it.
+export const recordRebuildProbe = mediaRebuildOperation.atStoreTime("now")<
+  { authority: ImportAuthority; holder: string; result: Omit<ProbeResult, "profile">; now: number },
+  { status: "recorded" } | { status: "stale" } | { status: "lease-lost" } | { status: "denied"; reason: string }
+>((db, { authority, holder, result, now }) => {
+  const refused = adminRefused(db, authority);
+  if (refused !== null) {
+    return { status: "denied", reason: refused };
+  }
+  if (!holds(db, holder, now)) {
+    return { status: "lease-lost" };
+  }
+  return recordProbeResultIn(db, { ...result, profile: STILL_PROFILE }, now);
 });

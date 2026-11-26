@@ -14,11 +14,12 @@ import { readOperation, writeOperation } from "./operation";
 //
 // A use is admitted while its profile's verdict passed for the running build (probePassed); an infrastructure failure
 // after the pass revokes nothing and only makes the profile due for a probe again (claimProbe). One claim is shared by
-// the CLI and the cron's probe round: claimProbe refuses a claim for the same build within PROBE_RETRY_MS of the last one
-// when that one recorded a result, and within PROBE_CLAIM_MS when it recorded none, and recordProbeResult records only
-// under the claim it is given, so two probers never both record. The media rebuild
-// probes `still@standard-1` under its own lease (domain/media-rebuild.ts probeRecord and recordProbe) over the same
-// records: its attempt removes the verdict before the probe runs.
+// every prober of a profile: the CLI and the cron's probe round (claimProbe, recordProbeResult), and for
+// `still@standard-1` the media rebuild under its lease (domain/media-rebuild.ts claimRebuildProbe and
+// recordRebuildProbe). Each claims through claimProbeIn, which refuses a claim for the same build within PROBE_RETRY_MS
+// of the last one when that one recorded a result, and within PROBE_CLAIM_MS when it recorded none, and records through
+// recordProbeResultIn, only under the claim it is given, so two probers never both record. A claim keeps the verdict, so
+// a probe that reaches none leaves admission as it was.
 
 const PROBE_PROFILES = ["normalize@standard-4", "still@standard-1"] as const;
 export type ProbeProfile = (typeof PROBE_PROFILES)[number];
@@ -187,21 +188,12 @@ export function failedSince(failure: ProbeFailure | null, record: ProbeRecord): 
 
 // Whether the profile needs a probe for `build`: no verdict for it, a failure, a pass Images did not verify, or an
 // infrastructure failure for the build at or after its pass.
-function probeDue(state: ProbeState, build: string): boolean {
+export function probeDue(state: ProbeState, build: string): boolean {
   const { record, failure } = state;
   if (record === null || record.version !== build || !record.ok || record.imagesVerified === false) {
     return true;
   }
   return failedSince(failure, record);
-}
-
-// The generic probe operations below (the CLI's and the probe round's) write NORMALIZE_PROFILE only: the still
-// profile's record and attempt are the media rebuild's, written under its lease (media-rebuild.ts), until both share
-// one claim.
-function genericProfile(profile: ProbeProfile): void {
-  if (profile !== NORMALIZE_PROFILE) {
-    throw new Error("not a profile the generic probe records");
-  }
 }
 
 export type ProbeClaim =
@@ -218,8 +210,13 @@ export type ProbeClaim =
 export const claimProbe = writeOperation.atStoreTime("now")<
   { profile: ProbeProfile; build: string; due: boolean; now: number },
   ProbeClaim
->((db, { profile, build, due, now }) => {
-  genericProfile(profile);
+>((db, { profile, build, due, now }) => claimProbeIn(db, profile, build, due, now));
+
+// claimProbe's decision and write, which the media rebuild's claim shares (media-rebuild.ts claimRebuildProbe).
+export function claimProbeIn(db: Db, profile: ProbeProfile, build: string, due: boolean, now: number): ProbeClaim {
+  if (!printable(build, PROBE_VERSION_BYTES)) {
+    throw new Error("not a build");
+  }
   const state = probeState(db, profile, now);
   if (due && !probeDue(state, build)) {
     return { status: "not_due" };
@@ -235,7 +232,7 @@ export const claimProbe = writeOperation.atStoreTime("now")<
   const value: ProbeAttempt = { version: build, at: now, claim };
   writeProbeValue(db, probeName("attempt", profile), value, probeAttemptValid(value, now));
   return { status: "claimed", claim };
-});
+}
 
 // The outcome of the probe `claim` started (design 4.15; its classification is the prober's): `pass` and `fail`
 // replace the verdict, for the claim's build, and clear the infrastructure failure the probe answers; `no-verdict`
@@ -243,18 +240,26 @@ export const claimProbe = writeOperation.atStoreTime("now")<
 // a claim another has replaced answers `stale`. A pass whose claim is older than an infrastructure failure for its
 // build answers `stale` too, recording nothing: the failure is the newer evidence, and the claim, with no result,
 // holds the profile only for PROBE_CLAIM_MS.
+export type ProbeResult = {
+  profile: ProbeProfile;
+  claim: string;
+  outcome: ProbeOutcome;
+  imagesVerified: boolean;
+  imageTag: string | null;
+};
+
 export const recordProbeResult = writeOperation.atStoreTime("now")<
-  {
-    profile: ProbeProfile;
-    claim: string;
-    outcome: ProbeOutcome;
-    imagesVerified: boolean;
-    imageTag: string | null;
-    now: number;
-  },
+  ProbeResult & { now: number },
   { status: "recorded" } | { status: "stale" }
->((db, { profile, claim, outcome, imagesVerified, imageTag, now }) => {
-  genericProfile(profile);
+>((db, { now, ...result }) => recordProbeResultIn(db, result, now));
+
+// recordProbeResult's decision and write, which the media rebuild's record shares (media-rebuild.ts
+// recordRebuildProbe).
+export function recordProbeResultIn(
+  db: Db,
+  { profile, claim, outcome, imagesVerified, imageTag }: ProbeResult,
+  now: number,
+): { status: "recorded" } | { status: "stale" } {
   const { attempt, failure } = probeState(db, profile, now);
   if (attempt === null || attempt.claim === undefined || attempt.claim !== claim || !OUTCOMES.includes(outcome)) {
     return { status: "stale" };
@@ -279,7 +284,7 @@ export const recordProbeResult = writeOperation.atStoreTime("now")<
   const done: ProbeAttempt = { ...attempt, result: outcome };
   writeProbeValue(db, probeName("attempt", profile), done, probeAttemptValid(done, now));
   return { status: "recorded" };
-});
+}
 
 // An upload met an infrastructure failure on `profile` under `build` (design 4.15): recorded, so the probe round
 // probes the profile again; admission is not revoked.
@@ -287,7 +292,6 @@ export const recordInfrastructureFailure = writeOperation.atStoreTime("now")<
   { profile: ProbeProfile; build: string; now: number },
   { status: "recorded" }
 >((db, { profile, build, now }) => {
-  genericProfile(profile);
   const failure: ProbeFailure = { version: build, at: now };
   writeProbeValue(db, probeName("failure", profile), failure, probeFailureValid(failure, now));
   return { status: "recorded" };
