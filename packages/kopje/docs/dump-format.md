@@ -499,6 +499,16 @@ migrations, which then upgrades, and every row reads 0 beside the point it held,
 `focus_y` as its focus only when they are not both 0. A file built from legacy data holds 0, with 0,0, in every row: a
 legacy `focalPoint` is not carried ([cutover.md](cutover.md)).
 
+Media thumbnails (migration `0123_media_thumbnails`): `media_attachments.thumbnail_of` is NULL, or the 18-digit id of
+the video or audio upload whose custom thumbnail the row is (its parent). A row with it set is an image upload of its
+own file token, neither attached nor scheduled, and, while current (`gc_at` NULL), completed with its URL; a chunk
+holding any other row with it set fails with `media_attachments: an invalid thumbnail link`. Rows insert in any order,
+so the parent is checked once every row is in: a current child whose parent is not a local video or audio upload of
+the same account, or a replaced child (`gc_at` set) that keeps its URL, fails verification with
+`thumbnail-link-invalid`. A replaced child whose parent is gone is kept. A dump taken before 0123 has no such column:
+it restores into a Store at its own migrations, which then upgrades, and every row reads NULL. A file built from legacy
+data holds NULL in every row.
+
 Account invitations (migration `0081_account_invitations`): an `account_invitations` row holds an `email` (text of 3 to
 254 UTF-8 bytes with no NUL, no ASCII control, space or DEL, and one `@` neither first nor last), a `username` (1 to 30
 ASCII letters, digits or underscores), both unique ignoring ASCII case, and a 24-byte ISO `created_at`; at most 10 rows.

@@ -5551,7 +5551,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   measure of the 254 KiB past which it is skipped and logged with no string made (254 KiB keeps the largest frame and
   its terminating byte within 256 KiB). A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 48,493,123.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 48,494,083.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
   a turn presents at most 18,726,544 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,396,167 being the most JSON a streamed subject presents, the quote
@@ -6065,18 +6065,18 @@ logs (6.01 MB escaped, 4.64 MB raw, the fill of the largest SQLite read) are mea
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
 | Account occurrence, with the account it moved to                 | 124,499           | 142,608         | 150,428           | 1         | 216   | 1.8%           |
 | Moved-to account (nested), derived from its caps                 | 12,464            |                 | 11,340            | 1         |       | 0.1%           |
-| Status                                                           | 4,619,777         | 2,818,202       | 2,826,006         | 1,597     | 3,292 | 33.7%          |
-| Quote (the status and its quoted status)                         | 7,160,942         | 5,626,757       | 5,642,122         | 2,140     | 6,566 | 67.3%          |
-| Boost of a quote                                                 | 7,457,251         | 6,037,893       | 6,059,222         | 2,199     | 7,650 | 72.2%          |
-| Conversation: 12 participants presented, its last status a quote | 8,860,125         | 7,338,022       | 7,396,167         | 2,191     | 9,149 | 88.2%          |
-| Notification group: 8 sample accounts, its status a quote        | 8,236,336         | 6,768,045       | 6,811,930         | 2,191     | 8,306 | 81.2%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,546,492         | 6,231,588       | 6,254,323         | 2,158     | 7,599 | 74.6%          |
+| Status                                                           | 4,619,873         | 2,818,202       | 2,826,006         | 1,597     | 3,292 | 33.7%          |
+| Quote (the status and its quoted status)                         | 7,161,134         | 5,626,757       | 5,642,122         | 2,140     | 6,566 | 67.3%          |
+| Boost of a quote                                                 | 7,457,443         | 6,037,893       | 6,059,222         | 2,199     | 7,650 | 72.2%          |
+| Conversation: 12 participants presented, its last status a quote | 8,860,317         | 7,338,022       | 7,396,167         | 2,191     | 9,149 | 88.2%          |
+| Notification group: 8 sample accounts, its status a quote        | 8,236,528         | 6,768,045       | 6,811,930         | 2,191     | 8,306 | 81.2%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,546,684         | 6,231,588       | 6,254,323         | 2,158     | 7,599 | 74.6%          |
 | An admin.report notification of that report                      | 2,374,225         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
 | A moderation_warning notification, its local account at bounds   | 134,434           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,434           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 7,296,279         | 5,769,491       | 5,788,421         | 2,163     | 6,786 | 69.0%          |
-| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,813,156         | 4,262,293       |                   | 1,343     | 3,192 | 50.8%          |
-| Its Create (the Note and its addressing again)                   |                   | 6,318,877       |                   |           |       | 75.3%          |
+| A filtered favourite of the quote, as include_filtered lists it  | 7,296,471         | 5,769,491       | 5,788,421         | 2,163     | 6,786 | 69.0%          |
+| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,821,604         | 4,278,825       |                   | 1,343     | 3,208 | 51.0%          |
+| Its Create (the Note and its addressing again)                   |                   | 6,335,409       |                   |           |       | 75.5%          |
 | Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
 | Trending hashtag (Tag with history), derived from its caps       |                   | 4,508           | 4,572             |           |       | 0.1%           |
@@ -6211,9 +6211,9 @@ with its frame. The collections it tags are `FeaturedCollection` tags of their i
 the `featured_collections` terms once. A Note's addressing (to, cc) keeps every recipient, and the Create repeats it: a
 local status addresses at most `MAX_LOCAL_ADDRESSED` (1,000) accounts, which a post's 500 characters (about 170
 mentions) never reach and the cutover's conversion refuses past, naming the status (`src/platform/identity-bounds.ts`).
-With every part at its bound and 1,000 actor ids of 2,048 bytes, the Create is 75% of `OUTBOX_BYTES`; five such Notes
+With every part at its bound and 1,000 actor ids of 2,048 bytes, the Create is 76% of `OUTBOX_BYTES`; five such Notes
 are not within 8 MiB, so the featured collection shows its Notes within `OUTBOX_BYTES` and the pins past them by uri
-(4.49 MB with one Note whole, `test/status-bounds.test.ts`). A group's status is the owner's own (favourites and boosts
+(4.52 MB with one Note whole, `test/status-bounds.test.ts`). A group's status is the owner's own (favourites and boosts
 group), so it is at most a quote. A report's statuses after the first stop at 2 MiB, so a report is at most its
 accounts, its first status (a quote) and nothing more, or a small first status and 2 MiB; its staff accounts are local,
 and its reporter (a remote one, from a `Flag`) and its comment are at their bounds: the comment's CHECK (migration
@@ -6338,7 +6338,7 @@ two Store tables below (the rows, the rejected items and the answers' peaks) and
 
 | Item                                           | Rows, with 25% headroom | Rejected-item objects |
 | ---------------------------------------------- | ----------------------- | --------------------- |
-| Boost of a quote (the largest timeline item)   | 20.27 MB                | 18.18 MB              |
+| Boost of a quote (the largest timeline item)   | 20.28 MB                | 18.18 MB              |
 | Group: its status (a quote), 8 sample accounts | 22.33 MB                | 20.44 MB              |
 | Report: its status and 4 accounts              | 20.51 MB                | 18.76 MB              |
 
@@ -6359,7 +6359,7 @@ A chunk of several takes at most its target of heap: 392 KiB (0.40 MB) for timel
 reports. Normal: the rows are the larger of 1.25 × the target and the item's rows, plus the admitted answer, the
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 392 KiB timeline cap and `STATUS_ANSWER_BYTES`, the largest multiple of 8 KiB that does with that
-cap (each byte of budget is three of heap, so 8 KiB more would leave 2,724.5 bytes, under the spare below), keep the
+cap (each byte of budget is three of heap, so 8 KiB more would leave 1,764.5 bytes, under the spare below), keep the
 fallback below half the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to spare
 under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 69,694 under its
 ceiling): each remote account row's and moved-to account's cached profile images (two rows at their caps, MEDIA-7),
@@ -6412,7 +6412,7 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 
 | Stream unit (Store isolate)                            | Rows, with 25% headroom | Presented objects | Strings and scratch | Peak     |
 | ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
-| Status (`update`, `status.update`: a boost of a quote) | 20.27 MB                | 18.18 MB          | 1.06 MB             | 39.52 MB |
+| Status (`update`, `status.update`: a boost of a quote) | 20.28 MB                | 18.18 MB          | 1.06 MB             | 39.52 MB |
 | Conversation (its last status a quote)                 | 23.96 MB                | 22.19 MB          | 1.06 MB             | 47.21 MB |
 | Notification (its status, report and warning together) | 26.82 MB                | 20.61 MB          | 1.06 MB             | 48.49 MB |
 | Announcement                                           | 7.28 MB                 | 0.75 MB           | 1.92 MB             | 9.95 MB  |

@@ -16,6 +16,7 @@ import { userMediaDeleteOperation, userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
 import { setState, state } from "./kopje-state";
 import { NORMALIZE_PROFILE, probePassed } from "./media-probes";
+import { BACKUP_HOLD_RECHECK_MS, thumbnailChildSql } from "./media-thumbnails";
 import { mediaDeleteOperation } from "./operation";
 import { type MediaAttachment, type MediaRow, presentMedia } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
@@ -115,13 +116,28 @@ export const SWEEP_BATCH = 100;
 export const DOOMED_AT = iso(0);
 
 // The condition for an unattached upload that may still be used: completed (processed, with its URL: an abandoned
-// reservation has none), not doomed, not the uploader's avatar or header, and not a custom emoji's image (MEDIA-1,
-// MEDIA-5). `now` is a parameter expression, the Store's time (#1828 plan section 3, "One media clock").
+// reservation has none), not doomed, not the uploader's avatar or header, not a custom emoji's image, and not a video
+// or audio upload's thumbnail (media-thumbnails.ts), current or retired (MEDIA-1, MEDIA-5). `now` is a parameter
+// expression, the Store's time (#1828 plan section 3, "One media clock").
 export function liveMediaSql(m: string, now: string): string {
+  return `(${m}.thumbnail_of IS NULL AND ${usableMediaSql(m, now)})`;
+}
+
+// liveMediaSql but for the thumbnail clause: what a thumbnail link asks of the image it links (thumbnailLinkSql).
+function usableMediaSql(m: string, now: string): string {
   return `(${m}.processed = 1 AND ${m}.url <> '' AND (${m}.gc_at IS NULL OR ${m}.gc_at > ${now})
 		AND NOT EXISTS (SELECT 1 FROM accounts ${m}_pa WHERE ${m}_pa.id = ${m}.account_id
 			AND ${m}.url IN (${m}_pa.avatar_url, ${m}_pa.header_url))
 		AND ${notEmojiSql(m)})`;
+}
+
+// The link predicate (#1828 PR6, media-thumbnails.ts): the image upload `c` may become the thumbnail of the upload `p`.
+// `c` is the owner's live unattached upload, linked to nothing, a completed image of `p`'s account, and `p` a local
+// video or audio upload. The caller names `c` by its id and its file token, the reservation it made. S3 and the
+// owner's PUT link through it (media-processing.ts queueNormalize, updateOwnerMedia).
+export function thumbnailLinkSql(c: string, p: string, now: string): string {
+  return `${c}.thumbnail_of IS NULL AND ${c}.status_id IS NULL AND ${c}.scheduled_status_id IS NULL
+		AND ${usableMediaSql(c, now)} AND ${thumbnailChildSql(c, p)}`;
 }
 
 // MEDIA-5: a custom emoji's image (migration 0055_local_custom_emojis) is kept for good, disabled or not, imported
@@ -148,7 +164,13 @@ export type Reserved =
   | { status: "rate_limited" }
   | { status: "budget_exhausted"; scope: "account" | "instance" }
   // The Worker's token is taken: nothing is counted or reserved, and the request may be sent again.
-  | { status: "retry" };
+  | { status: "retry" }
+  // thumbnailFor names no upload staging under that identity (or a restore fenced it): nothing is counted or reserved.
+  | { status: "staging_gone" };
+
+// The video or audio upload a thumbnail reservation is made for during its upload request (#1828 PR6, POST): its id,
+// file token and staging identity (media-processing.ts takeAvSlot's stagedAt).
+export type ThumbnailFor = { id: string; token: string; stagedAt: number };
 
 export type MonthlyTransforms = { instance: number; account: number };
 
@@ -170,16 +192,29 @@ export type MonthlyTransforms = { instance: number; account: number };
 // media_attachments is made at the Store's time (#1828 plan section 3, "One media clock"). The attempts and the budgets
 // are kept at the request's `now`, and so is the answer's deadline: the Worker counts the write window from its own
 // reading, taken before the call.
+//
+// A thumbnail made during a video or audio upload's request (`thumbnailFor`, #1828 PR6 fork h) is part of the upload
+// its parent's attempt admitted: it counts no attempt, and is admitted only for that parent of the same account, with
+// that file token, staging under that identity before its staged_until at the Store's time, and not reserved at or
+// before the last restore (K3, media-processing.ts). Only that branch reads the restore marker (`restoredAt`, which the
+// Store's method passes through withMarker; an unknown one refuses as transient), and only once the rest holds. Failing
+// any condition answers `staging_gone`, with nothing counted or written. The budgets and the token are then judged as
+// for any image reservation, and the reservation is an image's.
 export const reserveMedia = userWriteOperation.atStoreTime("storeNow")<
   {
     token: string;
     monthlyTransforms: MonthlyTransforms;
     avCandidate?: { build: string } | undefined;
+    thumbnailFor?: ThumbnailFor | undefined;
     now: number;
     storeNow: number;
+    restoredAt: Marker;
   },
   Reserved
->((db, { token, monthlyTransforms, avCandidate, now, storeNow }, { accountId }) => {
+>((db, { token, monthlyTransforms, avCandidate, thumbnailFor, now, storeNow, restoredAt }, { accountId }) => {
+  if (thumbnailFor !== undefined) {
+    return reserveThumbnail(db, accountId, { token, monthlyTransforms, thumbnailFor, now, storeNow, restoredAt });
+  }
   const attemptsName = `${ATTEMPTS}${accountId}`;
   const since = now - UPLOAD_BUDGET.windowMs;
   const attempts = (JSON.parse(state(db, attemptsName) ?? "[]") as number[]).filter((at) => at > since);
@@ -209,6 +244,48 @@ export const reserveMedia = userWriteOperation.atStoreTime("storeNow")<
   const ok = { status: "ok", id: reserved.ok, deadline: now + WRITE_WINDOW_MS } as const;
   return active ? { ...ok, imagesRefusal: refused?.scope ?? null } : ok;
 });
+
+// reserveMedia's thumbnailFor branch: the parent's staging row, by the keys of the attachment and media_processing.
+function reserveThumbnail(
+  db: Db,
+  accountId: string,
+  input: {
+    token: string;
+    monthlyTransforms: MonthlyTransforms;
+    thumbnailFor: ThumbnailFor;
+    now: number;
+    storeNow: number;
+    restoredAt: Marker;
+  },
+): Reserved {
+  const { thumbnailFor: parent, storeNow } = input;
+  const staging = db.first<{ created_at: string }>(
+    `SELECT m.created_at FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX}
+			CROSS JOIN media_processing p ON p.media_id = m.id
+			WHERE m.id = ?1 AND m.account_id = ?2 AND m.file_token = ?3 AND p.state = 'staging' AND p.staged_at = ?4
+				AND p.staged_until > ?5`,
+    parent.id,
+    accountId,
+    parent.token,
+    parent.stagedAt,
+    storeNow,
+  );
+  if (staging === undefined) {
+    return { status: "staging_gone" };
+  }
+  const restored = restoreTime(input.restoredAt);
+  if (restored !== null && Date.parse(staging.created_at) <= restored) {
+    return { status: "staging_gone" };
+  }
+  const refused = budgetRefusal(db, accountId, input.monthlyTransforms, input.now);
+  if (refused !== null) {
+    return refused;
+  }
+  const reserved = insertReservation(db, accountId, input.token, storeNow);
+  return "retry" in reserved
+    ? { status: "retry" }
+    : { status: "ok", id: reserved.ok, deadline: input.now + WRITE_WINDOW_MS };
+}
 
 // A file token is unique across every owner of an R2 key under files/<token>/: uploads and emoji, finished or reserved
 // (media_attachments.file_token, UNIQUE), stored card images (card_images.token, a UNIQUE index) and tombstones, a card
@@ -539,16 +616,18 @@ export const abandonMedia = userMediaDeleteOperation.atStoreTime("now")<{ id: st
   { id, now },
   { accountId },
 ) => {
-  const row = db.first<{ processed: number; url: string; type: string; gc_at: string | null }>(
-    "SELECT processed, url, type, gc_at FROM media_attachments WHERE id = ? AND account_id = ?",
+  const row = db.first<{ processed: number; url: string; type: string; gc_at: string | null; child: number }>(
+    `SELECT processed, url, type, gc_at, thumbnail_of IS NOT NULL AS child FROM media_attachments
+			WHERE id = ? AND account_id = ?`,
     id,
     accountId,
   );
   if (row === undefined) {
     return "gone";
   }
-  // A completed upload, or one the media processor holds (its keys are the processor's), is kept.
-  if ((row.processed === 1 && row.url !== "") || processorHolds(db, id)) {
+  // A completed upload, one the media processor holds (its keys are the processor's), and a linked thumbnail, current
+  // or retired (its own gc_at keeps its original, media-thumbnails.ts), are kept.
+  if ((row.processed === 1 && row.url !== "") || row.child === 1 || processorHolds(db, id)) {
     return "kept";
   }
   db.run(
@@ -703,38 +782,74 @@ export function setUp(db: Db): boolean {
   return db.first("SELECT 1 AS found FROM instance_settings WHERE name = 'domain'") !== undefined;
 }
 
+// The backup run whose copy stage may still copy an original it holds pending (platform/backup-state.ts, jobs/backup.ts:
+// a run in its dump or media stage), as a scalar subquery of its id, NULL without one. One key seek of kopje_state.
+const COPYING_RUN_SQL = `(SELECT CASE WHEN json_valid(value) AND json_extract(value, '$.run.stage') IN ('dump', 'media')
+		THEN json_extract(value, '$.run.id') END FROM kopje_state WHERE name = 'backup')`;
+
 // Doomed uploads, oldest first. They cannot be attached or read any more (liveMediaSql), so the R2 objects can go
 // before the rows.
-export const expiredMedia = mediaDeleteOperation.atStoreTime("now")<{ now: number; limit: number }, ExpiredMedia[]>(
-  (db, { now, limit }) =>
-    setUp(db)
-      ? db.all<ExpiredMedia>(
-          `SELECT id, file_token AS token FROM media_attachments
+//
+// The backup hold (#1828 PR6, W-T7): a thumbnail (media-thumbnails.ts) whose original the copying run holds pending in
+// its membership (backup_media, by its key) is left out, and its gc_at moved BACKUP_HOLD_RECHECK_MS past the Store's
+// time in the same transaction, so the run copies it before it goes, and held rows leave the front of the queue for the
+// rows behind them. A backup's capture indexes only current thumbnails (backup-state.ts captureMedia), and a row this
+// selects has its gc_at set, so the Store orders every capture against every selection before any R2 delete. The hold
+// is a residual outside the first SWEEP_BATCH due rows, so a call examines at most that many.
+export const expiredMedia = mediaDeleteOperation.atStoreTime("now")<{ now: number; limit: number }, ExpiredMedia[]>((
+  db,
+  { now, limit },
+) => {
+  if (!setUp(db)) {
+    return [];
+  }
+  const due = db.all<ExpiredMedia & { held: number }>(
+    `SELECT d.id, d.token, CASE WHEN d.child THEN EXISTS (SELECT 1 FROM backup_media b
+				WHERE b.source = 'originals/' || d.id AND b.state = 'pending' AND b.required_run = ${COPYING_RUN_SQL})
+				ELSE 0 END AS held
+			FROM (SELECT id, file_token AS token, thumbnail_of IS NOT NULL AS child FROM media_attachments
 				WHERE status_id IS NULL AND gc_at IS NOT NULL AND gc_at <= ? AND ${notEmojiSql("media_attachments")}
-				ORDER BY gc_at LIMIT ?`,
-          iso(now),
-          Math.min(limit, SWEEP_BATCH),
-        )
-      : [],
-);
+				ORDER BY gc_at LIMIT ?) d`,
+    iso(now),
+    Math.min(limit, SWEEP_BATCH),
+  );
+  const held = due.filter((row) => row.held === 1).map((row) => row.id);
+  if (held.length > 0) {
+    db.run(
+      "UPDATE media_attachments SET gc_at = ? WHERE id IN (SELECT value FROM json_each(?))",
+      iso(now + BACKUP_HOLD_RECHECK_MS),
+      JSON.stringify(held),
+    );
+  }
+  return due.filter((row) => row.held !== 1).map(({ id, token }) => ({ id, token }));
+});
 
 // Deletes swept rows whose R2 objects are gone; a row attached again meanwhile cannot match (it has no gc_at). A row
 // that never completed leaves a tombstone: its writer may still put an object after this, and reconciliation deletes
 // the keys again once the tombstone falls due, ORPHAN_GRACE_MS after the later of the purge's Store time and the
-// writer's deadline.
+// writer's deadline. A thumbnail (thumbnail_of set) leaves none: it completed, and only a retirement or a doom cleared
+// its url. Deleting an upload dooms its current thumbnail (the trigger media_attachments_thumbnail_delete), which a
+// later batch takes.
 export const purgeMedia = mediaDeleteOperation.atStoreTime("now")<{ ids: string[]; now: number }, number>((
   db,
   { ids, now },
 ) => {
-  const swept = db.all<{ id: string; token: string | null; url: string; type: string; created_at: string }>(
-    `SELECT id, file_token AS token, url, type, created_at FROM media_attachments
+  const swept = db.all<{
+    id: string;
+    token: string | null;
+    url: string;
+    type: string;
+    created_at: string;
+    child: number;
+  }>(
+    `SELECT id, file_token AS token, url, type, created_at, thumbnail_of IS NOT NULL AS child FROM media_attachments
 		WHERE id IN (SELECT value FROM json_each(?)) AND status_id IS NULL AND gc_at IS NOT NULL AND gc_at <= ?
 			AND ${notEmojiSql("media_attachments")}`,
     JSON.stringify(ids.slice(0, SWEEP_BATCH)),
     iso(now),
   );
   for (const row of swept) {
-    if (row.token !== null && row.url === "") {
+    if (row.token !== null && row.url === "" && row.child === 0) {
       const deadline = writeDeadline(row.type, row.created_at);
       db.run(
         "INSERT OR REPLACE INTO media_orphans (file_token, media_id, delete_after) VALUES (?, ?, ?)",
@@ -747,6 +862,32 @@ export const purgeMedia = mediaDeleteOperation.atStoreTime("now")<{ ids: string[
   }
   return swept.length;
 });
+
+export type ReleasedThumbnail = { id: string; token: string };
+
+// The release (media-thumbnails.ts): retired thumbnails whose served files are still to be deleted, at most
+// SWEEP_BATCH in id order, through media_attachments_thumbnail_release. The sweep deletes their files/<token>/full and
+// small (never the original), then forgetThumbnailFiles marks them released.
+export const releasedThumbnails = mediaDeleteOperation<Record<string, never>, ReleasedThumbnail[]>((db) =>
+  setUp(db)
+    ? db.all<ReleasedThumbnail>(
+        `SELECT id, file_token AS token FROM media_attachments INDEXED BY media_attachments_thumbnail_release
+				WHERE thumbnail_of IS NOT NULL AND url = '' AND preview_url IS NOT NULL ORDER BY id LIMIT ?`,
+        SWEEP_BATCH,
+      )
+    : [],
+);
+
+// Marks released the thumbnails `ids` whose files the sweep deleted, each only while it is still retired (url ''): a
+// row a restore made current again keeps its preview, which the restore's media rebuild remakes.
+export const forgetThumbnailFiles = mediaDeleteOperation<{ ids: string[] }, number>((db, { ids }) =>
+  db.run(
+    `UPDATE media_attachments INDEXED BY ${MEDIA_ID_INDEX} SET preview_url = NULL
+			WHERE id IN (SELECT value FROM json_each(?))
+			AND thumbnail_of IS NOT NULL AND url = '' AND preview_url IS NOT NULL`,
+    JSON.stringify(ids.slice(0, SWEEP_BATCH)),
+  ),
+);
 
 // At most this many tombstones are handled per reconciliation run.
 export const RECONCILE_BATCH = 100;

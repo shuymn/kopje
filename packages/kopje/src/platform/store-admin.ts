@@ -29,6 +29,7 @@ import { errorFields, errorMessage } from "./error-message";
 import { toHex } from "./hex";
 import { consoleSink, type LogSink } from "./log";
 import { readOnlyProblem } from "./readonly-sql";
+import { PITR_WINDOW_MS } from "./restore-marker";
 import { Sha256, sha256Hex } from "./sha256";
 import {
   buildHeader,
@@ -71,6 +72,8 @@ import {
   parseTrailer,
   QUOTE_COUNTS_DONE,
   rowBytes,
+  rowChecks,
+  ThumbnailLinkCheck,
   type VerifyReport,
 } from "./store-import";
 import type { StoreKernel } from "./store-kernel";
@@ -140,7 +143,6 @@ const LINK_STEP_BYTES = 1024 * 1024;
 const VERIFY_STEP_BYTES = 32 * 1024 * 1024;
 const MAX_QUERY_ROWS = 1000;
 const MAX_QUERY_BYTES = 4 * 1024 * 1024;
-const PITR_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 // A token import whose session made no successful step for this long may be abandoned with IMPORT_TOKEN.
 const STALE_IMPORT_MS = 15 * 60 * 1000;
 const RESET_BATCH_ROWS = 2000;
@@ -900,11 +902,11 @@ export class StoreAdmin {
           record.header.tables,
           verify.position,
           budget,
-          new BoostChainCheck(this.#sql).check,
+          rowChecks(new BoostChainCheck(this.#sql).check, new ThumbnailLinkCheck(this.#sql).check),
         );
         const results = [...verify.results, ...step.finished];
         if (step.refused !== null) {
-          // A row the Store cannot hold (BoostChainCheck): the import fails and needs a reset.
+          // A row the Store cannot hold (BoostChainCheck, ThumbnailLinkCheck): the import fails and needs a reset.
           const report: VerifyReport = { ok: false, tables: [], foreignKeyViolations: 0, problems: [step.refused] };
           return this.#verifyFailed(record, report);
         }

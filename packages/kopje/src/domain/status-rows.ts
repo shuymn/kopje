@@ -39,6 +39,7 @@ import { ADMIN_EMAIL_COLUMNS, LOCAL_EMAIL_COLUMNS, OAUTH_ADMIN_HEAP_SQL } from "
 import { FEATURE_APPROVAL_COLUMNS, QUOTE_APPROVAL_COLUMNS, QUOTE_READ_COLUMNS, quotedStatusIdSql } from "./audience";
 import { ITEM_COLUMNS, TAG_REFERENCE_COLUMNS, TAGGED_COLLECTION_COLUMNS } from "./collection-presenter";
 import { INSTANCE_DOMAIN_COLUMNS, INSTANCE_DOMAIN_FROM } from "./instance-domain";
+import { thumbnailOfSql } from "./media-thumbnails";
 import { actorUriSql, usernameSql } from "./profile-bounds";
 import { CACHED_IMAGE_COLUMNS, CACHED_IMAGE_KINDS } from "./remote-media";
 import {
@@ -146,6 +147,11 @@ export const MEDIA_COLUMN_MAP = {
   remote: `(SELECT md.domain IS NOT NULL FROM accounts md INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE md.id = m.account_id)`,
   cached: "NULL",
   cached_preview: "NULL",
+  // A local video or audio upload's current thumbnail, each column as stored (its triggers bound it), one seek of
+  // media_attachments_thumbnail apiece; NULL for any other row (media-thumbnails.ts thumbnailOfSql).
+  thumbnail_preview: thumbnailOfSql("m", "preview_url"),
+  thumbnail_meta: thumbnailOfSql("m", "meta"),
+  thumbnail_blurhash: thumbnailOfSql("m", "blurhash"),
 } as const satisfies ColumnMap;
 
 // The presenter's media: each attachment with its status and position, which order a status's at most

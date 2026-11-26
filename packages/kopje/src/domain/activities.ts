@@ -29,6 +29,7 @@ import {
 import { collectionUri, taggableCollections } from "./collection-presenter";
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
 import { type DeliveryEnvelope, enqueueActivity, type OutboundOptions, type ReachOf } from "./deliveries";
+import { thumbnailOfSql } from "./media-thumbnails";
 import { readOperation } from "./operation";
 import { actorUriSql, usernameSql } from "./profile-bounds";
 import type { NoteQuote } from "./quotes";
@@ -44,6 +45,7 @@ import {
   playableDocumentFacts,
   presentedMediaDescription,
   shownCardUrl,
+  thumbnailShown,
 } from "./status-presenter";
 import { CARD_COLUMN_MAP } from "./status-rows";
 
@@ -177,13 +179,15 @@ export type StatusFacts = {
   quote: NoteQuote | null;
   tags: { name: string; href: string }[];
   // blurhash: as storedBlurhash keeps it. playable: a video's or audio file's width, height and duration
-  // (status-presenter.ts playableDocumentFacts), {} for any other.
+  // (status-presenter.ts playableDocumentFacts), {} for any other. icon: a local video or audio upload's current
+  // thumbnail as status-presenter.ts thumbnailShown accepts it (#1828 PR6), whose blurhash is then the attachment's.
   media: {
     url: string | null;
     content_type: string | null;
     description: string;
     blurhash: string | null;
     playable: PlayableDocument;
+    icon: { url: string; mediaType: string | null } | null;
   }[];
   // The Mention tags (href, name) the Note shows.
   mentions: { href: string; name: string }[];
@@ -301,6 +305,7 @@ export function statusFacts(
 			LIMIT ${MAX_PRESENTED_TAGS}) n WHERE n.name IS NOT NULL`,
     statusId,
   );
+  // A local video or audio attachment's current thumbnail (media-thumbnails.ts thumbnailOfSql), one seek apiece.
   const media = db.all<{
     url: string | null;
     content_type: string | null;
@@ -308,10 +313,16 @@ export function statusFacts(
     blurhash: SqlStorageValue;
     type: string;
     meta: string | null;
+    thumbnail_preview: string | null;
+    thumbnail_type: string | null;
+    thumbnail_blurhash: SqlStorageValue;
   }>(
-    `SELECT url, content_type, description, blurhash, type, meta
-		FROM media_attachments INDEXED BY media_attachments_status WHERE status_id = ?1 AND shown = 1
-		ORDER BY position, id LIMIT ${MAX_STATUS_MEDIA}`,
+    `SELECT m.url, m.content_type, m.description, m.blurhash, m.type, m.meta,
+			${thumbnailOfSql("m", "preview_url")} AS thumbnail_preview,
+			${thumbnailOfSql("m", "content_type")} AS thumbnail_type,
+			${thumbnailOfSql("m", "blurhash")} AS thumbnail_blurhash
+		FROM media_attachments m INDEXED BY media_attachments_status WHERE m.status_id = ?1 AND m.shown = 1
+		ORDER BY m.position, m.id LIMIT ${MAX_STATUS_MEDIA}`,
     statusId,
   );
   // The attached card, by its key, its url and title projected as the presenter projects them (CARD_COLUMN_MAP): a
@@ -350,11 +361,15 @@ export function statusFacts(
     recipients: mentioned.map((m) => ({ accountId: m.account_id, uri: m.uri, silent: m.silent === 1 })),
     reached,
     tags: tags.map((t) => ({ name: t.name, href: `${origin}/tags/${encodeURIComponent(t.name)}` })),
-    media: media.map(({ type, meta, ...m }) => ({
-      ...m,
-      blurhash: storedBlurhash(m.blurhash),
-      playable: playableDocumentFacts(type, meta),
-    })),
+    media: media.map(({ type, meta, thumbnail_preview, thumbnail_type, thumbnail_blurhash, ...m }) => {
+      const icon = type === "video" || type === "audio" ? thumbnailShown(thumbnail_preview, m.url) : null;
+      return {
+        ...m,
+        blurhash: storedBlurhash(icon === null ? m.blurhash : thumbnail_blurhash),
+        playable: playableDocumentFacts(type, meta),
+        icon: icon === null ? null : { url: icon, mediaType: thumbnail_type },
+      };
+    }),
     mentions: mentionTags.map((m) => ({ href: m.uri, name: `@${m.username}@${m.domain ?? host}` })),
     emojis: localEmojiTags(db, row.emojis, origin, STATUS_EMOJIS_BYTES),
     poll: pollFacts(db, statusId),
@@ -400,6 +415,8 @@ function attachmentsOf(facts: StatusFacts): Record<string, unknown>[] {
             name: presentedMediaDescription(m.description),
             ...(m.blurhash === null ? {} : { blurhash: m.blurhash }),
             ...m.playable,
+            // Mastodon's ImageSerializer of the thumbnail (note_serializer.rb has_one :icon).
+            ...(m.icon === null ? {} : { icon: { type: "Image", mediaType: m.icon.mediaType, url: m.icon.url } }),
           },
         ];
   });

@@ -15,6 +15,7 @@ import { bindAll, LiteralError, quoteIdentifier, readColumn, textLiteral, valueL
 import { hasRows, type ScannedRow } from "./dump-scan";
 import { errorMessage } from "./error-message";
 import { LOCAL_USERNAME_SEEK_SQL, localUsernameIsDomain } from "./identity-bounds";
+import type { RowCheck } from "./store-dump";
 
 // Checks the shape of a header that came from a caller. The catalog and migrations are compared separately.
 export function parseHeader(value: unknown): DumpHeader {
@@ -225,6 +226,52 @@ export class BoostChainCheck {
     return chained.length === 0
       ? null
       : "statuses: a boost of a boost (reblog_of_id names a status that is itself a boost); Kopje stores no boost of a boost, so this dump cannot be restored";
+  };
+}
+
+// A thumbnail link (domain/media-thumbnails.ts, migration 0123_media_thumbnails) the Store's writers never leave, refused
+// at verification (`thumbnail-link-invalid`): a current child (gc_at NULL) whose parent, sought by its key, is missing,
+// of another account, not local (its file token) or not video or audio, which the insert trigger does not check so
+// that a child may come before its parent; and a linked child that is not current but keeps its URL, which only a
+// retirement or a doom leaves cleared. A retired child may name a parent the sweep has deleted. Checked on each
+// media_attachments row the checksum scan reads, once every row is in: one seek of the row and one of its parent by
+// key.
+export class ThumbnailLinkCheck {
+  constructor(private readonly sql: SqlStorage) {}
+
+  readonly check = (spec: TableSpec, row: ScannedRow): string | null => {
+    // A Store before 0123 has no link to check.
+    const linked = spec.name === "media_attachments" ? row.literals[spec.columns.indexOf("thumbnail_of")] : undefined;
+    const literal = row.literals[spec.columns.indexOf("id")];
+    if (linked === undefined || linked === "NULL" || literal === undefined) {
+      return null;
+    }
+    const bound = bind([literal]);
+    const refused = this.sql
+      .exec(
+        `SELECT 1 AS x FROM media_attachments c WHERE c.id = ${bound.exprs[0]!} AND c.thumbnail_of IS NOT NULL
+				AND CASE WHEN c.gc_at IS NULL THEN NOT EXISTS (SELECT 1 FROM media_attachments p WHERE p.id = c.thumbnail_of
+					AND p.account_id = c.account_id AND p.file_token IS NOT NULL AND p.type IN ('video', 'audio'))
+				ELSE c.url <> '' END`,
+        ...bound.params,
+      )
+      .toArray();
+    return refused.length === 0
+      ? null
+      : `thumbnail-link-invalid: media_attachments ${literal} is a thumbnail whose link Kopje never stores (a current one of no local video or audio upload of its account, or a replaced one that keeps its url); this dump cannot be restored`;
+  };
+}
+
+// The row checks of verification, in order: the first problem refuses the import.
+export function rowChecks(...checks: RowCheck[]): RowCheck {
+  return (spec, row) => {
+    for (const check of checks) {
+      const problem = check(spec, row);
+      if (problem !== null) {
+        return problem;
+      }
+    }
+    return null;
   };
 }
 

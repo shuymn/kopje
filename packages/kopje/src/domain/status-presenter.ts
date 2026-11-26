@@ -284,6 +284,11 @@ export type MediaRow = {
   // The cached copies of a remote attachment's file and icon, packed (STATUS_MEDIA_COLUMN_MAP); null for none.
   cached: string | null;
   cached_preview: string | null;
+  // A local video or audio upload's current thumbnail (media-thumbnails.ts thumbnailOfSql): its preview_url, meta and
+  // blurhash as stored; null or absent without one.
+  thumbnail_preview?: string | null;
+  thumbnail_meta?: string | null;
+  thumbnail_blurhash?: string | null;
 };
 type MentionRow = {
   status_id: string;
@@ -1135,8 +1140,71 @@ function statusUrl(row: StatusUrlRow): string {
 // blurhash. Its remote_url and preview_remote_url are its stored url and icon (null without one), as Mastodon's; a
 // local one's are null, as Mastodon's local? media. Without an origin (an edit's snapshot; an upload's own answers and a
 // scheduled post pass one only for a playable file, for its VIDEO_POSTER) nothing is read from the cache. text_url is always null (MD-6). blurhash: what storedBlurhash keeps
-// of the stored value (a local upload's is its preview's, platform/images.ts processImage, or null).
+// of the stored value (a local upload's is its preview's, platform/images.ts processImage, or null). A local video or
+// audio upload with a current thumbnail that thumbnailShown accepts shows it (#1828 PR6, as Mastodon's serializer and
+// populate_meta): preview_url the thumbnail's preview, meta.small its geometry, blurhash its own (null stays null);
+// its own still stays stored, shown again once the thumbnail is removed.
 export function presentMedia(row: MediaRow, origin: string | null = null): MediaAttachment {
+  return presentMediaOf(row, origin).media;
+}
+
+// presentMedia's answer, and whether it shows a thumbnail (processingMedia keeps the thumbnail's facts only then).
+export function presentMediaOf(
+  row: MediaRow,
+  origin: string | null = null,
+): { media: MediaAttachment; thumbnail: boolean } {
+  const media = presentOwnMedia(row, origin);
+  const thumbnail = thumbnailOverlay(row);
+  if (thumbnail === null) {
+    return { media, thumbnail: false };
+  }
+  const { small: _small, ...rest } = media.meta ?? {};
+  const meta: MediaMeta = { ...rest, ...(thumbnail.small === null ? {} : { small: thumbnail.small }) };
+  return {
+    media: {
+      ...media,
+      preview_url: thumbnail.preview_url,
+      meta: Object.keys(meta).length === 0 ? null : meta,
+      blurhash: thumbnail.blurhash,
+    },
+    thumbnail: true,
+  };
+}
+
+// What a thumbnail shows of its parent (presentMedia, S3's facts): its preview, the preview's geometry and blurhash.
+export type ThumbnailFacts = { preview_url: string; small: MediaSize | null; blurhash: string | null };
+
+// The current thumbnail of a local video or audio row, as every surface shows it, or null: the row read with the
+// thumbnail's columns (status-rows.ts MEDIA_COLUMN_MAP, which reads them only for such a row), its preview accepted by
+// thumbnailShown.
+export function thumbnailOverlay(
+  row: Pick<MediaRow, "type" | "url" | "thumbnail_preview" | "thumbnail_meta" | "thumbnail_blurhash">,
+): ThumbnailFacts | null {
+  if (row.type !== "video" && row.type !== "audio") {
+    return null;
+  }
+  const preview = thumbnailShown(row.thumbnail_preview ?? null, row.url);
+  if (preview === null) {
+    return null;
+  }
+  const small = storedMeta(row.thumbnail_meta ?? null).small;
+  return {
+    preview_url: preview,
+    small: isSize(small) ? mediaSize(small) : null,
+    blurhash: storedBlurhash(row.thumbnail_blurhash ?? null),
+  };
+}
+
+// The one decision of whether a thumbnail's stored preview is shown for its parent (#1828 PR6): REST, the Note's icon
+// and S3's facts all ask it, so no surface shows a thumbnail another refuses. The preview as presentedMediaUrl presents
+// it (http(s), within its bounds), and other than the parent's own file, both normalized (otherFile); null otherwise,
+// and the row is then shown as without a thumbnail.
+export function thumbnailShown(preview: unknown, parentUrl: unknown): string | null {
+  const shown = presentedMediaUrl(preview);
+  return otherFile(shown, presentedMediaUrl(parentUrl), null) ? shown : null;
+}
+
+function presentOwnMedia(row: MediaRow, origin: string | null): MediaAttachment {
   // URLs within MEDIA_URL_LIMIT as serialized, as stored (STORED_COLUMNS in platform/stored-bounds.ts).
   const remoteUrl = presentedMediaUrl(row.url);
   const remotePreview = presentedMediaUrl(row.preview_url);
@@ -1335,9 +1403,17 @@ function isoSeconds(seconds: number): string {
 }
 
 // An upload still processing, as its owner reads it (Mastodon's not_processed?, the serializer's url nil): url,
-// preview_url, meta and blurhash null (#1828 design 4.13), its type and description as stored.
-export function processingMedia(media: MediaAttachment): MediaAttachment {
-  return { ...media, url: null, preview_url: null, meta: null, blurhash: null };
+// preview_url, meta and blurhash null (#1828 design 4.13), its type and description as stored. With a thumbnail shown
+// (presentMediaOf's `thumbnail`, #1828 PR6 fork f), its preview_url, meta.small and blurhash stay, and only those.
+export function processingMedia(
+  media: MediaAttachment,
+  shown: { thumbnail: boolean } = { thumbnail: false },
+): MediaAttachment {
+  if (!shown.thumbnail) {
+    return { ...media, url: null, preview_url: null, meta: null, blurhash: null };
+  }
+  const small = media.meta?.small;
+  return { ...media, url: null, meta: small === undefined ? null : { small } };
 }
 
 type ViewerFlags = Record<"favourited" | "reblogged" | "bookmarked" | "pinned" | "muted", Set<string>>;

@@ -1581,20 +1581,126 @@ describe("dump", () => {
       { id: "990000000000000051", focus_given: 1 },
     ]);
     // A dump from elsewhere, as its text could hold it: the given attachment's row with another value in focus_given,
-    // its last column.
+    // the column before thumbnail_of (0123_media_thumbnails), its last.
     const start = text.indexOf("'https://remote.test/m/focus-1'");
     const row = text.slice(start, text.indexOf(")", start) + 1);
-    expect(row.endsWith(",1)"), row).toBe(true);
+    expect(row.endsWith(",1,NULL)"), row).toBe(true);
     expect(text.split(row)).toHaveLength(2);
     for (const literal of ["2", "-1", "0.5", "'x'", "''", "X'31'", "NULL"]) {
       const target = await migratedStore();
       await copyConfig(source, target);
-      const dump = text.replace(row, `${row.slice(0, -2)}${literal})`);
+      const dump = text.replace(row, `${row.slice(0, -7)}${literal},NULL)`);
       expect(String(await rejectionOf(importViaRpc(target, dump))), literal).toMatch(
         /media_attachments: focus_given past its stored bound/,
       );
     }
   }, 300_000);
+
+  // DATA-3: a thumbnail (media_attachments.thumbnail_of, 0123_media_thumbnails) round-trips, current and retired; a
+  // current one whose parent is not a local video or audio upload of its account, or a retired one keeping its url, is
+  // refused once every row is in, whether the child's row comes before its parent's or after.
+  describe("thumbnails (0123_media_thumbnails)", () => {
+    const T = "2026-11-26T00:00:00.000Z";
+    const media = (sql: SqlStorage, row: Record<string, SqlStorageValue>) => {
+      const full: Record<string, SqlStorageValue> = { processed: 1, created_at: T, ...row };
+      const columns = Object.keys(full);
+      sql.exec(
+        `INSERT INTO media_attachments (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+        ...Object.values(full),
+      );
+    };
+    const child = (id: string, account: string, parent: string, over: Record<string, SqlStorageValue> = {}) => ({
+      id,
+      account_id: account,
+      type: "image",
+      url: `https://kopje.test/files/${id}`,
+      preview_url: `https://kopje.test/files/${id}/small`,
+      file_token: `c${id}`.padEnd(43, "x"),
+      thumbnail_of: parent,
+      ...over,
+    });
+    const accounts = (sql: SqlStorage) => {
+      const [local] = sql
+        .exec<{ id: string }>("SELECT id FROM accounts WHERE domain IS NULL ORDER BY id LIMIT 1")
+        .toArray()
+        .map((r) => r.id);
+      const remote = sql
+        .exec<{ id: string }>("SELECT id FROM accounts WHERE domain IS NOT NULL ORDER BY id LIMIT 1")
+        .one().id;
+      return { local: local!, remote };
+    };
+    const read =
+      "SELECT * FROM media_attachments WHERE thumbnail_of IS NOT NULL OR id GLOB '99000000000000007*' ORDER BY id";
+
+    it("round-trips a current and a retired thumbnail, the retired one's parent purged", async () => {
+      const source = await seeded(0);
+      await runInDurableObject(source, (_instance, state) => {
+        const sql = state.storage.sql;
+        const { local } = accounts(sql);
+        media(sql, {
+          id: "990000000000000070",
+          account_id: local,
+          type: "video",
+          url: "https://kopje.test/v",
+          file_token: "p".repeat(43),
+        });
+        media(sql, child("990000000000000071", local, "990000000000000070"));
+        media(sql, child("990000000000000072", local, "990000000000000079", { gc_at: T, url: "" }));
+      });
+      const { text } = await dumpViaRpc(source);
+      const restored = await migratedStore();
+      await copyConfig(source, restored);
+      expect((await importViaRpc(restored, text)).report).toMatchObject({ ok: true, problems: [] });
+      const rows = (store: StoreStub) =>
+        runInDurableObject(store, (_instance, state) => state.storage.sql.exec(read).toArray());
+      const before = await rows(source);
+      expect(before.map((r) => [r.id, r.thumbnail_of])).toEqual([
+        ["990000000000000070", null],
+        ["990000000000000071", "990000000000000070"],
+        ["990000000000000072", "990000000000000079"],
+      ]);
+      expect(await rows(restored)).toEqual(before);
+    }, 120_000);
+
+    for (const [name, parentOf, retired] of [
+      ["another account's video", "others", false],
+      ["a remote video", "remote", false],
+      ["a local image", "image", false],
+      ["no row", "none", false],
+      ["a retired child that keeps its url", "none", true],
+    ] as const) {
+      for (const order of ["child first", "parent first"] as const) {
+        it(`refuses ${name} (${order}) as thumbnail-link-invalid`, async () => {
+          const source = await seeded(0);
+          await runInDurableObject(source, (_instance, state) => {
+            const sql = state.storage.sql;
+            const { local, remote } = accounts(sql);
+            // Ids order the dump: the child's row before or after its parent's.
+            const [childId, parentId] =
+              order === "child first"
+                ? ["990000000000000073", "990000000000000074"]
+                : ["990000000000000076", "990000000000000075"];
+            const parent = {
+              others: { account_id: remote, type: "video", file_token: "o".repeat(43) },
+              remote: { account_id: local, type: "video", file_token: null },
+              image: { account_id: local, type: "image", file_token: "i".repeat(43) },
+              none: null,
+            }[parentOf];
+            if (parent !== null) {
+              media(sql, { id: parentId, url: "https://kopje.test/p", ...parent });
+            }
+            media(sql, child(childId, local, parentId, retired ? { gc_at: T } : {}));
+          });
+          const { text } = await dumpViaRpc(source);
+          const target = await migratedStore();
+          await copyConfig(source, target);
+          const { report } = await importViaRpc(target, text);
+          expect(report).toMatchObject({ ok: false });
+          expect(JSON.stringify(report)).toMatch(/thumbnail-link-invalid/);
+        }, 120_000);
+      }
+    }
+  });
 
   // UC6: a dump taken before media_attachments.focus_given restores into a Store at its own migrations, whose upgrade
   // gives every attachment it carries 0, so its stored point decides whether it shows a focus; that Store's own export

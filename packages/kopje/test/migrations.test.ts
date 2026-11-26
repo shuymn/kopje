@@ -430,9 +430,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(104);
+      expect(STORED_TRIGGERS.size).toBe(107);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        104 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        107 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -15950,7 +15950,6 @@ DROP TRIGGER remote_media_bounds_update;`;
 
   it("follows 0121, checks every reference, and writes the table, its columns and emitTriggers' triggers (P26)", () => {
     expect(NAMES[at - 1]).toBe("0121_media_processing");
-    expect(at).toBe(NAMES.length - 1);
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
     expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(statements(`${SCHEMA}\n\n${emitTriggers(TRIGGERS)}`));
     for (const [, pattern] of (MIGRATIONS[at]?.sql ?? "").matchAll(/GLOB\s+'([^']*)'/g)) {
@@ -16127,6 +16126,167 @@ DROP TRIGGER remote_media_bounds_update;`;
       );
       sql.exec("DELETE FROM remote_media_objects WHERE token = ?", TOKEN);
       expect(sql.exec("SELECT count(*) AS n FROM remote_media_stills").one().n).toBe(0);
+    });
+  });
+});
+
+describe("0123_media_thumbnails", () => {
+  const NAME = "0123_media_thumbnails";
+  const at = NAMES.indexOf(NAME);
+  const REFUSED = /media_attachments: an invalid thumbnail link/;
+  const A = "100000000000000001";
+  const B = "100000000000000002";
+  const PARENT = "200000000000000001";
+  const IMAGE = "200000000000000002";
+  const REMOTE = "200000000000000003";
+  const OTHERS = "200000000000000004";
+  const CHILD = "200000000000000010";
+  const SECOND = "200000000000000011";
+  const GONE = "200000000000000099";
+  const T = "2026-11-26T00:00:00.000Z";
+  const EPOCH = "1970-01-01T00:00:00.000Z";
+  const token = (c: string) => c.repeat(43);
+
+  it("follows 0122 and is declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0122_remote_media_stills");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  // A Store at 0122 with a local video, a local image, a remote video and another account's video, then upgraded.
+  async function upgraded(run: (sql: SqlStorage) => void) {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at)).upgrade()).toMatchObject({ ok: true });
+      sql.exec("INSERT INTO accounts (id, uri, username) VALUES (?, 'https://kopje.test/users/a', 'a')", A);
+      sql.exec("INSERT INTO accounts (id, uri, username) VALUES (?, 'https://kopje.test/users/b', 'b')", B);
+      const media = (id: string, account: string, type: string, file: string | null) =>
+        sql.exec(
+          `INSERT INTO media_attachments (id, account_id, type, url, file_token, processed, created_at)
+					VALUES (?, ?, ?, ?, ?, 1, ?)`,
+          id,
+          account,
+          type,
+          `https://kopje.test/files/${id}`,
+          file,
+          T,
+        );
+      media(PARENT, A, "video", token("p"));
+      media(IMAGE, A, "image", token("i"));
+      media(REMOTE, A, "video", null);
+      media(OTHERS, B, "video", token("o"));
+      const objects = () =>
+        sql
+          .exec<{ name: string; sql: string | null }>(
+            `SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'media_attachments_thumbnail%'
+						AND name <> 'media_attachments' AND name NOT LIKE '_cf_%' ORDER BY name`,
+          )
+          .toArray();
+      const rows = () => sql.exec("SELECT * FROM media_attachments ORDER BY id").toArray();
+      const before = { objects: objects(), rows: rows() };
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(objects()).toEqual(before.objects);
+      expect(rows()).toEqual(before.rows.map((row) => ({ ...row, thumbnail_of: null })));
+      run(sql);
+    });
+  }
+
+  const CHILD_ROW: Record<string, SqlStorageValue> = {
+    id: CHILD,
+    account_id: A,
+    type: "image",
+    url: "https://kopje.test/files/child",
+    file_token: token("c"),
+    processed: 1,
+    status_id: null,
+    scheduled_status_id: null,
+    gc_at: null,
+    created_at: T,
+    thumbnail_of: PARENT,
+  };
+  const insert = (sql: SqlStorage, over: Record<string, SqlStorageValue>) => () => {
+    const row = { ...CHILD_ROW, ...over };
+    const columns = Object.keys(row);
+    sql.exec(
+      `INSERT INTO media_attachments (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+      ...Object.values(row),
+    );
+  };
+
+  it("refuses an insert of a child that is not an unattached, completed image of its own, and seeks no parent", async () => {
+    await upgraded((sql) => {
+      for (const over of [
+        { status_id: "300000000000000001" },
+        { scheduled_status_id: "300000000000000001" },
+        { type: "video" },
+        { thumbnail_of: CHILD },
+        { processed: 0 },
+        { url: "" },
+        { file_token: null },
+        { thumbnail_of: "2000000000000000010" },
+        { thumbnail_of: "20000000000000000a" },
+        { thumbnail_of: 200000000000000000 },
+      ]) {
+        expect(insert(sql, over), JSON.stringify(over)).toThrow(REFUSED);
+      }
+      expect(sql.exec("SELECT count(*) AS n FROM media_attachments").one().n).toBe(4);
+      // The insert seeks no parent: an import may insert a child before its parent, or a retired child of none.
+      insert(sql, { thumbnail_of: GONE })();
+      insert(sql, { id: SECOND, file_token: token("d"), thumbnail_of: GONE, gc_at: T, url: "" })();
+      expect(sql.exec("SELECT count(*) AS n FROM media_attachments WHERE thumbnail_of = ?", GONE).one().n).toBe(2);
+    });
+  });
+
+  it("refuses an update that breaks a link or makes a child current under a parent it may not have", async () => {
+    await upgraded((sql) => {
+      insert(sql, {})();
+      const set =
+        (columns: string, ...values: SqlStorageValue[]) =>
+        () =>
+          sql.exec(`UPDATE media_attachments SET ${columns} WHERE id = ?`, ...values, CHILD);
+      for (const [name, refused] of [
+        ["status", set("status_id = '300000000000000001'")],
+        ["scheduled", set("scheduled_status_id = '300000000000000001'")],
+        ["type", set("type = 'video'")],
+        ["self", set("thumbnail_of = id")],
+        ["processed", set("processed = 0")],
+        ["url", set("url = ''")],
+        ["file_token", set("file_token = NULL")],
+        ["account", set("account_id = ?", B)],
+        ["others", set("thumbnail_of = ?", OTHERS)],
+        ["remote", set("thumbnail_of = ?", REMOTE)],
+        ["image", set("thumbnail_of = ?", IMAGE)],
+        ["missing", set("thumbnail_of = ?", GONE)],
+      ] as const) {
+        expect(refused, name).toThrow(REFUSED);
+      }
+      // A second current child of the parent: the unique index.
+      expect(insert(sql, { id: SECOND, file_token: token("d") })).toThrow(/UNIQUE/);
+      // Retired, its parent gone: allowed while retired; refused when made current, or given its parent's id (no row
+      // holds that id, so no primary key refuses it).
+      set("gc_at = ?, url = '', thumbnail_of = ?", T, GONE)();
+      set("processed = 1")();
+      expect(set("gc_at = NULL, url = 'https://kopje.test/files/child'")).toThrow(REFUSED);
+      expect(set("id = thumbnail_of")).toThrow(REFUSED);
+      // Doomed (gc_at the epoch): allowed; then current again under its parent.
+      set("gc_at = ?", EPOCH)();
+      set("thumbnail_of = ?, gc_at = NULL, url = 'https://kopje.test/files/child'", PARENT)();
+      // An unrelated column, and a row with no link at all.
+      set("description = 'd'")();
+      sql.exec("UPDATE media_attachments SET type = 'audio' WHERE id = ?", REMOTE);
+    });
+  });
+
+  it("dooms the current child when its parent row is deleted, and only it", async () => {
+    await upgraded((sql) => {
+      insert(sql, {})();
+      insert(sql, { id: SECOND, file_token: token("d"), gc_at: T, url: "", preview_url: "p" })();
+      sql.exec("DELETE FROM media_attachments WHERE id = ?", PARENT);
+      expect(
+        sql.exec("SELECT id, gc_at, url FROM media_attachments WHERE thumbnail_of = ? ORDER BY id", PARENT).toArray(),
+      ).toEqual([
+        { id: CHILD, gc_at: EPOCH, url: "" },
+        { id: SECOND, gc_at: T, url: "" },
+      ]);
     });
   });
 });

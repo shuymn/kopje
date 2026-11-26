@@ -101,7 +101,7 @@ const REPLAYS: Replay[] = [
     async (w) => {
       const c = await queued(w);
       clock(at(5));
-      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "queued", teardownId: c.teardownId });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "queued", teardownId: c.teardownId, thumbnail: null });
       expect(await charged(w.store)).toBe(1);
     },
   ],
@@ -111,7 +111,7 @@ const REPLAYS: Replay[] = [
     async (w) => {
       const c = await started(w);
       clock(at(5));
-      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "settled", outcome: "running" });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "settled", outcome: "running", thumbnail: null });
       expect(await charged(w.store)).toBe(1);
     },
   ],
@@ -122,7 +122,7 @@ const REPLAYS: Replay[] = [
       const c = await completed(w);
       await w.store.releaseAvSlot(BUILD, { id: c.id, teardownId: c.teardownId });
       clock(at(5));
-      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "settled", outcome: "completed" });
+      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "settled", outcome: "completed", thumbnail: null });
       expect(await charged(w.store)).toBe(1);
     },
   ],
@@ -133,7 +133,11 @@ const REPLAYS: Replay[] = [
       const c = await failed(w, "verifier");
       await w.store.releaseAvSlot(BUILD, { id: c.id, teardownId: c.teardownId });
       clock(at(5));
-      expect(await queue(w, c, c.stagedAt)).toEqual({ status: "settled", outcome: { failed: "verifier" } });
+      expect(await queue(w, c, c.stagedAt)).toEqual({
+        status: "settled",
+        outcome: { failed: "verifier" },
+        thumbnail: null,
+      });
       expect(await charged(w.store)).toBe(1);
     },
   ],

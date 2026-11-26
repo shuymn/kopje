@@ -539,6 +539,8 @@ const SNAPSHOT = "a field of an edit's media snapshot, bounded as an attachment'
 const SETTINGS = "the instance settings' stored-bound projections (settingProjectionSql), naming no bounded column";
 const NUMBER = "a number constant (the trends round’s count clamp, TREND_OBSERVED_MAX), naming no column";
 const MEASURE = "a measure walk's per-candidate judgements and its time (isoTimeSql), grouped into counts by day";
+const THUMBNAIL =
+  "a local upload's thumbnail column, one image row of the same account, bounded where the Store writes it (a selected column, not a bounded one of the same name)";
 const FOCUS =
   "an attachment's focus x (a number, or NULL where none is shown), compared with an edit's, never presented";
 
@@ -567,6 +569,16 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // (remote-media.ts stillQualifiesSql), at its two call sites only.
   'src/domain/remote-media.ts interpolation stillQualifiesSql("r")': { count: 1, reason: PREDICATE },
   'src/domain/remote-media-stills.ts interpolation stillQualifiesSql("r")': { count: 1, reason: PREDICATE },
+  // A local upload's current thumbnail (media-thumbnails.ts thumbnailOfSql): the builder's own column, and its reads
+  // in the Note's attachments and in the owner's upload by its key.
+  "src/domain/media-thumbnails.ts interpolation m": { count: 1, reason: THUMBNAIL },
+  "src/domain/media-thumbnails.ts interpolation column": { count: 1, reason: THUMBNAIL },
+  'src/domain/activities.ts interpolation thumbnailOfSql("m", "preview_url")': { count: 1, reason: ACTIVITYPUB },
+  'src/domain/activities.ts interpolation thumbnailOfSql("m", "content_type")': { count: 1, reason: ACTIVITYPUB },
+  'src/domain/activities.ts interpolation thumbnailOfSql("m", "blurhash")': { count: 1, reason: ACTIVITYPUB },
+  "src/domain/media-processing.ts interpolation MEDIA_COLUMN_MAP.thumbnail_preview": { count: 1, reason: LOCAL },
+  "src/domain/media-processing.ts interpolation MEDIA_COLUMN_MAP.thumbnail_meta": { count: 1, reason: LOCAL },
+  "src/domain/media-processing.ts interpolation MEDIA_COLUMN_MAP.thumbnail_blurhash": { count: 1, reason: LOCAL },
   // A held Reject's Follow id judged against its stored bound: a predicate (deliveries.ts heldFollowUriSql).
   'src/domain/deliveries.ts interpolation heldFollowUriSql("uri")': { count: 2, reason: PREDICATE },
   // The owner lookup's shared parts (media-processing.ts OWNER_SQL, in ownerRow and ownerFacts): its processing state

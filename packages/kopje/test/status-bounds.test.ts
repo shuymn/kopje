@@ -460,6 +460,9 @@ type Parts = {
     description: string;
     meta: string | null;
     blurhash?: string | null;
+    // A local video or audio upload's current thumbnail (domain/media-thumbnails.ts): the parent is given a file token
+    // and a child image row is linked to it, as only an import seeds beside these parts.
+    thumbnail?: { preview: string; contentType: string; meta: string; blurhash: string };
   }[];
   mentions: string[];
   tags: string[];
@@ -492,12 +495,13 @@ async function storedStatus(t: Setup, author: string, parts: Parts): Promise<str
     parts.emojis ?? null,
   );
   for (const [position, m] of parts.media.entries()) {
+    const media = nextId();
     await sql(
       t.store,
       `INSERT INTO media_attachments (id, account_id, status_id, position, type, content_type, url, preview_url,
-				description, meta, focus_x, focus_y, blurhash)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, -1, ?)`,
-      nextId(),
+				description, meta, focus_x, focus_y, blurhash, file_token)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, -1, ?, ?)`,
+      media,
       author,
       id,
       position,
@@ -508,7 +512,25 @@ async function storedStatus(t: Setup, author: string, parts: Parts): Promise<str
       m.description,
       m.meta,
       m.blurhash ?? null,
+      m.thumbnail === undefined ? null : `p${media}${"x".repeat(24)}`,
     );
+    if (m.thumbnail !== undefined) {
+      await sql(
+        t.store,
+        `INSERT INTO media_attachments (id, account_id, type, content_type, url, preview_url, meta, blurhash, file_token,
+					processed, thumbnail_of)
+				VALUES (?, ?, 'image', ?, ?, ?, ?, ?, ?, 1, ?)`,
+        nextId(),
+        author,
+        m.thumbnail.contentType,
+        `https://${HOST}/t/${media}`,
+        m.thumbnail.preview,
+        m.thumbnail.meta,
+        m.thumbnail.blurhash,
+        `t${media}${"x".repeat(24)}`,
+        media,
+      );
+    }
   }
   await sql(
     t.store,
@@ -618,6 +640,20 @@ async function maximalParts(t: Setup, fill: Fill, kind: "rest" | "note" = "rest"
       description: counted.repeat(MAX_MEDIA_DESCRIPTION_LENGTH),
       meta: kind === "note" ? MAX_AV_META : MAX_META,
       blurhash: blurhashOf(5, 5, "~"),
+      // A Note's videos each have a thumbnail at its bounds, which its Document writes as its icon (#1828 PR6).
+      ...(kind === "note"
+        ? {
+            thumbnail: {
+              preview:
+                fill === "raw"
+                  ? atLimit(`https://${HOST}/t/${i}/`, MEDIA_URL_LIMIT)
+                  : escapingUrl(`https://t.example/${i}/?`),
+              contentType: "image/webp",
+              meta: MAX_META,
+              blurhash: blurhashOf(5, 5, "~"),
+            },
+          }
+        : {}),
     })),
     mentions,
     tags: Array.from({ length: MAX_STATUS_TAGS }, (_, i) => maxTag(i)),
@@ -3526,13 +3562,20 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
           longest: Math.max(...facts.tags.map((tag) => [...tag.name].length)),
           mentions: facts.mentions.length,
           media: facts.media.length,
+          // Each video's thumbnail, as its Document's icon.
+          icons: (note.attachment as { icon?: unknown }[]).filter((a) => a.icon !== undefined).length,
           emojis: facts.emojis.length,
           emojiTags: jsonBytes(facts.emojis),
           collections: facts.collections.length,
           link: jsonBytes(note.attachment) - jsonBytes((note.attachment as unknown[]).slice(0, -1)),
         };
       });
-      expect(measuredNote).toMatchObject({ tags: MAX_PRESENTED_TAGS, mentions: MAX_STATUS_MENTION_ROWS, media: 4 });
+      expect(measuredNote).toMatchObject({
+        tags: MAX_PRESENTED_TAGS,
+        mentions: MAX_STATUS_MENTION_ROWS,
+        media: 4,
+        icons: 4,
+      });
       expect(measuredNote.longest).toBeLessThanOrEqual(MAX_TAG_LENGTH);
       expect(measuredNote.create).toBeLessThanOrEqual(OUTBOX_BYTES);
       if (fill !== "escaped") {
@@ -3572,7 +3615,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
       expect({ ...measuredNote, featured: featuredBytes, whole }).toEqual({
         ...NOTE_FILLS.escaped,
         ...NOTE_COUNTS,
-        featured: 4_490_164,
+        featured: 4_522_968,
         whole: 1,
       });
     },
@@ -3586,6 +3629,7 @@ const NOTE_COUNTS = {
   longest: MAX_TAG_LENGTH,
   mentions: MAX_STATUS_MENTION_ROWS,
   media: 4,
+  icons: 4,
   emojis: 61,
   emojiTags: 14_850,
   collections: MAX_TAGGED_COLLECTIONS,

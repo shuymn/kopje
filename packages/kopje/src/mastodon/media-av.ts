@@ -498,6 +498,9 @@ function queueRefusal(reason: QueueRefusal): Response {
       return mastodonError(503, RECEIVE_TOO_LONG);
     case "restored":
       return mastodonError(503, UNAVAILABLE);
+    case "thumbnail":
+      // S3 refuses a thumbnail only when sent one, which this route does not send.
+      throw new Error("queueNormalize refused a thumbnail that was not sent");
   }
 }
 
