@@ -5,14 +5,14 @@ Store, the upload's processor Durable Object, its container, R2, the cron rounds
 owner, under lost replies, kills, late writes and clock offsets. It decides the ownership, precedence, processor steps,
 replays and accepted windows that PR4's Store, processor and route implement. Paths are relative to `packages/kopje/`.
 
-| File                    | Holds                                                                                                                                               |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MediaUploadStore.tla`  | the Store's operations S1-S13, one operator per transaction, under the precedence K1, K3, K4 then each operation's own rule (K2 included)           |
-| `MediaUpload.tla`       | the actors and their steps, the safety invariants and the liveness properties, each with the finding or design claim it stands for                  |
-| `MediaUploadParams.tla` | the scenarios: the uploads, their endpoints and each fault's budget                                                                                 |
-| `MediaUploadGoals.tla`  | reachability goals: each accepted window and each order the plan names is reached                                                                   |
-| `<scenario>.cfg`        | one scenario each, with every safety invariant (or, `L1`-`L5`, every liveness property under `LSpec`)                                               |
-| `checks.json`           | every check's expected outcome: each scenario's state count and depth, each mutation's broken property and trace length, each goal's witness length |
+| File                    | Holds                                                                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MediaUploadStore.tla`  | the Store's operations S1-S13, one operator per transaction, under the precedence K1, K3, K4 then each operation's own rule (K2 included)                                 |
+| `MediaUpload.tla`       | the actors and their steps, the safety invariants and the liveness properties, each with the finding or design claim it stands for                                        |
+| `MediaUploadParams.tla` | the scenarios: the uploads, their endpoints and each fault's budget                                                                                                       |
+| `MediaUploadGoals.tla`  | reachability goals: each accepted window and each order the plan names is reached                                                                                         |
+| `<scenario>.cfg`        | one scenario each, with every safety invariant (or, `L1`-`L5`, every liveness property under `LSpec`)                                                                     |
+| `checks.json`           | every check's expected outcome: each scenario's state count and depth, each mutation's broken property (and a safety mutation's trace length), each goal's witness length |
 
 `MediaUpload.tla`'s `Mutations` declares each mutation as the property it breaks and the scenario it breaks it in, and
 `MediaUploadGoals.tla`'s `GoalChecks` each goal with the scenario that reaches it; `checks.json` must list exactly those
@@ -27,7 +27,9 @@ tla-ts, in the `kopje-spec` project, which CI runs only for a change it reads:
 pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2 test-node/media-upload-spec/
 ```
 
-A change of the specification that changes a count changes `checks.json` in the same commit, which says why. Every named
+A change of the specification that changes a count changes `checks.json` in the same commit, which says why. A liveness
+mutation pins no trace length, only that its property fails with a non-empty trace: the checker's counterexample
+length differs between machines. Every named
 invariant and property has a mutation that the checker is seen to violate (`variants` in `checks.json`); the plan test
 fails for a property without one. `test-node/media-upload-spec-parts.test.ts` checks that the `kopje-spec` project
 collects every part's file and that CI's four test shards hold two parts' files each.

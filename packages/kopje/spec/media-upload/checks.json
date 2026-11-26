@@ -355,7 +355,6 @@
       "scenario": "L1",
       "variant": "LongAlarm",
       "property": "PendingStarts",
-      "trace": 32,
       "liveness": true,
       "breaks": "D1's alarm at TEARDOWN_MS (Codex r4 H3)"
     },
@@ -364,7 +363,6 @@
       "scenario": "L2",
       "variant": "MaintNoRetry",
       "property": "RecordsCleared",
-      "trace": 32,
       "liveness": true,
       "breaks": "S4's maint answer ends the invocation with its alarm deleted (GM7)"
     },
@@ -373,7 +371,6 @@
       "scenario": "L1",
       "variant": "StopNoRetry",
       "property": "ContainersStopped",
-      "trace": 32,
       "liveness": true,
       "breaks": "a stop that is not confirmed ends the invocation with its alarm deleted (Codex r4 M4, GM7)"
     },
@@ -382,7 +379,6 @@
       "scenario": "L2",
       "variant": "AgedKeepsInput",
       "property": "InputsDeleted",
-      "trace": 50,
       "liveness": true,
       "breaks": "the record-age stop leaves incoming/<id> of a completed upload"
     },
@@ -391,7 +387,6 @@
       "scenario": "L3",
       "variant": "NoExpiry",
       "property": "SlotsReleased",
-      "trace": 38,
       "liveness": true,
       "breaks": "the dispatch round never deletes a slot past held_until (W2)"
     },
@@ -448,7 +443,6 @@
       "scenario": "L2",
       "variant": "SweepNoIncoming",
       "property": "InputsDeleted",
-      "trace": 17,
       "liveness": true,
       "breaks": "the sweep, reconciliation and the retirement leave incoming/<id> (Gemini r1 GM5)"
     },
@@ -457,7 +451,6 @@
       "scenario": "L2",
       "variant": "DoneNeverSwept",
       "property": "CompletedSwept",
-      "trace": 36,
       "liveness": true,
       "breaks": "the sweep never takes a completed unattached upload at its gc_at (D2)"
     },
@@ -498,7 +491,6 @@
       "scenario": "L2",
       "variant": "LateSweep",
       "property": "CompletedSwept",
-      "trace": 37,
       "liveness": true,
       "breaks": "the sweep takes a completed unattached upload one unit after its gc_at instead of at it (Codex r2 CM5, D11)"
     },

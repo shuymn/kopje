@@ -6,8 +6,9 @@
 //           fixed.
 // liveness  one liveness scenario's .cfg (LSpec under every liveness property): none fails; states and depth fixed.
 // variant   a mutation (MediaUploadStore.tla's and MediaUpload.tla's Variant) in a scenario: the named invariant or
-//           property fails, with a shortest trace of the given length (a liveness counterexample's length is the
-//           checker's, its loop included).
+//           property fails; a safety mutation's shortest trace has the given length. A liveness mutation pins no
+//           length: its counterexample's length (the checker's, its loop included) differs between machines (37 on
+//           a laptop, 35 on CI for CompletedSwept-LateSweep), so only a non-empty trace is required.
 // goal      a reachability trap (MediaUploadGoals.tla): NotReached fails, so the window or order the goal names is
 //           reached, with a shortest witness of the given length.
 import { readFileSync } from "node:fs";
@@ -17,15 +18,17 @@ export const SPEC_DIR = fileURLToPath(new URL("../spec/media-upload/", import.me
 
 /** @typedef {{ name: string, distinct: number, depth: number }} Run */
 /**
- * @typedef {{ name: string, scenario: string, variant: string, property: string, trace: number,
+ * @typedef {{ name: string, scenario: string, variant: string, property: string, trace?: number,
  *   liveness?: boolean, breaks: string }} Variant
+ *   trace: a safety mutation's shortest trace length; a liveness mutation has none
  *   breaks: the rule the mutation breaks, and the finding or claim it stands for
  */
 /** @typedef {{ name: string, scenario: string, goal: string, trace: number }} Goal */
 /** @typedef {{ scenarios: Run[], liveness: Run[], variants: Variant[], goals: Goal[] }} Plan */
 /**
  * @typedef {{ status: "success", distinct: number, depth: number }
- *   | { status: "invariant-violation" | "liveness-violation", property: string, trace: number }} Expected
+ *   | { status: "invariant-violation", property: string, trace: number }
+ *   | { status: "liveness-violation", property: string }} Expected
  */
 /** @typedef {{ kind: string, name: string, module: string, config: string, expected: Expected }} Check */
 
@@ -103,11 +106,11 @@ export function checks(plan) {
       name: v.name,
       module: "MediaUpload",
       config: variantConfig(v.scenario, v.variant, v.property),
-      expected: /** @type {Expected} */ ({
-        status: v.liveness ? "liveness-violation" : "invariant-violation",
-        property: v.property,
-        trace: v.trace,
-      }),
+      expected: /** @type {Expected} */ (
+        v.liveness
+          ? { status: "liveness-violation", property: v.property }
+          : { status: "invariant-violation", property: v.property, trace: v.trace }
+      ),
     })),
     ...plan.goals.map((g) => ({
       kind: "goal",
