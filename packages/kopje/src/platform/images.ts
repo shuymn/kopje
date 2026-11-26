@@ -514,8 +514,9 @@ export async function stillBlurhash(
 // Whether Images re-encodes the media processor's PNG `png` of `size` into a checked still WebP within SMALL_EDGE (the
 // `still@standard-1` probe's last step, design 4.15): "refused" when the PNG is refused as input (INPUT_ERRORS), which
 // says the container's still is not usable; "bad-output" when Images' own output fails the still's checks; "quota" for
-// 9422 and "retry" for any other failure of the service. The probes take only "refused" as the build's; the media
-// rebuild takes both "refused" and "bad-output" as its still's failure.
+// 9422 and "retry" for any other failure of the service. Every prober of the profile, the media rebuild's included,
+// takes only "refused" as the build's failure and "bad-output" as no verdict (mastodon/media-activation.ts
+// imagesVerdict).
 export async function stillEncodes(
   codec: ImageCodec,
   png: Uint8Array,
