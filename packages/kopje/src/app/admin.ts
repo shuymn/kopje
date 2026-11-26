@@ -13,7 +13,7 @@ import {
   PROBE_ROUTE_MS,
   PROBE_STORE_MS,
   probeSteps,
-  stillCheck,
+  stillActivationProbe,
 } from "../mastodon/media-activation";
 import { rebuildMedia } from "../mastodon/media-rebuild";
 import { parseScheduledAt } from "../mastodon/statuses";
@@ -29,7 +29,7 @@ import { isProbeProfile, type MediaProcessorClient, PROBE_PROFILES } from "../pl
 import { readQueueBacklog } from "../platform/queue-backlog";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreResolver, StoreStub } from "../platform/store-client";
-import { type MaintenanceReason, StoreUnavailableError, toStoreUnavailable } from "../platform/store-errors";
+import { StoreUnavailableError, toStoreUnavailable } from "../platform/store-errors";
 import { storedAnnouncementText, storedEmojiCategory, withinDeliveryHostBound } from "../platform/stored-bounds";
 import { type AccessDeps, type AccessIdentity, verifyAccessClaims } from "../security/access-jwt";
 import { constantTimeEqual, randomToken } from "../security/tokens";
@@ -622,16 +622,15 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
 
   // ---- media processor (src/media-processor.ts)
 
-  // A probe of one execution profile. normalize@standard-4's is its activation probe (mastodon/media-activation.ts
-  // activationProbe): one claim shared with the probe round, the packaged clip copied to incoming/probe-<nonce> and run
-  // through the container, the verifier and Images, and the verdict recorded for this build. still@standard-1's is a
-  // check (stillCheck) that records nothing: the media rebuild records that profile's probe, under its lease. Both
-  // start a container and write R2, so maintenance and a read-only Store refuse them (503) before anything starts. The
-  // request has one deadline, PROBE_ROUTE_MS from its arrival (the middleware above), which every step ends by
-  // (probeSteps): its credential check, its body, the still check's health, and each step of the probe or check, Images
-  // included; a credential check, body or health that does not answer by its step answers 504. Work it does not wait
-  // for (a late copy's delete, and the probe's work with its copy's delete once the copy is put) is kept alive by
-  // waitUntil.
+  // A probe of one execution profile, its activation probe (mastodon/media-activation.ts activationProbe for
+  // normalize@standard-4, stillActivationProbe for still@standard-1): one claim shared with the probe round and the
+  // media rebuild, the packaged clip copied to incoming/probe-<nonce> and run through the container, the verifier and
+  // Images, and the verdict recorded for this build. Both start a container and write R2, so maintenance and a
+  // read-only Store refuse them (503: the claim is a write) before anything starts. The request has one deadline,
+  // PROBE_ROUTE_MS from its arrival (the middleware above), which every step ends by (probeSteps): its credential
+  // check, its body, and each step of the probe, Images included; a credential check or body that does not answer by
+  // its step answers 504. Work it does not wait for (a late copy's delete, and the probe's work with its copy's delete
+  // once the copy is put) is kept alive by waitUntil.
   admin.post("/media-processor/probe", async (c) => {
     const end = c.get("probeEnd");
     const retain = (work: Promise<unknown>) => c.executionCtx.waitUntil(work.catch(() => {}));
@@ -658,33 +657,12 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
         409,
       );
     }
-    if (profile === "normalize@standard-4") {
-      const probed = await activationProbe(
-        { build: build(c.env), store: stub(c), bucket: c.env.MEDIA, processor: processor.uploads, now, end, retain },
-        false,
-      );
-      return c.json({ probe: probed });
-    }
-    const health = await step(() => stub(c).health(build(c.env)), PROBE_STORE_MS);
-    if (health === OVER) {
-      return c.json({ error: "the Store did not answer in time", code: "probe-timeout" }, 504);
-    }
-    if (health.readonly) {
-      throw new StoreUnavailableError(readonlyReason(health));
-    }
-    return c.json({
-      probe: {
-        status: "checked",
-        verdict: await stillCheck({
-          bucket: c.env.MEDIA,
-          stills: processor.stills,
-          images: images(c.env),
-          now,
-          end,
-          retain,
-        }),
-      },
-    });
+    const deps = { build: build(c.env), store: stub(c), bucket: c.env.MEDIA, now, end, retain };
+    const probed =
+      profile === "normalize@standard-4"
+        ? await activationProbe({ ...deps, processor: processor.uploads }, false)
+        : await stillActivationProbe({ ...deps, stills: processor.stills, images: images(c.env) }, false);
+    return c.json({ probe: probed });
   });
 
   // ---- local emoji administration (domain/local-emojis.ts; AUTH-5, MEDIA-5)
@@ -1196,15 +1174,4 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
 
 export function isAdminPath(path: string): boolean {
   return path === ADMIN_PREFIX || path.startsWith(`${ADMIN_PREFIX}/`);
-}
-
-// Why a read-only Store refuses a write, from its health: maintenance, a dump's freeze, an import, or an upgrade.
-function readonlyReason(health: Awaited<ReturnType<StoreStub["health"]>>): MaintenanceReason {
-  if (health.maintenance) {
-    return "maintenance";
-  }
-  if (health.dump !== null) {
-    return "dump-in-progress";
-  }
-  return health.import !== null ? "import-in-progress" : "upgrade-in-progress";
 }

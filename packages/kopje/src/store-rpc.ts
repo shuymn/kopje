@@ -225,7 +225,6 @@ export const STORE_RPC = {
   // (federation/remote-media.ts), each at the Store's own time, so every safety window (LATE_PUT_MS after a claim)
   // is measured from a Store-recorded time. The maintenance is the Store's own method (it reads the restore marker).
   confirmRemoteMediaDeleted: remoteMedia.confirmRemoteMediaDeleted,
-  recordRemoteMediaValidation: remoteMedia.recordRemoteMediaValidation,
   remoteMediaOrphans: remoteMedia.remoteMediaOrphans,
   remoteMediaSwept: remoteMedia.remoteMediaSwept,
   claimRemoteMedia: remoteMedia.claimRemoteMedia,

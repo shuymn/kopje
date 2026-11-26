@@ -557,7 +557,20 @@ describe("maintenance (maintainRemoteMedia)", () => {
       { token: a!.token, keys: [`remote/${a!.token}/full`, `remote/${a!.token}/still`] },
     ]);
     // Its still is missing: the object is doomed and the slot reset to pending.
-    await w.op(recordRemoteMediaValidation, { results: [{ token: a!.token, missing: true }], now: w.clock.now });
+    await w.op(recordRemoteMediaValidation, {
+      restore: restoredAt,
+      restoredAt,
+      results: [
+        {
+          token: a!.token,
+          heads: [
+            { variant: "full", head: "present" },
+            { variant: "still", head: "missing" },
+          ],
+        },
+      ],
+      now: w.clock.now,
+    });
     expect((await w.slots()).find((s) => String(s.id) === a!.slot)).toMatchObject({ token: null, due_at: w.clock.now });
     const second = await maintain(w, restoredAt);
     expect(second.validation).toEqual([]);
@@ -580,7 +593,13 @@ describe("maintenance (maintainRemoteMedia)", () => {
     const first = w.clock.now + 1;
     w.clock.now = first + REMOTE_SETTLE_MS;
     expect((await maintain(w, first)).validation.map((v) => v.token)).toEqual(tokens);
-    await w.op(recordRemoteMediaValidation, { results: [{ token: tokens[0]!, missing: false }], now: w.clock.now });
+    const present = (token: string) => ({ token, heads: [{ variant: "full", head: "present" as const }] });
+    await w.op(recordRemoteMediaValidation, {
+      restore: first,
+      restoredAt: first,
+      results: [present(tokens[0]!)],
+      now: w.clock.now,
+    });
     // A bookmark taken here holds the walk's progress past the first object.
     const names = ["remote_media_validation", "remote_media_validated_at"];
     const state = () =>
@@ -591,7 +610,9 @@ describe("maintenance (maintainRemoteMedia)", () => {
       );
     const bookmark = await state();
     await w.op(recordRemoteMediaValidation, {
-      results: tokens.slice(1).map((token) => ({ token, missing: false })),
+      restore: first,
+      restoredAt: first,
+      results: tokens.slice(1).map(present),
       now: w.clock.now,
     });
     expect((await maintain(w, first)).validation).toEqual([]);

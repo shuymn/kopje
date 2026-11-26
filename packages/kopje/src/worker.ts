@@ -9,9 +9,11 @@ import {
   scheduledLinkCards,
   scheduledMedia,
   scheduledRemoteMedia,
+  scheduledRemoteStills,
 } from "./jobs/scheduled";
 import { processorClient } from "./media-processor";
 import { errorFields } from "./platform/error-message";
+import { imagesCodec } from "./platform/images";
 import { defaultStore } from "./platform/store-client";
 import { generateRsaKeyPair } from "./security/key-wrap";
 import { buildOf } from "./version";
@@ -35,8 +37,9 @@ export default {
   queue: (batch, env) => handleQueue(batch, env, { ...inboxDeps, delivery }),
   // Every 5 minutes: a field link round (one account's profile links checked), a link card round (a few statuses' cards
   // fetched), a card image round (a few card images fetched and re-encoded), a remote media round (the cache of remote
-  // avatars and headers maintained and a few files fetched), the delivery sweep and doorbell, the media sweep and
-  // reconciliation, the media processor's dispatch, probe and incoming/ orphan rounds, a round of inbound jobs (purges, Moves), the daily backup when it is due or running, and a turn of
+  // avatars and headers maintained and a few files fetched), a remote stills round (at most one still of a cached remote
+  // video), the delivery sweep and doorbell, the media sweep and reconciliation, the media processor's dispatch, probe
+  // and incoming/ orphan rounds, a round of inbound jobs (purges, Moves), the daily backup when it is due or running, and a turn of
   // the streaming API (which closes the sockets of expired tokens). Each is a no-op in maintenance, by design, and each
   // runs on its own.
   scheduled: (_controller, env, ctx) => {
@@ -45,10 +48,20 @@ export default {
     ctx.waitUntil(scheduledCardImages(env, inboxDeps));
     ctx.waitUntil(scheduledRemoteMedia(env, inboxDeps));
     ctx.waitUntil(
+      scheduledRemoteStills(env, {
+        build: buildOf,
+        store: defaultStore,
+        stills: (e) => processorClient(e, buildOf(e))?.stills ?? null,
+        images: (e) => imagesCodec(e.IMAGES),
+        now,
+      }),
+    );
+    ctx.waitUntil(
       scheduledMedia(env, {
         build: buildOf,
         store: defaultStore,
-        processor: (e) => processorClient(e, buildOf(e))?.uploads ?? null,
+        processor: (e) => processorClient(e, buildOf(e)),
+        images: (e) => imagesCodec(e.IMAGES),
       }),
     );
     ctx.waitUntil(

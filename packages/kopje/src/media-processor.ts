@@ -23,10 +23,10 @@
 //
 // probeNormalize is the activation probe of normalize@standard-4 (mastodon/media-activation.ts probeWork) on a copy of
 // the packaged clip. stillNow runs /still on standard-1 for the media rebuild (design 4.16, mastodon/media-rebuild-av.ts)
-// and the still check of `kopje-admin media-processor probe`: its one input key is read from the media bucket once and
-// streamed as the request body, and the PNG comes back to the caller, which checks it. On a probe object it is the
-// still@standard-1 probe and follows the same single-owner rule as probeNormalize; on a fresh object (rb:<nonce>) it is
-// one rebuild still. Both answer only once the container is destroyed, and a still
+// the remote stills' round (jobs/remote-stills.ts) and the still@standard-1 probe: its one input key is read from the
+// media bucket once and streamed as the request body, and the PNG comes back to the caller, which checks it. On a probe
+// object it is the still@standard-1 probe and follows the same single-owner rule as probeNormalize; on a fresh object
+// it is one rebuild still (rb:<nonce>) or one remote still (s:<token>:<attempt>). Both answer only once the container is destroyed, and a still
 // only by its deadline: its destroy ends STILL_CLEANUP_MS before it, the removal of the object's storage and alarm is
 // awaited until it, and one that has not finished by then is left to the alarm, which repeats it until it is done.
 import { DurableObject } from "cloudflare:workers";
@@ -41,7 +41,7 @@ import { readBoundedBody } from "./platform/body";
 import { accountMonthlyTransforms, envInMaintenance, readConfig } from "./platform/config";
 import { errorFields } from "./platform/error-message";
 import { type ImageCodec, imagesCodec } from "./platform/images";
-import { incomingKey } from "./platform/media-files";
+import { incomingKey, remoteFileKey } from "./platform/media-files";
 import {
   type BuildEvidence,
   type MediaProcessorClient,
@@ -421,6 +421,9 @@ async function startReady(
 // key streamed into /still with its length, the PNG read back, and destroy. Everything ends at one absolute `deadline`:
 // the operation by STILL_TEARDOWN_MS before it (a read of the key that answers later has its body cancelled and nothing
 // is sent to the container), the destroy by the deadline itself, and an answer whose teardown ended past it is not ok.
+// The operation's cut is `input-deadline` while the input has not drained into the request body (the read late, or its
+// body stalled), `operation-deadline` once it has (the container's work): a remote still retries the first and parks
+// the second (jobs/remote-stills.ts).
 // It never throws; the destroy is attempted whatever happened before it, and one that did not finish is `pending`.
 async function runStill(
   container: Container,
@@ -453,6 +456,9 @@ async function runStill(
     }
     image = ready.running ?? image;
     const aborted = new AbortController();
+    // Whether the input's source drained into the request body: the cut is labelled by it (input-deadline before,
+    // operation-deadline after), never by whether the read of the key answered.
+    let drained = false;
     const run = async () => {
       const object = await bucket.get(key);
       if (object === null) {
@@ -461,11 +467,18 @@ async function runStill(
       // Answered at or past the operation's end: the call has given up, so the container is not given the input.
       if (aborted.signal.aborted || deps.now() >= operationEnd) {
         await object.body.cancel();
-        throw new ProbeFailure("operation-deadline");
+        throw new ProbeFailure("input-deadline");
       }
+      const source = object.body.pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          flush: () => {
+            drained = true;
+          },
+        }),
+      );
       const response = await ready.port.fetch("http://container/still", {
         method: "POST",
-        body: object.body.pipeThrough(new FixedLengthStream(object.size)),
+        body: source.pipeThrough(new FixedLengthStream(object.size)),
         headers: { "content-type": "application/octet-stream", "content-length": String(object.size) },
         signal: aborted.signal,
       });
@@ -473,7 +486,7 @@ async function runStill(
     };
     const png = await before(run(), operationEnd, deps, aborted);
     if (png === TIMED_OUT) {
-      throw new ProbeFailure("operation-deadline");
+      throw new ProbeFailure(drained ? "operation-deadline" : "input-deadline");
     }
     result = { ok: true, png, image };
   } catch (error) {
@@ -1027,6 +1040,7 @@ export function processorClient(env: Env, build: string) {
   return {
     stills: {
       still: (key, ms) => still(`rb:${crypto.randomUUID()}`, key, ms),
+      remote: (token, attempt, ms) => still(`s:${token}:${attempt}`, remoteFileKey(token, "full"), ms),
       probe: (key, ms) => still(`p:${build}:${STILL_PROFILE}`, key, ms),
       probeInput: decodeFixture(),
     },

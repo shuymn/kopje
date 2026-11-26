@@ -1,4 +1,4 @@
-import { NORMALIZE_PROFILE, probeImageTag } from "../domain/media-probes";
+import { NORMALIZE_PROFILE, probeImageTag, type ProbeProfile, STILL_PROFILE } from "../domain/media-probes";
 import { type AvType, type AvVerdict, avVerifier, verifyStill } from "../platform/av-bytes";
 import { DeadlinePassed, within } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
@@ -351,59 +351,92 @@ export type ProbeRun =
   // as this request knows, and a record that commits late still does so only under its claim's fence.
   | { status: "unconfirmed"; verdict: ProbeVerdict | null };
 
+type ProbeDeps = {
+  build: string;
+  store: ProbeStore;
+  bucket: Pick<R2Bucket, "put" | "delete">;
+  wait?: Wait;
+  now?: () => number;
+  end?: number;
+  // Keeps work the request does not wait for alive past its response (waitUntil).
+  retain?: (work: Promise<unknown>) => void;
+};
+
 // One activation probe of normalize@standard-4 for `build`: one claim (shared by the CLI and the round; `due` for the
 // round), the clip copied to incoming/probe-<nonce>, the probe on the profile's object, the copy deleted, and the
 // verdict recorded under the claim, each step ending by `end` (probeSteps; PROBE_ROUTE_MS from now when not given). A
 // probe that throws reaches no verdict; a copy a dead Worker left is the orphan pass's.
-export async function activationProbe(
-  deps: {
-    build: string;
-    store: ProbeStore;
-    bucket: Pick<R2Bucket, "put" | "delete">;
-    processor: UploadProcessor;
-    wait?: Wait;
-    now?: () => number;
-    end?: number;
-    // Keeps work the request does not wait for alive past its response (waitUntil).
-    retain?: (work: Promise<unknown>) => void;
-  },
+export function activationProbe(deps: ProbeDeps & { processor: UploadProcessor }, due: boolean): Promise<ProbeRun> {
+  return claimedProbe(deps, NORMALIZE_PROFILE, due, (step, retain) => {
+    const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
+    // The probe and the copy's delete after it, kept alive by `retain` too: a client that goes before the teardown
+    // leaves the delete running (within waitUntil's grace).
+    const probed = (async (): Promise<ProbeVerdict & { image?: string | null }> => {
+      try {
+        if (!(await putCopy(step, deps.bucket, key, deps.processor.probeInput, retain))) {
+          return { outcome: "no-verdict", reason: "copy" };
+        }
+        const answered = await step(() => deps.processor.probeNormalize(key), PROBE_CALL_MS);
+        return answered === OVER ? { outcome: "no-verdict", reason: "timeout" } : answered;
+      } catch (error) {
+        console.warn({ event: "kopje.media.probe.failed", ...errorFields(error) });
+        return { outcome: "no-verdict", reason: "unavailable" };
+      } finally {
+        await dropCopy(step, deps.bucket, key);
+      }
+    })();
+    retain(probed);
+    return probed;
+  });
+}
+
+// One activation probe of still@standard-1 for `build`, as activationProbe's: the same claim (`due` for the round), the
+// still check (stillCheck: the clip's copy, a still on the profile's object, verifyStill and Images) and its verdict
+// recorded under the claim, so the probe round, the CLI and the media rebuild share one attempt, cooldown and
+// classifier (media-probes.ts claimProbeIn). Its pass for the running build is what admits remote stills.
+export function stillActivationProbe(
+  deps: ProbeDeps & { stills: StillMaker; images: ImageCodec },
   due: boolean,
+): Promise<ProbeRun> {
+  const now = deps.now ?? Date.now;
+  return claimedProbe(deps, STILL_PROFILE, due, (_step, retain) =>
+    stillCheck({
+      bucket: deps.bucket,
+      stills: deps.stills,
+      images: deps.images,
+      now,
+      retain,
+      ...(deps.wait === undefined ? {} : { wait: deps.wait }),
+      ...(deps.end === undefined ? {} : { end: deps.end }),
+    }),
+  );
+}
+
+// The claim of `profile`, the probe `run` under it, and its verdict recorded under the claim; a probe the object refused
+// before it started (NOT_STARTED) records nothing.
+async function claimedProbe(
+  deps: ProbeDeps,
+  profile: ProbeProfile,
+  due: boolean,
+  run: (step: Step, retain: (work: Promise<unknown>) => void) => Promise<ProbeVerdict & { image?: string | null }>,
 ): Promise<ProbeRun> {
   const now = deps.now ?? Date.now;
   const retain = deps.retain ?? (() => {});
   const step = probeSteps(deps.end ?? now() + PROBE_ROUTE_MS, now, deps.wait, retain);
   const claim = await step(
-    () => deps.store.claimMediaProbe(deps.build, { profile: NORMALIZE_PROFILE, build: deps.build, due }),
+    () => deps.store.claimMediaProbe(deps.build, { profile, build: deps.build, due }),
     PROBE_STORE_MS,
   );
   if (claim === OVER) {
-    console.warn({ event: "kopje.media.probe.unconfirmed", step: "claim" });
+    console.warn({ event: "kopje.media.probe.unconfirmed", step: "claim", profile });
     return { status: "unconfirmed", verdict: null };
   }
   if (claim.status !== "claimed") {
     return claim;
   }
-  const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
-  // The probe and the copy's delete after it, kept alive by `retain` too: a client that goes before the teardown
-  // leaves the delete running (within waitUntil's grace).
-  const probed = (async (): Promise<ProbeVerdict & { image?: string | null }> => {
-    try {
-      if (!(await putCopy(step, deps.bucket, key, deps.processor.probeInput, retain))) {
-        return { outcome: "no-verdict", reason: "copy" };
-      }
-      const answered = await step(() => deps.processor.probeNormalize(key), PROBE_CALL_MS);
-      return answered === OVER ? { outcome: "no-verdict", reason: "timeout" } : answered;
-    } catch (error) {
-      console.warn({ event: "kopje.media.probe.failed", ...errorFields(error) });
-      return { outcome: "no-verdict", reason: "unavailable" };
-    } finally {
-      await dropCopy(step, deps.bucket, key);
-    }
-  })();
-  retain(probed);
-  const { image = null, ...result } = await probed;
+  const { image = null, ...result } = await run(step, retain);
   if (result.outcome !== "pass") {
-    console.warn({ event: "kopje.media.probe.verdict", outcome: result.outcome, reason: result.reason });
+    console.warn({ event: "kopje.media.probe.verdict", profile, outcome: result.outcome, reason: result.reason });
   }
   if (result.outcome === "no-verdict" && NOT_STARTED.has(result.reason)) {
     return { status: "not_started", verdict: result };
@@ -411,7 +444,7 @@ export async function activationProbe(
   const recorded = await step(
     () =>
       deps.store.recordMediaProbeResult(deps.build, {
-        profile: NORMALIZE_PROFILE,
+        profile,
         claim: claim.claim,
         outcome: result.outcome,
         imagesVerified: result.outcome === "pass" && result.imagesVerified,
@@ -420,7 +453,7 @@ export async function activationProbe(
     PROBE_STORE_MS,
   );
   if (recorded === OVER) {
-    console.warn({ event: "kopje.media.probe.unconfirmed", step: "record" });
+    console.warn({ event: "kopje.media.probe.unconfirmed", step: "record", profile });
     return { status: "unconfirmed", verdict: result };
   }
   return recorded.status === "recorded"
@@ -433,10 +466,10 @@ export async function activationProbe(
 // The most the check gives its still: the rebuild's still stage (STILL_CALL_MS in media-processor.ts).
 const STILL_CHECK_MS = 75_000;
 
-// The still profile's check on request: the packaged clip copied to incoming/probe-<nonce>, a still of it on the
-// profile's object (stills.probe), verifyStill, and Images (stillEncodes); the copy deleted, each step ending by `end`
-// (probeSteps). It records nothing: the media rebuild is the profile's one recording prober for now, through the claim
-// the generic probe shares (media-probes.ts claimProbeIn). As the activation probe, `fail` only on evidence of the build: the container's answers showing it does not
+// The still profile's check: the packaged clip copied to incoming/probe-<nonce>, a still of it on the profile's object
+// (stills.probe), verifyStill, and Images (stillEncodes); the copy deleted, each step ending by `end` (probeSteps). It
+// records nothing itself: stillActivationProbe records its verdict under the profile's claim. As the activation probe,
+// `fail` only on evidence of the build: the container's answers showing it does not
 // speak the protocol (StillOutcome `evidence`: its /healthz, a 404 on /still or a 405, a 200 breaking the reply),
 // verifyStill refusing the PNG, or Images refusing it as input; `pass` with imagesVerified false when Images answered
 // 9422; `no-verdict` for anything else (the container's refusal of the clip, every other code, and Images' own output

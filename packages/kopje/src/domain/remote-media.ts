@@ -33,6 +33,7 @@ import {
   mediaCategorySql,
   remoteMediaCategory,
   SAFE_INTEGER_MAX,
+  STILL_ATTEMPT,
   statusMediaWindowSql,
   storedBlurhash,
   storedLinkDomain,
@@ -193,11 +194,7 @@ function addUsage(db: Db, change: { bytes?: number; doomed?: number; pending?: n
 // A change of the object `token`'s charge (bytes, doomed) in the usage row. While an audit pass runs, a change of an
 // object it has already counted (token at or before its cursor) is added to the pass's sums too, so a write between
 // its chunks reports no drift.
-export function chargeObject(
-  db: Db,
-  token: string,
-  change: { bytes?: number; doomed?: number; pending?: number },
-): void {
+function chargeObject(db: Db, token: string, change: { bytes?: number; doomed?: number; pending?: number }): void {
   addUsage(db, change);
   const saved = json<Audit>(db, STATE.audit);
   if (typeof saved.cursor === "string" && saved.cursor !== "" && token <= saved.cursor) {
@@ -991,6 +988,46 @@ export const recordRemoteMedia = writeOperation.atStoreTime("now")<
 
 // ---- Remote video stills: the parts the cache's own transitions apply (the operations: remote-media-stills.ts)
 
+// One charge move of the still of the stored object `token`: the ledger row and usage (chargeObject) by `delta`, never
+// on an object that is not stored (its whole charge is subtracted by its deletion's confirmation).
+export function chargeStill(db: Db, token: string, delta: number): void {
+  if (delta === 0) {
+    return;
+  }
+  db.run("UPDATE remote_media_objects SET charge = charge + ?2 WHERE token = ?1 AND state = 'stored'", token, delta);
+  chargeObject(db, token, { bytes: delta });
+}
+
+// The still-only reset after a restore (design 4.8; validation's answer for a named still that is missing, or unknown
+// VALIDATION_FAILURES times): fenced on the object stored and its row stored with the attempt the batch named. The slot
+// names no still, the still's charge is released, and the row is queued again, due now, its claims back to 0 (a restore
+// is the operator's, and each claim costs a unit). The video stays cached and playable; a key that survives becomes one
+// no row names, which the sweep deletes. False, and nothing changed, when the fence does not hold.
+function resetNamedStill(db: Db, token: string, attempt: string, now: number): boolean {
+  const row = db.first<{ still_charge: number }>(
+    `SELECT st.still_charge FROM remote_media_stills st CROSS JOIN remote_media_objects o ON o.token = st.token
+			WHERE st.token = ?1 AND st.state = 'stored' AND st.attempt = ?2 AND o.state = 'stored'`,
+    token,
+    attempt,
+  );
+  if (row === undefined) {
+    return false;
+  }
+  db.run(
+    `UPDATE remote_media SET still_ext = NULL, still_key = NULL, still_blurhash = NULL
+			WHERE id = (SELECT slot_id FROM remote_media_objects WHERE token = ?1)`,
+    token,
+  );
+  chargeStill(db, token, -row.still_charge);
+  db.run(
+    `UPDATE remote_media_stills SET state = 'queued', due_at = ?2, claims = 0, claimed_at = NULL, attempt = NULL,
+			outcome = NULL, still_charge = 0 WHERE token = ?1`,
+    token,
+    now,
+  );
+  return true;
+}
+
 // What turns remote stills on, as the caller passes it (#1828 PR5): the media processor bound, the month's stills budget
 // (MEDIA_STILL_MONTHLY_JOBS) and the running build, whose `still@standard-1` probe must have passed.
 export type StillsActivation = { binding: boolean; budget: number; build: string };
@@ -1076,8 +1113,10 @@ export type RemoteMediaMaintenance = {
   // Doomed objects due, their keys (at most DELETE_BATCH, two keys each).
   // The doomed objects due, in at most two groups the Worker deletes with one R2 call each (dueDeletions).
   deletions: RemoteMediaDeletion[][];
-  // PITR validation: the stored objects whose variants to head, at most VALIDATION_HEADS keys.
+  // PITR validation: the stored objects whose variants to head, at most VALIDATION_HEADS keys, and the restore the
+  // batch validates, which its result names (recordRemoteMediaValidation); null with no batch.
   validation: RemoteMediaDeletion[];
+  validationRestore: number | null;
   // The orphan sweep's list cursor when a sweep is due ('' from the start), else null.
   sweep: string | null;
   counts: {
@@ -1538,7 +1577,8 @@ function audit(db: Db): RemoteMediaUsage | null {
 
 // PITR validation after a settled restore newer than the last validation: the restored reservations (claimed before
 // the restore) doomed, due at once (the settle period outlasts any put of theirs), then the stored objects from a
-// cursor by token whose variants are headed, at most VALIDATION_HEADS keys (an object with a still counts two).
+// cursor by token whose variants are headed, at most VALIDATION_HEADS keys (an object counts one a variant: `full`, the
+// legacy `still` of an animated image, the named still of a video whose still row is stored).
 // The validation walk's progress: the restore it validates and the last token recorded (JSON in kopje_state).
 function validationCursor(db: Db): {
   restore: number | null;
@@ -1568,15 +1608,21 @@ function validationBatch(db: Db, now: number, restoredAt: number): { batch: Remo
   if (progress.restore !== restoredAt) {
     setState(db, STATE.validation, JSON.stringify({ restore: restoredAt, cursor }));
   }
-  const rows = db.all<{ token: string; still: number }>(
-    `SELECT token, still_type IS NOT NULL AS still FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_VALIDATION_INDEX}
+  const rows = db.all<{ token: string; still: number; named: string | null }>(
+    `SELECT o.token, o.still_type IS NOT NULL AS still,
+			(SELECT st.attempt FROM remote_media_stills st WHERE st.token = o.token AND st.state = 'stored') AS named
+		FROM remote_media_objects o INDEXED BY ${REMOTE_OBJECTS_VALIDATION_INDEX}
 		WHERE state = 'stored' AND token > ?1 ORDER BY token LIMIT ${VALIDATION_HEADS}`,
     cursor,
   );
   const batch: RemoteMediaDeletion[] = [];
   let heads = 0;
   for (const row of rows) {
+    // `full`; the legacy `still` of an animated image; the named still of a video whose still is recorded.
     const keys = row.still === 1 ? keysOf(row.token) : [remoteFileKey(row.token, "full")];
+    if (row.named !== null && STILL_ATTEMPT.test(row.named)) {
+      keys.push(remoteFileKey(row.token, `s${row.named}`));
+    }
     if (heads + keys.length > VALIDATION_HEADS) {
       break;
     }
@@ -1601,6 +1647,7 @@ export const maintainRemoteMedia = writeOperation.atStoreTime("now")<
     status,
     deletions: [],
     validation: [],
+    validationRestore: null,
     sweep: null,
     counts,
     drift: null,
@@ -1648,6 +1695,7 @@ export const maintainRemoteMedia = writeOperation.atStoreTime("now")<
     status: "ready",
     deletions: dueDeletions(db, now),
     validation,
+    validationRestore: validation.length > 0 ? restoredAt : null,
     sweep: sweepDue ? sweepCursor : null,
     counts,
     drift,
@@ -1695,17 +1743,35 @@ export const confirmRemoteMediaDeleted = writeOperation.atStoreTime("now")<
   return { confirmed };
 });
 
-// PITR validation's heads, in token order: each object one of whose variants is missing is doomed (its surviving
-// variants go with it) and its slot reset to pending; the walk's cursor moves past the last one. A head that failed
-// (`failed`, the last result) is tried again from that object, and an object whose heads fail VALIDATION_FAILURES times
-// in a row is handled as missing, so it never holds the walk back: the cache is disposable, and the file is fetched
-// again. The pass ends when the maintenance finds no object past the cursor (remote_media_validated_at).
+// What the Worker saw of one variant of a validated object: present, missing (the head answered null), or unknown (the
+// head failed or did not answer in time).
+export type ValidationHead = "present" | "missing" | "unknown";
+
+export type ValidationResult = { token: string; heads: readonly { variant: string; head: ValidationHead }[] };
+
+// PITR validation's heads, in token order, from the batch of the restore `restore` (maintainRemoteMedia's
+// validationRestore). Nothing applies unless that restore is the walk's (validationCursor) and the marker's, read here
+// only once the walk's matches: a result of an earlier restore's batch delivered after a later restore rewound the walk
+// changes nothing. Per object, by its variants:
+//   - `full` or the legacy `still` (an animated image's) missing: the object is doomed (its surviving variants go with
+//     it) and its slot reset to pending;
+//   - either unknown (a failed head): tried again from that object, and handled as missing after VALIDATION_FAILURES
+//     in a row, so it never holds the walk back (the cache is disposable, and the file is fetched again);
+//   - otherwise the named still (s<attempt>, a video's recorded still): kept when present; missing, or unknown
+//     VALIDATION_FAILURES times in a row, the still-only reset (resetNamedStill), fenced on the attempt the batch named:
+//     the video stays cached and playable, and a still is made again. A still result never dooms `full`.
+// The walk's cursor moves past each object decided. The pass ends when the maintenance finds no object past the cursor
+// (remote_media_validated_at).
 export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
-  { results: readonly { token: string; missing: boolean; failed?: boolean }[]; now: number },
-  { reset: number }
->((db, { results, now }) => {
-  let reset = 0;
+  { restore: number; results: readonly ValidationResult[]; now: number; restoredAt: Marker },
+  { status: "recorded"; reset: number; stills: number } | { status: "stale" }
+>((db, { restore, results, now, restoredAt }) => {
   const progress = validationCursor(db);
+  if (!isTime(restore) || !isTime(now) || progress.restore !== restore || restoreTime(restoredAt) !== restore) {
+    return { status: "stale" };
+  }
+  let reset = 0;
+  let stills = 0;
   let last = progress.cursor;
   let failures = { token: progress.failedToken, count: progress.failures };
   const missing = (token: string) => {
@@ -1725,38 +1791,55 @@ export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
     }
     reset++;
   };
+  // Whether the failed head of `token` is the VALIDATION_FAILURES-th in a row (else the walk stops at it).
+  const failedOut = (token: string): boolean => {
+    const count = failures.token === token ? failures.count + 1 : 1;
+    failures = { token, count };
+    return count >= VALIDATION_FAILURES;
+  };
   for (const result of listOf(results).slice(0, VALIDATION_HEADS)) {
     const token = result?.token;
     if (typeof token !== "string" || !FILE_TOKEN.test(token) || token <= last) {
       continue;
     }
-    if (result.failed === true) {
-      const count = failures.token === token ? failures.count + 1 : 1;
-      if (count < VALIDATION_FAILURES) {
-        failures = { token, count };
+    const heads = new Map<string, ValidationHead>();
+    for (const entry of listOf(result.heads).slice(0, 3)) {
+      const head = entry?.head;
+      if (
+        typeof entry?.variant === "string" &&
+        REMOTE_VARIANT.test(entry.variant) &&
+        (head === "present" || head === "missing" || head === "unknown")
+      ) {
+        heads.set(entry.variant, head);
+      }
+    }
+    const full = heads.get("full") ?? "unknown";
+    const legacy = heads.get("still");
+    const named = [...heads].find(([variant]) => variant !== "full" && variant !== "still");
+    if (full === "missing" || legacy === "missing") {
+      missing(token);
+    } else if (full === "unknown" || legacy === "unknown") {
+      if (!failedOut(token)) {
         break;
       }
       missing(token);
-      // oxlint-disable-next-line typescript/no-unnecessary-boolean-literal-compare -- unchecked RPC input
-    } else if (result.missing === true) {
-      missing(token);
+    } else if (named !== undefined && named[1] !== "present") {
+      if (named[1] === "unknown" && !failedOut(token)) {
+        break;
+      }
+      if (resetNamedStill(db, token, named[0].slice(1), now)) {
+        stills++;
+      }
     }
     last = token;
     failures = { token: null, count: 0 };
   }
-  if (progress.restore !== null) {
-    setState(
-      db,
-      STATE.validation,
-      JSON.stringify({
-        restore: progress.restore,
-        cursor: last,
-        failedToken: failures.token,
-        failures: failures.count,
-      }),
-    );
-  }
-  return { reset };
+  setState(
+    db,
+    STATE.validation,
+    JSON.stringify({ restore, cursor: last, failedToken: failures.token, failures: failures.count }),
+  );
+  return { status: "recorded", reset, stills };
 });
 
 // The orphan sweep's page (one R2 list of remote/, at most 1,000 keys, at most once an hour): the keys uploaded more

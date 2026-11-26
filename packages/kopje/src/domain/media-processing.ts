@@ -25,10 +25,11 @@ import {
   setUp,
   uploadJobFits,
   ownerUri,
+  stillJobsSpent,
   uploadJobsSpent,
   WRITE_WINDOW_MS,
 } from "./media";
-import { NORMALIZE_PROFILE, probePassed, probeState, type ProbeState } from "./media-probes";
+import { NORMALIZE_PROFILE, probePassed, probeState, type ProbeState, STILL_PROFILE } from "./media-probes";
 import { mediaDeleteOperation, readOperation, writeOperation } from "./operation";
 import { isPlayable, type MediaAttachment, type MediaRow, presentMedia, processingMedia } from "./status-presenter";
 import { MEDIA_COLUMN_MAP } from "./status-rows";
@@ -474,6 +475,8 @@ export type AvActivation = {
   // The slots that count now, at most MAX_AV_INFLIGHT + 1.
   slots: number;
   probe: ProbeState;
+  // Remote stills (#1828 PR5): the stills units spent in the Store's month, and still@standard-1's probe.
+  stills: { spent: number; probe: ProbeState };
 };
 
 // Activation as the Store reads it at its own time (health, the instance endpoints; S1, S3 and reserveMedia read the
@@ -486,6 +489,7 @@ export const avActivation = readOperation.atStoreTime("now")<ActivationInput & {
     spent: uploadJobsSpent(db, now),
     slots: countingSlots(db, now),
     probe: probeState(db, NORMALIZE_PROFILE, now),
+    stills: { spent: stillJobsSpent(db, now), probe: probeState(db, STILL_PROFILE, now) },
   }),
 );
 

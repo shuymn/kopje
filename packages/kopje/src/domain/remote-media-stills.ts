@@ -8,7 +8,7 @@ import { readState, state, writeState } from "./kopje-state";
 import { chargeJob, jobFits } from "./media";
 import { writeOperation } from "./operation";
 import {
-  chargeObject,
+  chargeStill,
   DEFER_MS,
   LANE1_HEADROOM,
   LATE_PUT_MS,
@@ -115,15 +115,6 @@ function slotRowHolds(db: Db, slot: number, token: string): boolean {
 
 function objectState(db: Db, token: string): string | undefined {
   return db.first<{ state: string }>("SELECT state FROM remote_media_objects WHERE token = ?1", token)?.state;
-}
-
-// One charge move of the still of the stored object `token`: the ledger row and usage (chargeObject) by `delta`.
-function chargeStill(db: Db, token: string, delta: number): void {
-  if (delta === 0) {
-    return;
-  }
-  db.run("UPDATE remote_media_objects SET charge = charge + ?2 WHERE token = ?1 AND state = 'stored'", token, delta);
-  chargeObject(db, token, { bytes: delta });
 }
 
 // Whether the claim `claimedAt` follows the last restore (the marker read here: an attempt from before a restore may

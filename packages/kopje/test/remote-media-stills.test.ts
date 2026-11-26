@@ -1209,7 +1209,12 @@ describe("slot writers clear a named still (P21b)", () => {
     const started = await w.op(maintainRemoteMedia, { now: w.clock.now, restoredAt, cap: CAP, retentionDays: 0 });
     expect(started.validation.map((b) => b.token)).toContain(v.token);
     const { recordRemoteMediaValidation } = await import("../src/domain/remote-media");
-    await w.op(recordRemoteMediaValidation, { results: [{ token: v.token, missing: true }], now: w.clock.now });
+    await w.op(recordRemoteMediaValidation, {
+      restore: restoredAt,
+      restoredAt,
+      results: [{ token: v.token, heads: [{ variant: "full", head: "missing" }] }],
+      now: w.clock.now,
+    });
     expect(await slotOf(w, v.slot)).toEqual({ token: null, still_ext: null, still_key: null, still_blurhash: null });
   });
 });
@@ -1290,7 +1295,7 @@ describe("presentation (P21a, P21c)", () => {
   });
 });
 
-describe("PR5-1 leaves remote stills unreachable (P18c, P-PITR1)", () => {
+describe("the real round without the processor's binding (P18c, P-PITR1)", () => {
   // A remote video the real round caches, with a `still@standard-1` pass recorded through the generic probe claim.
   async function cachedVideo(w: MediaWorld) {
     const claimed = await w.t.store.claimMediaProbe(BUILD, { profile: "still@standard-1", build: BUILD, due: false });
@@ -1314,13 +1319,13 @@ describe("PR5-1 leaves remote stills unreachable (P18c, P-PITR1)", () => {
     return { media, token: object!.token };
   }
 
-  it("queues no still from the real round, with a pass and stills otherwise possible", async () => {
+  it("queues no still from the real round without the binding, with a pass for the build", async () => {
     const w = await mediaWorld();
     await cachedVideo(w);
     expect(await stillRows(w)).toEqual([]);
   });
 
-  it("validates a restored full-only video as main does: it stays cached and served", async () => {
+  it("validates a restored video without a named still by its `full` alone: it stays cached and served", async () => {
     const w = await mediaWorld();
     const { token: t } = await cachedVideo(w);
     const restoredAt = w.clock.now;

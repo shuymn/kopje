@@ -1,4 +1,4 @@
-import { failedSince } from "../domain/media-probes";
+import { failedSince, type ProbeProfile, type ProbeState } from "../domain/media-probes";
 import type { AvActivation } from "../domain/media-processing";
 import type { BackupConfigResult } from "../platform/backup-config";
 import type { BackupState } from "../platform/backup-state";
@@ -71,15 +71,19 @@ export async function healthReport(
   return { ok: Object.values(checks).every((check) => check.ok), build, checks };
 }
 
-// The media processor's state for video and audio uploads (#1828 design 4.15; docs/media-processor.md), read from the
-// Store's activation (avActivation) and never starting a container:
-//   disabled     no binding, or MEDIA_UPLOAD_MONTHLY_JOBS 0 (`reason` says which)
-//   provisioned  the binding and a budget, and no verdict for this build yet: `lastProbe` "unavailable" when a probe was
-//                attempted for it and reached none, "never" when none was
-//   ready        a pass for this build: uploads are admitted; `imagesVerified` false when its Images step answered 9422,
-//                and `infrastructureFailure` when an upload met one since (a re-probe is due; admission stands)
-//   degraded     a failed probe for this build: uploads are refused
-// with the month's spent units, the budget, and the slots counting now. Only `degraded` is not ok.
+// The media processor's state (#1828 design 4.15; docs/media-processor.md), read from the Store's activation
+// (avActivation) and never starting a container, over the profiles the positive budgets need: normalize@standard-4 for
+// MEDIA_UPLOAD_MONTHLY_JOBS, still@standard-1 for MEDIA_STILL_MONTHLY_JOBS (remote stills). Each needed profile is
+//   provisioned  no verdict for this build yet: `lastProbe` "unavailable" when a probe was attempted for it and reached
+//                none, "never" when none was
+//   ready        a pass for this build: its kind is admitted; `imagesVerified` false when its Images step answered
+//                9422, and `infrastructureFailure` when a job met one since (a re-probe is due; admission stands)
+//   degraded     a failed probe for this build: its kind is refused
+// and the check's state is the worst of them (degraded, then provisioned, then ready), its qualifiers those of any
+// needed profile, with each profile's own under `profiles`. `disabled` when no budget is positive (`reason` "budget"),
+// or when one is and the binding is not ("binding", for either budget: a departure from design 4.15's degraded that
+// the documents state). With the uploads' month's spent units, budget and counting slots, and the stills' spent units
+// and budget. Only `degraded` is not ok.
 async function mediaProcessorCheck(
   build: string,
   config: Config,
@@ -87,6 +91,7 @@ async function mediaProcessorCheck(
   store: () => HealthStore,
 ): Promise<Check> {
   const budget = config.MEDIA_UPLOAD_MONTHLY_JOBS;
+  const stillsBudget = config.MEDIA_STILL_MONTHLY_JOBS;
   const read = store().avActivation;
   if (read === undefined) {
     return { ok: true, state: "disabled", reason: "unread" };
@@ -97,25 +102,61 @@ async function mediaProcessorCheck(
   } catch (error) {
     return { ok: false, state: "unknown", error: errorMessage(error) };
   }
-  const usage = { spent: activation.spent, budget, slots: activation.slots };
-  if (!binding || budget <= 0) {
+  const usage = {
+    spent: activation.spent,
+    budget,
+    slots: activation.slots,
+    stills: { spent: activation.stills.spent, budget: stillsBudget },
+  };
+  if (!binding || (budget <= 0 && stillsBudget <= 0)) {
     return { ok: true, state: "disabled", reason: binding ? "budget" : "binding", ...usage };
   }
-  const { record, attempt, failure } = activation.probe;
+  const needed: [ProbeProfile, ProbeState][] = [];
+  if (budget > 0) {
+    needed.push(["normalize@standard-4", activation.probe]);
+  }
+  if (stillsBudget > 0) {
+    needed.push(["still@standard-1", activation.stills.probe]);
+  }
+  const profiles = Object.fromEntries(needed.map(([profile, probe]) => [profile, profileState(build, probe)]));
+  const states = Object.values(profiles);
+  const state = (["degraded", "provisioned", "ready"] as const).find((s) => states.some((p) => p.state === s))!;
+  const provisioned = states.filter((p) => p.state === "provisioned");
+  const ready = states.filter((p) => p.state === "ready");
+  return {
+    ok: state !== "degraded",
+    state,
+    ...(state === "provisioned"
+      ? { lastProbe: provisioned.some((p) => p.lastProbe === "unavailable") ? "unavailable" : "never" }
+      : {}),
+    ...(state === "ready" ? { imagesVerified: ready.every((p) => p.imagesVerified !== false) } : {}),
+    ...(ready.some((p) => p.infrastructureFailure === true) ? { infrastructureFailure: true } : {}),
+    ...usage,
+    profiles,
+  };
+}
+
+type ProfileState = {
+  state: "provisioned" | "ready" | "degraded";
+  lastProbe?: "unavailable" | "never";
+  imagesVerified?: boolean;
+  infrastructureFailure?: true;
+};
+
+// One needed profile's state from its probe records for `build`.
+function profileState(build: string, { record, attempt, failure }: ProbeState): ProfileState {
   const verdict = record !== null && record.version === build ? record : null;
   if (verdict === null) {
     const attempted = attempt !== null && attempt.version === build;
-    return { ok: true, state: "provisioned", lastProbe: attempted ? "unavailable" : "never", ...usage };
+    return { state: "provisioned", lastProbe: attempted ? "unavailable" : "never" };
   }
   if (!verdict.ok) {
-    return { ok: false, state: "degraded", ...usage };
+    return { state: "degraded" };
   }
   return {
-    ok: true,
     state: "ready",
     imagesVerified: verdict.imagesVerified !== false,
-    ...(failedSince(failure, verdict) ? { infrastructureFailure: true } : {}),
-    ...usage,
+    ...(failedSince(failure, verdict) ? { infrastructureFailure: true as const } : {}),
   };
 }
 

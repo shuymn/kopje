@@ -8,11 +8,13 @@ import { reconcileMedia, sweepMedia, type SweepDeps } from "../mastodon/media";
 import { envInMaintenance, readConfig } from "../platform/config";
 import { DeadlinePassed } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
-import type { UploadProcessor } from "../platform/media-transcoder";
+import type { ImageCodec } from "../platform/images";
+import type { MediaProcessorClient, StillMaker } from "../platform/media-transcoder";
 import { callStore } from "../platform/store-client";
 import type { StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { incomingOrphans, mediaDispatchRound, mediaProbeRound } from "./media-jobs";
+import { remoteStillsRound } from "./remote-stills";
 
 // The 5-minute cron (wrangler.jsonc). Nothing runs while the env sets maintenance (or is invalid), as for the queue; in
 // the Store's own maintenance its writes are refused and each task waits for the next run.
@@ -118,27 +120,70 @@ export async function scheduledRemoteMedia(env: Env, deps: RemoteMediaDeps): Pro
 
 // The media processor's rounds (jobs/media-jobs.ts), each its own error boundary, run on their own (worker.ts): the
 // dispatch round (S12 and S13: the Store's transitions, then a run for each pending upload it hands back), the probe
-// round (normalize@standard-4's activation probe when it is due, only with the binding and a positive
-// MEDIA_UPLOAD_MONTHLY_JOBS), and the incoming/ orphan pass (at most one claim an hour). In the Store's maintenance
+// round (each profile's activation probe when it is due, only with the binding and that profile's budget positive:
+// MEDIA_UPLOAD_MONTHLY_JOBS for normalize@standard-4, MEDIA_STILL_MONTHLY_JOBS for still@standard-1), and the incoming/
+// orphan pass (at most one claim an hour). In the Store's maintenance
 // each is refused before any R2 operation or container start.
 export type MediaRoundsDeps = {
   build: (env: Env) => string;
   store: StoreResolver;
-  processor: (env: Env) => UploadProcessor | null;
+  processor: (env: Env) => MediaProcessorClient | null;
+  images: (env: Env) => ImageCodec;
 };
 
 export async function scheduledMedia(env: Env, deps: MediaRoundsDeps): Promise<void> {
   const config = readConfig(env);
+  const processor = deps.processor(env);
   const round = {
     build: deps.build(env),
     store: deps.store(env),
     bucket: env.MEDIA,
-    processor: deps.processor(env),
+    processor: processor?.uploads ?? null,
     budget: config.ok ? config.config.MEDIA_UPLOAD_MONTHLY_JOBS : 0,
+    stills: processor?.stills ?? null,
+    images: deps.images(env),
+    stillsBudget: config.ok ? config.config.MEDIA_STILL_MONTHLY_JOBS : 0,
   };
   await cronRound(env, () => mediaDispatchRound(round), "kopje.scheduled.media_dispatch_failed");
   await cronRound(env, () => mediaProbeRound(round), "kopje.scheduled.media_probe_failed");
   await cronRound(env, () => incomingOrphans(round), "kopje.scheduled.media_orphans_failed");
+}
+
+// The cron's remote stills round (jobs/remote-stills.ts), on its own as the remote media round is: at most one still a
+// tick, outside the env's maintenance; without the processor's binding, with MEDIA_STILL_MONTHLY_JOBS 0 or an invalid
+// configuration it makes no Store call, and in the Store's maintenance the claim is refused before any container
+// starts.
+export type RemoteStillsRoundDeps = {
+  build: (env: Env) => string;
+  store: StoreResolver;
+  stills: (env: Env) => StillMaker | null;
+  images: (env: Env) => ImageCodec;
+  now: () => number;
+};
+
+export async function scheduledRemoteStills(env: Env, deps: RemoteStillsRoundDeps): Promise<void> {
+  const config = readConfig(env);
+  if (!config.ok) {
+    return;
+  }
+  const stills = deps.stills(env);
+  const budget = config.config.MEDIA_STILL_MONTHLY_JOBS;
+  await cronRound(
+    env,
+    () =>
+      remoteStillsRound({
+        build: deps.build(env),
+        store: deps.store(env),
+        bucket: env.MEDIA,
+        stills,
+        images: deps.images(env),
+        budget,
+        cap: config.config.REMOTE_MEDIA_CACHE_BYTES,
+        maintenance: () => envInMaintenance(env),
+        now: deps.now,
+      }),
+    "kopje.scheduled.remote_stills_failed",
+  );
 }
 
 // One step of the cron, its own error boundary: a failure is logged as `event` and stops no later step. A Store

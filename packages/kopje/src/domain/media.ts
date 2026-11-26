@@ -381,6 +381,10 @@ export function uploadJobsSpent(db: Db, now: number): number {
   return jobsSpent(db, "upload", now);
 }
 
+export function stillJobsSpent(db: Db, now: number): number {
+  return jobsSpent(db, "still", now);
+}
+
 export function uploadJobFits(db: Db, limit: number, now: number): boolean {
   return jobFits(db, "upload", limit, now);
 }

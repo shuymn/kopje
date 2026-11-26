@@ -141,13 +141,17 @@ export type StillOutcome =
       evidence?: BuildEvidence;
     };
 
-// What the media rebuild uses of the processor (design 4.16): a still of an original, and the `still@standard-1`
-// probe. Each runs on standard-1 in the caller's invocation, reads its one input key from the media bucket once and
-// streams it as the request body (design 4.6), and destroys the container before it answers. `ms` bounds the call from
-// its start on the object's clock. The app wiring passes it over the MEDIA_PROCESSOR binding; tests pass a fake.
+// What the media rebuild (design 4.16), the remote stills' round (jobs/remote-stills.ts) and the still probe use of the
+// processor: a still of an original, a still of a cached remote video, and the `still@standard-1` probe. Each runs on
+// standard-1 in the caller's invocation, reads its one input key from the media bucket once and streams it as the
+// request body (design 4.6), and destroys the container before it answers. `ms` bounds the call from its start on the
+// object's clock. The app wiring passes it over the MEDIA_PROCESSOR binding; tests pass a fake.
 export type StillMaker = {
   // On a fresh object (rb:<nonce>), input originals/<id>.
   still(key: string, ms: number): Promise<StillOutcome>;
+  // On a fresh object (s:<token>:<attempt>, the claim's attempt), input remote/<token>/full, which never changes under
+  // its token (a new file is cached under a fresh token).
+  remote(token: string, attempt: string, ms: number): Promise<StillOutcome>;
   // On the profile's probe object (p:<version>:still@standard-1), input the copy of `probeInput` the rebuild wrote.
   probe(key: string, ms: number): Promise<StillOutcome>;
   // The packaged probe clip (container/probe.mp4).
