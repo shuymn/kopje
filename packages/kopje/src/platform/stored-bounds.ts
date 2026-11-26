@@ -2407,7 +2407,7 @@ export function remoteMediaSlotPastBoundSql(row: string): string {
 }
 
 // A remote video still's attempt nonce (#1828 PR5, domain/remote-media-stills.ts): 32 lowercase hex digits, the hex of
-// a UUID the Store draws. Its key's variant is `s` and the nonce (platform/media-files.ts STILL_VARIANT).
+// a UUID the Store draws. Its key's variant is `s` and the nonce (platform/media-files.ts REMOTE_VARIANT).
 export const STILL_ATTEMPT = /^[0-9a-f]{32}$/;
 
 // True when `value` is neither NULL nor an attempt nonce (STILL_ATTEMPT), judged in order: the storage class, the
@@ -2421,7 +2421,8 @@ export function stillAttemptPastSql(value: string): string {
 	ELSE 0 END`;
 }
 
-// True when `value` is neither NULL nor a named still's variant: `s` and an attempt nonce (STILL_VARIANT).
+// True when `value` is neither NULL nor a named still's variant: `s` and an attempt nonce (platform/media-files.ts
+// REMOTE_VARIANT).
 export function stillKeyPastSql(value: string): string {
   return `CASE WHEN ${value} IS NULL THEN 0
 	WHEN typeof(${value}) <> 'text' THEN 1

@@ -30,6 +30,7 @@ import {
   REMOTE_OBJECTS_SLOT_INDEX,
   REMOTE_OBJECTS_STORED_INDEX,
   REMOTE_OBJECTS_VALIDATION_INDEX,
+  mediaCategorySql,
   remoteMediaCategory,
   SAFE_INTEGER_MAX,
   statusMediaWindowSql,
@@ -1025,7 +1026,7 @@ function unfragmentedSql(value: string): string {
 // status-presenter.ts playablePreview's rule). The attachment's own blurhash does not matter.
 export function stillQualifiesSql(r: string): string {
   return `(${r}.kind = 'attachment' AND ${r}.category = 'video' AND EXISTS (SELECT 1 FROM media_attachments qm
-		INDEXED BY ${MEDIA_ID_INDEX} WHERE qm.id = ${r}.owner_id AND qm.type IN ('video', 'gifv')
+		INDEXED BY ${MEDIA_ID_INDEX} WHERE qm.id = ${r}.owner_id AND ${mediaCategorySql("qm.type")} = 'video'
 			AND (qm.preview_url IS NULL OR qm.preview_url = '' OR ${unfragmentedSql("qm.preview_url")} = ${unfragmentedSql("qm.url")})))`;
 }
 
@@ -1900,7 +1901,8 @@ export function cachedMediaUrls(
     !FILE_TOKEN.test(token) ||
     !REMOTE_MEDIA_EXTENSIONS.has(ext) ||
     (stillExt !== "" && !REMOTE_MEDIA_EXTENSIONS.has(stillExt)) ||
-    (stillKey !== "" && (stillExt === "" || !/^s[0-9a-f]{32}$/.test(stillKey)))
+    (stillKey !== "" &&
+      (stillExt === "" || stillKey === "full" || stillKey === "still" || !REMOTE_VARIANT.test(stillKey)))
   ) {
     return null;
   }

@@ -4,7 +4,7 @@ import { REMOTE_MEDIA_CACHE_MIN_BYTES } from "../platform/config";
 import { FILE_TOKEN } from "../platform/media-files";
 import { type Marker, restoreTime } from "../platform/restore-marker";
 import { SAFE_INTEGER_MAX, STILL_ATTEMPT, STILL_CLAIMS, storedBlurhash } from "../platform/stored-bounds";
-import { setState, state } from "./kopje-state";
+import { readState, state, writeState } from "./kopje-state";
 import { chargeJob, jobFits } from "./media";
 import { writeOperation } from "./operation";
 import {
@@ -56,7 +56,7 @@ type Lease = { holder: string; until: number };
 
 function lease(db: Db): Lease | null {
   try {
-    const value = JSON.parse(state(db, STATE.stillLease) ?? "null") as Partial<Lease> | null;
+    const value = readState<Partial<Lease>>(db, STATE.stillLease);
     return typeof value?.holder === "string" && isTime(value.until)
       ? { holder: value.holder, until: value.until }
       : null;
@@ -183,9 +183,14 @@ export const claimRemoteStill = writeOperation.atStoreTime("now")<
   if (restore !== null && (now - restore < REMOTE_SETTLE_MS || restore > validated)) {
     return { status: "restoring" };
   }
-  const walk = db.all<Row & { token: string; object: string | null; slot: number | null }>(
-    `SELECT w.token, st.state, st.claims, st.claimed_at, st.attempt, st.outcome, st.still_charge, o.state AS object,
-				o.slot_id AS slot
+  const walk = db.all<{
+    token: string;
+    claims: number;
+    still_charge: number;
+    object: string | null;
+    slot: number | null;
+  }>(
+    `SELECT w.token, st.claims, st.still_charge, o.state AS object, o.slot_id AS slot
 			FROM (SELECT token, due_at FROM remote_media_stills INDEXED BY remote_media_stills_due WHERE due_at <= ?1
 				ORDER BY due_at LIMIT ${STILL_CLAIM_WALK}) w
 			CROSS JOIN remote_media_stills st ON st.token = w.token
@@ -233,7 +238,7 @@ export const claimRemoteStill = writeOperation.atStoreTime("now")<
       STILL_OUTPUT_LIMIT,
       claims >= STILL_CLAIMS ? null : now + LATE_PUT_MS,
     );
-    setState(db, STATE.stillLease, JSON.stringify({ holder: attempt, until: now + STILL_LEASE_MS }));
+    writeState(db, STATE.stillLease, { holder: attempt, until: now + STILL_LEASE_MS });
     return { status: "claimed", token: row.token, attempt, claims, deleted, deferred };
   }
   return { status: "walked", deleted, deferred };
