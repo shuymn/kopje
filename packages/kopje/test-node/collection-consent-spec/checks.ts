@@ -8,7 +8,8 @@
 // scripts/tlc-check.mjs runs the same checks under the official TLC.
 //
 // A scenario's distinct-state count and depth are fixed: a change means the state space changed, which the commit
-// that changes checks.json explains. Each check logs its time and the process's RSS.
+// that changes checks.json explains. Each check logs its name when it starts, so a job cancelled at its time limit
+// shows the check that stalled, and its time and the process's RSS.
 //
 // The tests are split over PARTS files, <part>.test.ts beside this module, so that CI's test shards share them:
 // `vitest --shard` deals out whole files, and each part's file has a shard of its own
@@ -77,6 +78,10 @@ export function tlaTsChecks(file: string): void {
   describe("spec/collection-consent under tla-ts", () => {
     for (const c of checks(plan).filter((c) => partOf(`${c.kind} ${c.name}`) === part)) {
       it(`${c.kind} ${c.name}`, { timeout: CHECK_TIMEOUT_MS }, async () => {
+        console.log(`${c.kind} ${c.name}: start`);
+        // Vitest forwards console output on a microtask, and check() then runs synchronously: yield once so the line
+        // is out before the search, or a job killed during it never shows the line.
+        await Promise.resolve();
         const start = performance.now();
         const result = await check({ source: readModule(c.module) ?? "", config: c.config, loadModule: readModule });
         const ms = Math.round(performance.now() - start);
