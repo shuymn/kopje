@@ -116,6 +116,9 @@ export function tlaTsChecks(file: string): void {
     for (const c of checks(plan).filter((c) => partOf(`${c.kind} ${c.name}`) === part)) {
       it(`${c.kind} ${c.name}`, { timeout: CHECK_TIMEOUT_MS }, async () => {
         console.log(`${c.kind} ${c.name}: start`);
+        // Vitest forwards console output on a microtask, and check() then runs synchronously: yield once so the line
+        // is out before the search, or a job killed during it never shows the line.
+        await Promise.resolve();
         const start = performance.now();
         const result = await check({ source: readModule(c.module) ?? "", config: c.config, loadModule: readModule });
         const ms = Math.round(performance.now() - start);

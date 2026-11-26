@@ -28,8 +28,8 @@ pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2 test-node/media-up
 ```
 
 A change of the specification that changes a count changes `checks.json` in the same commit, which says why. A liveness
-mutation pins no trace length, only that its property fails: the checker's counterexample length differs between
-machines. Every named
+mutation pins no trace length, only that its property fails with a non-empty trace: the checker's counterexample
+length differs between machines. Every named
 invariant and property has a mutation that the checker is seen to violate (`variants` in `checks.json`); the plan test
 fails for a property without one. `test-node/media-upload-spec-parts.test.ts` checks that the `kopje-spec` project
 collects every part's file and that CI's four test shards hold two parts' files each.
