@@ -2271,21 +2271,6 @@ describe("the route's answers and its cleanup (code review r2)", () => {
     await leftNothing(w);
   });
 
-  // One thumbnail part on the AV path (#1828 PR6 D-9), where Rails reads the last: a second, even empty text, is
-  // refused at its head.
-  it.each([
-    ["a thumbnail file then an empty thumbnail text", [videoPart(), THUMB_FILE, { name: "thumbnail", data: "" }]],
-    ["an empty thumbnail text then a thumbnail file", [videoPart(), { name: "thumbnail", data: "" }, THUMB_FILE]],
-  ])("M5: %s answers 422 (D-9)", async (_, parts) => {
-    const w = await routeWorld();
-    const response = await postMedia(w, multipartBody(parts));
-    expect(await answerOf(response)).toEqual({
-      status: 422,
-      body: { error: "Validation failed: Thumbnail was sent more than once" },
-    });
-    await leftNothing(w);
-  });
-
   // S2, then the delete its `released` authorizes, then the abandonment (code review r3 M3).
   it("M3: a staging refusal's authorized delete starts while abandonMedia is held", async () => {
     const { bucket, counts } = hookedBucket({});
@@ -2381,5 +2366,31 @@ describe("the route's answers and its cleanup (code review r2)", () => {
       body: { error: "Validation failed: Thumbnail file size must be less than 16 MB" },
     });
     await leftNothing(w);
+  });
+});
+
+// A video upload without a thumbnail keeps main's order (G1): the form's refusals come before the file's last part is
+// sent, and empty `thumbnail` fields are absent, counted by no rule (PR6-2 code review r1 M2, LOW 1).
+describe("an upload without a thumbnail answers as before #1828 PR6 (G1)", () => {
+  it("answers the form's refusal before sending the file's last part", async () => {
+    const { bucket, counts } = hookedBucket({
+      onPart: () => {
+        throw new Error("uploadPart failed");
+      },
+    });
+    const w = await routeWorld({ bucket });
+    const body = multipartBody([
+      videoPart(),
+      { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) },
+    ]);
+    expect(await answerOf(await postMedia(w, body))).toEqual({ status: 422, body: DESCRIPTION_TOO_LONG });
+    expect(counts.parts).toBe(0);
+  });
+
+  it.each(["prefix", "suffix"])("takes two empty thumbnail fields as none (%s)", async (where) => {
+    const w = await routeWorld();
+    const empty = { name: "thumbnail", data: "" };
+    const parts = where === "prefix" ? [empty, empty, videoPart()] : [videoPart(), empty, empty];
+    expect((await postMedia(w, multipartBody(parts))).status).toBe(202);
   });
 });

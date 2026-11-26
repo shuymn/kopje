@@ -28,8 +28,9 @@ export type ImageInfo = { format: string; width?: number; height?: number };
 // `still`: the output keeps one frame of an animated input (Images' anim: false); otherwise a WebP output keeps every
 // frame. A PNG output always keeps one (imagesCodec). `limit`: the output's bytes, read up to it and refused past it
 // before anything inspects them (a card image, CARD_IMAGE_OUTPUT_LIMIT); without it the output is read whole.
-// `guard`: runs each binding call (output() and the output's info()) and each read of the output; one that gives up
-// rejects, and a read given up cancels the output stream (readBodyPrefix), so nothing is left reading it. Without it
+// `guard`: runs each binding call (output() and the output's info()) and each read of the output, started inside it;
+// one that gives up rejects, and a read given up cancels the output stream (readBodyPrefix), so nothing is left reading
+// it. Without it
 // the calls run as they are. `format` 'rgba': raw pixels, read only by encodeRgba.
 export type CallGuard = <T>(work: () => Promise<T>) => Promise<T>;
 export type EncodeOptions = {
@@ -104,22 +105,20 @@ async function outputBytes(
   if (limit === undefined) {
     return wholeOutput(image, guard);
   }
-  const prefix = await readBodyPrefix(image, limit, (read) => guard(() => read), { copy: false });
+  const prefix = await readBodyPrefix(image, limit, undefined, { copy: false, start: guard });
   if (prefix.limitReached) {
     throw new ImageOutputError("output is past its byte limit");
   }
   return prefix.bytes;
 }
 
-// The whole output, each read under `guard` (an upload's thumbnail, made by a deadline: mastodon/media.ts).
+// The whole output, each read started under `guard` (an upload's thumbnail, made by a deadline: mastodon/media.ts).
 async function wholeOutput(image: ReadableStream<Uint8Array>, guard: CallGuard): Promise<Uint8Array> {
   const reader = image.getReader();
   const chunks: Uint8Array[] = [];
   try {
     for (;;) {
-      const read = reader.read();
-      read.catch(() => {});
-      const { done, value } = await guard(() => read);
+      const { done, value } = await guard(() => reader.read());
       if (done) {
         break;
       }
@@ -267,10 +266,12 @@ export type ProcessResult =
 
 // `blurhash`: the preview's blurhash is made too, its RGBA output and every read of it given up at `end` (by `now`) or
 // RGBA_CALL_MS after it starts, whichever is first, and not asked for when less than RGBA_MIN_CALL_MS is left. Without
-// it (a custom emoji) nothing more is asked. `guard`: runs the inspection's info() and every call and read of both
-// encodes (EncodeOptions guard), so an image made by a deadline gives up each Images call at it (an upload's
-// thumbnail, mastodon/media.ts); without it they run as they are.
-export type ProcessOptions = { blurhash?: { end: number; now: () => number }; guard?: CallGuard };
+// it (a custom emoji) nothing more is asked. Its `guard(until)`: the RGBA output's guard giving up at `until` on the
+// caller's clock (an upload's thumbnail, whose waits are the route's); without it, inTime's. `guard`: runs the
+// inspection's info() and every call and read of both encodes (EncodeOptions guard), so an image made by a deadline
+// gives up each Images call at it (an upload's thumbnail, mastodon/media.ts); without it they run as they are.
+export type BlurhashOptions = { end: number; now: () => number; guard?: (until: number) => CallGuard };
+export type ProcessOptions = { blurhash?: BlurhashOptions; guard?: CallGuard };
 
 export function fit(size: Size, edge: number): Size {
   const scale = Math.min(1, edge / Math.max(size.width, size.height));
@@ -401,7 +402,7 @@ async function previewBlurhash(
   input: Uint8Array,
   transform: Partial<Size>,
   small: Size,
-  { end, now }: { end: number; now: () => number },
+  { end, now, guard: guardUntil }: BlurhashOptions,
 ): Promise<{ blurhash: string | null; stop: BlurhashStop }> {
   if (now() >= end - RGBA_MIN_CALL_MS) {
     return { blurhash: null, stop: "deadline" };
@@ -409,7 +410,7 @@ async function previewBlurhash(
   const until = Math.min(end, now() + RGBA_CALL_MS);
   try {
     // An answer settling at or past `until` is not used either (inTime), even before the guard's timer fires.
-    const guard: CallGuard = (work) => inTime(work, until, now);
+    const guard: CallGuard = guardUntil?.(until) ?? ((work) => inTime(work, until, now));
     const rgba = await encodeRgba(codec, input, transform, small, PREVIEW_RGBA_LIMIT, guard);
     return { blurhash: imageBlurhash(rgba), stop: null };
   } catch (error) {

@@ -437,7 +437,12 @@ async function transformReserved(
   const guard = deadlineGuard(deps, end);
   const processed = await begin(() =>
     processImage(deps.images(c.env), bytes, {
-      blurhash: { end: Math.min(end, upload.deadline - UPLOAD_SAVE_RESERVE_MS), now: deps.now },
+      blurhash: {
+        end: Math.min(end, upload.deadline - UPLOAD_SAVE_RESERVE_MS),
+        now: deps.now,
+        // The RGBA output is given up on the route's clock too, at its own shorter end.
+        ...(end === Infinity ? {} : { guard: (until: number) => deadlineGuard(deps, until) }),
+      },
       ...(end === Infinity ? {} : { guard }),
     }),
   );

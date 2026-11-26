@@ -1698,16 +1698,17 @@ Media (the `MediaAttachment` entity):
   backslash, and exactly one `boundary` of RFC 2046's characters): the request is read whole, as an image's, with the
   image path's limits and errors (a file over 16 MB is refused for its size before its type).
 - A video or audio upload whose form has several errors may report another of them than Mastodon: a `thumbnail` sent
-  before the `file` part is judged once the file is known to be video or audio, before any part after the file is
-  read, so a description too long after the file is not the error reported, where Mastodon reports the description
-  first. A `thumbnail` file after the file past 16 MB answers 422 `Validation failed: Thumbnail file size must be less
-  than 16 MB` before the description is judged. A `thumbnail` after the file within its size, a malformed query and
-  the other orders answer as for an image. A video or audio upload takes one `thumbnail` part: a second, file or text,
-  empty or not, answers 422 `Validation failed: Thumbnail was sent more than once`, after the file at its part's head,
-  where Rails reads the last. Before an image `file`, the image path's answers hold: the last `thumbnail` counts, and
-  one sent is `Thumbnail must be blank`. Parts before the `file` part are read up to 16 MB plus 64 KiB, or 17,956,864
-  bytes once a `thumbnail` file is among them, and past it answer 422 `Validation failed: File file size must be less
-  than 16 MB`.
+  before the `file` part is judged once the file is known to be video or audio, before any part after the file is read,
+  so a description too long after the file is not the error reported, where Mastodon reports the description first. A
+  `thumbnail` file after the file past 16 MB answers 422 `Validation failed: Thumbnail file size must be less than 16
+  MB` before the description is judged. A `thumbnail` after the file within its size, a malformed query and the other
+  orders answer as for an image. A video or audio upload takes one `thumbnail` part that is sent (a file, or text that
+  is not empty): a second answers 422 `Validation failed: Thumbnail was sent more than once`, a file after the file at
+  its part's head, where Rails reads the last. An empty text `thumbnail` is absent and is not counted, so a file beside
+  it is the thumbnail even when the empty text comes last, where Rails reads that last part as none. Before an image
+  `file`, the image path's answers hold: the last `thumbnail` counts, and one sent is `Thumbnail must be blank`. Parts
+  before the `file` part are read up to 16 MB plus 64 KiB, or 17,956,864 bytes once a `thumbnail` file is among them,
+  and past it answer 422 `Validation failed: File file size must be less than 16 MB`.
 - A video's or audio file's custom `thumbnail` (on upload and on `PUT`/`PATCH /api/v1/media/:id`, as Mastodon takes it)
   is made by Images as an image upload is: JPEG, PNG, GIF, WebP or AVIF by its signature, served as PNG for a PNG and
   WebP for the rest, its preview at most 640 pixels an edge (Mastodon's is 230,400 pixels), at most 16,777,216 pixels,

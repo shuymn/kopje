@@ -7,7 +7,7 @@ import { MEDIA_BODY_LIMIT } from "../src/mastodon/media";
 import { PREFIX_THUMBNAIL_LIMIT } from "../src/mastodon/media-av";
 import { API_BODY_LIMIT } from "../src/mastodon/params";
 import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
-import { IMAGE_SIZE_LIMIT, imagesCodec } from "../src/platform/images";
+import { type EncodeOptions, IMAGE_SIZE_LIMIT, imagesCodec, RGBA_CALL_MS } from "../src/platform/images";
 import { incomingKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
 import { bearer, sql } from "./api-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
@@ -175,6 +175,28 @@ describe("a video or audio upload with a thumbnail (T15)", () => {
     expect((await children(w))[0]?.thumbnail_of).toBe(await parentId(w));
   });
 
+  // Empty text is none and is not counted by D-9 (G1), so a file beside it is the thumbnail (code review r1 LOW 1).
+  it.each([
+    [
+      "a thumbnail file then an empty thumbnail text",
+      () => [videoPart(), thumbPart(), { name: "thumbnail", data: "" }],
+    ],
+    [
+      "an empty thumbnail text then a thumbnail file",
+      () => [videoPart(), { name: "thumbnail", data: "" }, thumbPart()],
+    ],
+    [
+      "an empty thumbnail text, a thumbnail file, the file",
+      () => [{ name: "thumbnail", data: "" }, thumbPart(), videoPart()],
+    ],
+  ])("takes the file as the thumbnail beside an empty thumbnail text: %s", async (_, parts) => {
+    const w = await routeWorld();
+    const response = await answerOf(await postMedia(w, multipartBody(parts())));
+    const [child] = await children(w);
+    expect(child).toMatchObject({ thumbnail_of: await parentId(w), gc_at: null });
+    expect(response).toEqual({ status: 202, body: showsChild(child) });
+  });
+
   it("refuses a second thumbnail part after the file at its head, its bytes unread (D-9)", async () => {
     const w = await routeWorld();
     const second = thumbPart(new Uint8Array(4 * 1024 * 1024));
@@ -264,6 +286,26 @@ describe("a video or audio upload with a thumbnail (T15)", () => {
     // The last part went while at most two reads past the file's end were pulled, never the thumbnail's 16 MiB.
     expect(pulledAt.at(-1)).toBeLessThanOrEqual(fileSize + 1024 + 2 * chunk);
     expect((await input(await parentId(w)))?.byteLength).toBe(fileSize);
+  }, 300_000);
+
+  it("reads no part of a trailing thumbnail while the file's last part is still being sent (C45)", async () => {
+    const hold = deferred();
+    const { bucket, partReached } = hookedBucket({ holdPart: hold.promise });
+    const w = await routeWorld({ bucket });
+    asPlainPng(w);
+    const fileSize = PART_BYTES - 1;
+    const padded = new Uint8Array(IMAGE_SIZE_LIMIT);
+    padded.set(bytes(PNG_PLAIN));
+    const { body, contentType } = multipartBody([videoPart(mp4(fileSize)), thumbPart(padded)]);
+    const chunk = 1024 * 1024;
+    const slow = new SlowBody(body, { chunk });
+    const response = postMedia(w, { body: slow.stream(), contentType });
+    await partReached;
+    // The route, given time, would read the thumbnail's 16 MiB if it did not wait for the part's reply.
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    expect(slow.pulled).toBeLessThanOrEqual(fileSize + 1024 + 2 * chunk);
+    hold.resolve();
+    expect((await response).status).toBe(202);
   }, 300_000);
 
   it.each([
@@ -482,7 +524,7 @@ describe("the making by the staging's end (POST timing)", () => {
       stallingEncode(w, "read", reached);
     },
     small: (w: RouteWorld, reached: () => void) => {
-      stallingEncode(w, "output", reached, true);
+      stallingEncode(w, "output", reached, "small");
     },
   };
 
@@ -498,6 +540,7 @@ describe("the making by the staging's end (POST timing)", () => {
       stalls[stall](w, () => reachedImages.resolve());
       const post = postWatched(w, multipartBody([videoPart(), thumbPart()]), version);
       await reachedImages.promise;
+      const parent = await parentId(w);
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       const [child] = await children(w);
       await w.advance(Math.min(...w.timers.pending));
@@ -506,14 +549,39 @@ describe("the making by the staging's end (POST timing)", () => {
       expect(w.gate.calls).toContain("releaseStaging");
       expect(w.gate.calls).not.toContain("completeMedia");
       expect(w.gate.calls).not.toContain("queueNormalize");
-      // Given up by the guard, so the making settled and its reservation was abandoned, the Images call still pending.
-      expect(await children(w)).toEqual([
-        expect.objectContaining({ id: child?.id, processed: 1, url: "", thumbnail_of: null }),
-      ]);
+      // Given up by the guard, so the making settled, the Images call still pending: its reservation was abandoned and
+      // taken by the sweep run after the response.
+      expect(child).toMatchObject({ processed: 0, thumbnail_of: null });
+      expect(await children(w)).toEqual([]);
       expect(await env.MEDIA.head(originalKey(child?.id ?? ""))).toBeNull();
-      expect(await input(await parentId(w))).toBeNull();
+      expect(await input(parent)).toBeNull();
     },
   );
+
+  // The preview's RGBA output is given up on the route's clock at its own end (RGBA_CALL_MS), before the staging's:
+  // the thumbnail is kept without a blurhash (code review r1 M6).
+  it("gives up a stalled RGBA output at its own end on the route's clock, keeping the thumbnail without a blurhash", async () => {
+    const w = await routeWorld();
+    const reachedRgba = deferred();
+    stallingEncode(w, "output", () => reachedRgba.resolve(), "rgba");
+    const post = postWatched(w, multipartBody([videoPart(), thumbPart()]));
+    await reachedRgba.promise;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const started = Date.now();
+    await w.advance(Math.min(...w.timers.pending));
+    expect(Date.now()).toBeLessThanOrEqual(started + RGBA_CALL_MS);
+    const response = await answerOf(await post.answered);
+    await post.done;
+    const [child] = await children(w);
+    expect(child).toMatchObject({ thumbnail_of: await parentId(w), gc_at: null });
+    expect(response).toEqual({
+      status: 202,
+      body: expect.objectContaining({
+        preview_url: expect.stringContaining(`/media/${child?.file_token ?? "?"}/small.`),
+        blurhash: null,
+      }),
+    });
+  });
 
   it("answers at the end while the thumbnail's R2 put is pending, and discards it only once the put settles", async () => {
     const put = deferred();
@@ -536,6 +604,7 @@ describe("the making by the staging's end (POST timing)", () => {
     const w = await routeWorld({ bucket });
     const post = postWatched(w, multipartBody([videoPart(), thumbPart()]));
     await putReached.promise;
+    const parent = await parentId(w);
     const [child] = await children(w);
     await w.advance(Math.min(...w.timers.pending));
     expect(await answerOf(await post.answered)).toEqual({ status: 503, body: RECEIVE_TOO_LONG });
@@ -545,9 +614,10 @@ describe("the making by the staging's end (POST timing)", () => {
     put.resolve();
     await post.done;
     expect(w.gate.calls).not.toContain("completeMedia");
-    expect(await children(w)).toEqual([expect.objectContaining({ id: child?.id, processed: 1, url: "" })]);
+    // Abandoned once the put settled, and taken by the sweep run after it.
+    expect(await children(w)).toEqual([]);
     expect(await env.MEDIA.head(originalKey(child?.id ?? ""))).toBeNull();
-    expect(await env.MEDIA.head(incomingKey(await parentId(w)))).toBeNull();
+    expect(await env.MEDIA.head(incomingKey(parent))).toBeNull();
   });
 });
 
@@ -582,7 +652,14 @@ function asPlainPng(w: RouteWorld): void {
 
 // Each encode (only the preview's, a still, with `still`) through a binding whose output() never answers, or whose
 // output's read never yields; `reached` once such an output() is asked for.
-function stallingEncode(w: RouteWorld, where: "output" | "read", reached: () => void, still = false): void {
+// `pick`: the encodes that stall (every one, the preview's still, or the preview's RGBA output); the others are the
+// test codec's.
+function stallingEncode(
+  w: RouteWorld,
+  where: "output" | "read",
+  reached: () => void,
+  pick: "all" | "small" | "rgba" = "all",
+): void {
   const never = <T>() => new Promise<T>(() => {});
   const binding = {
     info: () => never(),
@@ -604,5 +681,7 @@ function stallingEncode(w: RouteWorld, where: "output" | "read", reached: () => 
   } as unknown as ImagesBinding;
   const stalled = imagesCodec(binding);
   const encode = w.codec.encode.bind(w.codec);
-  w.codec.encode = (b, o) => (!still || o.still === true ? stalled.encode(b, o) : encode(b, o));
+  const stalls = (o: EncodeOptions) =>
+    pick === "all" || (pick === "small" ? o.still === true && o.format !== "rgba" : o.format === "rgba");
+  w.codec.encode = (b, o) => (stalls(o) ? stalled.encode(b, o) : encode(b, o));
 }

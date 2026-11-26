@@ -389,6 +389,12 @@ function cutGuard(deps: ApiDeps, end: number) {
 
 // ---- The sniff
 
+// A `thumbnail` part that is sent: a file, or text that is not empty (empty text is absent: mastodon/media.ts
+// thumbnailSent).
+function sentThumbnail(text: Text): boolean {
+  return text.head.name === "thumbnail" && (text.head.file || text.body.byteLength > 0);
+}
+
 type Text = { head: PartHead; body: Uint8Array };
 
 // The first `file` part's head and first SNIFF_BYTES, after the parts before it (kept, as text); null when the body has
@@ -720,18 +726,19 @@ class AvUpload {
   }
 
   // The refusals the parts before the file part decide, before any slot is taken (P7), now that the file is known to be
-  // video or audio (#1828 PR6, "Multipart"): one `thumbnail` part (D-9), not text (D-3: empty text is none), and a file
-  // within IMAGE_SIZE_LIMIT and of an image type by its signature, whose body is then kept apart and weighs nothing.
+  // video or audio (#1828 PR6, "Multipart"): one sent `thumbnail` part (D-9; empty text is none and is not counted,
+  // G1), not text (D-3), and a file within IMAGE_SIZE_LIMIT and of an image type by its signature, whose body is then
+  // kept apart and weighs nothing.
   #beforeSlot(): StagingRefusal | null {
     if (this.#texts.some((t) => t.head.name === "file")) {
       return new StagingRefusal(422, REPEATED_FILE);
     }
-    const thumbnails = this.#texts.filter((t) => t.head.name === "thumbnail");
+    const thumbnails = this.#texts.filter(sentThumbnail);
     if (thumbnails.length > 1) {
       return new StagingRefusal(422, REPEATED_THUMBNAIL);
     }
     const [thumbnail] = thumbnails;
-    if (thumbnail !== undefined && !thumbnail.head.file && thumbnail.body.byteLength > 0) {
+    if (thumbnail !== undefined && !thumbnail.head.file) {
       return new StagingRefusal(422, THUMBNAIL_INVALID_TYPE);
     }
     if (thumbnail?.head.file === true) {
@@ -812,11 +819,6 @@ class AvUpload {
           }
         }
       });
-      // The file's last part is sent, and its buffer released, before the next part's head is read (#1828 PR6), so a
-      // trailing thumbnail is never held beside a part buffer.
-      if (fill > 0) {
-        await flush();
-      }
       let weighed = this.#texts.reduce((sum, t) => sum + weight(t), 0);
       for (;;) {
         const head = await this.#reader.next();
@@ -826,15 +828,24 @@ class AvUpload {
         if (head.name === "file") {
           throw new StagingRefusal(422, REPEATED_FILE);
         }
-        // D-9: a second thumbnail is refused at its head, none of its bytes read; one file is kept within
-        // IMAGE_SIZE_LIMIT, its head weighed and its body not.
-        if (head.name === "thumbnail" && this.#texts.some((t) => t.head.name === "thumbnail")) {
+        // D-9: a second sent thumbnail is refused, a file at its head, none of its bytes read, and text once read
+        // (empty text is none, G1); one file is kept within IMAGE_SIZE_LIMIT, its head weighed and its body not.
+        const repeated = head.name === "thumbnail" && this.#texts.some(sentThumbnail);
+        const thumbnail = head.name === "thumbnail" && head.file;
+        if (repeated && thumbnail) {
           throw new StagingRefusal(422, REPEATED_THUMBNAIL);
         }
-        const thumbnail = head.name === "thumbnail" && head.file;
+        if (thumbnail && fill > 0) {
+          // The file's last part is sent, and its buffer released, before a trailing thumbnail is collected (#1828
+          // PR6), so the two are never held together; without one it is sent once the form is judged, as before.
+          await flush();
+        }
         const body = thumbnail
           ? await collected(this.#reader, IMAGE_SIZE_LIMIT, () => new StagingRefusal(422, THUMBNAIL_TOO_LARGE))
           : await collected(this.#reader, API_BODY_LIMIT);
+        if (repeated && body.byteLength > 0) {
+          throw new StagingRefusal(422, REPEATED_THUMBNAIL);
+        }
         weighed += weight({ head, body: thumbnail ? new Uint8Array() : body });
         if (weighed > API_BODY_LIMIT || this.#texts.length >= MULTIPART_PARTS) {
           throw new StagingRefusal(413, "Request body is too large");
@@ -856,6 +867,9 @@ class AvUpload {
         this.#thumbnail === null ? undefined : thumbnailFileProblem(this.#thumbnail.byteLength, this.#thumbnail);
       if (problem !== undefined) {
         throw new StagingRefusal(422, problem);
+      }
+      if (fill > 0) {
+        await flush();
       }
       await write(() => multipart.complete(parts));
       upload = null;
