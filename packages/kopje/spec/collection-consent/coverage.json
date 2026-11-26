@@ -1,12 +1,12 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "e5292bd83094001c40410092c05a9df74bbe528f",
+  "confirmed": "54dba22e5bf151b310cf55d6424f5b210e76d726",
   "files": [
     {
       "path": "src/store.ts",
       "functions": ["Store.receiveActivity"],
       "spec": "CollectionConsent.tla KRecv: one inbound activity, one Store transaction",
-      "blob": "d8f4d6189645bf2c357c7981adde11add50c46ca"
+      "blob": "c8016d75cad5cbc1c8bf599aae1cb1edb22accb5"
     },
     {
       "path": "src/domain/inbox.ts",
@@ -81,7 +81,7 @@
       "path": "src/domain/activities.ts",
       "functions": ["revocationRejectActivity"],
       "spec": "CollectionConsentKopje.tla Acc, Rej, Del, Blk, DelL: the activities Kopje records",
-      "blob": "ddc280a939c8352c69cefba73062a07799996997"
+      "blob": "0fc850355691fa284846b6748409d7e9a067b133"
     },
     {
       "path": "src/domain/deliveries.ts",
@@ -100,7 +100,7 @@
         "retryDeliveries"
       ],
       "spec": "CollectionConsent.tla's atomicity: each Kopje step is one of these RPCs",
-      "blob": "a8056b062d0c48dd08b4ce669c54ccd31de8c6a9"
+      "blob": "9ba544ab4f1ebda56ead5e75998fe7a841e3a0e3"
     },
     {
       "path": "src/mastodon/collections.ts",
