@@ -118,16 +118,22 @@ executing the text, so a row of any size stays under the platform's 100 KB state
 
 ### Stored bounds
 
-A job's retry state is its row's `attempts` and `due_at`, in `inbound_jobs` (migration `0080_inbound_job_attempts`)
-and in `quote_revocations`, `domain_block_cleanups`, `notification_request_jobs`, `notification_clears`,
-`notification_dismissals`, `moderation_jobs` and `remote_moderation_jobs` (migration `0084_family_job_attempts`),
-and `collection_jobs` (migration `0108_collection_jobs`), RES-5: fresh (`0`, NULL), backing off after a failed or
-stalled batch (`1` to `5`, an INTEGER time in ms from 0 to 2^53 − 1 when it may run again) or parked (`6`, NULL). Any
-other pair fails with `CHECK constraint failed`. A dump carries them as they are, so a restored Store keeps its parked
-jobs parked until `kopje-admin jobs retry`; a file built from legacy data writes `0` and NULL. From the same migration
-on, `notification_request_jobs.cursor` is inclusive: the highest id of the sender's notifications the job still walks. A
-dump taken before that migration holds exclusive cursors: it restores into a Store at its own migrations, whose upgrade
-then makes them inclusive; importing it into a Store already past the migration is refused.
+Each paragraph below gives the stored bound of a table or column (the CHECK or trigger of the migration it names), what
+a chunk past it fails with, refused as `chunk-failed`, and what a restored Store does with the values. Column affinity
+applies before every check: a column declared INTEGER stores numeric text and an integral REAL as the integer, and one
+declared TEXT stores a number as its decimal text. A dump taken before a migration restores into a Store at its own
+migrations, which then upgrades; a paragraph says what the upgrade writes where it writes anything.
+
+A job's retry state is its row's `attempts` and `due_at`, in `inbound_jobs` (migration `0080_inbound_job_attempts`) and
+in `quote_revocations`, `domain_block_cleanups`, `notification_request_jobs`, `notification_clears`,
+`notification_dismissals`, `moderation_jobs` and `remote_moderation_jobs` (migration `0084_family_job_attempts`), and
+`collection_jobs` (migration `0108_collection_jobs`), RES-5: fresh (`0`, NULL), backing off after a failed or stalled
+batch (`1` to `5`, an INTEGER time in ms from 0 to 2^53 − 1 when it may run again) or parked (`6`, NULL). Any other pair
+fails with `CHECK constraint failed`. A dump carries them as they are, so a restored Store keeps its parked jobs parked
+until `kopje-admin jobs retry`; a file built from legacy data writes `0` and NULL. From the same migration on,
+`notification_request_jobs.cursor` is inclusive: the highest id of the sender's notifications the job still walks. A
+dump taken before that migration holds exclusive cursors: its upgrade makes them inclusive; importing it into a Store
+already past the migration is refused.
 
 A retraction still staging its targets (RES-6) is its `outbound_activities` row with `staged` set and, from migration
 `0085_retraction_staging` on, the `retraction_stagings` row its `staged` names (its id as TEXT; `''` before the first
@@ -139,14 +145,14 @@ are, so a restored Store goes on staging from the same cursor. A `staged` value 
 intent (a key a dump taken before that migration holds, or anything else) starts the staging anew, so a target
 written before may get its retraction twice.
 
-A block's collection `Remove` still reaching its owner's followers (RES-6) is, from migration `0108_collection_jobs`
-on, its `outbound_activities` row with `staged` `''`, named by a `collection_job_intents` row of its owner's
+A block's collection `Remove` still reaching its owner's followers (RES-6) is, from migration `0108_collection_jobs` on,
+its `outbound_activities` row with `staged` `''`, named by a `collection_job_intents` row of its owner's
 `collection_jobs` row, with the followers' inboxes gathered so far in `collection_reach`. Each column has the CHECK the
 migration gives it (a `phase` it knows, INTEGER follow ids and intent ids, the follow bound NULL until the job's first
 followers round takes it, an inbox cursor and a staged inbox of 1 to 4,096 UTF-8 bytes without NUL), and both child
-tables name an existing job. A dump carries them as they are, so a restored Store goes on from the same phase, bound
-and cursors. A round writes only to an intent that is a staged `Remove` of
-the job's own owner; any other intent a row names gets no target and leaves the job.
+tables name an existing job. A dump carries them as they are, so a restored Store goes on from the same phase, bound and
+cursors. A round writes only to an intent that is a staged `Remove` of the job's own owner; any other intent a row names
+gets no target and leaves the job.
 
 A delivery host (RES-4, RES-5) is, from migration `0112_delivery_hosts` on, a row of `delivery_hosts`: `host` in the
 stored set of `deliveryHostSql` (`src/platform/stored-bounds.ts`: ASCII text of 3 to 253 bytes, lowercase letters,
@@ -170,26 +176,22 @@ repeated `to` or `cc` key, which `json_valid` accepts, is read only at the one e
 body without `addressing` (an unsigned `Delete`) is placed by its activity's own `to` and `cc`.
 
 A received quote's `author_fetches` (migration `0094_quote_author_fetches`) is the integer `0` to `6`, the author
-documents its current verification work applied (RES-6 in [threat-model.md](threat-model.md)); text that reads as one
-of them is stored as that integer by the column's affinity, and anything else fails with `CHECK constraint failed`. A
-dump carries it as it is, so a restored Store's work keeps its count. A dump taken before 0094 has no such column: it
-restores into a Store at its own migrations, whose upgrade gives every quote `0`. A file built from legacy data has no
-quotes.
+documents its current verification work applied (RES-6 in [threat-model.md](threat-model.md)); anything else fails with
+`CHECK constraint failed`. A dump carries it as it is, so a restored Store's work keeps its count. A dump taken before
+0094 has no such column: its upgrade gives every quote `0`. A file built from legacy data has no quotes.
 
 A received quote's `broadcast` (migration `0104_quote_broadcast`) is the integer `0`, `1` or `2`: whether its current
 verification work notifies when its decision moves the quote's state (`2` while a failure that may pass waits for the
-next verification). Text that reads as one of them is stored as that integer by the column's affinity, and anything
-else fails with `CHECK constraint failed`. A dump carries it as it is, so a restored Store's work decides as it would
-have. A dump taken before 0104 has no such column: it restores into a Store at its own migrations, whose upgrade gives
-every quote `0`, so a work under way then decides without notifying. A file built from legacy data has no quotes.
+next verification). Anything else fails with `CHECK constraint failed`. A dump carries it as it is, so a restored
+Store's work decides as it would have. A dump taken before 0104 has no such column: its upgrade gives every quote `0`,
+so a work under way then decides without notifying. A file built from legacy data has no quotes.
 
-Authorized apps (migration `0086_authorized_apps`): `oauth_clients.authorized` is the integer `1` for an app a user
-has authorized (a code was issued for it) and `0` otherwise. Text or a real that reads as one of them is stored as
-that integer by the column's affinity; anything else fails with `oauth_client_authorized`. A dump carries it as it
-is, so a restored Store keeps every authorized app out of the registration budget (RES-6) whether or not it holds
-tokens. A dump taken before 0086 has no such column: it restores into a Store at its own migrations, whose
-upgrade marks every app that holds a user's code or token. A file built from legacy data writes `0`: legacy clients
-carry no tokens, so they are marked when a user signs in through them again.
+Authorized apps (migration `0086_authorized_apps`): `oauth_clients.authorized` is the integer `1` for an app a user has
+authorized (a code was issued for it) and `0` otherwise. Anything else fails with `oauth_client_authorized`. A dump
+carries it as it is, so a restored Store keeps every authorized app out of the registration budget (RES-6) whether or
+not it holds tokens. A dump taken before 0086 has no such column: its upgrade marks every app that holds a user's code
+or token. A file built from legacy data writes `0`: legacy clients carry no tokens, so they are marked when a user signs
+in through them again.
 
 A held handshake (VIS-30, migration `0088_handshake_replays`) is a `handshake_replays` row keyed by the follow it holds
 (`follow_id`, a foreign key to `follows` that a follow's delete cascades to), with `check_at`, an INTEGER time in ms
@@ -245,22 +247,20 @@ out if it does not pass); `visible_in_picker` and `disabled` are 0 or 1; `create
 data has no row (`verify-conversion` fails on any).
 
 An announcement is a row of `announcements` (migration `0056_announcements`): an 18-digit `id`; `text` of 1 to 10,000
-UTF-8 bytes with no NUL and not blank in SQLite's ASCII sense; `starts_at` and `ends_at` both NULL or both set, the
-end not before the start; `published_at`, `scheduled_at`, `created_at` and `updated_at` as `YYYY-MM-DDTHH:MM:SS.sssZ`
-with an hour of 00 to 23 (NULL allowed but for the last two); `all_day` and `published` 0 or 1; a published row has
-a `published_at` and no `scheduled_at`. At most 1,000 rows, and at most 16 published or scheduled. A scheduled row
-whose time has passed is published by the next cron run. `announcement_reactions` rows name a local account and a
-`name` of 1 to 128 bytes with no NUL, C0 control or DEL: the shortcode of their `custom_emoji_id`'s emoji (ASCII of
-`A-Z a-z 0-9 _`), or, with no emoji, a name holding a character past ASCII; at most 8 names per announcement, one row
-per name and account; a reaction whose emoji was disabled since still imports. `announcement_dismissals` rows are one
-per local account and announcement. The tables come after `accounts`, `local_accounts` and `custom_emojis`. A chunk
-past these fails with the CHECK's name (`announcement_id_is_a_snowflake`, `announcement_text_within_10000_bytes`,
+UTF-8 bytes with no NUL and not blank in SQLite's ASCII sense; `starts_at` and `ends_at` both NULL or both set, the end
+not before the start; `published_at`, `scheduled_at`, `created_at` and `updated_at` as `YYYY-MM-DDTHH:MM:SS.sssZ` with
+an hour of 00 to 23 (NULL allowed but for the last two); `all_day` and `published` 0 or 1; a published row has a
+`published_at` and no `scheduled_at`. At most 1,000 rows, and at most 16 published or scheduled. A scheduled row whose
+time has passed is published by the next cron run. `announcement_reactions` rows name a local account and a `name` of 1
+to 128 bytes with no NUL, C0 control or DEL: the shortcode of their `custom_emoji_id`'s emoji (ASCII of `A-Z a-z 0-9
+_`), or, with no emoji, a name holding a character past ASCII; at most 8 names per announcement, one row per name and
+account; a reaction whose emoji was disabled since still imports. `announcement_dismissals` rows are one per local
+account and announcement. The tables come after `accounts`, `local_accounts` and `custom_emojis`. A chunk past these
+fails with the CHECK's name (`announcement_id_is_a_snowflake`, `announcement_text_within_10000_bytes`,
 `announcement_times_iso`, `announcement_range`, `announcement_flags`, `announcement_publication`,
-`announcement_reaction_name_within_128_bytes`), `announcements: more than 1000`, `announcements: more than 16
-published or scheduled`, `announcement_reactions: more than 8 names for one announcement`, `announcement_reactions: a
-custom emoji reaction is named by its shortcode` or a `UNIQUE` or `FOREIGN KEY` failure. A dump taken before 0056
-lists none of these tables: it restores into a Store at its own migrations (begin checks them), which then upgrades.
-A file built from legacy data has no row.
+`announcement_reaction_name_within_128_bytes`), `announcements: more than 1000`, `announcements: more than 16 published
+or scheduled`, `announcement_reactions: more than 8 names for one announcement`, `announcement_reactions: a custom emoji
+reaction is named by its shortcode` or a `UNIQUE` or `FOREIGN KEY` failure. A file built from legacy data has no row.
 
 Trends (migration `0057_trends`): `trend_tags` rows hold a hashtag `name` of 1 to 1,024 UTF-8 bytes with no NUL, at most
 256 characters and no ASCII but `0-9 _ a-z`, a `score` and a `max_score` with 0 ≤ score ≤ max_score ≤ 1e15 and a 24-byte
@@ -275,40 +275,34 @@ time. A chunk past these fails with the CHECK's name (`trend_tag_name`, `trend_t
 `tag_trend_review_at_iso`, `status_trend_review_at_iso`, `account_trend_review_at_iso`), `trend_tags: more than 250`,
 `trend_statuses: more than 250`, `trend_statuses: more than 3 for one author`, `trend_statuses: account_id is the
 status's author`, `tag_trend_reviews: more than 10000` (and the same for the other two review tables),
-`instance_settings: a value past its stored bound`, or a `FOREIGN KEY` failure. A dump taken before 0057 lists none of
-these tables: it restores into a Store at its own migrations, which then upgrades. A file built from legacy data has no
+`instance_settings: a value past its stored bound`, or a `FOREIGN KEY` failure. A file built from legacy data has no
 row.
 
 Profile credentials (migration `0058_profile_credentials`): `accounts.indexable` is NULL (a remote account not stored
-again since that migration, presented as false), or the integer 0 or 1; any other stored value, text that does not
-read as 0 or 1 included, fails with `accounts: indexable past its stored bound`. `local_accounts.accept_requests_after`
-is NULL (no unlock acceptance job) or a non-negative integer, the last `follows.id` the job passed; the job continues
-after a restore. Any other value fails with `accept_requests_after_cursor`. A dump taken before 0058 has neither
-column: it restores into a Store at its own migrations, which then upgrades. A file built from legacy data writes NULL
-for both.
+again since that migration, presented as false), or the integer 0 or 1; any other stored value, text that does not read
+as 0 or 1 included, fails with `accounts: indexable past its stored bound`. `local_accounts.accept_requests_after` is
+NULL (no unlock acceptance job) or a non-negative integer, the last `follows.id` the job passed; the job continues after
+a restore. Any other value fails with `accept_requests_after_cursor`. A file built from legacy data writes NULL for
+both.
 
 The contact account and activity (migration `0059_contact_and_activity`): `local_accounts.active_on` is NULL (never
 recorded) or a UTC date `YYYY-MM-DD` of 10 bytes, the account's last day with an authenticated request; anything else
 fails with `active_on_date`. An `instance_settings` row named `contact_username` holds an account's address, `user` or
-`user@domain` (ASCII letters, digits and `-._`, one `@` at most and at neither end, a username of at most 255 bytes,
-509 UTF-8 bytes in all, text only); anything else fails with `instance_settings: a value past its stored bound`. A dump
-taken before 0059 has no `active_on`: it restores into a Store at its own migrations, which then upgrades, and the
-upgrade deletes a `contact_username` row it carries outside that bound. A file built from legacy data writes NULL for
-`active_on` and no `contact_username` row.
+`user@domain` (ASCII letters, digits and `-._`, one `@` at most and at neither end, a username of at most 255 bytes, 509
+UTF-8 bytes in all, text only); anything else fails with `instance_settings: a value past its stored bound`. A dump
+taken before 0059 has no `active_on`: its upgrade deletes a `contact_username` row it carries outside that bound. A file
+built from legacy data writes NULL for `active_on` and no `contact_username` row.
 
-Account moves (migration `0060_account_moves`): `accounts.moved_to_account_id` is NULL, or the 18-digit id (text of
-18 ASCII digits) of another account, on a remote row only; anything else, the row's own id and a local row included,
-fails with `accounts: moved_to_account_id past its stored bound`. No foreign key holds it: an id that names no account
-restores as it is and presents no `moved`. A dump taken before 0060 has no such column: it restores into a Store at its
-own migrations, which then upgrades. A file built from legacy data writes NULL.
+Account moves (migration `0060_account_moves`): `accounts.moved_to_account_id` is NULL, or the 18-digit id (text of 18
+ASCII digits) of another account, on a remote row only; anything else, the row's own id and a local row included, fails
+with `accounts: moved_to_account_id past its stored bound`. No foreign key holds it: an id that names no account
+restores as it is and presents no `moved`. A file built from legacy data writes NULL.
 
 Static images (migration `0061_account_static_images`): `accounts.avatar_static_url` and `header_static_url` are NULL
 (the static image is the image itself), or text of at most 512 UTF-8 bytes without NUL, only on a local row whose
 `avatar_url` or `header_url` respectively is set; anything else fails with `accounts: static image past its stored
-bound`. Kopje writes the still preview URL of the upload the image names. A local upload's `meta` may carry
-`"animated": true` beside its sizes: its served file is animated, and its preview a still. A dump taken before 0061
-has no such columns: it restores into a Store at its own migrations, which then upgrades. A file built from legacy data
-writes NULL.
+bound`. Kopje writes the still preview URL of the upload the image names. A local upload's `meta` may carry `"animated":
+true` beside its sizes: its served file is animated, and its preview a still. A file built from legacy data writes NULL.
 
 Account warnings (migration `0062_account_warnings`): an `account_warnings` row names a local account
 (`target_account_id`, a `local_accounts` row) and holds `action` `none`; `text` of at most 10,000 UTF-8 bytes with no
@@ -319,35 +313,31 @@ warning; it is shown only to the warning's target, sent by that target. The tabl
 before `notifications`, and `sqlite_sequence` carries its id counter, so a restored Store never gives a warning id
 twice. A chunk past these fails with the CHECK's name (`account_warning_action`,
 `account_warning_text_within_10000_bytes`, `account_warning_status_ids_within_100_ids_and_2101_bytes`,
-`account_warning_created_at_iso`), `account_warnings: status_ids past its stored bound`, or a `UNIQUE` or
-`FOREIGN KEY` failure. A dump taken before 0062 has neither: it restores into a Store at its own migrations, which then
-upgrades. A file built from legacy data has no row and writes NULL for the column.
+`account_warning_created_at_iso`), `account_warnings: status_ids past its stored bound`, or a `UNIQUE` or `FOREIGN KEY`
+failure. A file built from legacy data has no row and writes NULL for the column.
 
 Status applications (migration `0064_status_applications`): `statuses.application_id` is NULL, or the client id of the
 app a local original was posted through: text of 1 to 64 ASCII bytes of base64url characters (`A-Z`, `a-z`, `0-9`, `-`,
-`_`), on a local original only (no boost, no remote author); anything else fails with `statuses: application_id past
-its stored bound`. No foreign key holds it: an id that names no `oauth_clients` row restores as it is and presents
-`application: null`. A scheduled status's `params` keep their `application_id` as written; publication records it
-only when it passes the same rule. A dump taken before 0064 has no such column: it restores into a Store at its own
-migrations, which then upgrades. A file built from legacy data writes NULL.
+`_`), on a local original only (no boost, no remote author); anything else fails with `statuses: application_id past its
+stored bound`. No foreign key holds it: an id that names no `oauth_clients` row restores as it is and presents
+`application: null`. A scheduled status's `params` keep their `application_id` as written; publication records it only
+when it passes the same rule. A file built from legacy data writes NULL.
 
 Scheduled statuses' params (migration `0110_scheduled_params`): besides the CHECK of `0011_scheduled_statuses` (a JSON
 object within 128 KiB), text with no NUL anywhere; a chunk that holds a BLOB or a NUL in one fails with
-`scheduled_statuses: a value past its stored bound`, refused as `chunk-failed`. A dump taken before 0110 restores into
-a Store at its own migrations, whose upgrade keeps such a row: it reads as unreadable (left out of the list, not found
-when shown or updated, and dropped when due).
+`scheduled_statuses: a value past its stored bound`, refused as `chunk-failed`. The upgrade of a dump taken before 0110
+keeps such a row: it reads as unreadable (left out of the list, not found when shown or updated, and dropped when due).
 
 Media BlurHash (migration `0065_media_blurhash`): `media_attachments.blurhash` is NULL, or text of 6 to 54 ASCII bytes
-of base83 characters (`0-9`, `A-Z`, `a-z` and `#$%*+,-.:;=?@[]^_{|}~`) whose first character gives x and y components
-of 1 to 5 each (its index i in that alphabet: x = i mod 9 + 1, y = floor(i / 9) + 1) and whose length is 4 + 2xy;
-anything else fails with `media_attachments: blurhash past its stored bound`. A dump taken before 0065 has no such
-column: it restores into a Store at its own migrations, which then upgrades. A file built from legacy data writes NULL.
+of base83 characters (`0-9`, `A-Z`, `a-z` and `#$%*+,-.:;=?@[]^_{|}~`) whose first character gives x and y components of
+1 to 5 each (its index i in that alphabet: x = i mod 9 + 1, y = floor(i / 9) + 1) and whose length is 4 + 2xy; anything
+else fails with `media_attachments: blurhash past its stored bound`. A file built from legacy data writes NULL.
 
-Media descriptions (migration `0105_media_description_bytes`): `media_attachments.description` is text of at most
-40,000 UTF-8 bytes and 10,000 characters as SQLite counts them (a malformed UTF-8 run counts as one); a longer one, or a
-BLOB, fails with `media_attachments: a value past its stored bound`. Malformed text within the bound is kept byte for
-byte, and presented as its first 10,000 code points once decoded. A dump taken before 0105 may hold a longer one or a
-BLOB: it restores into a Store at its own migrations, whose upgrade then cuts it to the bound, as text.
+Media descriptions (migration `0105_media_description_bytes`): `media_attachments.description` is text of at most 40,000
+UTF-8 bytes and 10,000 characters as SQLite counts them (a malformed UTF-8 run counts as one); a longer one, or a BLOB,
+fails with `media_attachments: a value past its stored bound`. Malformed text within the bound is kept byte for byte,
+and presented as its first 10,000 code points once decoded. A dump taken before 0105 may hold a longer one or a BLOB:
+its upgrade cuts it to the bound, as text.
 
 Field verification (migration `0066_field_verification`): `local_accounts.links_due_at` and `links_hold_until` are NULL
 or non-negative integers (milliseconds), `links_claim` a non-negative integer and `links_attempts` an integer from 0 to
@@ -355,56 +345,49 @@ or non-negative integers (milliseconds), `links_claim` a non-negative integer an
 claim is claimed again after its hold. `verified_links` is NULL, or text of at most 4,096 UTF-8 bytes with no NUL: a
 JSON array of 1 to 4 pairs `[value, time]` of texts, each value 1 to 255 bytes of printable ASCII once in the array and
 each time in the 24-byte ISO form; anything else fails with `local_accounts: verified_links past its stored bound`. A
-dump taken before 0066 has no such columns: it restores into a Store at its own migrations, which then upgrades. A file
-built from legacy data writes the defaults.
+file built from legacy data writes the defaults.
 
 Field link checks (migration `0076_field_link_checks`): `local_accounts.unverified_links` is NULL, or text of at most
 4,096 UTF-8 bytes with no NUL: a JSON array of 1 to 4 texts, each 1 to 255 bytes of printable ASCII once decoded and
-once in the array (the values checked and not verified since the last save); anything else fails with
-`local_accounts: unverified_links past its stored bound`. A dump taken before 0076 has no such column: it restores into
-a Store at its own migrations, which then upgrades. A file built from legacy data writes NULL.
+once in the array (the values checked and not verified since the last save); anything else fails with `local_accounts:
+unverified_links past its stored bound`. A file built from legacy data writes NULL.
 
 Filter text units (migration `0079_filter_text_units`): `statuses.filter_text_units` is NULL, or an integer from 0 to
-10,000 (text holding such a number is stored as that integer, by the column's affinity); anything else fails with
-`statuses: filter_text_units past its stored bound`. It is the length of the status's filter text in UTF-16 code units,
-cut at 10,000, as a Kopje writer measured it, and is restored as it is: a figure other than the text's length can
-change how an answer's shared allowance is divided (an undercount can raise the cuts of the statuses matched before
-it, and shorten its own), never pass the allowance (`docs/threat-model.md`, RES-2). NULL is never wrong: the level then
-reads an upper bound. A dump taken before 0079 has no such column: it restores into a Store at its own migrations,
-which then upgrades. A file built from legacy data writes NULL.
+10,000; anything else fails with `statuses: filter_text_units past its stored bound`. It is the length of the status's
+filter text in UTF-16 code units, cut at 10,000, as a Kopje writer measured it, and is restored as it is: a figure other
+than the text's length can change how an answer's shared allowance is divided (an undercount can raise the cuts of the
+statuses matched before it, and shorten its own), never pass the allowance (`docs/threat-model.md`, RES-2). NULL is
+never wrong: the level then reads an upper bound. A file built from legacy data writes NULL.
 
 Untrusted counts (migration `0114_untrusted_counts`): `statuses.untrusted_favourites_count` and
-`untrusted_reblogs_count` are each NULL, or an integer from 0 to 100,000,000 (text or a REAL holding such an integer is
-stored as that integer, by the column's affinity); anything else fails with `statuses: untrusted_favourites_count past
-its stored bound` (or `untrusted_reblogs_count`). They are the favourites and boosts count a remote status's server
-gave, which the API shows for that status in place of Kopje's own count; a local status's are never read. A dump taken
-before 0114 has no such columns: it restores into a Store at its own migrations, whose upgrade adds them NULL. A file
-built from legacy data writes NULL.
+`untrusted_reblogs_count` are each NULL, or an integer from 0 to 100,000,000; anything else fails with `statuses:
+untrusted_favourites_count past its stored bound` (or `untrusted_reblogs_count`). They are the favourites and boosts
+count a remote status's server gave, which the API shows for that status in place of Kopje's own count; a local status's
+are never read. A dump taken before 0114 has no such columns: its upgrade adds them NULL. A file built from legacy data
+writes NULL.
 
 Pinned statuses (migration `0089_pin_cap`): `status_pins` holds at most 5 rows per local account (`accounts.domain`
 NULL, which its row holds before any of its pins, whatever order a file puts other rows in) and 20 per remote one,
-whatever their statuses' visibility; a chunk that adds a pin past an account's limit fails with `status_pins: more
-pins than the account may keep`, refused as `chunk-failed` (HTTP 500 from the admin API, as a chunk that breaks any
-constraint is). A dump taken before 0089 restores into a Store at its own migrations, whose upgrade
-keeps each account's newest pins in pin order (`created_at` descending, then `status_id` descending) and deletes the
-rest.
+whatever their statuses' visibility; a chunk that adds a pin past an account's limit fails with `status_pins: more pins
+than the account may keep`, refused as `chunk-failed` (HTTP 500 from the admin API, as a chunk that breaks any
+constraint is). The upgrade of a dump taken before 0089 keeps each account's newest pins in pin order (`created_at`
+descending, then `status_id` descending) and deletes the rest.
 
 Scheduled statuses' uploads (migration `0109_scheduled_media_cap`): at most 4 `media_attachments` rows name one
 `scheduled_status_id`; a chunk that holds a fifth for one fails with `media_attachments: more media than a scheduled
-status may hold`, refused as `chunk-failed`. A dump taken before 0109 restores into a Store at its own migrations,
-whose upgrade keeps each scheduled status's first four by `position`, then `id`, and detaches the rest (no scheduled
-status, `position` 0, `gc_at` a day after the upgrade).
+status may hold`, refused as `chunk-failed`. The upgrade of a dump taken before 0109 keeps each scheduled status's first
+four by `position`, then `id`, and detaches the rest (no scheduled status, `position` 0, `gc_at` a day after the
+upgrade).
 
 Status cards (migration `0067_status_cards`): a `status_cards` row names its status (`status_id`, 18 ASCII digits, a
 `statuses` row it goes with) and is pending (`due_at` set, `fetched_at` NULL) or attached (`fetched_at` set, `due_at`
 NULL, a non-empty `title`; CHECKs `status_card_pending_or_attached` and `status_card_attached_title`). `url` is
 `https://` text of at most 2,048 bytes of printable ASCII without ``"<>\^`{|}``; `author_url` and `provider_url` are
 `''` or the same rule over `http(s)://` within 1,024 bytes; `title`, `description`, `author_name` and `provider_name`
-texts with no NUL within 512, 1,024, 512 and 512 JSON-escaped UTF-8 bytes; `language` NULL or 2 to 7 ASCII letters
-and hyphens; `published_at` NULL or the 24-byte ISO form; `due_at`, `enqueued_at`, `claim`, `generation` and
-`fetched_at` integers from 0 to 2^53 − 1 and `attempts` 0 to 2. Anything else fails with `status_cards: a value past
-its stored bound`. A restored open claim is claimed again after its hold. A dump taken before 0067 has no such table:
-it restores into a Store at its own migrations, which then upgrades. A file built from legacy data has no row.
+texts with no NUL within 512, 1,024, 512 and 512 JSON-escaped UTF-8 bytes; `language` NULL or 2 to 7 ASCII letters and
+hyphens; `published_at` NULL or the 24-byte ISO form; `due_at`, `enqueued_at`, `claim`, `generation` and `fetched_at`
+integers from 0 to 2^53 − 1 and `attempts` 0 to 2. Anything else fails with `status_cards: a value past its stored
+bound`. A restored open claim is claimed again after its hold. A file built from legacy data has no row.
 
 Card images (migration `0070_card_images`): a `status_cards` row also holds `image_url` (`''`, or the `url` rule's
 `https://` text), `image_id` (NULL or 18 ASCII digits; no foreign key, and a restored one names no row, since
@@ -417,13 +400,12 @@ Remote field verification (migration `0068_remote_field_verification`): a `remot
 account (`account_id`, 18 ASCII digits, an `accounts` row it goes with). `link_back` is `http(s)://` text of 1 to 2,048
 bytes of printable ASCII; `links` is the canonical JSON (as SQLite's `json()` writes it, no escape) of an array of 1 to
 4 entries `[index, href, verified_at, checked]`, within 4,213 UTF-8 bytes with no NUL: `index` an integer from 0 to 15,
-strictly increasing; `href` `https://` text of 1 to 1,016 bytes of printable ASCII without ``"<>\^`{|}``;
-`verified_at` null or the 24-byte ISO form; `checked` 0 or 1, and 1 when `verified_at` is set. `generation` and `claim`
-are integers from 0 to 2^53 − 1, `attempts` 0 to 2, and `due_at`, `armed_at`, `hold_until` and `checked_at` NULL or
-integers from 0 to 2^53 − 1, `due_at` and `armed_at` set together or neither (CHECK `remote_field_links_armed`).
-Anything else fails with `remote_field_links: a value past its stored bound`. A restored open claim is claimed again
-after its hold. A dump taken before 0068 has no such table: it restores into a Store at its own migrations, which then
-upgrades. A file built from legacy data has no row.
+strictly increasing; `href` `https://` text of 1 to 1,016 bytes of printable ASCII without ``"<>\^`{|}``; `verified_at`
+null or the 24-byte ISO form; `checked` 0 or 1, and 1 when `verified_at` is set. `generation` and `claim` are integers
+from 0 to 2^53 − 1, `attempts` 0 to 2, and `due_at`, `armed_at`, `hold_until` and `checked_at` NULL or integers from 0
+to 2^53 − 1, `due_at` and `armed_at` set together or neither (CHECK `remote_field_links_armed`). Anything else fails
+with `remote_field_links: a value past its stored bound`. A restored open claim is claimed again after its hold. A file
+built from legacy data has no row.
 
 Card embeds (migration `0069_card_embeds`): a `status_cards` row also holds `card_type` (an integer from 0 to 2: link,
 photo, video), `width` and `height` (integers from 0 to 65,535), `embed_src` (`''`, or `http://` or `https://` text of
@@ -474,28 +456,25 @@ which counts as any other until it expires. Days before today minus 184 or after
 most 500 rows of each table a run; a later day is never read. The restore itself counts nothing. A file built from
 legacy data has no row. An `instance_settings` row named `activity_api_enabled` holds `true` or `false`.
 
-Actor document revisions (migration `0073_actor_document_revision`): `accounts.document_revision` is an integer from
-0 to 2^53 - 1 (INTEGER affinity stores numeric text and an integral REAL as one); anything else, NULL included, fails
-with `accounts: document_revision past its stored bound`. A restored row keeps its value, and the Store's next store
-of that actor's document issues another (threat-model ID-1), the maximum included. A dump taken before 0073 has no
-such column: it restores into a Store at its own migrations, which then upgrades, and every row reads 0. A file built
-from legacy data leaves it at 0.
+Actor document revisions (migration `0073_actor_document_revision`): `accounts.document_revision` is an integer from 0
+to 2^53 - 1; anything else, NULL included, fails with `accounts: document_revision past its stored bound`. A restored
+row keeps its value, and the Store's next store of that actor's document issues another (threat-model ID-1), the maximum
+included. A dump taken before 0073 has no such column: after its upgrade, every row reads 0. A file built from legacy
+data leaves it at 0.
 
 Feature policies (migration `0115_feature_policies`): `accounts.feature_policy` is a remote account's FEP-7aa9
-`canFeature` as Mastodon stores it, an integer from 0 to 2^32 - 1 (INTEGER affinity stores numeric text and an integral
-REAL as one), and 0 on a local account; anything else, NULL included, fails with `accounts: feature_policy past its
-stored bound`. A restored row keeps its value until the Store stores that actor's next document. A dump taken before
-0115 has no such column: it restores into a Store at its own migrations, which then upgrades, and every row reads 0
-(Mastodon's `missing`: no local account may feature the account until its document is stored again). A file built
-from legacy data leaves it at 0.
+`canFeature` as Mastodon stores it, an integer from 0 to 2^32 - 1, and 0 on a local account; anything else, NULL
+included, fails with `accounts: feature_policy past its stored bound`. A restored row keeps its value until the Store
+stores that actor's next document. A dump taken before 0115 has no such column: after its upgrade, every row reads 0
+(Mastodon's `missing`: no local account may feature the account until its document is stored again). A file built from
+legacy data leaves it at 0.
 
 Media focus (migration `0116_media_focus_given`): `media_attachments.focus_given` is 0 or 1; any other value, NULL
-included, fails with `media_attachments: focus_given past its stored bound` (INTEGER affinity stores numeric text and an
-integral REAL as the integer). The bound is its range only, not its agreement with `focus_x` and `focus_y`. Kopje's
-writers store 1 when the attachment's focus was given (an upload's, a media update's or an edit's `focus`, a remote
-attachment's `focalPoint`) and 0 when none was; an attachment shows its focus where the column is 1 or its point is not
-0,0. A restored row keeps its value. A dump taken before 0116 has no such column: it restores into a Store at its own
-migrations, which then upgrades, and every row reads 0 beside the point it held, so an attachment shows `focus_x` and
+included, fails with `media_attachments: focus_given past its stored bound`. The bound is its range only, not its
+agreement with `focus_x` and `focus_y`. Kopje's writers store 1 when the attachment's focus was given (an upload's, a
+media update's or an edit's `focus`, a remote attachment's `focalPoint`) and 0 when none was; an attachment shows its
+focus where the column is 1 or its point is not 0,0. A restored row keeps its value. A dump taken before 0116 has no
+such column: after its upgrade, every row reads 0 beside the point it held, so an attachment shows `focus_x` and
 `focus_y` as its focus only when they are not both 0. A file built from legacy data holds 0, with 0,0, in every row: a
 legacy `focalPoint` is not carried ([cutover.md](cutover.md)).
 
@@ -503,85 +482,77 @@ Media thumbnails (migration `0123_media_thumbnails`): `media_attachments.thumbna
 the video or audio upload whose custom thumbnail the row is (its parent). A row with it set is an image upload of its
 own file token, neither attached nor scheduled, and, while current (`gc_at` NULL), completed with its URL; a chunk
 holding any other row with it set fails with `media_attachments: an invalid thumbnail link`. Rows insert in any order,
-so the parent is checked once every row is in: a current child whose parent is not a local video or audio upload of
-the same account, or a replaced child (`gc_at` set) that keeps its URL or never completed, fails verification with
+so the parent is checked once every row is in: a current child whose parent is not a local video or audio upload of the
+same account, or a replaced child (`gc_at` set) that keeps its URL or never completed, fails verification with
 `thumbnail-link-invalid`. A replaced child whose parent is gone is kept. A dump taken before 0123 has no such column:
-it restores into a Store at its own migrations, which then upgrades, and every row reads NULL. A file built from legacy
-data holds NULL in every row.
+after its upgrade, every row reads NULL. A file built from legacy data holds NULL in every row.
 
 Account invitations (migration `0081_account_invitations`): an `account_invitations` row holds an `email` (text of 3 to
 254 UTF-8 bytes with no NUL, no ASCII control, space or DEL, and one `@` neither first nor last), a `username` (1 to 30
 ASCII letters, digits or underscores), both unique ignoring ASCII case, and a 24-byte ISO `created_at`; at most 10 rows.
 A chunk past these fails with the CHECK's name (`account_invitation_email`, `account_invitation_username`,
 `account_invitation_created_at_iso`), `UNIQUE constraint failed`, or `account_invitations: more than 10`. A restored
-Store honours them as the admin added them (threat-model AUTH-9). A dump taken before 0081 has no such table: it
-restores into a Store at its own migrations, which then upgrades. A file built from legacy data has no row.
+Store honours them as the admin added them (threat-model AUTH-9). A file built from legacy data has no row.
 
 Annual reports (migration `0093_annual_reports`): an `annual_reports` row names a local account (`account_id`, a
 `local_accounts` row, whose delete cascades to it) and a `year` (an integer from 1 to 9999), one per account and year,
-and holds an `archetype` (`lurker`, `booster`, `pollster`, `replier` or `oracle`), `statuses` and `followers`
-(integers from 0 to 2^53 - 1), `top_status_id` (NULL or 18 ASCII digits; no foreign key, so it may name a status the
-Store no longer holds, which the report then does not show), `top_hashtag` and `top_hashtag_uses` (both NULL, or a
-name of 1 to 1,024 UTF-8 bytes with no NUL and at most 256 characters, and an integer from 2 to 2^53 - 1),
-`viewed_at` (NULL while pending) and `created_at`, each as `YYYY-MM-DDTHH:MM:SS.sssZ` with an hour of 00 to 23.
-SQLite's column affinity stores numeric text and an integral REAL in an INTEGER column as the integer, and an integer
-in a TEXT column as its decimal text, before the CHECK runs. A chunk past these fails with the CHECK's name
-(`annual_report_year`, `annual_report_archetype`, `annual_report_statuses`, `annual_report_followers`,
-`annual_report_top_status_id`, `annual_report_top_hashtag`, `annual_report_top_hashtag_uses`,
-`annual_report_top_hashtag_pair`, `annual_report_viewed_at`, `annual_report_created_at`) or a `PRIMARY KEY` or
-`FOREIGN KEY` failure. A restored report is presented as it was dumped, `created_at` included; nothing recomputes it.
-A dump taken before 0093 has no such table: it restores into a Store at its own migrations, which then upgrades. A
-file built from legacy data has no row. An `instance_settings` row named `wrapstodon` holds `true` or `false`.
+and holds an `archetype` (`lurker`, `booster`, `pollster`, `replier` or `oracle`), `statuses` and `followers` (integers
+from 0 to 2^53 - 1), `top_status_id` (NULL or 18 ASCII digits; no foreign key, so it may name a status the Store no
+longer holds, which the report then does not show), `top_hashtag` and `top_hashtag_uses` (both NULL, or a name of 1 to
+1,024 UTF-8 bytes with no NUL and at most 256 characters, and an integer from 2 to 2^53 - 1), `viewed_at` (NULL while
+pending) and `created_at`, each as `YYYY-MM-DDTHH:MM:SS.sssZ` with an hour of 00 to 23. A chunk past these fails with
+the CHECK's name (`annual_report_<column>` for each column but `account_id`, and `annual_report_top_hashtag_pair`) or a
+`PRIMARY KEY` or `FOREIGN KEY` failure. A restored report is presented as it was dumped, `created_at` included; nothing
+recomputes it. A file built from legacy data has no row. An `instance_settings` row named `wrapstodon` holds `true` or
+`false`.
 
 Notification policies' bot condition (migration `0095_notification_policy_bots`): `notification_policies.for_bots` is
 `accept`, `filter` or `drop`, as each of the policy's other conditions is; anything else fails with the CHECK's text
-(`CHECK constraint failed: for_bots IN ('accept', 'filter', 'drop')`). A dump taken before 0095 has no such column: it
-restores into a Store at its own migrations, which then upgrades, giving every policy `accept`. A file built from
-legacy data has no row.
+(`CHECK constraint failed: for_bots IN ('accept', 'filter', 'drop')`). A dump taken before 0095 has no such column: its
+upgrade gives every policy `accept`. A file built from legacy data has no row.
 
 Profile image descriptions and display settings (migration `0097_profile_descriptions`): `accounts.avatar_description`
 and `header_description` are text of at most 600 UTF-8 bytes, with no NUL and at most 150 characters as SQLite counts
-them, `''` for none; `show_featured`, `show_media` and `show_media_replies` are the integer 0 or 1. Column affinity
-applies first, so a number written to a description is stored as its text, and numeric text (`'1'`, `' 1'`, `'1.0'`)
-written to a setting as the integer. Anything else, NULL included, fails with `accounts: profile setting past its
-stored bound`. A description of malformed bytes that SQLite counts as fewer characters is presented cut at 150 code
-points after decoding. A dump taken before 0097 has none of these columns: it restores into a Store at its own
-migrations, which then upgrades, giving every account `''` and `1`. A file built from legacy data writes the defaults.
+them, `''` for none; `show_featured`, `show_media` and `show_media_replies` are the integer 0 or 1. Anything else, NULL
+included, fails with `accounts: profile setting past its stored bound`. A description of malformed bytes that SQLite
+counts as fewer characters is presented cut at 150 code points after decoding. A dump taken before 0097 has none of
+these columns: its upgrade gives every account `''` and `1`. A file built from legacy data writes the defaults.
 
-Poll refresh state (migration `0100_poll_refresh`): `polls.fetched_at` and `refresh_at` are NULL or an integer from
-0 to 2^53 - 1 (epoch milliseconds, the Store's clock), and `revision` is an integer from 0 to 2^53 - 1. Column
-affinity applies first, so numeric text or an integral REAL is stored as the integer. Anything else fails with the
-CHECK's text for the two times and with `polls: revision past its stored bound` for the revision. A restored value is
-kept as dumped: a time after the Store's clock reads as none, so that poll is due for a refresh at its next signed-in
-read, and the next write of the poll issues another revision, the maximum included. A dump taken before 0100 has none
-of these columns: it restores into a Store at its own migrations, which then upgrades, giving every poll NULL, NULL
-and 0. A file built from legacy data writes the defaults.
-Collections (migration `0103_collections`): a `collections` row names its owner (`account_id`, whose delete cascades
-to it), and holds `local` (0 or 1), a `name` of 1 to 40 characters for a local collection and 1 to 256 for a remote
-one, a `description` (NULL, or at most 100 and 2,048 characters), each at most 4 UTF-8 bytes a character with no NUL,
-a `language` (NULL or a supported locale), `sensitive` and `discoverable` (0 or 1), a `tag` (NULL, or a hashtag's
-display name of 1 to 1,024 bytes and at most 256 characters), `uri`, `url` and `total_items` (NULL on a local row; on
-a remote one an https URL of printable ASCII within 2,048 bytes, NULL or such a URL, and NULL or an integer to
-2^31 - 1), and a 24-byte ISO `created_at` and `updated_at`. A `collection_items` row names its collection (whose
-delete cascades to it) and its member (`account_id`, whose delete cascades to it; NULL only on a remote item not yet
-resolved, `object_uri` then naming it), one row per member and collection, and holds a `state` (0 pending, 1
-accepted, 2 rejected, 3 revoked), a `position` from 1 to 2^31 - 1, its remote URIs and item-check columns, and the
-two times; its CHECKs tie the columns to each other (an accepted row has an account, a
-verified authorization has an account and is unique per member, a retraction is held only by a pending row without
-either authorization, the check's token and watched answer only by a queued check). An account holds at most 50
-collections, and a collection at most 50 items, of which at most 25 pending or accepted. Anything else fails with the
-CHECK's name (`collection_name`, `collection_item_state`, `collection_item_accepted` and the others),
-`UNIQUE constraint failed`, `collections: past the per-account bound`, `collection_items: past the per-collection
-bound` or `collection_items: past the live bound`. A restored row is presented as it was dumped; the cron deletes a
-rejected or revoked item a day after its `updated_at`. A dump taken before 0103 has no such table: it restores into a
-Store at its own migrations, which then upgrades. A file built from legacy data has no row.
+Poll refresh state (migration `0100_poll_refresh`): `polls.fetched_at` and `refresh_at` are NULL or an integer from 0 to
+2^53 - 1 (epoch milliseconds, the Store's clock), and `revision` is an integer from 0 to 2^53 - 1. Anything else fails
+with the CHECK's text for the two times and with `polls: revision past its stored bound` for the revision. A restored
+value is kept as dumped: a time after the Store's clock reads as none, so that poll is due for a refresh at its next
+signed-in read, and the next write of the poll issues another revision, the maximum included. A dump taken before 0100
+has none of these columns: its upgrade gives every poll NULL, NULL and 0. A file built from legacy data writes the
+defaults.
+
+Collections (migration `0103_collections`): a `collections` row names its owner (`account_id`, whose delete cascades to
+it), and holds `local` (0 or 1), a `name` of 1 to 40 characters for a local collection and 1 to 256 for a remote one, a
+`description` (NULL, or at most 100 and 2,048 characters), each at most 4 UTF-8 bytes a character with no NUL, a
+`language` (NULL or a supported locale), `sensitive` and `discoverable` (0 or 1), a `tag` (NULL, or a hashtag's display
+name of 1 to 1,024 bytes and at most 256 characters), `uri`, `url` and `total_items` (NULL on a local row; on a remote
+one an https URL of printable ASCII within 2,048 bytes, NULL or such a URL, and NULL or an integer to 2^31 - 1), and a
+24-byte ISO `created_at` and `updated_at`. A `collection_items` row names its collection (whose delete cascades to it)
+and its member (`account_id`, whose delete cascades to it; NULL only on a remote item not yet resolved, `object_uri`
+then naming it), one row per member and collection, and holds a `state` (0 pending, 1 accepted, 2 rejected, 3 revoked),
+a `position` from 1 to 2^31 - 1, its remote URIs and item-check columns, and the two times; its CHECKs tie the columns
+to each other (an accepted row has an account, a verified authorization has an account and is unique per member, a
+retraction is held only by a pending row without either authorization, the check's token and watched answer only by a
+queued check). An account holds at most 50 collections, and a collection at most 50 items, of which at most 25 pending
+or accepted. Anything else fails with the CHECK's name (`collection_name`, `collection_item_state`,
+`collection_item_accepted` and the others), `UNIQUE constraint failed`, `collections: past the per-account bound`,
+`collection_items: past the per-collection bound` or `collection_items: past the live bound`. A restored row is
+presented as it was dumped; the cron deletes a rejected or revoked item a day after its `updated_at`. A file built from
+legacy data has no row.
+
 The collections a status tags (migration `0120_tagged_collections`): a `status_collections` row names a status
 (`status_id`) and a collection (`collection_id`), the delete of either cascading to it, once per pair; a status tags at
 most 4 collections, and a collection is tagged by at most 100 statuses. Anything else fails with a `FOREIGN KEY` or
 `UNIQUE` failure, `status_collections: past the per-status bound` or `status_collections: past the per-collection
-bound`. A restored row stays as dumped until its status is next edited or updated, which writes the status's tags
-again. A dump taken before 0120 has no such table: it restores into a Store at its own migrations, which then
-upgrades, and its statuses tag no collection. A file built from legacy data has no row.
+bound`. A restored row stays as dumped until its status is next edited or updated, which writes the status's tags again.
+A dump taken before 0120 has no such table: after its upgrade, its statuses tag no collection. A file built from legacy
+data has no row.
+
 A remote account's collection sync and the checks of its collections' items (migration
 `0113_featured_collection_syncs`): `collection_syncs.collections_read` is 0 or 1, whether the read under way has read
 the account's `featuredCollections`, and `collections_changed` 0 or 1, whether the account's collections changed since
@@ -591,14 +562,15 @@ latest item-check claims (an INTEGER from 0 to 104,249,990, the last day whose n
 latest due time of an item's check, CHECK `collection_check_quotas_day`), and `used`, the claims made that day (an
 INTEGER from 0 to 250, CHECK `collection_check_quotas_used`). Any other value fails with `CHECK constraint failed`. A
 dump carries them as they are, so a restored Store goes on with the same day's count; a `day` after the Store's clock
-keeps its count until that day has passed. A dump taken before 0113 has neither: it restores into a Store at its own
-migrations, which then upgrades, giving every sync 0 and no quota. A file built from legacy data has no row.
+keeps its count until that day has passed. A dump taken before 0113 has neither: its upgrade gives every sync 0 and no
+quota. A file built from legacy data has no row.
+
 `notifications.collection_item_id` and `notifications.collection_id` (migration `0107_collection_notifications`) are
-each NULL or 18 ASCII digits naming an item or a collection the dump holds: an `added_to_collection` notification
-names its item alone, a `collection_update` its collection alone, and any other type neither, with at most one
-notification an item and one `collection_update` a collection and recipient; otherwise the chunk fails with
-`notifications: collection keys past their stored bound` or a `FOREIGN KEY` or `UNIQUE` failure. A dump taken
-before 0107 has neither column: every notification restores with both NULL.
+each NULL or 18 ASCII digits naming an item or a collection the dump holds: an `added_to_collection` notification names
+its item alone, a `collection_update` its collection alone, and any other type neither, with at most one notification an
+item and one `collection_update` a collection and recipient; otherwise the chunk fails with `notifications: collection
+keys past their stored bound` or a `FOREIGN KEY` or `UNIQUE` failure. A dump taken before 0107 has neither column: every
+notification restores with both NULL.
 
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a
@@ -630,17 +602,17 @@ renames it with the table), hold no other row.
 
 These are excluded because they must not be restored blindly:
 
-| Excluded                                                   | Why                                                                                                                                                                                                                                                                                                                                                                                             |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kopje_migrations`                                         | The header carries it. The target's own migration runner recreates it                                                                                                                                                                                                                                                                                                                           |
-| `kopje_state` except `last_local_id` and `profile_updates` | `hold`, `upgrade` and `upgrade_bookmark` (a bookmark belongs to the source object), `maintenance`, `dump` and `import` describe one object at one time                                                                                                                                                                                                                                          |
-| `media_orphans`                                            | Tombstones of R2 objects to delete; a restored Store must not delete what it restores                                                                                                                                                                                                                                                                                                           |
-| `card_images`                                              | Card images, re-encoded with no original kept; a restored Store shows its cards without them (`status_cards` keeps the links)                                                                                                                                                                                                                                                                   |
-| `remote_media*`                                            | The cache of remote media and its R2 ledger: a target starts with an empty cache, shows remote URLs, and fetches them again                                                                                                                                                                                                                                                                     |
-| `backup_media`                                             | The scheduled backup's media index for one bucket ([backup.md](backup.md)); a restored Store starts a fresh media baseline                                                                                                                                                                                                                                                                      |
-| `reply_walk*`                                              | Walks of remote replies collections under way (context or Create walks, migration `0099_reply_walks`), and where their scans of each status's stored replies stand and the work they owe a thread's next walks (`0106_reply_walk_debts`): job state; a restored Store starts no walk, scans each status from its first reply again, and owes again what the walk that next has no room for cuts |
-| `stream_*`                                                 | The streaming API's registry of subscriptions, journal of events and position: state of the open sockets of one object                                                                                                                                                                                                                                                                          |
-| `_cf_*`, `sqlite_*` (except `sqlite_sequence`)             | Platform and SQLite internals                                                                                                                                                                                                                                                                                                                                                                   |
+| Excluded                                                   | Why                                                                                                                                                                                                                                                                |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `kopje_migrations`                                         | The header carries it. The target's own migration runner recreates it                                                                                                                                                                                              |
+| `kopje_state` except `last_local_id` and `profile_updates` | `hold`, `upgrade` and `upgrade_bookmark` (a bookmark belongs to the source object), `maintenance`, `dump` and `import` describe one object at one time                                                                                                             |
+| `media_orphans`                                            | Tombstones of R2 objects to delete; a restored Store must not delete what it restores                                                                                                                                                                              |
+| `card_images`                                              | Card images, re-encoded with no original kept; a restored Store shows its cards without them (`status_cards` keeps the links)                                                                                                                                      |
+| `remote_media*`                                            | The cache of remote media and its R2 ledger: a target starts with an empty cache, shows remote URLs, and fetches them again                                                                                                                                        |
+| `backup_media`                                             | The scheduled backup's media index for one bucket ([backup.md](backup.md)); a restored Store starts a fresh media baseline                                                                                                                                         |
+| `reply_walk*`                                              | Walks of remote replies collections under way (`0099_reply_walks`) and the scan positions and debts they keep for a thread's next walks (`0106_reply_walk_debts`): job state; a restored Store starts no walk and scans each status's replies from the first again |
+| `stream_*`                                                 | The streaming API's registry of subscriptions, journal of events and position: state of the open sockets of one object                                                                                                                                             |
+| `_cf_*`, `sqlite_*` (except `sqlite_sequence`)             | Platform and SQLite internals                                                                                                                                                                                                                                      |
 
 The importer refuses a `kopje_state` row whose name is not allowlisted. `profile_updates` is written only by
 `convert --images`: a JSON array of the ids of the local accounts whose avatar or header the conversion changed
