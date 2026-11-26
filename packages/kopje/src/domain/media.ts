@@ -353,7 +353,7 @@ function jobsName(kind: JobKind, now: number): string {
 }
 
 // The units of `kind` spent in the month `now` is in.
-export function jobsSpent(db: Db, kind: JobKind, now: number): number {
+function jobsSpent(db: Db, kind: JobKind, now: number): number {
   return Number(state(db, jobsName(kind, now)) ?? "0");
 }
 

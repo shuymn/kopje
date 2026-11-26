@@ -354,7 +354,7 @@ function resetSlot(db: Db, id: string, url: string, host: string, now: number, c
 // ---- Enqueue
 
 // The instance's domain (instance_settings), or null before setup.
-export function instanceDomain(db: Db): string | null {
+function instanceDomain(db: Db): string | null {
   const value = db.first<{ value: SqlStorageValue }>(
     "SELECT value FROM instance_settings WHERE name = 'domain'",
   )?.value;

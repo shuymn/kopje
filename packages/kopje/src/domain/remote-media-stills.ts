@@ -36,7 +36,7 @@ import {
 // ledger row's charge, the row's still_charge, and usage and the audit accumulator (chargeObject) by one delta:
 // - claim (claimRemoteStill): a reservation of STILL_OUTPUT_LIMIT (net of an unsettled earlier one), one unit of the
 //   stills budget, a fresh attempt, and the lease (remote_still_lease) to it;
-// - admission (admitRemoteStill) before the put: one put within STILL_PUT_GRANT_MS;
+// - admission (admitRemoteStill) before the put: one put;
 // - record (recordRemoteStill): the slot names the still, the reservation becomes the WebP's bytes;
 // - failure (failRemoteStill): the attempt settled once (retry or park), its reservation released;
 // - the claim's walk deletes a row that no longer qualifies and releases its charge.
@@ -49,8 +49,6 @@ import {
 export const STILL_CLAIM_WALK = 64;
 // The lease a claim takes: past the next 5-minute cron tick, so a round whose stop is unknown holds the next one off.
 export const STILL_LEASE_MS = 600 * 1000;
-// The time an admitted put may start within, on the Worker's clock read before the admission's call.
-export const STILL_PUT_GRANT_MS = 2000;
 
 const isTime = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
 
@@ -247,8 +245,7 @@ function current(row: Row | undefined, attempt: unknown): row is Row & { claimed
 
 // Admission right before the put of `attempt`'s still: a write (refused in any maintenance, a dump or an import), for
 // the row's current, unsettled attempt that holds the live lease, the object stored and its slot current, eligible and
-// qualifying, and the claim after the last restore (the marker). Its commit authorizes one put, which the Worker starts
-// only within STILL_PUT_GRANT_MS of its own clock reading taken before the call.
+// qualifying, and the claim after the last restore (the marker). Its commit authorizes one put.
 export const admitRemoteStill = writeOperation.atStoreTime("now")<
   { token: string; attempt: string; now: number; restoredAt: Marker },
   { admitted: boolean }

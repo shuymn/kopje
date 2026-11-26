@@ -42,7 +42,7 @@ export type ProbeRecord = {
   imagesVerified?: boolean;
 };
 
-export type ProbeAttempt = {
+type ProbeAttempt = {
   version: string;
   at: number;
   claim?: string;
@@ -104,7 +104,7 @@ function stamped(at: unknown, now: number): boolean {
   return Number.isSafeInteger(at) && (at as number) >= 0 && (at as number) <= now;
 }
 
-export function probeRecordValid(value: unknown, now: number): value is ProbeRecord {
+function probeRecordValid(value: unknown, now: number): value is ProbeRecord {
   const record = shaped(value, ["version", "imageTag", "at", "ok"], ["imagesVerified"]);
   return (
     record !== null &&
@@ -116,7 +116,7 @@ export function probeRecordValid(value: unknown, now: number): value is ProbeRec
   );
 }
 
-export function probeAttemptValid(value: unknown, now: number): value is ProbeAttempt {
+function probeAttemptValid(value: unknown, now: number): value is ProbeAttempt {
   const attempt = shaped(value, ["version", "at"], ["claim", "result"]);
   return (
     attempt !== null &&
@@ -150,7 +150,7 @@ function storedJson(db: Db, name: string): unknown {
 }
 
 // Writes a value its validator accepted within PROBE_VALUE_BYTES; throws otherwise, so nothing out of bounds is stored.
-export function writeProbeValue(db: Db, name: string, value: unknown, valid: boolean): void {
+function writeProbeValue(db: Db, name: string, value: unknown, valid: boolean): void {
   const text = JSON.stringify(value);
   if (!valid || new TextEncoder().encode(text).byteLength > PROBE_VALUE_BYTES) {
     throw new Error("probe record out of bounds");
