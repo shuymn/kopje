@@ -3542,17 +3542,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
     `test-node/schema-coverage.test.ts`.
   - Remote stills, the Store's part (#1828, migration `0122_remote_media_stills`, `src/domain/remote-media-stills.ts`;
     no round makes one yet and nothing queues one): a still is queued, in the transaction that records its video, only
-    for a cached remote video or gifv with no preview of its own while `still@standard-1` passed for the running
-    build. A claim reserves `STILL_OUTPUT_LIMIT` (2 MiB) on the object, ledger and usage together with one delta, and
-    is admitted only within the cap less `LANE1_HEADROOM`, deferred otherwise; reclamation never dooms anything for a
+    for a cached remote video or gifv with no preview of its own while `still@standard-1` passed for the running build.
+    A claim reserves `STILL_OUTPUT_LIMIT` (2 MiB) on the object, ledger and usage together with one delta, and is
+    admitted only within the cap less `LANE1_HEADROOM`, deferred otherwise; reclamation never dooms anything for a
     still. Each claim names a fresh attempt, the still's key `remote/<token>/s<attempt>` (never a stable key), takes a
-    unit of the month's stills budget and a lease, and a video gets at most `STILL_CLAIMS` (3). The put is admitted
-    only for the lease's attempt, and the record only before the claim's `STILL_ROUND_MS`, under the same fence; it
-    names the key on the slot and moves the charge to the still's bytes. A failure or a dropped row releases the
-    reservation. A doomed video waits `LATE_PUT_MS` after its still's claim, and its deletion deletes the named key;
-    a key no slot names is never charged and is left to the sweep (MEDIA-2). Every slot writer that clears a slot
-    clears its named still. Every operation reads the restore marker where a restore changes its answer, refusing on
-    an unknown one. `test/remote-media-stills.test.ts`.
+    unit of the month's stills budget and a lease, and a video gets at most `STILL_CLAIMS` (3) between restores. The put
+    is admitted only for the lease's attempt, and the record only before the claim's `STILL_ROUND_MS`, under the same
+    fence; it names the key on the slot and moves the charge to the still's bytes. A failure or a dropped row releases
+    the reservation. A doomed video waits `LATE_PUT_MS` after its still's claim, and its deletion deletes the named key;
+    a key no slot names is never charged and is left to the sweep (MEDIA-2). Every slot writer that clears a slot clears
+    its named still. Every operation reads the restore marker where a restore changes its answer, refusing on an unknown
+    one. `test/remote-media-stills.test.ts`.
   - Walks across rounds: each records the progress it completed, and an item that fails every time holds back
     none behind it: the claims (a file that fails is retried later while the others are fetched), the backfill (an
     account whose URL is refused gets no slot, and the cursor moves past accounts already processed), the audit, the
