@@ -136,12 +136,12 @@ which makes the stills of video rows with it (`kopje-admin media-rebuild`, activ
    npm run admin -- media-processor probe
    ```
 
-It starts the container on each instance type Kopje uses (normalize on standard-4 with ffmpeg's threads at 4, the
-choice measured for #1828; stills on standard-1), runs one operation on a 2-second clip that ships in the package,
-destroys the container, and prints what it saw. For `normalize@standard-4` that is its activation probe, whose verdict
-it records for the deployed version; it writes the Store, so it is refused while the instance is in maintenance or
-read-only. Each image Kopje builds is about 300 MB in your account's
-container registry; delete the images of versions you no longer deploy (`npx wrangler containers images list`).
+It starts the container on each instance type Kopje uses (normalize on standard-4 with ffmpeg's threads at 4, stills on
+standard-1), runs one operation on a 2-second clip that ships in the package, destroys the container, and prints what it
+saw. For `normalize@standard-4` that is its activation probe, whose verdict it records for the deployed version; it
+writes the Store, so it is refused while the instance is in maintenance or read-only. Each image Kopje builds is about
+300 MB in your account's container registry; delete the images of versions you no longer deploy (`npx wrangler
+containers images list`).
 
 The `v2-media-processor` migration is permanent: once deployed, it is never edited or removed. To turn the processor
 off, remove only the `"containers"` entry and deploy; keep the export, the binding and the migration, and the probe
