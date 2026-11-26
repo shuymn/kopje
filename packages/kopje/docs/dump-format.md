@@ -60,8 +60,8 @@ dump with the Store's own catalog and literals (`src/platform/dump-catalog.ts` a
   `GET /admin/catalog` (or `kopje-admin catalog`) and copy `migrations` and `tables` from there.
 - The catalog is read from the live schema:
   - All tables are included except `kopje_migrations`, `media_orphans`, `card_images`, `remote_media`,
-    `remote_media_objects`, `remote_media_usage`, `backup_media`, `reply_walk*`, `stream_*`, `_cf_*`, and `sqlite_*`
-    other than `sqlite_sequence`.
+    `remote_media_objects`, `remote_media_usage`, `remote_media_stills`, `backup_media`, `reply_walk*`, `stream_*`,
+    `_cf_*`, and `sqlite_*` other than `sqlite_sequence`.
     The moderation log (`admin_actions`, migration `0029_admin_reports`) is included like any other table: a
     restored Store keeps who did what, and its ids, so the log keeps pruning its oldest rows.
   - Columns are in declaration order.

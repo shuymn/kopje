@@ -5,7 +5,7 @@ import { PROBE_CLAIM_MS, probeName } from "../src/domain/media-probes";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
 import { avFixture } from "./av-helpers";
-import { BUILD, rejectionOf } from "./helpers";
+import { BUILD } from "./helpers";
 import { mediaForm } from "./media-helpers";
 import { ACTIVE, avWorld, clock, gate, HOUR, passProbe, SECOND, staged, T0, TEXT } from "./media-processing-helpers";
 import { community } from "./status-helpers";
@@ -78,25 +78,25 @@ describe("admission per profile and build", () => {
     expect(await activation(w.store)).toMatchObject({ active: false });
   });
 
-  it("the generic probe RPCs write the normalize profile only; the still profile stays on the rebuild's lease (L4)", async () => {
+  it("the generic probe RPCs write both profiles, each its own records (PR5, L4 reversed)", async () => {
     const w = await avWorld();
     clock(T0 + HOUR);
-    const before = await w.store.mediaProbeRecords(BUILD, { profile: STILL });
-    for (const call of [
-      () => claim(w.store, STILL, BUILD, false),
-      () =>
-        w.store.recordMediaProbeResult(BUILD, {
-          profile: STILL,
-          claim: "c",
-          outcome: "pass",
-          imagesVerified: true,
-          imageTag: null,
-        }),
-      () => w.store.recordMediaInfrastructureFailure(BUILD, { profile: STILL, build: BUILD }),
-    ]) {
-      expect(await rejectionOf(call())).toBeInstanceOf(Error);
-    }
-    expect(await w.store.mediaProbeRecords(BUILD, { profile: STILL })).toEqual(before);
+    const normalize = await w.store.mediaProbeRecords(BUILD, { profile: NORMALIZE });
+    await probe(w.store, STILL, BUILD, "pass", false);
+    clock(T0 + HOUR + SECOND);
+    expect(await w.store.recordMediaInfrastructureFailure(BUILD, { profile: STILL, build: BUILD })).toEqual({
+      status: "recorded",
+    });
+    expect(await w.store.mediaProbeRecords(BUILD, { profile: STILL })).toMatchObject({
+      record: { version: BUILD, ok: true, imagesVerified: false, at: T0 + HOUR },
+      attempt: { version: BUILD, result: "pass" },
+      failure: { version: BUILD, at: T0 + HOUR + SECOND },
+    });
+    // The normalize profile's records are untouched.
+    expect(await w.store.mediaProbeRecords(BUILD, { profile: NORMALIZE })).toEqual({
+      ...normalize,
+      now: T0 + HOUR + SECOND,
+    });
   });
 
   it("a failed probe revokes admission: S3 refuses a staged upload inactive, with its input (M5)", async () => {

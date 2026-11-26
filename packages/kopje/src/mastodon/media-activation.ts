@@ -10,6 +10,7 @@ import {
   type NormalizeResult,
   type ProbeVerdict,
   type StillMaker,
+  type StillOutcome,
   TranscoderUnavailable,
   type UploadProcessor,
 } from "../platform/media-transcoder";
@@ -210,9 +211,21 @@ export async function probeFinish(
   }
 }
 
+// The verdict of a `still@standard-1` probe, one classifier for every prober (the probe command's still check and the
+// media rebuild's probe, mastodon/media-rebuild-av.ts), from the container's answer (`out`) and, for a still
+// verifyStill accepted, Images' answer on it (imagesVerdict): `fail` on the container's evidence of the build
+// (StillOutcome `evidence`) or a PNG verifyStill refuses, no-verdict for every other failure of the container (its
+// refusal of the clip among them); the `still` stage, its PNG, when the still is verified and Images is to be asked.
+export function stillProbeVerdict(out: StillOutcome): ProbeStage {
+  if (!out.ok) {
+    return { outcome: out.evidence !== undefined ? "fail" : "no-verdict", reason: out.failure };
+  }
+  return verifyStill(out.png) !== null ? { outcome: "fail", reason: "still" } : { outcome: "still", png: out.png };
+}
+
 // Images on the verified still: `pass` (unverified on 9422), `fail` only when it refused the PNG as input, and
 // no-verdict for its own output failing the still's checks or any other failure of it.
-function imagesVerdict(encoded: Awaited<ReturnType<typeof stillEncodes>>): ProbeVerdict {
+export function imagesVerdict(encoded: Awaited<ReturnType<typeof stillEncodes>>): ProbeVerdict {
   if (encoded === "passed" || encoded === "quota") {
     return { outcome: "pass", imagesVerified: encoded === "passed" };
   }
@@ -244,7 +257,7 @@ const STILL_CHECK_CALL_MS = 85_000;
 
 // The probe object's refusals before it starts a container (media-processor.ts #owned): busy (another call's work, an
 // orphan running, or the alarm destroying one) and its alarm's write failing or settling late.
-const NOT_STARTED: ReadonlySet<string> = new Set(["busy", "storage", "storage-late"]);
+export const NOT_STARTED: ReadonlySet<string> = new Set(["busy", "storage", "storage-late"]);
 
 type Wait = (ms: number) => Promise<void>;
 const timerWait: Wait = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -422,8 +435,8 @@ const STILL_CHECK_MS = 75_000;
 
 // The still profile's check on request: the packaged clip copied to incoming/probe-<nonce>, a still of it on the
 // profile's object (stills.probe), verifyStill, and Images (stillEncodes); the copy deleted, each step ending by `end`
-// (probeSteps). It records nothing: the profile's record is the media rebuild's, which probes it under its own lease
-// (L4). As the activation probe, `fail` only on evidence of the build: the container's answers showing it does not
+// (probeSteps). It records nothing: the media rebuild is the profile's one recording prober for now, through the claim
+// the generic probe shares (media-probes.ts claimProbeIn). As the activation probe, `fail` only on evidence of the build: the container's answers showing it does not
 // speak the protocol (StillOutcome `evidence`: its /healthz, a 404 on /still or a 405, a 200 breaking the reply),
 // verifyStill refusing the PNG, or Images refusing it as input; `pass` with imagesVerified false when Images answered
 // 9422; `no-verdict` for anything else (the container's refusal of the clip, every other code, and Images' own output
@@ -462,13 +475,11 @@ async function stillCheckWork(
     if (out === OVER) {
       return { outcome: "no-verdict", reason: "timeout", image: null };
     }
-    if (!out.ok) {
-      return { outcome: out.evidence !== undefined ? "fail" : "no-verdict", reason: out.failure, image: out.image };
+    const stage = stillProbeVerdict(out);
+    if (stage.outcome !== "still") {
+      return { ...stage, image: out.image };
     }
-    if (verifyStill(out.png) !== null) {
-      return { outcome: "fail", reason: "still", image: out.image };
-    }
-    const png = out.png;
+    const png = stage.png;
     // Images is a step of the request: past its cut (the request's deadline, or the check's), no verdict.
     const encoded = await step(
       () => stillEncodes(deps.images, png, pngSize(png), (work) => within(work, deadline, deps.now)),

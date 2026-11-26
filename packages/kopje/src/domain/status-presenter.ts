@@ -61,7 +61,7 @@ import {
 } from "./filters";
 import { htmlToPlainText } from "./plain-text";
 import { type Poll, presentPolls, withStatusEmojis } from "./poll-presenter";
-import { cachedImageUrls } from "./remote-media";
+import { cachedImageUrls, cachedMediaUrls } from "./remote-media";
 import { MEDIA_URL_JSON_BYTES, MEDIA_URL_LIMIT } from "./status-bounds";
 import {
   CARD_COLUMN_MAP,
@@ -1127,10 +1127,12 @@ function statusUrl(row: StatusUrlRow): string {
 // av-bytes.ts isEdge, isEdgeSize), a playable file's own facts in its original
 // (playableFacts: a video's frame rate, duration and bitrate, an audio file's duration and bitrate; `small` only where a
 // still was stored) and the focal point. A remote attachment's file
-// and icon are shown from the cache on `origin` when cached (remote-media.ts cachedImageUrls, the one decision): url
-// its cached file, else its remote url; preview_url its cached icon, else, for an image, its cached file's still (or
-// the file itself), else its remote icon, else url for an image or an unknown file (a playable one's as playablePreview
-// judges it). Its remote_url and preview_remote_url are its stored url and icon (null without one), as Mastodon's; a
+// and icon are shown from the cache on `origin` when cached (remote-media.ts cachedMediaUrls and cachedImageUrls, the one
+// decision): url its cached file, else its remote url; preview_url its cached icon, else, for an image, its cached
+// file's still (or the file itself), else its remote icon, else url for an image or an unknown file; for a video or
+// gifv its cached icon, else its remote icon when that is not the file itself, else the still Kopje made of its cached
+// file (#1828 PR5), as playablePreview judges it; with that still shown and no blurhash of its own, the still's
+// blurhash. Its remote_url and preview_remote_url are its stored url and icon (null without one), as Mastodon's; a
 // local one's are null, as Mastodon's local? media. Without an origin (an edit's snapshot; an upload's own answers and a
 // scheduled post pass one only for a playable file, for its VIDEO_POSTER) nothing is read from the cache. text_url is always null (MD-6). blurhash: what storedBlurhash keeps
 // of the stored value (a local upload's is its preview's, platform/images.ts processImage, or null).
@@ -1138,10 +1140,14 @@ export function presentMedia(row: MediaRow, origin: string | null = null): Media
   // URLs within MEDIA_URL_LIMIT as serialized, as stored (STORED_COLUMNS in platform/stored-bounds.ts).
   const remoteUrl = presentedMediaUrl(row.url);
   const remotePreview = presentedMediaUrl(row.preview_url);
-  const file = origin === null ? null : cachedImageUrls(row.cached ?? null, origin);
+  const file = origin === null ? null : cachedMediaUrls(row.cached ?? null, origin);
   const icon = origin === null ? null : cachedImageUrls(row.cached_preview ?? null, origin);
   const url = file?.image ?? remoteUrl;
-  const preview = icon?.image ?? (file !== null && row.type === "image" ? file.still : null) ?? remotePreview;
+  // A video's or gifv's own icon, cached or remote, keeps precedence over its named still (D20).
+  const preview = isVideo(row.type)
+    ? (icon?.image ?? distinct(remotePreview, url, remoteUrl) ?? file?.still ?? null)
+    : (icon?.image ?? (file !== null && row.type === "image" ? (file.still ?? file.image) : null) ?? remotePreview);
+  const stillShown = isVideo(row.type) && file !== null && preview !== null && preview === file.still;
   const stored = storedMeta(row.meta);
   const sized = isPlayable(row.type) ? isEdgeSize : isSize;
   const original = {
@@ -1166,8 +1172,22 @@ export function presentMedia(row: MediaRow, origin: string | null = null): Media
     text_url: null,
     meta: Object.keys(meta).length === 0 ? null : meta,
     description: presentedMediaDescription(row.description),
-    blurhash: storedBlurhash(row.blurhash),
+    blurhash: storedBlurhash(row.blurhash) ?? (stillShown ? file.stillBlurhash : null),
   };
+}
+
+const isVideo = (type: string) => type === "video" || type === "gifv";
+
+// `preview` when it is an image other than the file itself (otherFile, playablePreview's rule), else null.
+function distinct(preview: string | null, url: string | null, remoteUrl: string | null): string | null {
+  return otherFile(preview, url, remoteUrl) ? preview : null;
+}
+
+// Whether `preview` is a file other than the attachment's own: neither its url nor its remote url, either without its
+// fragment, which names a part of the same file.
+function otherFile(preview: string | null, url: string | null, remoteUrl: string | null): preview is string {
+  const file = (value: string | null) => value?.split("#", 1)[0];
+  return preview !== null && file(preview) !== file(url) && file(preview) !== file(remoteUrl);
 }
 
 // A playable attachment: a video, gifv or audio file, whose own file is no image.
@@ -1186,8 +1206,7 @@ export function playablePreview(
   remoteUrl: string | null,
   origin: string | null,
 ): string | null {
-  const file = (value: string | null) => value?.split("#", 1)[0];
-  if (preview !== null && file(preview) !== file(url) && file(preview) !== file(remoteUrl)) {
+  if (otherFile(preview, url, remoteUrl)) {
     return preview;
   }
   return type === "audio" || origin === null ? null : `${origin}${VIDEO_POSTER}`;

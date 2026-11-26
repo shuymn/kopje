@@ -625,7 +625,7 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
   // A probe of one execution profile. normalize@standard-4's is its activation probe (mastodon/media-activation.ts
   // activationProbe): one claim shared with the probe round, the packaged clip copied to incoming/probe-<nonce> and run
   // through the container, the verifier and Images, and the verdict recorded for this build. still@standard-1's is a
-  // check (stillCheck) that records nothing: the media rebuild records that profile's probe under its own lease. Both
+  // check (stillCheck) that records nothing: the media rebuild records that profile's probe, under its lease. Both
   // start a container and write R2, so maintenance and a read-only Store refuse them (503) before anything starts. The
   // request has one deadline, PROBE_ROUTE_MS from its arrival (the middleware above), which every step ends by
   // (probeSteps): its credential check, its body, the still check's health, and each step of the probe or check, Images

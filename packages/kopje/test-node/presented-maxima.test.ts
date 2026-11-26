@@ -364,11 +364,12 @@ JSON is at most ${answer},`.replace(/\s+/g, " "),
     );
     expect(flat(DOCUMENT)).toContain(`each column's largest value the same way (${largestRow}, the escaped poll row`);
     expect(flat(DOCUMENT)).toContain(`With the backstop fired, 1.25 × (the target + ${largestRow}) of dropped rows`);
-    const past = HEAP_PEAKS.timelines.backstop + 3 * CAP_STEP - HALF;
+    // The next step leaves less than SPARE_FLOOR under half (test/status-bounds.test.ts asserts it).
+    const left = HALF - (HEAP_PEAKS.timelines.backstop + 3 * CAP_STEP);
     expect(flat(DOCUMENT)).toContain(
       `The ${TIMELINE_CHUNK_BYTES / 1024} KiB timeline cap and \`STATUS_ANSWER_BYTES\`, the largest multiple of ` +
-        `${step} that does with that cap (each byte of budget is three of heap, so ${step} more would pass half by ` +
-        `${count(past)} bytes), keep the fallback below half the isolate's memory even while the dropped chunk ` +
+        `${step} that does with that cap (each byte of budget is three of heap, so ${step} more would leave ` +
+        `${count(left)} bytes, under the spare below), keep the fallback below half the isolate's memory even while the dropped chunk ` +
         `remains live, with at least ${spare} to spare under ${HALF / 1e6} MB`,
     );
   });

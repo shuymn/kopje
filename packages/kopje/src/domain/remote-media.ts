@@ -8,7 +8,7 @@ import {
 } from "../platform/config";
 import { hostDomain } from "../platform/domain-name";
 import { remoteMediaUrlRefusal } from "../platform/http-url";
-import { FILE_TOKEN, remoteFileKey } from "../platform/media-files";
+import { FILE_TOKEN, REMOTE_VARIANT, remoteFileKey } from "../platform/media-files";
 import { type RemoteCategory, type RemoteFileKind, remoteFileLimits } from "../platform/remote-media-bytes";
 import { type Marker, restoreTime } from "../platform/restore-marker";
 import {
@@ -30,10 +30,13 @@ import {
   REMOTE_OBJECTS_SLOT_INDEX,
   REMOTE_OBJECTS_STORED_INDEX,
   REMOTE_OBJECTS_VALIDATION_INDEX,
+  mediaCategorySql,
   remoteMediaCategory,
   SAFE_INTEGER_MAX,
   statusMediaWindowSql,
+  storedBlurhash,
   storedLinkDomain,
+  BLURHASH_BYTES,
 } from "../platform/stored-bounds";
 import {
   accountMediaRejectedSql,
@@ -46,6 +49,7 @@ import {
 import { isIntegerKey } from "./ids";
 import { hostCovered, hostMediaRejected } from "./instance-domain-blocks";
 import { setState, state } from "./kopje-state";
+import { probePassed } from "./media-probes";
 import { writeOperation } from "./operation";
 
 // The cache of remote media (MEDIA-7 in docs/threat-model.md; migration 0077_remote_media): the Store's part, the only
@@ -139,7 +143,7 @@ const COVERAGE_VERSION = 3;
 // Reclamation's victim order: attachments, thumbnails, headers, avatars, emoji.
 const RECLAIM_ORDER = ["attachment", "thumbnail", "header", "avatar", "emoji"] as const;
 
-const STATE = {
+export const STATE = {
   walk: "remote_media_walk",
   suspended: "remote_media_suspended",
   backfill: "remote_media_backfill",
@@ -148,6 +152,8 @@ const STATE = {
   sweep: "remote_media_sweep",
   audit: "remote_media_audit",
   retention: "remote_media_retention_days",
+  // The remote stills' lease (remote-media-stills.ts).
+  stillLease: "remote_still_lease",
 } as const;
 
 const isTime = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
@@ -187,7 +193,11 @@ function addUsage(db: Db, change: { bytes?: number; doomed?: number; pending?: n
 // A change of the object `token`'s charge (bytes, doomed) in the usage row. While an audit pass runs, a change of an
 // object it has already counted (token at or before its cursor) is added to the pass's sums too, so a write between
 // its chunks reports no drift.
-function chargeObject(db: Db, token: string, change: { bytes?: number; doomed?: number; pending?: number }): void {
+export function chargeObject(
+  db: Db,
+  token: string,
+  change: { bytes?: number; doomed?: number; pending?: number },
+): void {
   addUsage(db, change);
   const saved = json<Audit>(db, STATE.audit);
   if (typeof saved.cursor === "string" && saved.cursor !== "" && token <= saved.cursor) {
@@ -205,7 +215,7 @@ function chargeObject(db: Db, token: string, change: { bytes?: number; doomed?: 
 
 export type RemoteMediaUsage = { bytes: number; doomed: number; pending: number };
 
-function usage(db: Db): RemoteMediaUsage {
+export function usage(db: Db): RemoteMediaUsage {
   return (
     db.first<RemoteMediaUsage>("SELECT bytes, doomed, pending FROM remote_media_usage WHERE id = 1") ?? {
       bytes: 0,
@@ -225,7 +235,7 @@ function usage(db: Db): RemoteMediaUsage {
 // reject_media in the rule of the emoji's domain or of the account's (R38, audience.ts mediaRejectedSql: the
 // nearest block decides); and for every kind neither the slot's host nor any host of its object's fetch covered by a
 // domain block (redirect provenance).
-function slotEligibleSql(r: string): string {
+export function slotEligibleSql(r: string): string {
   return `(${slotOwnsSql(r)}
 		AND CASE
 			WHEN ${r}.kind = 'emoji' THEN NOT ${hostCoveredSql(`${r}.domain`)} AND NOT ${hostMediaRejectedSql(`${r}.domain`)}
@@ -263,16 +273,21 @@ function slotOwnsSql(r: string): string {
 
 // Dooms the live object `token` (reserved or stored), unlinked from its slot, with its deletion due at once, or
 // LATE_PUT_MS after its Store-recorded claim when it was reserved (a put may still land) unless `immediate` (its
-// window has passed). Its charge stays counted, now as doomed. One ledger row and the usage row.
+// window has passed), or LATE_PUT_MS after its still's last claim when that is later (a still's put may still land,
+// remote-media-stills.ts). Its charge stays counted, now as doomed, and its still is due no more (its row keeps its
+// attempt and charge until the deletion's cascade). One ledger row, its still's row and the usage row.
 function doomObject(db: Db, token: string, now: number, immediate = false): void {
-  const object = db.first<{ charge: number; state: string; claimed_at: number }>(
-    "SELECT charge, state, claimed_at FROM remote_media_objects WHERE token = ?1 AND state <> 'doomed'",
+  const object = db.first<{ charge: number; state: string; claimed_at: number; still_claimed_at: number | null }>(
+    `SELECT o.charge, o.state, o.claimed_at, st.claimed_at AS still_claimed_at FROM remote_media_objects o
+		LEFT JOIN remote_media_stills st ON st.token = o.token WHERE o.token = ?1 AND o.state <> 'doomed'`,
     token,
   );
   if (object === undefined) {
     return;
   }
-  const due = object.state === "reserved" && !immediate ? Math.max(now, object.claimed_at + LATE_PUT_MS) : now;
+  const claimed = object.state === "reserved" ? object.claimed_at : object.still_claimed_at;
+  const due = claimed !== null && !immediate ? Math.max(now, claimed + LATE_PUT_MS) : now;
+  db.run("UPDATE remote_media_stills SET due_at = NULL WHERE token = ?1 AND due_at IS NOT NULL", token);
   db.run(
     "UPDATE remote_media_objects SET state = 'doomed', slot_id = NULL, due_at = ?2 WHERE token = ?1",
     token,
@@ -322,8 +337,8 @@ function resetSlot(db: Db, id: string, url: string, host: string, now: number, c
   doomSlotObject(db, id, now);
   db.run(
     `UPDATE remote_media SET url = ?2, host = ?3, generation = min(generation + 1, ${SAFE_INTEGER_MAX}), attempts = 0,
-			failed_at = NULL, enqueued_at = ?4, due_at = ?4, token = NULL, ext = NULL, still_ext = NULL, stored_at = NULL,
-			category = coalesce(?5, category)
+			failed_at = NULL, enqueued_at = ?4, due_at = ?4, token = NULL, ext = NULL, still_ext = NULL, still_key = NULL,
+			still_blurhash = NULL, stored_at = NULL, category = coalesce(?5, category)
 		WHERE id = CAST(?1 AS INTEGER)`,
     id,
     url,
@@ -898,13 +913,13 @@ function failSlot(db: Db, id: string, attempts: number, permanent: boolean, now:
 // The outcome of one claim. Out of the fence (another claim, a reset, an ineligible slot, a covered host, another
 // category, or any value out of its range), the token is doomed and nothing else changes. Inside it:
 // - stored: the object becomes stored at its actual bytes (at most its reservation), usage moves by actual − R, and
-//   the slot points at it;
+//   the slot points at it; with `stills` active, a video's still is queued in the same transaction (queueStill);
 // - partial: the object is doomed (its still put may still land: LATE_PUT_MS after its claim) and the slot takes a
 //   transient failure;
 // - failed: the object is doomed and the slot fails (permanent) or is retried;
 // - unattempted: the object is doomed and the attempt given back; the slot stays due.
 export const recordRemoteMedia = writeOperation.atStoreTime("now")<
-  RemoteMediaFence & { outcome: RemoteMediaOutcome; now: number },
+  RemoteMediaFence & { outcome: RemoteMediaOutcome; now: number; stills?: StillsActivation },
   { held: boolean }
 >((db, input) => {
   const { slot, token, now } = input;
@@ -949,14 +964,15 @@ export const recordRemoteMedia = writeOperation.atStoreTime("now")<
     );
     chargeObject(db, token, { bytes: actual - object.charge, pending: -1 });
     db.run(
-      `UPDATE remote_media SET token = ?2, ext = ?3, still_ext = ?4, stored_at = ?5, due_at = NULL, failed_at = NULL,
-				attempts = 0 WHERE id = CAST(?1 AS INTEGER)`,
+      `UPDATE remote_media SET token = ?2, ext = ?3, still_ext = ?4, still_key = NULL, still_blurhash = NULL,
+				stored_at = ?5, due_at = NULL, failed_at = NULL, attempts = 0 WHERE id = CAST(?1 AS INTEGER)`,
       slot,
       token,
       EXTENSIONS[outcome.contentType] ?? null,
       outcome.stillType === null ? null : (EXTENSIONS[outcome.stillType] ?? null),
       now,
     );
+    queueStill(db, slot, token, input.stills, now);
     return { held: true };
   }
   doomObject(db, token, now);
@@ -972,6 +988,84 @@ export const recordRemoteMedia = writeOperation.atStoreTime("now")<
   }
   return { held: true };
 });
+
+// ---- Remote video stills: the parts the cache's own transitions apply (the operations: remote-media-stills.ts)
+
+// What turns remote stills on, as the caller passes it (#1828 PR5): the media processor bound, the month's stills budget
+// (MEDIA_STILL_MONTHLY_JOBS) and the running build, whose `still@standard-1` probe must have passed.
+export type StillsActivation = { binding: boolean; budget: number; build: string };
+
+// The most a still's round takes from its claim (claim, container, Images, admission, put and record), on the Store's
+// clock: a record is refused from claimed_at + STILL_ROUND_MS, so no record names a key after it (the sweep relies on
+// it, stillKeyKept).
+export const STILL_ROUND_MS = 180 * 1000;
+
+// Whether stills are active for `stills` at `now`: the binding, a positive budget and a pass of `still@standard-1` for
+// its build (media-probes.ts probePassed).
+export function stillsActive(db: Db, stills: StillsActivation | undefined, now: number): boolean {
+  return (
+    typeof stills === "object" &&
+    stills !== null &&
+    // oxlint-disable-next-line typescript/no-unnecessary-boolean-literal-compare -- unchecked RPC input
+    stills.binding === true &&
+    Number.isSafeInteger(stills.budget) &&
+    stills.budget > 0 &&
+    typeof stills.build === "string" &&
+    probePassed(db, "still@standard-1", stills.build, now)
+  );
+}
+
+// A stored value's part before its first '#', as bytes.
+function unfragmentedSql(value: string): string {
+  return `CASE WHEN instr(CAST(${value} AS BLOB), x'23') > 0
+		THEN substr(CAST(${value} AS BLOB), 1, instr(CAST(${value} AS BLOB), x'23') - 1) ELSE CAST(${value} AS BLOB) END`;
+}
+
+// Whether the slot `r` may have a still: an attachment's file of category video whose remote attachment row is a video
+// or gifv without an icon of its own (preview_url NULL, '' or the file itself up to its fragment, compared as bytes:
+// status-presenter.ts playablePreview's rule). The attachment's own blurhash does not matter.
+export function stillQualifiesSql(r: string): string {
+  return `(${r}.kind = 'attachment' AND ${r}.category = 'video' AND EXISTS (SELECT 1 FROM media_attachments qm
+		INDEXED BY ${MEDIA_ID_INDEX} WHERE qm.id = ${r}.owner_id AND ${mediaCategorySql("qm.type")} = 'video'
+			AND (qm.preview_url IS NULL OR qm.preview_url = '' OR ${unfragmentedSql("qm.preview_url")} = ${unfragmentedSql("qm.url")})))`;
+}
+
+// The still of the object `token` just stored for slot `slot` (recordRemoteMedia's stored branch, in its transaction):
+// queued, due now, when stills are active and the slot qualifies (stillQualifiesSql). A video cached while stills were
+// off gets none.
+function queueStill(db: Db, slot: string, token: string, stills: StillsActivation | undefined, now: number): void {
+  if (!stillsActive(db, stills, now)) {
+    return;
+  }
+  // The slot by its rowid, the rule evaluated in the projection on that row alone (remote-media-stills.ts slotRowHolds).
+  const qualifies = db.first<{ qualifies: number }>(
+    `SELECT CASE WHEN ${stillQualifiesSql("r")} THEN 1 ELSE 0 END AS qualifies FROM remote_media r
+			WHERE r.id = CAST(?1 AS INTEGER)`,
+    slot,
+  );
+  if (qualifies?.qualifies === 1) {
+    db.run(
+      "INSERT INTO remote_media_stills (token, state, claims, due_at, still_charge) VALUES (?1, 'queued', 0, ?2, 0)",
+      token,
+      now,
+    );
+  }
+}
+
+// The sweep's rule for a key remote/<token>/s<attempt> of a token the ledger holds: kept while a stored row names it, or
+// while its attempt can still record (the row's current attempt, unsettled and queued, before claimed_at +
+// STILL_ROUND_MS on the Store's clock). Any other such key is a key no row names, nor ever will between restores.
+function stillKeyKept(db: Db, token: string, attempt: string, now: number): boolean {
+  return (
+    db.first(
+      `SELECT 1 AS x FROM remote_media_stills WHERE token = ?1 AND attempt = ?2
+				AND (state = 'stored' OR (state = 'queued' AND outcome IS NULL AND ?3 < claimed_at + ${STILL_ROUND_MS}))`,
+      token,
+      attempt,
+      now,
+    ) !== undefined
+  );
+}
 
 // ---- Maintenance
 
@@ -1004,6 +1098,16 @@ function keysOf(token: string): string[] {
   return [remoteFileKey(token, "full"), remoteFileKey(token, "still")];
 }
 
+// A doomed object's keys (dueDeletions): `full` and its named still for a still recorded (remote-media-stills.ts),
+// `full` alone for a video whose still is queued (none is named; a key an attempt put is the sweep's), and main's two
+// otherwise. At most two keys an object, so a group of DELETE_BATCH stays within R2_DELETE_KEYS.
+function deletionKeys(token: string, still: { state: string | null; attempt: string | null }): string[] {
+  if (still.state === "stored" && still.attempt !== null) {
+    return [remoteFileKey(token, "full"), remoteFileKey(token, `s${still.attempt}`)];
+  }
+  return still.state === null ? keysOf(token) : [remoteFileKey(token, "full")];
+}
+
 // The doomed objects whose deletion is due at `now`, by due_at, at most DELETE_BATCH.
 // The doomed objects due, in two groups from two seeks: the retried ones (a delete failed) from the oldest
 // RETRY_BATCH due, those of the fewest failed attempts n, at most RETRY_BATCH / 2^(n-1) (one from the ninth), so a
@@ -1011,24 +1115,36 @@ function keysOf(token: string): string[] {
 // oldest due up to what the retried leave of DELETE_BATCH (at least DELETE_BATCH - RETRY_BATCH). Neither hides the
 // other however many of it are due.
 function dueDeletions(db: Db, now: number): RemoteMediaDeletion[][] {
-  const retried = db.all<{ token: string; attempts: number }>(
-    `SELECT token, delete_attempts AS attempts FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_RETRY_INDEX}
-		WHERE state = 'doomed' AND delete_attempts > 0 AND due_at <= ?1 ORDER BY due_at LIMIT ${RETRY_BATCH}`,
+  type Due = { token: string; still_state: string | null; attempt: string | null };
+  const retried = db.all<Due & { attempts: number }>(
+    `SELECT o.token, o.delete_attempts AS attempts, st.state AS still_state, st.attempt
+		FROM (SELECT token, delete_attempts, due_at FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_RETRY_INDEX}
+			WHERE state = 'doomed' AND delete_attempts > 0 AND due_at <= ?1 ORDER BY due_at LIMIT ${RETRY_BATCH}) o
+		LEFT JOIN remote_media_stills st ON st.token = o.token
+		ORDER BY o.due_at`,
     now,
   );
   const fewest = Math.min(...retried.map((row) => row.attempts));
   const retry = retried
     .filter((row) => row.attempts === fewest)
     .slice(0, Math.max(1, RETRY_BATCH >> Math.min(fewest - 1, DELETE_SPLITS)));
-  const fresh = db.all<{ token: string }>(
-    `SELECT token FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_DUE_INDEX}
-		WHERE state = 'doomed' AND delete_attempts = 0 AND due_at <= ?1 ORDER BY due_at LIMIT ?2`,
+  const fresh = db.all<Due>(
+    `SELECT o.token, st.state AS still_state, st.attempt
+		FROM (SELECT token, due_at FROM remote_media_objects INDEXED BY ${REMOTE_OBJECTS_DUE_INDEX}
+			WHERE state = 'doomed' AND delete_attempts = 0 AND due_at <= ?1 ORDER BY due_at LIMIT ?2) o
+		LEFT JOIN remote_media_stills st ON st.token = o.token
+		ORDER BY o.due_at`,
     now,
     DELETE_BATCH - retry.length,
   );
   return [fresh, retry]
     .filter((group) => group.length > 0)
-    .map((group) => group.map(({ token }) => ({ token, keys: keysOf(token) })));
+    .map((group) =>
+      group.map(({ token, still_state, attempt }) => ({
+        token,
+        keys: deletionKeys(token, { state: still_state, attempt }),
+      })),
+    );
 }
 
 // The validity walk: at most VALIDITY_WALK slots from the cursor by id (wrapping), each that fails slotEligibleSql, or
@@ -1601,7 +1717,8 @@ export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
     doomObject(db, token, now);
     if (slot !== undefined && !resetSlot(db, slot.id, slot.url, slot.host, now)) {
       db.run(
-        "UPDATE remote_media SET token = NULL, ext = NULL, still_ext = NULL, stored_at = NULL, failed_at = ?2 WHERE id = CAST(?1 AS INTEGER)",
+        `UPDATE remote_media SET token = NULL, ext = NULL, still_ext = NULL, still_key = NULL, still_blurhash = NULL,
+					stored_at = NULL, failed_at = ?2 WHERE id = CAST(?1 AS INTEGER)`,
         slot.id,
         now,
       );
@@ -1644,7 +1761,9 @@ export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
 
 // The orphan sweep's page (one R2 list of remote/, at most 1,000 keys, at most once an hour): the keys uploaded more
 // than ORPHAN_GRACE_MS ago whose token the ledger does not hold, to delete. Safe because the ledger records every token
-// before its put (MEDIA-2). The page is checkpointed (the sweep's time and the list's next cursor) only once nothing of
+// before its put (MEDIA-2). A video still's key (`s` and an attempt, REMOTE_VARIANT) under a token the ledger holds is
+// decided by stillKeyKept on the Store's clock: kept while a row names it or its attempt can still record, else deleted
+// once uploaded more than LATE_PUT_MS ago. The page is checkpointed (the sweep's time and the list's next cursor) only once nothing of
 // it is left to delete: here when it has no orphan, otherwise by remoteMediaSwept after the Worker's delete returned,
 // so a page whose delete failed or did not run is listed again.
 export const remoteMediaOrphans = writeOperation.atStoreTime("now")<
@@ -1653,13 +1772,24 @@ export const remoteMediaOrphans = writeOperation.atStoreTime("now")<
 >((db, { keys, cursor, now }) => {
   const orphans: string[] = [];
   for (const entry of listOf(keys).slice(0, 1000)) {
-    const match =
-      typeof entry?.key === "string" ? /^remote\/([A-Za-z0-9_-]{32,64})\/(full|still)$/.exec(entry.key) : null;
-    if (match === null || !isTime(entry.uploaded) || entry.uploaded > now - ORPHAN_GRACE_MS) {
+    const match = typeof entry?.key === "string" ? /^remote\/([A-Za-z0-9_-]{32,64})\/([^/]+)$/.exec(entry.key) : null;
+    const variant = match?.[2] ?? "";
+    if (match === null || !REMOTE_VARIANT.test(variant) || !isTime(entry.uploaded) || !isTime(now)) {
+      continue;
+    }
+    // Too young for any rule, decided before the ledger is read: a `full` or `still` key within ORPHAN_GRACE_MS of its
+    // upload, a still's within LATE_PUT_MS.
+    const still = variant !== "full" && variant !== "still";
+    if (still ? entry.uploaded >= now - LATE_PUT_MS : entry.uploaded > now - ORPHAN_GRACE_MS) {
       continue;
     }
     const token = match[1] ?? "";
-    if (db.first("SELECT 1 AS x FROM remote_media_objects WHERE token = ?1", token) === undefined) {
+    const held = db.first("SELECT 1 AS x FROM remote_media_objects WHERE token = ?1", token) !== undefined;
+    if (held && still) {
+      if (!stillKeyKept(db, token, variant.slice(1), now)) {
+        orphans.push(entry.key);
+      }
+    } else if (!held && entry.uploaded <= now - ORPHAN_GRACE_MS) {
       orphans.push(entry.key);
     }
   }
@@ -1748,6 +1878,43 @@ export function cachedImagesOf(db: Db, ids: readonly string[]): CachedImages {
 }
 
 const REMOTE_MEDIA_EXTENSIONS: ReadonlySet<string> = new Set(Object.values(REMOTE_MEDIA_TYPES));
+
+// The most bytes a cached attachment's packed file reads (stored-bounds.ts mediaCacheSql): a token, two extensions, a
+// named still's variant (`s` and 32 hex digits) and its blurhash, and the separators.
+export const CACHED_MEDIA_BYTES = 64 + 1 + 4 + 1 + 4 + 1 + 33 + 1 + BLURHASH_BYTES;
+
+// The local URLs of a cached attachment's packed file on `origin`, or null for anything else: the file, its still (the
+// named still of a video, `s<attempt>`, or an animated image's still; null without one) and the named still's blurhash
+// as storedBlurhash keeps it. As cachedImageUrls, the one decision of cached against remote for the file.
+export function cachedMediaUrls(
+  packed: string | null,
+  origin: string,
+): { image: string; still: string | null; stillBlurhash: string | null } | null {
+  if (typeof packed !== "string" || packed.length > CACHED_MEDIA_BYTES) {
+    return null;
+  }
+  const space = packed.indexOf(" ");
+  const head = space < 0 ? packed : packed.slice(0, space);
+  const [token = "", ext = "", stillExt = "", stillKey = "", ...rest] = head.split(":");
+  if (
+    rest.length > 0 ||
+    !FILE_TOKEN.test(token) ||
+    !REMOTE_MEDIA_EXTENSIONS.has(ext) ||
+    (stillExt !== "" && !REMOTE_MEDIA_EXTENSIONS.has(stillExt)) ||
+    (stillKey !== "" &&
+      (stillExt === "" || stillKey === "full" || stillKey === "still" || !REMOTE_VARIANT.test(stillKey)))
+  ) {
+    return null;
+  }
+  const image = `${origin}/media/r/${token}/full.${ext}`;
+  const still =
+    stillExt === "" ? null : `${origin}/media/r/${token}/${stillKey === "" ? "still" : stillKey}.${stillExt}`;
+  return {
+    image,
+    still,
+    stillBlurhash: stillKey === "" || space < 0 ? null : storedBlurhash(packed.slice(space + 1)),
+  };
+}
 
 // The local URLs of a packed cached object (cachedImagesOf) on `origin`, or null for anything else: the full file and
 // the still (the full file when there is none). The one decision of cached against remote: a presenter shows the

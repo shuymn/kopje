@@ -430,9 +430,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(102);
+      expect(STORED_TRIGGERS.size).toBe(104);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        102 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        104 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -15787,7 +15787,6 @@ describe("0121_media_processing", () => {
 
   it("follows 0120 and only creates its two tables and their indexes (P26)", () => {
     expect(NAMES[at - 1]).toBe("0120_tagged_collections");
-    expect(at).toBe(NAMES.length - 1);
     // A new table: the upgrade checks every reference of the Store.
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
     const all = statements(MIGRATIONS[at]?.sql ?? "");
@@ -15898,6 +15897,236 @@ describe("0121_media_processing", () => {
       sql.exec("DELETE FROM media_attachments WHERE id = ?", MEDIA);
       expect(sql.exec("SELECT count(*) AS n FROM media_processing").one().n).toBe(0);
       expect(sql.exec("SELECT media_id FROM media_av_slots").toArray()).toEqual([{ media_id: MEDIA }]);
+    });
+  });
+});
+
+describe("0122_remote_media_stills", () => {
+  const NAME = "0122_remote_media_stills";
+  const at = NAMES.indexOf(NAME);
+  const SLOT_REFUSED = /remote_media: a value past its stored bound/;
+  const STILL_REFUSED = /remote_media_stills: a value past its stored bound/;
+  const TOKEN = "t".repeat(43);
+  const ATTEMPT = "0123456789abcdef".repeat(2);
+  const BLURHASH = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  const TRIGGERS = [
+    "remote_media_bounds_insert",
+    "remote_media_bounds_update",
+    "remote_media_stills_bounds_insert",
+    "remote_media_stills_bounds_update",
+  ];
+  const SCHEMA = `CREATE TABLE remote_media_stills (
+  token TEXT NOT NULL PRIMARY KEY REFERENCES remote_media_objects (token) ON DELETE CASCADE,
+  state TEXT NOT NULL CHECK (state IN ('queued', 'stored')),
+  claims INTEGER NOT NULL CHECK (typeof(claims) = 'integer' AND claims BETWEEN 0 AND 3),
+  due_at INTEGER CHECK (due_at IS NULL OR (typeof(due_at) = 'integer' AND due_at >= 0)),
+  claimed_at INTEGER CHECK (claimed_at IS NULL OR (typeof(claimed_at) = 'integer' AND claimed_at >= 0)),
+  attempt TEXT CHECK (attempt IS NULL
+    OR (typeof(attempt) = 'text' AND length(CAST(attempt AS BLOB)) = 32 AND instr(CAST(attempt AS BLOB), x'00') = 0
+      AND attempt NOT GLOB '*[^0-9a-f]*')),
+  outcome TEXT CHECK (outcome IS NULL OR outcome IN ('retry', 'park')),
+  still_charge INTEGER NOT NULL CHECK (typeof(still_charge) = 'integer' AND still_charge BETWEEN 0 AND 2097152),
+  CHECK ((claims = 0) = (claimed_at IS NULL)),
+  CHECK ((attempt IS NULL) = (claimed_at IS NULL)),
+  CHECK (outcome IS NULL OR attempt IS NOT NULL),
+  CHECK (state <> 'stored' OR (due_at IS NULL AND claims >= 1 AND outcome IS NULL AND still_charge >= 1)),
+  CHECK (state <> 'queued' OR outcome IS NULL OR still_charge = 0)
+) WITHOUT ROWID;
+
+CREATE INDEX remote_media_stills_due ON remote_media_stills (due_at) WHERE due_at IS NOT NULL;
+
+ALTER TABLE remote_media ADD COLUMN still_key TEXT;
+ALTER TABLE remote_media ADD COLUMN still_blurhash TEXT;
+
+DROP TRIGGER remote_media_bounds_insert;
+DROP TRIGGER remote_media_bounds_update;`;
+
+  it("follows 0121, checks every reference, and writes the table, its columns and emitTriggers' triggers (P26)", () => {
+    expect(NAMES[at - 1]).toBe("0121_media_processing");
+    expect(at).toBe(NAMES.length - 1);
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(statements(`${SCHEMA}\n\n${emitTriggers(TRIGGERS)}`));
+    for (const [, pattern] of (MIGRATIONS[at]?.sql ?? "").matchAll(/GLOB\s+'([^']*)'/g)) {
+      expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  // A Store at 0121 with a remote attachment whose file is cached (a slot, its stored object), then upgraded.
+  async function upgraded(run: (sql: SqlStorage) => void) {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at)).upgrade()).toMatchObject({ ok: true });
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES ('100000000000000001', 'https://r.example/u', 'u', 'r.example')",
+      );
+      sql.exec(
+        `INSERT INTO remote_media (id, kind, owner_id, account_id, url, host, category, lane, generation, enqueued_at,
+					token, ext, still_ext, stored_at)
+				VALUES (1, 'attachment', '100000000000000002', '100000000000000001', 'https://r.example/v.mp4', 'r.example',
+					'video', 1, 0, 1, ?1, 'mp4', NULL, 2)`,
+        TOKEN,
+      );
+      sql.exec(
+        `INSERT INTO remote_media_objects (token, slot_id, state, charge, kind, content_type, hosts, claimed_at, stored_at)
+				VALUES (?1, 1, 'stored', 1000, 'attachment', 'video/mp4', '["r.example"]', 1, 2)`,
+        TOKEN,
+      );
+      const objects = () =>
+        sql
+          .exec<{ name: string; sql: string | null }>(
+            `SELECT name, sql FROM sqlite_master WHERE tbl_name NOT IN ('remote_media_stills', 'remote_media')
+						AND name NOT LIKE '_cf_%' ORDER BY name`,
+          )
+          .toArray();
+      const rows = () => ({
+        slots: sql.exec("SELECT * FROM remote_media").toArray(),
+        objects: sql.exec("SELECT * FROM remote_media_objects").toArray(),
+      });
+      const before = { objects: objects(), rows: rows() };
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // Every other object and row as it was; the new columns NULL on the existing slot.
+      expect(objects()).toEqual(before.objects);
+      expect(rows().objects).toEqual(before.rows.objects);
+      expect(rows().slots).toEqual(before.rows.slots.map((r) => ({ ...r, still_key: null, still_blurhash: null })));
+      expect(sql.exec("SELECT count(*) AS n FROM remote_media_stills").one().n).toBe(0);
+      run(sql);
+    });
+  }
+
+  it("bounds a named still on the slot through the recreated triggers, and writes through them", async () => {
+    await upgraded((sql) => {
+      const set =
+        (columns: string, ...values: SqlStorageValue[]) =>
+        () =>
+          sql.exec(`UPDATE remote_media SET ${columns} WHERE id = 1`, ...values);
+      // The recreated insert trigger: the slot inserted again, refused with a still_key and no still_ext or a blurhash
+      // with no still_key, and accepted with the whole still.
+      const slot = sql.exec("SELECT * FROM remote_media WHERE id = 1").one();
+      sql.exec("DELETE FROM remote_media WHERE id = 1");
+      const insert = (over: Record<string, SqlStorageValue>) => () => {
+        const row = { ...slot, ...over };
+        const columns = Object.keys(row);
+        sql.exec(
+          `INSERT INTO remote_media (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+          ...Object.values(row),
+        );
+      };
+      expect(insert({ still_ext: null, still_key: `s${ATTEMPT}` })).toThrow(SLOT_REFUSED);
+      expect(insert({ still_ext: "webp", still_blurhash: BLURHASH })).toThrow(SLOT_REFUSED);
+      insert({ still_ext: "webp", still_key: `s${ATTEMPT}`, still_blurhash: BLURHASH })();
+      sql.exec("DELETE FROM remote_media WHERE id = 1");
+      insert({})();
+      // Refused: a still_key not s and 32 lowercase hex digits; a still_key without a still_ext; a blurhash without a
+      // still_key or past its bound.
+      for (const refused of [
+        set("still_ext = 'webp', still_key = ?", `s${ATTEMPT.slice(1)}`),
+        set("still_ext = 'webp', still_key = ?", `s${ATTEMPT}0`),
+        set("still_ext = 'webp', still_key = ?", `s${ATTEMPT.toUpperCase()}`),
+        set("still_ext = 'webp', still_key = ?", `x${ATTEMPT}`),
+        set("still_ext = 'webp', still_key = ?", 1),
+        set("still_key = ?", `s${ATTEMPT}`),
+        set("still_ext = 'webp', still_blurhash = ?", BLURHASH),
+        set("still_ext = 'webp', still_key = ?, still_blurhash = ?", `s${ATTEMPT}`, "short"),
+        set("still_ext = 'webp', still_key = ?, still_blurhash = ?", `s${ATTEMPT}`, `${BLURHASH}\u0000`),
+      ]) {
+        expect(refused).toThrow(SLOT_REFUSED);
+      }
+      set("still_ext = 'webp', still_key = ?, still_blurhash = ?", `s${ATTEMPT}`, BLURHASH)();
+      // An existing column through the recreated update trigger.
+      set("generation = generation + 1")();
+      set(
+        "token = NULL, ext = NULL, still_ext = NULL, still_key = NULL, still_blurhash = NULL, stored_at = NULL, due_at = 5",
+      )();
+      expect(sql.exec("SELECT generation, still_key FROM remote_media WHERE id = 1").one()).toEqual({
+        generation: 1,
+        still_key: null,
+      });
+    });
+  });
+
+  it("refuses a still key and an attempt of the right length with an embedded NUL, inserted or updated", async () => {
+    await upgraded((sql) => {
+      const key = `s${"a".repeat(30)}\u0000Z`;
+      const attempt = `${"a".repeat(30)}\u0000Z`;
+      // The slot: updated, then inserted again.
+      expect(() => sql.exec("UPDATE remote_media SET still_ext = 'webp', still_key = ? WHERE id = 1", key)).toThrow(
+        SLOT_REFUSED,
+      );
+      const slot = sql.exec("SELECT * FROM remote_media WHERE id = 1").one();
+      sql.exec("DELETE FROM remote_media WHERE id = 1");
+      const row = { ...slot, still_ext: "webp", still_key: key };
+      const columns = Object.keys(row);
+      expect(() =>
+        sql.exec(
+          `INSERT INTO remote_media (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+          ...Object.values(row),
+        ),
+      ).toThrow(SLOT_REFUSED);
+      // The still: inserted, then updated.
+      const still = (value: string) =>
+        sql.exec(
+          `INSERT INTO remote_media_stills (token, state, claims, claimed_at, attempt, still_charge)
+						VALUES (?, 'stored', 1, 2, ?, 1)`,
+          TOKEN,
+          value,
+        );
+      expect(() => still(attempt)).toThrow(/CHECK constraint failed|remote_media_stills/);
+      still(ATTEMPT);
+      expect(() => sql.exec("UPDATE remote_media_stills SET attempt = ? WHERE token = ?", attempt, TOKEN)).toThrow(
+        /CHECK constraint failed|remote_media_stills/,
+      );
+    });
+  });
+
+  it("holds each column of a still and each state to its columns, and cascades it with its object", async () => {
+    await upgraded((sql) => {
+      const insert = (row: Record<string, SqlStorageValue>) => () => {
+        const all = { token: TOKEN, state: "queued", claims: 0, still_charge: 0, ...row };
+        const columns = Object.keys(all);
+        sql.exec(
+          `INSERT INTO remote_media_stills (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+          ...Object.values(all),
+        );
+        sql.exec("DELETE FROM remote_media_stills");
+      };
+      const claimed = { claims: 1, claimed_at: 1, attempt: ATTEMPT };
+      for (const refused of [
+        insert({ state: "doomed" }),
+        insert({ claims: 4, claimed_at: 1, attempt: ATTEMPT }),
+        insert({ claims: 1 }),
+        insert({ claimed_at: 1 }),
+        insert({ ...claimed, attempt: ATTEMPT.toUpperCase() }),
+        insert({ ...claimed, attempt: ATTEMPT.slice(1) }),
+        insert({ ...claimed, outcome: "other" }),
+        insert({ outcome: "retry" }),
+        insert({ ...claimed, still_charge: 2097153 }),
+        insert({ ...claimed, still_charge: 1.5 }),
+        insert({ ...claimed, outcome: "retry", still_charge: 1 }),
+        insert({ ...claimed, state: "stored", still_charge: 0 }),
+        insert({ ...claimed, state: "stored", still_charge: 1, due_at: 3 }),
+        insert({ ...claimed, state: "stored", still_charge: 1, outcome: "park" }),
+        insert({ token: "u".repeat(43) }),
+      ]) {
+        expect(refused).toThrow(/CHECK constraint failed|FOREIGN KEY constraint failed|remote_media_stills/);
+      }
+      // The bound trigger's own refusals (a value of another storage class).
+      expect(insert({ ...claimed, due_at: 1.5 })).toThrow(STILL_REFUSED);
+      insert({ ...claimed, state: "stored", still_charge: 2097152 })();
+      insert({ ...claimed, outcome: "park" })();
+      insert({ due_at: 5 })();
+      sql.exec(
+        "INSERT INTO remote_media_stills (token, state, claims, still_charge, due_at) VALUES (?, 'queued', 0, 0, 5)",
+        TOKEN,
+      );
+      sql.exec("DELETE FROM remote_media_objects WHERE token = ?", TOKEN);
+      expect(sql.exec("SELECT count(*) AS n FROM remote_media_stills").one().n).toBe(0);
     });
   });
 });

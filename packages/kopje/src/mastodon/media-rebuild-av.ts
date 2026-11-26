@@ -1,6 +1,7 @@
-import { type ProbeAttempt, probeImageTag, type ProbeRecord, PROBE_RETRY_MS } from "../domain/media-probes";
+import { probeImageTag, PROBE_RETRY_MS } from "../domain/media-probes";
 import {
   avMetaFits,
+  type RebuildProbeClaim,
   type RebuildAv,
   type RebuildCharge,
   type RebuildRecord,
@@ -25,11 +26,11 @@ import {
   stillWebpSize,
 } from "../platform/images";
 import { fileKey, originalKey, probeInputKey } from "../platform/media-files";
-import type { StillMaker, StillOutcome } from "../platform/media-transcoder";
+import type { ProbeVerdict, StillMaker, StillOutcome } from "../platform/media-transcoder";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreStub } from "../platform/store-client";
 import { storedBlurhash } from "../platform/stored-bounds";
-import { pngSize } from "./media-activation";
+import { imagesVerdict, NOT_STARTED, pngSize, stillProbeVerdict } from "./media-activation";
 
 // The media rebuild of a video or audio row (#1828 design 4.16; mastodon/media-rebuild.ts runs the call, its lease and
 // its fences). Its served `full` is the verified output the original already is (D11), and a video's `small` is the
@@ -69,11 +70,12 @@ import { pngSize } from "./media-activation";
 //
 // Bounds: one AV row a call (MAX_AV_BUILDS_PER_CALL), within REBUILD_AV_MS; stages end at AV_COPY_MS (read, verify and
 // copy), AV_PROBE_MS (the probe) and AV_STILL_MS (the still) from their start, and at the row's end. The probe runs at
-// most once a call, and after a failure for this build not again within PROBE_RETRY_MS, under the rebuild's lease and
-// whatever the budgets: the probe clip is copied to
-// incoming/probe-<nonce>, the StillMaker runs /still on the profile's probe object (one container per profile, design
-// 4.5), its PNG goes through verifyStill and Images (stillEncodes), the copy is deleted, and the Store records the
-// result for this build. Every R2 write and delete goes through the call's `settled` (the Store confirms the lease
+// most once a call, under the rebuild's lease and the probe's one claim (domain/media-probes.ts: not again within
+// PROBE_RETRY_MS of a recorded result, nor PROBE_CLAIM_MS of an unfinished claim), whatever the budgets: the probe
+// clip is copied to incoming/probe-<nonce>, the StillMaker runs /still on the profile's probe object (one container per
+// profile, design 4.5), its PNG goes through verifyStill and Images (stillEncodes), the copy is deleted, and the Store
+// records the verdict (mastodon/media-activation.ts stillProbeVerdict, imagesVerdict) under the claim. A pass Images
+// did not verify (9422) stops the call as its quota, before any charge or still. Every R2 write and delete goes through the call's `settled` (the Store confirms the lease
 // first).
 
 export const REBUILD_AV_MS = 120_000;
@@ -81,8 +83,7 @@ const AV_COPY_MS = 60_000;
 const AV_PROBE_MS = 60_000;
 const AV_STILL_MS = 75_000;
 export const MAX_AV_BUILDS_PER_CALL = 1;
-const STILL_PROFILE = "still@standard-1";
-// How soon a failed probe of the still profile is run again for the same build (design 4.15).
+// How soon the still profile is probed again for the same build after a recorded result (design 4.15).
 export { PROBE_RETRY_MS };
 
 export type AvCall = {
@@ -483,83 +484,85 @@ async function make(
   return facts;
 }
 
-// Whether the `still@standard-1` probe has passed for this build. It runs at most once a call (one AV row a call), when
-// no pass for this build is recorded and none was started for it within PROBE_RETRY_MS (at the Store's clock): the
-// attempt is recorded before the probe starts, so a failing profile, and a probe that reached no verdict, cost at most
-// one container and Images call an hour whatever the budgets. The profile fails only when the container refuses the
-// packaged clip as input, verifyStill refuses its PNG, or Images refuses that PNG or its output fails the checks; any
-// other failure of the processor or Images is no verdict, and the call stops.
+// Whether the `still@standard-1` probe has passed for this build, verified by Images. Its claim is the probe's one claim
+// (claimMediaRebuildProbe): a pass that needs no probe answers at once; within the claim's cooldown the build's verdict
+// stands (a failure falls back, a pass Images did not verify stops as its quota, none stops the call); otherwise the
+// probe runs once and its verdict is recorded under the claim. A probe object that refused before it started a
+// container (busy, its alarm's write) records nothing, so the claim holds the profile for PROBE_CLAIM_MS only.
 async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => number): Promise<boolean | AvOutcome> {
-  const { record, attempt, now } = await call.bounded<{
-    record: ProbeRecord | null;
-    attempt: ProbeAttempt | null;
-    now: number;
-  }>(async () => await call.store.mediaProbeRecord(call.build, { profile: STILL_PROFILE }));
-  const verdict = record !== null && record.version === call.build ? record.ok : null;
-  if (verdict === true) {
+  const claimed = await call.bounded<RebuildProbeClaim>(
+    async () =>
+      await call.store.claimMediaRebuildProbe(call.build, {
+        authority: call.authority,
+        holder: call.holder,
+        build: call.build,
+      }),
+  );
+  if (claimed.status === "denied" || claimed.status === "lease-lost") {
+    return refusedBy(claimed);
+  }
+  if (claimed.status === "passed") {
     return true;
   }
-  // Started for this build within PROBE_RETRY_MS: its failure stands, and an attempt that reached no verdict (the
-  // processor's or Images' state, their quota) stops the call until the hour is over.
-  if (attempt !== null && attempt.version === call.build && now - attempt.at < PROBE_RETRY_MS) {
-    return verdict === false ? false : RETRY;
-  }
-  const started = await recordProbe(call, null, null);
-  if (started !== null) {
-    return started;
+  if (claimed.status === "cooldown") {
+    const record = claimed.record;
+    if (record === null) {
+      return RETRY;
+    }
+    if (!record.ok) {
+      return false;
+    }
+    return record.imagesVerified === false ? QUOTA : true;
   }
   const until = stage(AV_PROBE_MS);
   const key = probeInputKey(toHex(crypto.getRandomValues(new Uint8Array(16))));
   await call.settled(() => call.bucket.put(key, stills.probeInput));
-  let outcome: "passed" | "failed" | AvOutcome;
+  let verdict: ProbeVerdict;
   let image: string | null = null;
   try {
     const out = await call.bounded(() => stills.probe(key, until - call.now()), until);
     image = probeImageTag(out.image);
-    if (!out.ok) {
-      if (out.pending === true) {
-        throw new DeadlinePassed();
-      }
-      // The container refusing the packaged clip says the profile cannot make stills; anything else is its state.
-      outcome = out.input === undefined ? RETRY : "failed";
-    } else if (verifyStill(out.png) !== null) {
-      outcome = "failed";
+    if (!out.ok && out.pending === true) {
+      throw new DeadlinePassed();
+    }
+    if (!out.ok && NOT_STARTED.has(out.failure)) {
+      return RETRY;
+    }
+    const container = stillProbeVerdict(out);
+    if (container.outcome !== "still") {
+      verdict = container;
     } else {
-      const png = out.png;
+      const png = container.png;
       const encoded = await call.bounded(
         () => stillEncodes(call.images, png, pngSize(png), (work) => within(work, until, call.now)),
         until,
       );
-      // Images refusing the PNG, or its output failing the still's checks, is the still's failure here.
-      outcome = encoded === "quota" ? QUOTA : encoded === "retry" ? RETRY : encoded === "passed" ? "passed" : "failed";
+      verdict = imagesVerdict(encoded);
     }
   } finally {
     await call.settled(() => call.bucket.delete(key));
   }
-  if (typeof outcome !== "string") {
-    return outcome;
-  }
-  const recorded = await recordProbe(call, outcome === "passed", image);
-  if (recorded !== null) {
-    return recorded;
-  }
-  return outcome === "passed";
-}
-
-// Records the probe's start (`ok` null) or its verdict, under the lease; null once recorded.
-async function recordProbe(call: AvCall, ok: boolean | null, imageTag: string | null): Promise<AvOutcome | null> {
-  const recorded = await call.bounded<
-    { status: "ok" } | { status: "lease-lost" } | { status: "denied"; reason: string }
-  >(
+  const recorded = await call.bounded(
     async () =>
-      await call.store.recordMediaProbe(call.build, {
+      await call.store.recordMediaRebuildProbe(call.build, {
         authority: call.authority,
         holder: call.holder,
-        profile: STILL_PROFILE,
-        version: call.build,
-        imageTag,
-        ok,
+        result: {
+          claim: claimed.claim,
+          outcome: verdict.outcome,
+          imagesVerified: verdict.outcome === "pass" && verdict.imagesVerified,
+          imageTag: image,
+        },
       }),
   );
-  return recorded.status === "ok" ? null : refusedBy(recorded);
+  if (recorded.status === "denied" || recorded.status === "lease-lost") {
+    return refusedBy(recorded);
+  }
+  if (recorded.status === "stale") {
+    return RETRY;
+  }
+  if (verdict.outcome === "pass") {
+    return verdict.imagesVerified ? true : QUOTA;
+  }
+  return verdict.outcome === "fail" ? false : RETRY;
 }

@@ -599,8 +599,8 @@ export const STORE_RPC = {
   recordMediaRebuild: mediaRebuild.recordRebuild,
   recordMediaRebuildStill: mediaRebuild.recordAvStill,
   fallbackMediaRebuild: mediaRebuild.fallbackAvRebuild,
-  mediaProbeRecord: mediaRebuild.probeRecord,
-  recordMediaProbe: mediaRebuild.recordProbe,
+  claimMediaRebuildProbe: mediaRebuild.claimRebuildProbe,
+  recordMediaRebuildProbe: mediaRebuild.recordRebuildProbe,
 
   // The media processor's probe records and activation (domain/media-probes.ts, domain/media-processing.ts), each at
   // the Store's own time: one claim shared by the CLI and the probe round, its fenced result, an upload's

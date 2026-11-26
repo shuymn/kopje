@@ -35,6 +35,7 @@ import {
   remoteFieldLinkRowPastBoundSql,
   remoteMediaObjectPastBoundSql,
   remoteMediaSlotPastBoundSql,
+  remoteMediaStillPastBoundSql,
   remoteMediaUsagePastBoundSql,
   staticImagesPastBoundSql,
   STORED_COLUMNS,
@@ -120,7 +121,7 @@ const CARD_IMAGE_COLUMNS =
   "id, source_url, due_at, enqueued_at, claim, attempts, token, width, height, blurhash, stored_at";
 const REMOTE_MEDIA_COLUMNS =
   "id, kind, owner_id, account_id, domain, url, host, category, lane, generation, due_at, enqueued_at, " +
-  "claim, attempts, token, ext, still_ext, stored_at, failed_at, seen_at";
+  "claim, attempts, token, ext, still_ext, stored_at, failed_at, seen_at, still_key, still_blurhash";
 const REMOTE_MEDIA_OBJECT_COLUMNS =
   "token, slot_id, state, charge, kind, content_type, still_type, hosts, claimed_at, stored_at, due_at, " +
   "delete_attempts";
@@ -332,7 +333,7 @@ const STATEMENTS: readonly string[] = [
     unverifiedLinksPastBoundSql("NEW.unverified_links"),
     "local_accounts: unverified_links past its stored bound",
   ),
-  // 0077_remote_media
+  // 0077_remote_media; the slot's recreated by 0122_remote_media_stills over its two new columns
   ...boundTriggers(
     "remote_media_bounds",
     "remote_media",
@@ -353,6 +354,14 @@ const STATEMENTS: readonly string[] = [
     "id, bytes, doomed, pending",
     remoteMediaUsagePastBoundSql("NEW"),
     "remote_media_usage: a value past its stored bound",
+  ),
+  // 0122_remote_media_stills
+  ...boundTriggers(
+    "remote_media_stills_bounds",
+    "remote_media_stills",
+    "token, state, claims, due_at, claimed_at, attempt, outcome, still_charge",
+    remoteMediaStillPastBoundSql("NEW"),
+    "remote_media_stills: a value past its stored bound",
   ),
   // 0079_filter_text_units: the bound, and the clearing of a measure a text change left behind (one row, by key).
   ...boundTriggers(

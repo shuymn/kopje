@@ -51,6 +51,29 @@ describe("remote media keys", () => {
     }
   });
 
+  it("names a video still by `s` and 32 lowercase hex digits only (P20b)", () => {
+    const attempt = "0123456789abcdef".repeat(2);
+    const still = `s${attempt}` as const;
+    expect(remoteFileKey(TOKEN, still)).toBe(`remote/${TOKEN}/${still}`);
+    expect(remoteMediaPath(TOKEN, still, "image/webp")).toBe(`/media/r/${TOKEN}/${still}.webp`);
+    expect(keyOfRemotePath(TOKEN, `${still}.webp`)).toEqual({ key: `remote/${TOKEN}/${still}`, extension: "webp" });
+    for (const variant of [
+      `s${attempt.slice(1)}`,
+      `s${attempt}0`,
+      `s${attempt.toUpperCase()}`,
+      `s${"g".repeat(32)}`,
+      `x${attempt}`,
+      `s${attempt}/x`,
+      "s",
+    ]) {
+      expect(() => remoteFileKey(TOKEN, variant as `s${string}`), variant).toThrow("not a server token");
+      expect(keyOfRemotePath(TOKEN, `${variant}.webp`), variant).toBeNull();
+    }
+    // The legacy variants keep their grammar.
+    expect(keyOfRemotePath(TOKEN, "still.png")).toEqual({ key: `remote/${TOKEN}/still`, extension: "png" });
+    expect(keyOfRemotePath(TOKEN, "full.mp4")).toEqual({ key: `remote/${TOKEN}/full`, extension: "mp4" });
+  });
+
   it.each([
     ["bytes=0-9", { offset: 0, length: 10 }],
     ["bytes=10-", { offset: 10 }],
@@ -92,6 +115,20 @@ describe("serveRemoteMedia", () => {
     expect((await served(`/media/r/${"S".repeat(43)}/full.gif`)).status).toBe(404);
     expect((await served(`/media/r/${"Q".repeat(43)}/full.png`)).status).toBe(404);
     expect((await served(`/media/r/x/full.png`)).status).toBe(404);
+  });
+
+  it("serves a named video still as image/webp, GET and HEAD, and 404 for a malformed one (P20b)", async () => {
+    const served = await site();
+    const still = `s${"0123456789abcdef".repeat(2)}`;
+    await env.MEDIA.put(`remote/${TOKEN}/${still}`, BODY, { httpMetadata: { contentType: "image/webp" } });
+    const got = await served(`/media/r/${TOKEN}/${still}.webp`);
+    expect(got.status).toBe(200);
+    expect(got.headers.get("content-type")).toBe("image/webp");
+    expect(new Uint8Array(await got.arrayBuffer())).toEqual(BODY);
+    expect((await served(`/media/r/${TOKEN}/${still}.webp`, { method: "HEAD" })).status).toBe(200);
+    expect((await served(`/media/r/${TOKEN}/${still}.png`)).status).toBe(404);
+    expect((await served(`/media/r/${TOKEN}/${still.toUpperCase()}.webp`)).status).toBe(404);
+    expect((await served(`/media/r/${TOKEN}/${still.slice(0, -1)}.webp`)).status).toBe(404);
   });
 
   it("answers ranges with 206, an unsatisfiable one with 416, and a multi-part one with the whole file", async () => {

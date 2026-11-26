@@ -563,6 +563,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     count: 1,
     reason: "a number constant (the held Rejects a local account keeps, HOLD_REJECT_ROOM), naming no column",
   },
+  // Whether a remote media slot may have a video still, evaluated on the slot's row after its rowid seek: a predicate
+  // (remote-media.ts stillQualifiesSql), at its two call sites only.
+  'src/domain/remote-media.ts interpolation stillQualifiesSql("r")': { count: 1, reason: PREDICATE },
+  'src/domain/remote-media-stills.ts interpolation stillQualifiesSql("r")': { count: 1, reason: PREDICATE },
   // A held Reject's Follow id judged against its stored bound: a predicate (deliveries.ts heldFollowUriSql).
   'src/domain/deliveries.ts interpolation heldFollowUriSql("uri")': { count: 2, reason: PREDICATE },
   // The owner lookup's shared parts (media-processing.ts OWNER_SQL, in ownerRow and ownerFacts): its processing state
@@ -968,6 +972,15 @@ describe("the source scanner", () => {
 
 describe("bounded columns in src/domain", () => {
   const { reads, misuses } = scan(sources("src/domain"));
+
+  it("flags a same-name local builder that projects raw statuses.uri", () => {
+    const text = [
+      'function stillQualifiesSql() { return "s.uri"; }',
+      "db.all(`SELECT ${stillQualifiesSql()} FROM statuses s`);",
+    ].join("\n");
+    const { reads } = scan([{ path: "src/domain/review-probe.ts", text }]);
+    expect(reads.map((finding) => finding.read)).toContain("interpolation stillQualifiesSql()");
+  });
 
   it("are read only through their helpers", () => {
     const allowed = allowedByKey();
