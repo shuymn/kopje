@@ -184,11 +184,15 @@ export function remoteStillsDeps(env: Env, deps: RemoteStillsRoundDeps): RemoteS
 }
 
 export async function scheduledRemoteStills(env: Env, deps: RemoteStillsRoundDeps): Promise<void> {
-  const round = remoteStillsDeps(env, deps);
-  if (round === null) {
-    return;
-  }
-  await cronRound(env, () => remoteStillsRound(round), "kopje.scheduled.remote_stills_failed");
+  // Its dependencies are built only past the maintenance gate.
+  await cronRound(
+    env,
+    async () => {
+      const round = remoteStillsDeps(env, deps);
+      return round === null ? null : remoteStillsRound(round);
+    },
+    "kopje.scheduled.remote_stills_failed",
+  );
 }
 
 // One step of the cron, its own error boundary: a failure is logged as `event` and stops no later step. A Store

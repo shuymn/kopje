@@ -344,7 +344,8 @@ export function chargeInstanceTransforms(db: Db, count: number, limit: number, n
 // (MEDIA_UPLOAD_MONTHLY_JOBS), one per container job that budget pays for: an upload's processing
 // (domain/media-processing.ts queueNormalize) and the media rebuild's stills (domain/media-rebuild.ts); `still`
 // (MEDIA_STILL_MONTHLY_JOBS), one per claim of a remote video's still (domain/remote-media-stills.ts), covering its
-// container and its at most two Images calls. Kept and pruned as the transformation counters are.
+// container and its at most two Images transformations and one metadata call. Kept and pruned as the transformation
+// counters are.
 const JOB_COUNTERS = { upload: "media_upload_jobs:", still: "media_still_jobs:" } as const;
 type JobKind = keyof typeof JOB_COUNTERS;
 

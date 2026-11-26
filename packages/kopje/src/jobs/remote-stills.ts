@@ -255,18 +255,26 @@ export async function remoteStillsRound(deps: RemoteStillsDeps): Promise<RemoteS
   if (!granted || deps.maintenance()) {
     return retried("admission");
   }
-  // The grant is read last, at the put's own start: no check after it can let a put start past STILL_PUT_GRANT_MS.
-  const putAt = now();
-  if (putAt - asked > STILL_PUT_GRANT_MS) {
-    return retried("admission");
-  }
+  // The grant is read last, in the put's own callback: no clock read after it comes before the put starts.
+  let expired = false;
   try {
     await inTime(
-      () => deps.bucket.put(remoteFileKey(token, `s${attempt}`), webp, { httpMetadata: { contentType: "image/webp" } }),
-      Math.min(putAt + PUT_MS, workEnd),
+      () => {
+        if (now() - asked > STILL_PUT_GRANT_MS) {
+          expired = true;
+          return Promise.reject(new DeadlinePassed());
+        }
+        return deps.bucket.put(remoteFileKey(token, `s${attempt}`), webp, {
+          httpMetadata: { contentType: "image/webp" },
+        });
+      },
+      Math.min(now() + PUT_MS, workEnd),
       now,
     );
   } catch (error) {
+    if (expired) {
+      return retried("admission");
+    }
     if (!(error instanceof DeadlinePassed)) {
       console.warn({ event: "kopje.media.still.remote_put_failed", ...errorFields(error) });
     }

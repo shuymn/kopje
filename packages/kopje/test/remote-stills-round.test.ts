@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { healthReport } from "../src/app/health";
 import { PROBE_RETRY_MS, probeName } from "../src/domain/media-probes";
-import { LATE_PUT_MS, recordRemoteMedia, remoteMediaOrphans, type StillsActivation } from "../src/domain/remote-media";
+import {
+  LATE_PUT_MS,
+  recordRemoteMedia,
+  remoteMediaOrphans,
+  STILL_ROUND_MS,
+  type StillsActivation,
+} from "../src/domain/remote-media";
 import { STILL_LEASE_MS } from "../src/domain/remote-media-stills";
 import {
   REMOTE_STILL_CALL_MS,
@@ -134,14 +140,16 @@ const made = async (): Promise<StillOutcome> => ({ ok: true, png: await stillPng
 // The media bucket, its puts recorded (`before` runs ahead of each).
 function recordingBucket(before?: (key: string) => Promise<void>) {
   const puts: { key: string; type: string | undefined }[] = [];
+  const options: (R2PutOptions | undefined)[] = [];
   const bucket = {
-    put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+    put: async (key: string, value: Uint8Array, put?: R2PutOptions) => {
       await before?.(key);
-      puts.push({ key, type: (options?.httpMetadata as R2HTTPMetadata | undefined)?.contentType });
-      return env.MEDIA.put(key, value, options);
+      puts.push({ key, type: (put?.httpMetadata as R2HTTPMetadata | undefined)?.contentType });
+      options.push(put);
+      return env.MEDIA.put(key, value, put);
     },
   };
-  return { puts, bucket };
+  return { puts, options, bucket };
 }
 
 // The Store with `hooks` run after the named calls answer, and every call counted.
@@ -185,7 +193,7 @@ describe("the round makes, checks, puts and records one still (P20a, P20c, P22, 
     await passStill(w);
     const v = await video(w);
     const { stills, calls } = maker(made);
-    const { puts, bucket } = recordingBucket();
+    const { puts, options, bucket } = recordingBucket();
     const codec = new TestCodec();
     const round = await remoteStillsRound(deps(w, stills, { bucket, images: codec }));
     expect(round).toMatchObject({ status: "recorded", token: v.token });
@@ -194,6 +202,8 @@ describe("the round makes, checks, puts and records one still (P20a, P20c, P22, 
     expect(calls).toEqual([{ token: v.token, attempt, ms: REMOTE_STILL_CALL_MS }]);
     expect(REMOTE_STILL_CALL_MS).toBe(STILL_CALL_MS);
     expect(puts).toEqual([{ key: `remote/${v.token}/s${attempt}`, type: "image/webp" }]);
+    // A plain put: no condition (onlyIf), nothing adopted (Gemini r3 M1).
+    expect(options).toEqual([{ httpMetadata: { contentType: "image/webp" } }]);
     // Two Images transformations (the WebP and its RGBA) and one metadata call (the WebP's info), none charged to the
     // Images budgets (P20c, P22).
     expect(codec.encodeCalls.map((call) => call.format)).toEqual(["image/webp", "rgba"]);
@@ -464,6 +474,31 @@ describe("put admission (P19d, W-S7, W-S10)", () => {
     expect(puts).toEqual([]);
   });
 
+  it("starts no put if the clock advances past the grant in the deadline wrapper", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    await video(w);
+    const { bucket, puts } = recordingBucket();
+    let checkedMaintenance = false;
+    let reads = 0;
+    const { store } = storeWith(w.t.store, {
+      admitRemoteStill: () => void vi.setSystemTime(Date.now() + STILL_PUT_GRANT_MS),
+    });
+    const round = await remoteStillsRound(
+      deps(w, maker(made).stills, {
+        store,
+        bucket,
+        maintenance: () => {
+          checkedMaintenance = true;
+          return false;
+        },
+        now: () => Date.now() + (checkedMaintenance && ++reads >= 2 ? 1 : 0),
+      }),
+    );
+    expect(round).toMatchObject({ status: "failed", disposition: { reason: "admission" } });
+    expect(puts).toEqual([]);
+  });
+
   it("puts nothing on a timely grant when the env's maintenance is set before the put", async () => {
     const w = await mediaWorld();
     await passStill(w);
@@ -590,6 +625,63 @@ describe("the round's bounds (P-RND, G1, RES-6)", () => {
     at(w, start + LATE_PUT_MS);
     expect(await remoteStillsRound(deps(w, stills))).toMatchObject({ status: "recorded", token: v.token });
     expect(await stillOf(w, v.token)).toMatchObject({ state: "stored", claims: 2 });
+  });
+
+  // A timely claim and call, then the clock past what Images needs before the round's end: no Images call.
+  it("starts no Images call when what is left of the round does not fit it", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w);
+    let answered = false;
+    let reads = 0;
+    const { stills } = maker(async () => {
+      answered = true;
+      return made();
+    });
+    const codec = new TestCodec();
+    // The call's own check reads the clock once; every read after it is past the round's end.
+    const now = () => Date.now() + (answered && ++reads >= 2 ? STILL_ROUND_MS : 0);
+    const round = await remoteStillsRound(deps(w, stills, { images: codec, now }));
+    expect(round).toMatchObject({ status: "failed", disposition: { reason: "budget", outcome: "retry" } });
+    expect(codec.encodeCalls).toEqual([]);
+    expect(codec.infoCalls).toBe(0);
+    expect(await stillOf(w, v.token)).toMatchObject({ state: "queued", claims: 1 });
+  });
+
+  // Images answered in time, then the clock past what the admission and the put need: no admission, no put.
+  it("asks for no admission when what is left of the round does not fit it and the put", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    await video(w);
+    let jump = 0;
+    const codec = new TestCodec();
+    codec.encodeResponder = (options) => {
+      if (options.format === "rgba") {
+        jump = STILL_ROUND_MS - 2 * 5_000 - 15_000;
+      }
+      return null;
+    };
+    const counted = storeWith(w.t.store);
+    const { puts, bucket } = recordingBucket();
+    const round = await remoteStillsRound(
+      deps(w, maker(made).stills, { images: codec, store: counted.store, bucket, now: () => Date.now() + jump }),
+    );
+    expect(round).toMatchObject({ status: "failed", disposition: { reason: "budget" } });
+    expect(codec.encodeCalls.map((call) => call.format)).toEqual(["image/webp", "rgba"]);
+    expect(counted.calls).not.toContain("admitRemoteStill");
+    expect(puts).toEqual([]);
+  });
+
+  it("builds nothing on a tick in the env's maintenance", async () => {
+    const built: string[] = [];
+    await scheduledRemoteStills({ ...env, MEDIA_STILL_MONTHLY_JOBS: "5", MAINTENANCE: "readonly" } as Env, {
+      build: () => (built.push("build"), BUILD),
+      store: () => (built.push("store"), env.STORE.get(env.STORE.idFromName("unused"))),
+      stills: () => (built.push("stills"), null),
+      images: () => (built.push("images"), new TestCodec()),
+      now: () => Date.now(),
+    });
+    expect(built).toEqual([]);
   });
 
   it("claims one still a tick", async () => {

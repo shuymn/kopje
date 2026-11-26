@@ -105,8 +105,9 @@ const configSchema = v.object(
     // starts none. This release spends it only on the stills `kopje-admin media-rebuild` makes for video rows.
     MEDIA_UPLOAD_MONTHLY_JOBS: v.optional(integer(0), 0),
     // Media processor jobs remote video stills may start per UTC month (#1828, domain/remote-media-stills.ts
-    // claimRemoteStill): one a claim, covering its container and its at most two Images calls, which
-    // IMAGES_MONTHLY_TRANSFORMS does not count. 0, the default, makes none (docs/media-processor.md, "Remote stills").
+    // claimRemoteStill): one a claim, covering its container and its at most two Images transformations and one
+    // metadata call, which IMAGES_MONTHLY_TRANSFORMS does not count. 0, the default, makes none
+    // (docs/media-processor.md, "Remote stills").
     MEDIA_STILL_MONTHLY_JOBS: v.optional(integer(0), 0),
     // The bytes the cache of remote media (domain/remote-media.ts, MEDIA-7) may charge in the media bucket under
     // remote/, reservations and files awaiting deletion included; reclamation keeps it below. 4 GiB by default; 0 turns
