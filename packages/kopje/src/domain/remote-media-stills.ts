@@ -331,8 +331,9 @@ export type RemoteStillFailure =
 // check, so a late failure still releases a live reservation. A doomed object answers `doomed` and changes nothing. On a
 // stored object the first call settles the attempt: its outcome, its reservation released (the ledger and usage by
 // −still_charge), and due again at max(claimed_at + LATE_PUT_MS, now + RETRY_DELAYS_MS[claims − 1]) for a retry, never
-// for a park or after the STILL_CLAIMS-th claim. A replay answers the recorded outcome and changes nothing. The lease is
-// released when the attempt holds it and `keepLease` is false (no container started, or its stop confirmed).
+// for a park or after the STILL_CLAIMS-th claim, and the lease released when the attempt holds it and `keepLease` is
+// false (no container started, or its stop confirmed). A replay answers the recorded outcome and writes nothing, the
+// lease included, whatever its `keepLease`: a lease a settlement kept lapses at its expiry.
 export const failRemoteStill = writeOperation.atStoreTime("now")<
   { token: string; attempt: string; outcome: "retry" | "park"; keepLease: boolean; now: number; restoredAt: Marker },
   RemoteStillFailure
@@ -346,9 +347,6 @@ export const failRemoteStill = writeOperation.atStoreTime("now")<
     row.attempt === attempt &&
     (row.outcome === "retry" || row.outcome === "park")
   ) {
-    if (!keep) {
-      release(db, attempt);
-    }
     return { status: "settled", outcome: row.outcome };
   }
   if (!current(row, attempt) || (outcome !== "retry" && outcome !== "park") || !isTime(now)) {

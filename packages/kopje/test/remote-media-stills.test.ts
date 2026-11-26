@@ -794,9 +794,25 @@ describe("the failure (P19c, the Store's part)", () => {
     });
     expect(await stillOf(w, v.token)).toMatchObject({ outcome: "retry", still_charge: 0, due_at: due });
     expect(await chargeOf(w, v.token)).toBe(reserved! - STILL_OUTPUT_LIMIT);
-    // The replay released the lease its attempt held.
-    expect(await leaseOf(w)).toBeNull();
+    // A replay is a pure answer: the lease the settlement kept stays, whatever keepLease says.
+    expect(await leaseOf(w)).toMatchObject({ holder: attempt });
     await totalsAgree(w);
+  });
+
+  it("does not release a held lease on failure replay", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w, { stills: STILLS });
+    const { attempt } = (await claim(w)).out as { attempt: string };
+    await failStill(w, v.token, attempt, "retry", true);
+    const held = await leaseOf(w);
+    expect(held).toMatchObject({ holder: attempt });
+    at(w, w.clock.now + 1);
+    expect(await failStill(w, v.token, attempt, "retry", false, "unknown")).toEqual({
+      out: { status: "settled", outcome: "retry" },
+      reads: 0,
+    });
+    expect(await leaseOf(w)).toEqual(held);
   });
 
   it("parks on the first claim, and settles a failure past claimed_at + STILL_ROUND_MS", async () => {
