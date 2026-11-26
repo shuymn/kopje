@@ -1,18 +1,19 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { TRANSFORMS_PER_UPLOAD, UPLOAD_BUDGET } from "../src/domain/media";
+import { DETACHED_GRACE_MS, TRANSFORMS_PER_UPLOAD, UPLOAD_BUDGET } from "../src/domain/media";
 import { DISPATCH_MS, PART_BYTES, V1_POLL_MS } from "../src/domain/media-processing";
 import { MEDIA_BODY_LIMIT } from "../src/mastodon/media";
 import { PREFIX_THUMBNAIL_LIMIT } from "../src/mastodon/media-av";
 import { API_BODY_LIMIT } from "../src/mastodon/params";
+import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
 import { IMAGE_SIZE_LIMIT, imagesCodec } from "../src/platform/images";
 import { incomingKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
 import { bearer, sql } from "./api-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
 import { BUILD, deferred } from "./helpers";
 import { bytes } from "./media-helpers";
-import { charged, clock, VIDEO } from "./media-processing-helpers";
+import { charged, clock, VIDEO, VIDEO_NO_STILL } from "./media-processing-helpers";
 import {
   answerOf,
   hookedBucket,
@@ -28,6 +29,7 @@ import {
   SlowBody,
   videoPart,
 } from "./media-route-helpers";
+import { sweep } from "./media-thumbnail-helpers";
 
 // Custom thumbnails on POST /api/v1/media and /api/v2/media for video and audio (#1828 PR6 plan, "Multipart", "POST
 // timing", "POST link"; T15, T16, T17's route cases): one `thumbnail` part, judged once the file is known to be video
@@ -348,6 +350,74 @@ describe("a video or audio upload with a thumbnail (T15)", () => {
     expect(await w.store.mediaDispatchRound(BUILD)).toMatchObject({ runs: [{ id }] });
     await complete(w, id);
     expect(await getOwn(w, id)).toEqual({ status: 200, body: showsChild(child) });
+  });
+
+  it("keeps the thumbnail of an upload whose route dies after S3: completed with it, swept with it at its grace", async () => {
+    const w = await routeWorld();
+    // S3 commits and its reply never reaches the route, which makes no further call (W-T4).
+    w.gate.hold("queueNormalize", "after");
+    const committed = w.gate.reached("queueNormalize");
+    void postMedia(w, multipartBody([videoPart(), thumbPart()]));
+    await committed;
+    const id = await parentId(w);
+    const [child] = await children(w);
+    expect(child).toMatchObject({ thumbnail_of: id, gc_at: null });
+    clock(Date.now() + DISPATCH_MS);
+    expect(await w.store.mediaDispatchRound(BUILD)).toMatchObject({ runs: [{ id }] });
+    await complete(w, id);
+    expect(await getOwn(w, id)).toEqual({ status: 200, body: showsChild(child) });
+    const [parent] = await sql<{ gc_at: string }>(w.store, "SELECT gc_at FROM media_attachments WHERE id = ?", id);
+    const grace = Date.parse(parent?.gc_at ?? "");
+    expect(grace).toBe(Date.now() + DETACHED_GRACE_MS);
+    clock(grace - 1);
+    expect(await sweep(w.store)).toBe(0);
+    clock(grace);
+    await sweep(w.store);
+    await sweep(w.store);
+    expect(await sql(w.store, "SELECT id FROM media_attachments WHERE id IN (?, ?)", id, child?.id ?? "")).toEqual([]);
+    expect(await env.MEDIA.head(originalKey(child?.id ?? ""))).toBeNull();
+  });
+
+  // T17's route case: the thumbnail takes the account's last three transformations, so the video's still finds no room
+  // (chargeAvPoster `spent`) and the video completes with its poster, the thumbnail its preview.
+  it("makes the thumbnail with three transformations left; the video completes with its poster (T17)", async () => {
+    const w = await routeWorld();
+    const config = readConfig(env);
+    if (!config.ok) {
+      throw new Error("config");
+    }
+    const limit = accountMonthlyTransforms(config.config);
+    const account = `images_account_transforms:${new Date().toISOString().slice(0, 7)}:${w.h.users.alice.id}`;
+    await sql(
+      w.store,
+      "INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)",
+      account,
+      String(limit - TRANSFORMS_PER_UPLOAD),
+    );
+    const response = await answerOf(await postMedia(w, multipartBody([videoPart(), thumbPart()])));
+    const id = await parentId(w);
+    const [child] = await children(w);
+    expect(child).toMatchObject({ thumbnail_of: id, processed: 1 });
+    expect(response).toEqual({ status: 202, body: showsChild(child) });
+    const [spent] = await sql<{ value: string }>(w.store, "SELECT value FROM kopje_state WHERE name = ?", account);
+    expect(spent?.value).toBe(String(limit));
+    clock(Date.now() + DISPATCH_MS);
+    expect(await w.store.mediaDispatchRound(BUILD)).toMatchObject({ runs: [{ id }] });
+    const token = await tokenOf(w, id);
+    const started = await w.store.startNormalize(BUILD, { id, token, invocation: `inv-${id}` });
+    if (started.status !== "started") {
+      throw new Error(`not started: ${started.status}`);
+    }
+    const monthlyTransforms = { instance: config.config.IMAGES_MONTHLY_TRANSFORMS, account: limit };
+    expect(await w.store.chargeAvPoster(BUILD, { id, startId: started.startId, monthlyTransforms })).toEqual({
+      status: "spent",
+    });
+    expect(
+      await w.store.completeAvUpload(BUILD, { id, token, startId: started.startId, facts: VIDEO_NO_STILL }),
+    ).toEqual({ status: "done" });
+    const shown = await getOwn(w, id);
+    expect(shown).toEqual({ status: 200, body: showsChild(child) });
+    expect(shown.body).toMatchObject({ type: "video", url: expect.stringContaining("/media/") });
   });
 
   it("answers a repeat that finds S3 committed (pending) with the thumbnail, linked once", async () => {
