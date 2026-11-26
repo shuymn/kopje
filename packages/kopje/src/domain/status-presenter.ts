@@ -1200,8 +1200,7 @@ export function thumbnailOverlay(
 // it (http(s), within its bounds), and other than the parent's own file, both normalized (otherFile); null otherwise,
 // and the row is then shown as without a thumbnail.
 export function thumbnailShown(preview: unknown, parentUrl: unknown): string | null {
-  const shown = presentedMediaUrl(preview);
-  return otherFile(shown, presentedMediaUrl(parentUrl), null) ? shown : null;
+  return distinct(presentedMediaUrl(preview), presentedMediaUrl(parentUrl), null);
 }
 
 function presentOwnMedia(row: MediaRow, origin: string | null): MediaAttachment {
