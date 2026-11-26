@@ -342,7 +342,16 @@ describe("the slot's seek (P19e)", () => {
         expect(media).not.toBe("");
         return [...queued.plans, ...claimed.plans, ...recorded.plans];
       };
+      // A cached video before ANALYZE, so the statistics are of a populated owner index (growth from it, not from none).
+      await video(w);
       const { before, after } = await staleStatistics(w.t, {
+        settle: async () => {
+          const [owner] = await sql<{ stat: string }>(
+            w.t.store,
+            "SELECT stat FROM sqlite_stat1 WHERE tbl = 'remote_media' AND idx = 'remote_media_owner'",
+          );
+          expect(Number(owner?.stat.split(" ")[0] ?? 0)).toBeGreaterThan(0);
+        },
         capture,
         // Past the 20,000 pending slots the cache keeps: attachment slots of other owners, around the video's in the
         // owner index.
