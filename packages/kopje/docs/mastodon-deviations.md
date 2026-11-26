@@ -1724,9 +1724,9 @@ Media (the `MediaAttachment` entity):
   thumbnail, as Mastodon clears it; then `meta.small` and `blurhash` are the upload's own (its still's, or absent and
   null for audio and a video without one), where Mastodon keeps the removed thumbnail's. A v2 audio upload with
   embedded cover art keeps its custom thumbnail once processed, where Mastodon's worker replaces it with the cover. On
-  Cloudflare Free and Pro, a `POST` whose file and thumbnail together pass the zone's 100 MB request limit is refused by
-  Cloudflare (413, not a Mastodon JSON body) before Kopje reads it; a file near the 90 MiB limit takes its thumbnail by
-  `PUT`.
+  Cloudflare Free and Pro, a `POST` whose body passes the zone's request limit (100 MiB, 104,857,600 bytes) is refused
+  by Cloudflare (413, not a Mastodon JSON body) before Kopje reads it, so a file near the 90 MiB limit leaves about
+  10 MiB for its thumbnail and the form; a larger thumbnail goes by `PUT`.
 - A local video's or audio file's `Document` in its Note writes `duration` to the millisecond (`PT29.964S`), where
   Mastodon writes its stored seconds as ffprobe gives them (to the microsecond); the API's `meta` keeps the stored
   value.
