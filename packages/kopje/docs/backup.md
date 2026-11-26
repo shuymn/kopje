@@ -52,10 +52,10 @@ images, and a card recorded after the restore fetches its image again. Their fil
 Cached remote files (`remote/` in R2: remote avatars, headers and custom emoji) are not backed up either, and their
 tables are not in a dump (`remote_media`, `remote_media_objects`, `remote_media_usage`, `remote_media_stills`): a
 restored or imported Store shows them by their remote URLs and caches them again. The cron's orphan sweep deletes the
-files under `remote/` that the Store does not know, a day after their upload, at most 1,000 an hour. After a point-in-time restore, the cache
-writes and deletes nothing for 20 minutes; it then deletes the files the restored Store had only reserved, checks every
-file it shows (at most 100 a round) and fetches a missing one again. Until the check reaches it, a cached URL may
-answer 404.
+files under `remote/` that the Store does not know, a day after their upload, at most 1,000 an hour. After a
+point-in-time restore, the cache writes and deletes nothing for 20 minutes; it then deletes the files the restored Store
+had only reserved, checks every file it shows (at most 100 a round) and fetches a missing one again. Until the check
+reaches it, a cached URL may answer 404.
 
 Video and audio processing (its jobs and capacity slots) is not in a dump either, and a point-in-time restore takes it
 back to the bookmark while a container the restore forgot may still run. Before a point-in-time restore, set

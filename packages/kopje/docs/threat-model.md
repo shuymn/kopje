@@ -6312,9 +6312,9 @@ A chunk of several takes at most its target of heap: 392 KiB (0.40 MB) for timel
 reports. Normal: the rows are the larger of 1.25 × the target and the item's rows, plus the admitted answer, the
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 392 KiB timeline cap and `STATUS_ANSWER_BYTES`, the largest multiple of 8 KiB that does with that
-cap (each byte of budget is three of heap, so 8 KiB more would leave 2,724.5 bytes, under the spare below), keep the fallback below
-half the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to spare under 64 MB
-(asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 69,694 under its
+cap (each byte of budget is three of heap, so 8 KiB more would leave 2,724.5 bytes, under the spare below), keep the
+fallback below half the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to spare
+under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 69,694 under its
 ceiling): each remote account row's and moved-to account's cached profile images (two rows at their caps, MEDIA-7),
 each status, account and moved-to account row's cached emoji (its first 16 entries, read with the row: `emojiCacheSql`;
 the emoji-cache fill caches every entry of snapshots at their most entries, and a moved-to account counts its at their
