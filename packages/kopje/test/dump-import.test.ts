@@ -1662,12 +1662,13 @@ describe("dump", () => {
       expect(await rows(restored)).toEqual(before);
     }, 120_000);
 
-    for (const [name, parentOf, retired] of [
-      ["another account's video", "others", false],
-      ["a remote video", "remote", false],
-      ["a local image", "image", false],
-      ["no row", "none", false],
-      ["a retired child that keeps its url", "none", true],
+    for (const [name, parentOf, over] of [
+      ["another account's video", "others", {}],
+      ["a remote video", "remote", {}],
+      ["a local image", "image", {}],
+      ["no row", "none", {}],
+      ["a retired child that keeps its url", "none", { gc_at: T }],
+      ["a retired child never completed", "none", { gc_at: T, url: "", processed: 0 }],
     ] as const) {
       for (const order of ["child first", "parent first"] as const) {
         it(`refuses ${name} (${order}) as thumbnail-link-invalid`, async () => {
@@ -1689,7 +1690,7 @@ describe("dump", () => {
             if (parent !== null) {
               media(sql, { id: parentId, url: "https://kopje.test/p", ...parent });
             }
-            media(sql, child(childId, local, parentId, retired ? { gc_at: T } : {}));
+            media(sql, child(childId, local, parentId, over));
           });
           const { text } = await dumpViaRpc(source);
           const target = await migratedStore();
