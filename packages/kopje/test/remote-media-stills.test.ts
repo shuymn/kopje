@@ -38,6 +38,7 @@ import { type Restore, withMarker } from "../src/platform/restore-marker";
 import type { StoreOperation } from "../src/platform/store-kernel";
 import { BLURHASH_BYTES, mediaCacheSql, STILL_CHARGE_MAX } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
+import { blockDomain } from "./domain-block-helpers";
 import { BUILD, rejectionOf } from "./helpers";
 import { dumpViaRpc } from "./ops-helpers";
 import { mp4 } from "./remote-media-fixtures";
@@ -518,7 +519,7 @@ describe("admission (P19d, the Store's part)", () => {
     expect(await admit(w, v.token, "f".repeat(32), "unknown")).toEqual({ out: { admitted: false }, reads: 0 });
     // A restore at or after the claim.
     expect(await admit(w, v.token, attempt, claimedAt)).toEqual({ out: { admitted: false }, reads: 1 });
-    // reject_media on the author's domain: no longer eligible.
+    // An icon of its own: the video no longer qualifies.
     await sql(
       w.t.store,
       "UPDATE media_attachments SET preview_url = 'https://files.example/i.png' WHERE id = ?",
@@ -885,6 +886,26 @@ describe("the sweep's rule for keys no row names (P20f)", () => {
     expect(await sweep(w, [{ key, uploaded: claimedAt - 3 * 24 * 60 * 60 * 1000 }])).toEqual({ orphans: [] });
     expect(await recordStill(w, v.token, attempt)).toMatchObject({ out: { status: "recorded" } });
     expect(await sweep(w, [{ key, uploaded: 0 }])).toEqual({ orphans: [] });
+  });
+
+  it("refuses the record of a still put after reject_media came, and collects its key once past LATE_PUT_MS", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    const v = await video(w, { stills: STILLS });
+    const claimedAt = w.clock.now;
+    const attempt = ((await claim(w)).out as { attempt: string }).attempt;
+    const key = `remote/${v.token}/s${attempt}`;
+    expect(await admit(w, v.token, attempt)).toMatchObject({ out: { admitted: true } });
+    // The put was granted; the author's domain then gets reject_media before the record.
+    const [author] = await sql<{ domain: string }>(w.t.store, "SELECT domain FROM accounts WHERE id = ?", v.account);
+    await blockDomain(w.t.store, author!.domain, "noop", { rejectMedia: true });
+    expect(await recordStill(w, v.token, attempt)).toEqual({ out: { status: "refused" }, reads: 0 });
+    expect(await slotOf(w, v.slot)).toMatchObject({ still_key: null });
+    // Kept while the attempt could still record; collected once past its cut and LATE_PUT_MS after its upload.
+    at(w, claimedAt + STILL_ROUND_MS - 1);
+    expect(await sweep(w, [{ key, uploaded: claimedAt }])).toEqual({ orphans: [] });
+    at(w, claimedAt + LATE_PUT_MS + 1);
+    expect(await sweep(w, [{ key, uploaded: claimedAt }])).toEqual({ orphans: [key] });
   });
 
   it("collects a key whose attempt is past its record deadline, and the record after the cut is refused", async () => {
