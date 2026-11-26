@@ -19,7 +19,7 @@ export const DAY = 86_400_000;
 let sequence = 700_000_000_000_000_000n;
 export const nextId = () => String(sequence++);
 
-// A public remote status of about 0.98 MB of JSON: content of 20,000 escaping characters (and "needle", which search
+// A public remote status of about 0.97 MB of JSON: content of 19,200 escaping characters (and "needle", which search
 // finds), a poll of 100 choices of 1,000, 4 attachments with descriptions of 10,000 and emojis at their presented
 // bound, each at its bound (RES-2). Nine such pass ANSWER_BYTES, so a page of them is cut. `share` divides the
 // content, the choices and the descriptions (pageStatus).
@@ -33,7 +33,7 @@ export async function bigStatus(
   const id = await seedStatus(h.store, {
     accountId: author,
     visibility: "public",
-    content: `<p>needle ${C.repeat(20_000 / share)}</p>`,
+    content: `<p>needle ${C.repeat(19_200 / share)}</p>`,
     published,
     ...extra,
   });
@@ -73,8 +73,8 @@ export function pageStatus(
   return bigStatus(h, author, published, extra, 8);
 }
 
-// The share of bigStatus of which eight items of any status answer fit STATUS_ANSWER_BYTES (7.67-7.70 MB) and one more
-// passes ANSWER_BYTES: statusBudgetEdge's big statuses, midway between the budget less an `edge` item (7.50 MB) and
+// The share of bigStatus of which eight items of any status answer fit STATUS_ANSWER_BYTES (7.63-7.66 MB) and one more
+// passes ANSWER_BYTES: statusBudgetEdge's big statuses, midway between the budget less an `edge` item (7.49 MB) and
 // the budget, and the walks and passes that take eight a page.
 export const STATUS_PAGE_SHARE = 1.02;
 

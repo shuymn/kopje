@@ -631,7 +631,7 @@ async function maximalParts(t: Setup, fill: Fill, kind: "rest" | "note" = "rest"
     // writes its mediaType), URLs at their byte bound, of ASCII (raw) or of backslashes JSON escapes (the others); a
     // 5x5 blurhash.
     media: Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => ({
-      type: kind === "note" ? "video" : fill === "raw" ? "image" : "unknown",
+      type: kind === "note" || fill === "raw" ? "video" : "unknown",
       contentType: kind === "note" ? "video/mp4" : null,
       url:
         fill === "raw" ? atLimit(`https://${HOST}/m/${i}/`, MEDIA_URL_LIMIT) : escapingUrl(`https://m.example/${i}/?`),
@@ -640,8 +640,9 @@ async function maximalParts(t: Setup, fill: Fill, kind: "rest" | "note" = "rest"
       description: counted.repeat(MAX_MEDIA_DESCRIPTION_LENGTH),
       meta: kind === "note" ? MAX_AV_META : MAX_META,
       blurhash: blurhashOf(5, 5, "~"),
-      // A Note's videos each have a thumbnail at its bounds, which its Document writes as its icon (#1828 PR6).
-      ...(kind === "note"
+      // A Note's videos, and the raw fill's, each have a thumbnail at its bounds (#1828 PR6), which the Document writes
+      // as its icon and REST shows as the preview: a local upload's, as only an import seeds beside remote parts.
+      ...(kind === "note" || fill === "raw"
         ? {
             thumbnail: {
               preview:
@@ -1667,6 +1668,11 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
   // Every part at its bound is shown, and every filter with its match.
   const shown = one.answer as Presented & { filtered: { keyword_matches: string[]; status_matches: string[] }[] };
   expect(shown.media_attachments).toHaveLength(MAX_STATUS_MEDIA);
+  if (fill === "raw") {
+    // Each attachment shows its thumbnail as its preview.
+    const previews = shown.media_attachments.map((m) => (m as { preview_url: string }).preview_url);
+    expect(previews.map((preview, i) => preview.includes(`/t/${i}/`))).toEqual(Array(MAX_STATUS_MEDIA).fill(true));
+  }
   expect(shown.mentions).toHaveLength(MAX_STATUS_MENTION_ROWS);
   expect(shown.tags).toHaveLength(MAX_PRESENTED_TAGS);
   expect(shown.poll!.options).toHaveLength(MAX_REMOTE_OPTIONS);
