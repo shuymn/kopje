@@ -270,7 +270,7 @@ export type ProcessResult =
 // caller's clock (an upload's thumbnail, whose waits are the route's); without it, inTime's. `guard`: runs the
 // inspection's info() and every call and read of both encodes (EncodeOptions guard), so an image made by a deadline
 // gives up each Images call at it (an upload's thumbnail, mastodon/media.ts); without it they run as they are.
-export type BlurhashOptions = { end: number; now: () => number; guard?: (until: number) => CallGuard };
+type BlurhashOptions = { end: number; now: () => number; guard?: (until: number) => CallGuard };
 export type ProcessOptions = { blurhash?: BlurhashOptions; guard?: CallGuard };
 
 export function fit(size: Size, edge: number): Size {
