@@ -241,10 +241,12 @@ its object's alarm, and one more still container may then start beside it. In ma
 read-only nothing is claimed.
 
 A still that was written but never recorded (its round gave up, or the Store refused its record) is charged nothing and
-named by no video: the hourly orphan sweep deletes it once it was uploaded more than 75 minutes earlier (24 hours once
-its video has left the cache) and the sweep's cursor reaches it, so each is at most 2 MiB and at most one is written a
-cron tick. A doomed video's deletion waits 75 minutes after a still's claim, and deletes the video's recorded still with
-it.
+named by no video. It becomes eligible for the hourly orphan sweep once uploaded more than 75 minutes earlier while its
+video is cached, or 24 hours or more earlier once it is not (counted from the upload, not from the video leaving the
+cache), and is deleted when a sweep page listing it succeeds; a failed page is listed again an hour later, so no time
+bounds its removal. Between restores each such still is at most 2 MiB and at most one is written a cron tick; a
+restore's backlog is below. A doomed video's deletion waits 75 minutes after a still's claim, and deletes the video's
+recorded still with it.
 
 Cost (an estimate from the design, to be replaced by the den-test measurement): a still runs one `standard-1`
 container for a few seconds, about 16 GiB-s of memory and 32 GB-s of disk, and two Images transformations; 200 stills a
@@ -259,10 +261,14 @@ job had started, until the processor confirms its stop ([backup.md](backup.md), 
 
 A restore rewinds the month's spent jobs and each video's claims to the bookmark, so the three claims a video and the
 monthly budgets hold between restores. No still is claimed until the restore's validation has walked the cache. A still
-the restore forgot (recorded after the bookmark) is named by no video: it is deleted as above, and the video gets a new
-still under a new URL, so a viewer holding the old one gets 404. As for every cached URL after a restore, a still the
+the restore forgot (recorded after the bookmark) is named by no video: all of them are unnamed at once and deleted as
+above, a backlog removed at the sweep's pace, and a new still is made for the video under a new URL once claims resume
+with budget left, so a viewer holding the old one gets 404. As for every cached URL after a restore, a still the
 restored Store names may answer 404 until validation reaches its video (its file was deleted before or during the
-restore); validation then shows the poster, keeps the video cached and playable, and queues a new still.
+restore); validation then shows the poster, keeps the video cached and playable, and queues the still again, made anew
+once claims resume with budget left and stills on. This assumes a delete outstanding at the restore has landed or failed
+before validation reads the restored still, as the 20 minutes the cache waits after a restore before any maintenance
+provide in practice; one landing later leaves the still answering 404, with no reset.
 
 ## Turning it off
 
