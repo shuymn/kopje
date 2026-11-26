@@ -39,7 +39,7 @@ export function thumbnailChildSql(c: string, p: string): string {
 
 // Whether `m` may have a thumbnail: a local (its file token) video or audio upload. The link, the trigger's parent
 // seek and the import's check use the same test.
-export function thumbnailParentSql(m: string): string {
+function thumbnailParentSql(m: string): string {
   return `${m}.file_token IS NOT NULL AND ${m}.type IN ('video', 'audio')`;
 }
 
