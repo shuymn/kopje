@@ -401,6 +401,19 @@ describe("reserveMedia's thumbnailFor (T17's Store cases)", () => {
     return answer.value;
   }
 
+  it("answers staging_gone for a parent past S3 (pending), whose staging identity its row keeps", async () => {
+    const w = await avWorld();
+    const parent = await queued(w);
+    const [row] = await sql<{ state: string; staged_at: number; staged_until: number }>(
+      w.store,
+      "SELECT state, staged_at, staged_until FROM media_processing WHERE media_id = ?",
+      parent.id,
+    );
+    expect(row).toMatchObject({ state: "pending", staged_at: parent.stagedAt });
+    expect(row!.staged_until).toBeGreaterThan(Date.now());
+    expect(await reserveFor(w, parent)).toEqual({ status: "staging_gone" });
+  });
+
   it("reserves an image for a staging upload without an attempt, past the attempt limit too", async () => {
     const w = await avWorld();
     const parent = await staged(w);
