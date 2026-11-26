@@ -1694,12 +1694,56 @@ describe("dump", () => {
           const { text } = await dumpViaRpc(source);
           const target = await migratedStore();
           await copyConfig(source, target);
-          const { report } = await importViaRpc(target, text);
+          const { id, report } = await importViaRpc(target, text);
           expect(report).toMatchObject({ ok: false });
           expect(JSON.stringify(report)).toMatch(/thumbnail-link-invalid/);
+          // The reset leaves no row, the delete trigger dooming a current child whose parent row it deletes first.
+          expect(await resetImport(target, id)).toMatchObject({ ok: true, done: true });
+          const left = await runInDurableObject(target, (_instance, state) =>
+            state.storage.sql.exec<{ n: number }>("SELECT count(*) AS n FROM media_attachments").one(),
+          );
+          expect(left.n).toBe(0);
         }, 120_000);
       }
     }
+
+    // A dump of 0122 carries no thumbnail_of: a Store at 0123 refuses it, and one at its own migrations takes it and
+    // then upgrades with every row as it was and the column NULL.
+    it("refuses a dump of 0122 at 0123, and upgrades one restored at 0122 with every row kept", async () => {
+      const { text } = await dumpViaRpc(await seeded(0));
+      const header = splitDump(text).header as { migrations: { name: string }[] };
+      expect(header.migrations.at(-1)?.name).toBe("0123_media_thumbnails");
+      const at0122 = { ...header, migrations: header.migrations.slice(0, -1) };
+      const target = await migratedStore();
+      await ensureAdmin(target);
+      expect(await target.importBegin(BUILD, ACCESS, at0122)).toMatchObject({ code: "migrations-differ" });
+
+      let before: Record<string, SqlStorageValue>[] = [];
+      await restoredBefore(
+        "0123_media_thumbnails",
+        (sql) => {
+          sql.exec(
+            "INSERT INTO accounts (id, uri, username) VALUES ('190000000000000005', 'https://kopje.test/u', 'u')",
+          );
+          sql.exec(
+            `INSERT INTO media_attachments (id, account_id, type, url, file_token, processed, created_at)
+						VALUES ('990000000000000080', '190000000000000005', 'video', 'https://kopje.test/v', ?, 1, ?),
+							('990000000000000081', '190000000000000005', 'image', 'https://kopje.test/i', ?, 1, ?)`,
+            "v".repeat(43),
+            T,
+            "i".repeat(43),
+            T,
+          );
+          before = sql.exec("SELECT * FROM media_attachments ORDER BY id").toArray();
+        },
+        async (sql, upgrade) => {
+          expect(await upgrade()).toMatchObject({ ok: true, applied: ["0123_media_thumbnails"] });
+          expect(sql.exec("SELECT * FROM media_attachments ORDER BY id").toArray()).toEqual(
+            before.map((row) => ({ ...row, thumbnail_of: null })),
+          );
+        },
+      );
+    }, 120_000);
   });
 
   // UC6: a dump taken before media_attachments.focus_given restores into a Store at its own migrations, whose upgrade
