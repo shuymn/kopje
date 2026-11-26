@@ -554,9 +554,9 @@ const LONGEST_SIZE = { width: 0.0000012345678901234567, height: 1.23456789012345
 const MAX_META = padded({ original: LONGEST_SIZE, small: LONGEST_SIZE });
 
 // The most a video's Document carries (status-presenter.ts playableDocumentFacts, which reads nothing else of the
-// meta): width and height at 65,535 and a duration of 23 characters within the verifier's range (from one sample at
-// 48 kHz). The Note's maxima's media are these.
-const MAX_AV_META = padded({ original: { width: 65_535, height: 65_535, duration: 0.000021234567890123456 } });
+// meta): width and height at 65,535 and the longest duration it writes, to the millisecond within the verifier's range
+// (below AUDIO_DURATION_LIMIT's 1,200 s). The Note's maxima's media are these.
+const MAX_AV_META = padded({ original: { width: 65_535, height: 65_535, duration: 1199.999 } });
 
 // A media URL of MEDIA_URL_LIMIT bytes that JSON escapes the most: a query of backslashes, which URL parsing keeps as
 // they are (a query is not a path, and the query percent-encode set has no backslash), each two bytes in JSON.
@@ -3568,7 +3568,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
       expect({ ...measuredNote, featured: featuredBytes, whole }).toEqual({
         ...NOTE_FILLS.escaped,
         ...NOTE_COUNTS,
-        featured: 4_490_224,
+        featured: 4_490_164,
         whole: 1,
       });
     },

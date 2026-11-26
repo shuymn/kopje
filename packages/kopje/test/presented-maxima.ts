@@ -141,11 +141,11 @@ export const PROFILE_MAXIMA = { json: 326_185, conservative: 372_038 };
 // and the JSON of the Note and of its Create.
 type NoteShape = { sqlite: number; rows: number; nodes: number; note: number; create: number };
 export const NOTE_FILLS: Record<Fill, NoteShape> = {
-  escaped: { sqlite: 3_770_279, rows: 1_343, nodes: 3_192, note: 4_262_353, create: 6_318_937 },
-  derived: { sqlite: 3_770_279, rows: 1_343, nodes: 3_192, note: 4_262_353, create: 6_318_937 },
-  raw: { sqlite: 3_813_156, rows: 1_343, nodes: 3_192, note: 3_974_247, create: 6_030_831 },
-  "emoji-poll": { sqlite: 3_770_094, rows: 1_343, nodes: 3_192, note: 4_262_168, create: 6_318_752 },
-  "emoji-cache": { sqlite: 3_770_279, rows: 1_343, nodes: 3_192, note: 4_262_353, create: 6_318_937 },
+  escaped: { sqlite: 3_770_279, rows: 1_343, nodes: 3_192, note: 4_262_293, create: 6_318_877 },
+  derived: { sqlite: 3_770_279, rows: 1_343, nodes: 3_192, note: 4_262_293, create: 6_318_877 },
+  raw: { sqlite: 3_813_156, rows: 1_343, nodes: 3_192, note: 3_974_187, create: 6_030_771 },
+  "emoji-poll": { sqlite: 3_770_094, rows: 1_343, nodes: 3_192, note: 4_262_108, create: 6_318_692 },
+  "emoji-cache": { sqlite: 3_770_279, rows: 1_343, nodes: 3_192, note: 4_262_293, create: 6_318_877 },
 };
 
 // Each column's most of NOTE_FILLS, as the table of maxima states it.

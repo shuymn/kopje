@@ -16,6 +16,7 @@ import { NOW } from "./app-helpers";
 import { avFixture } from "./av-helpers";
 import { deleteSignature } from "./delete-job-helpers";
 import {
+  AVIF,
   GIF,
   JPEG_WITH_GPS,
   PNG_ICC,
@@ -45,6 +46,8 @@ import {
   clocksAt,
   storeClock,
 } from "./media-helpers";
+import { clock, forgetRestore } from "./media-processing-helpers";
+import { mp4, routeWorld } from "./media-route-helpers";
 import { animatedWebp, exifOrientation, webpChunk } from "./remote-media-fixtures";
 import {
   community,
@@ -1556,5 +1559,191 @@ describe("an unreadable restore marker", () => {
     } finally {
       await env.MEDIA.delete(key);
     }
+  });
+
+  // With the processor bound and a budget, but its probe absent or failed, uploads are inactive and an image reserves
+  // as before: no AV candidate whose start reads the marker (#1828 PR4-4 code review r1 M4).
+  it.each(["absent", "fail"] as const)(
+    "uploads an ordinary image with the probe %s and the marker unreadable",
+    async (probe) => {
+      const w = await routeWorld({ probe });
+      const key = restoreMarkerKey(w.store.id.toString());
+      await env.MEDIA.put(key, "{");
+      try {
+        const form = mediaForm(bytes(PNG_PLAIN), {}, "photo.png", "image/png");
+        expect((await upload(w.h, w.h.users.alice, form)).status).toBe(200);
+      } finally {
+        await env.MEDIA.delete(key);
+      }
+    },
+  );
+
+  it.each(["absent", "fail"] as const)(
+    "uploads an ordinary image with the probe %s across a restore after its reservation",
+    async (probe) => {
+      const w = await routeWorld({ probe });
+      const start = w.gate.hold("startTransforms");
+      const reached = w.gate.reached("startTransforms");
+      const response = upload(w.h, w.h.users.alice, mediaForm(bytes(PNG_PLAIN), {}, "photo.png", "image/png"));
+      await reached;
+      clock(Date.now() + 1000);
+      await env.MEDIA.put(restoreMarkerKey(w.store.id.toString()), JSON.stringify({ at: Date.now() }));
+      try {
+        clock(Date.now() + 1000);
+        start.resolve();
+        expect((await response).status).toBe(200);
+      } finally {
+        await forgetRestore(w.store);
+      }
+    },
+  );
+});
+
+// The upload route with video and audio active (#1828 PR4-4, mastodon/media-av.ts): the first `file` part's signature
+// chooses the path, image signatures first; the image path answers as before.
+describe("the upload route with video and audio active (P1, Q1, C2-M6)", () => {
+  const month = new Date(NOW).toISOString().slice(0, 7);
+  const png = () => new File([bytes(PNG_PLAIN)], "a.png", { type: "image/png" });
+  const video = () => new File([mp4(16)], "v.mp4", { type: "video/mp4" });
+
+  it("refuses active and unsupported types by their bytes through the image pipeline, and an MP4 takes the AV branch", async () => {
+    const w = await routeWorld();
+    for (const [file, name, type] of [
+      ["<!doctype html><script>alert(1)</script>", "x.jpg", "image/jpeg"],
+      ['<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', "x.svg", "image/svg+xml"],
+    ] as const) {
+      const response = await upload(w.h, w.h.users.alice, mediaForm(file, {}, name, type));
+      expect([name, response.status, await response.json()]).toEqual([
+        name,
+        422,
+        { error: "Validation failed: File content type is invalid" },
+      ]);
+    }
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+    // The guard: the same route takes a video down the AV branch (S1, 202).
+    const response = await upload(w.h, w.h.users.alice, multipartForm([["file", video()]]));
+    expect(response.status).toBe(202);
+    expect(w.gate.calls).toContain("takeAvSlot");
+  });
+
+  it("takes a valid AVIF as an image", async () => {
+    const w = await routeWorld();
+    const response = await upload(w.h, w.h.users.alice, mediaForm(bytes(AVIF), {}, "a.avif", "image/avif"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ type: "image" });
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+    expect(w.gate.calls).toContain("startTransforms");
+  });
+
+  it.each([
+    ["account", "Your media processing budget for the month is used up", { instance: "0", account: "400" }],
+    ["instance", "This server's media processing budget for the month is used up", { instance: "4000", account: "0" }],
+  ])("answers an image the %s budget's 429 after the sniff, its attempt counted", async (_, error, spent) => {
+    const w = await routeWorld();
+    // The month's Images transformations, spent for the account or the instance.
+    if (spent.instance === "4000") {
+      await sql(w.store, "INSERT INTO kopje_state (name, value) VALUES (?, '4000')", `images_transforms:${month}`);
+    } else {
+      await sql(
+        w.store,
+        "INSERT INTO kopje_state (name, value) VALUES (?, '400')",
+        `images_account_transforms:${month}:${w.h.users.alice.id}`,
+      );
+    }
+    const response = await upload(w.h, w.h.users.alice, mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png"));
+    expect([response.status, await response.json()]).toEqual([429, { error }]);
+    expect(w.gate.calls).not.toContain("startTransforms");
+    expect(w.codec.calls).toBe(0);
+    const attempts = await sql<{ value: string }>(
+      w.store,
+      "SELECT value FROM kopje_state WHERE name = ?",
+      `media_attempts:${w.h.users.alice.id}`,
+    );
+    expect(JSON.parse(attempts[0]?.value ?? "[]")).toHaveLength(1);
+  });
+
+  it("inactive with Images spent answers 429 before the body, no attempt counted", async () => {
+    const w = await routeWorld({ budget: 0 });
+    await sql(w.store, "INSERT INTO kopje_state (name, value) VALUES (?, '4000')", `images_transforms:${month}`);
+    const response = await upload(w.h, w.h.users.alice, mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png"));
+    expect([response.status, await response.json()]).toEqual([
+      429,
+      { error: "This server's media processing budget for the month is used up" },
+    ]);
+    expect(
+      await sql(w.store, "SELECT 1 FROM kopje_state WHERE name = ?", `media_attempts:${w.h.users.alice.id}`),
+    ).toEqual([]);
+  });
+
+  it("with video and audio inactive, repeated file parts answer as before in both orders: the last part is read", async () => {
+    const w = await routeWorld({ budget: 0 });
+    const pngLast = await upload(
+      w.h,
+      w.h.users.alice,
+      multipartForm([
+        ["file", video()],
+        ["file", png()],
+      ]),
+    );
+    expect(pngLast.status).toBe(200);
+    const videoLast = await upload(
+      w.h,
+      w.h.users.alice,
+      multipartForm([
+        ["file", png()],
+        ["file", video()],
+      ]),
+    );
+    expect([videoLast.status, await videoLast.json()]).toEqual([
+      422,
+      { error: "Validation failed: File content type is invalid" },
+    ]);
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+  });
+
+  it("keeps a profile image image-only (P17): a video avatar is refused as before, never reserved", async () => {
+    const w = await routeWorld();
+    const avatar = new FormData();
+    avatar.append("avatar", video());
+    const response = await w.h.request("/api/v1/accounts/update_credentials", {
+      method: "PATCH",
+      body: avatar,
+      headers: { authorization: `Bearer ${w.h.users.alice.token}` },
+    });
+    // Refused by its bytes before anything is reserved, as before #1828.
+    expect([response.status, await response.json()]).toMatchObject([
+      422,
+      { error: "Validation failed: Avatar content type is invalid, Avatar is invalid" },
+    ]);
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+    expect(await sql(w.store, "SELECT type FROM media_attachments")).toEqual([]);
+  });
+
+  it("with video and audio active, PNG then MP4 answers as before, and MP4 then PNG is refused", async () => {
+    const w = await routeWorld();
+    const videoLast = await upload(
+      w.h,
+      w.h.users.alice,
+      multipartForm([
+        ["file", png()],
+        ["file", video()],
+      ]),
+    );
+    expect([videoLast.status, await videoLast.json()]).toEqual([
+      422,
+      { error: "Validation failed: File content type is invalid" },
+    ]);
+    const pngLast = await upload(
+      w.h,
+      w.h.users.alice,
+      multipartForm([
+        ["file", video()],
+        ["file", png()],
+      ]),
+    );
+    expect([pngLast.status, await pngLast.json()]).toEqual([
+      422,
+      { error: "Validation failed: File was sent more than once" },
+    ]);
   });
 });

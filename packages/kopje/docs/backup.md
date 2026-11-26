@@ -376,7 +376,9 @@ paths are built only from validated ids. Work in a new, empty directory so nothi
    made by the media processor when its block is added and `MEDIA_UPLOAD_MONTHLY_JOBS` has a job left this month (one
    job and three transformations each; the first call that needs one checks the processor with a short probe clip
    first); otherwise the row is counted as `fallback` and shows the plain video poster. A still left by an earlier,
-   interrupted run is reused. To give stills to such videos later, once the processor is set up, run
+   interrupted run is reused. An interrupted run (the CLI stopped) keeps its lease for 10 minutes, so the next run
+   waits for it or reports that another run holds it; one interrupted during the probe leaves stills stopped (`retry`)
+   for an hour before the probe is tried again. To give stills to such videos later, once the processor is set up, run
    `kopje-admin media-rebuild --stills`.
 
 7. **Publish.** The imported Store stays readonly (it accepts no write and delivers nothing) until you publish it, once

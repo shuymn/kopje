@@ -71,6 +71,8 @@ export type AppDeps = {
   activity?: ActivityMemo;
   // The media processor (src/media-processor.ts), null without its binding; worker.ts passes processorClient.
   mediaProcessor?: (env: Env) => MediaProcessorClient | null;
+  // Resolves `ms` later on the API's clock, for the v1 media upload's waits (default: a timer); tests hold it.
+  wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
 };
 
 // The admin API writes that leave moderation jobs (domain/suspension.ts): the action and the unsuspension of an
@@ -276,6 +278,8 @@ export function createApp({
     fetchPoll: createPollFetcher({ build, store, now, keygen, loader }),
     requestJobs: jobs,
     activity,
+    mediaProcessor,
+    ...(seams.wait === undefined ? {} : { wait: seams.wait }),
     signAsAuthor:
       seams.signAsAuthor ??
       ((env: Env, sign: AuthorSignature) => {

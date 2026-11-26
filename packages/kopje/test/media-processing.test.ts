@@ -61,33 +61,33 @@ afterEach(() => {
 });
 
 const MiB = 1024 * 1024;
-// T_FIXED of a v2 input of at most 25 MiB: dispatch, start, input, probe, still, preview and commit.
-const FIXED = 17 * SECOND;
+// T_FIXED of a v2 input of at most 16 MiB: dispatch, start, input, probe, still, preview and commit.
+const FIXED = 24 * SECOND;
 const at = (s: number) => T0 + s * SECOND;
 
 describe("the allocation (P8)", () => {
-  it("v2: the processing's end less the fixed parts leaves the encode (19.6 s for 90 MiB)", () => {
+  it("v2: the processing's end less the fixed parts leaves the encode (28.625 s for 90 MiB)", () => {
     const a = allocate("v2", T0, T0 + V2_PROCESS_MS, 90 * MiB);
-    expect(inputMs(90 * MiB)).toBe(3600);
+    expect(inputMs(90 * MiB)).toBe(5625);
     expect(a.deadline).toBe(T0 + V2_PROCESS_MS);
-    expect(a.fixedMs).toBe(19_600);
-    expect(a.encodeMs).toBe(V2_PROCESS_MS - 19_600);
+    expect(a.fixedMs).toBe(28_625);
+    expect(a.encodeMs).toBe(V2_PROCESS_MS - 28_625);
     expect(a.cuts.commit).toBe(a.deadline);
-    expect(a.cuts.encode).toBe(a.deadline - 10 * SECOND);
+    expect(a.cuts.encode).toBe(a.deadline - 17 * SECOND);
   });
 
   it("v1: the reply is a fixed part, and the deadline is reply_by less T_REPLY", () => {
     const a = allocate("v1", T0, T0 + 90 * SECOND, 90 * MiB);
     expect(a.deadline).toBe(T0 + 90 * SECOND - T_REPLY);
-    expect(a.fixedMs).toBe(19_600 + T_REPLY);
-    expect(a.encodeMs).toBe(90 * SECOND - 21_600);
+    expect(a.fixedMs).toBe(28_625 + T_REPLY);
+    expect(a.encodeMs).toBe(90 * SECOND - 30_625);
     expect(allocate("v2", T0, T0 + V2_PROCESS_MS, 2 * MiB).fixedMs).toBe(FIXED);
   });
 
-  it("an input under 25 MiB takes the least input time", () => {
+  it("an input under 16 MiB takes the least input time", () => {
     expect(inputMs(1)).toBe(SECOND);
-    expect(inputMs(25 * MiB)).toBe(SECOND);
-    expect(inputMs(25 * MiB + 1)).toBe(1001);
+    expect(inputMs(16 * MiB)).toBe(SECOND);
+    expect(inputMs(16 * MiB + 1)).toBe(1001);
   });
 
   it("soft cuts: a stage that begins late takes from the encode, never from a later stage's cut", () => {
@@ -130,17 +130,17 @@ describe("the allocation (P8)", () => {
       }
       return { ...up, stagedAt: taken.stagedAt, stagingMs: taken.stagingMs };
     };
-    // Sixty of ninety seconds went on the body before the sniff: 30 s left.
-    const slow = await take(30 * SECOND);
-    expect(slow.stagingMs).toBe(30 * SECOND - T_REPLY);
+    // Most of the v1 time went on the body before the sniff: 40 s left.
+    const slow = await take(40 * SECOND);
+    expect(slow.stagingMs).toBe(40 * SECOND - T_REPLY);
     clock(at(5));
     expect(
       await w.store.queueNormalize(BUILD, { ...slow, bytes: 2 * MiB, text: TEXT, activation: ACTIVE }),
     ).toMatchObject({ status: "queued" });
-    expect((await held(w.store, slow.id)).row!.deadline_at).toBe(at(1) + 30 * SECOND - T_REPLY);
-    // 24 s left: at the queue 4 s later the encode would have T_MIN_ENCODE less 1 s.
-    const slower = await take(24 * SECOND);
-    clock(at(1) + 24 * SECOND - T_REPLY - FIXED - T_MIN_ENCODE + 1);
+    expect((await held(w.store, slow.id)).row!.deadline_at).toBe(at(1) + 40 * SECOND - T_REPLY);
+    // 34 s left: at the queue 4 s later the encode would have T_MIN_ENCODE less 1 s.
+    const slower = await take(34 * SECOND);
+    clock(at(1) + 34 * SECOND - T_REPLY - FIXED - T_MIN_ENCODE + 1);
     expect(await w.store.queueNormalize(BUILD, { ...slower, bytes: 2 * MiB, text: TEXT, activation: ACTIVE })).toEqual({
       status: "refused_cleanup_yours",
       reason: "time",
@@ -177,7 +177,7 @@ describe("the allocation (P8)", () => {
     ).toMatchObject({ status: "queued" });
     const deadline = (await held(w.store, c.id)).row!.deadline_at!;
     expect(deadline).toBe(T0 + AV_WRITE_WINDOW_MS);
-    expect(allocate("v2", queuedAt, deadline, 90 * MiB).encodeMs).toBe(282_400);
+    expect(allocate("v2", queuedAt, deadline, 90 * MiB).encodeMs).toBe(273_375);
     // No write grant is valid past the AV write deadline: the last is answered a millisecond before it, for that
     // millisecond, and none at it.
     clock(T0 + 25 * MINUTE);

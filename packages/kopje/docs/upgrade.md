@@ -207,7 +207,9 @@ days, so the bookmark must be younger than that.
 
    The Store restarts to apply it. The call answers `restoring`. A restore is refused while `media-rebuild` runs;
    after it, a media rebuild waits 20 minutes of maintenance again, and the remote media cache waits 20 minutes before
-   it checks its files again ([backup.md](backup.md)).
+   it checks its files again ([backup.md](backup.md)). Once the instance serves again (step 5), run
+   `kopje-admin media-rebuild` ([backup.md](backup.md), "Restore"): a restore can bring back a video or audio upload
+   whose files a sweep deleted after the bookmark, which the rebuild reports as `original-missing`.
 
 4. **Check** with `kopje-admin health`: `schema.status` is `current`, and `versionMatch` is true.
 5. **Remove `MAINTENANCE`** (or set it to `off`). The instance serves again; spooled inbox activities are replayed.

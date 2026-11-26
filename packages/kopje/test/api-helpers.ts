@@ -237,7 +237,9 @@ export type ApiHarness = Awaited<ReturnType<typeof apiHarness>>;
 // deps replaces the image codec, or wraps the Store stub the app calls (tests still reach the real Store as `store`).
 export async function apiHarness(
   overrides: Record<string, unknown> = {},
-  deps: Pick<AppDeps, "images" | "federation"> & { wrapStore?: ((store: StoreStub) => StoreStub) | undefined } = {},
+  deps: Pick<AppDeps, "images" | "federation" | "mediaProcessor" | "wait"> & {
+    wrapStore?: ((store: StoreStub) => StoreStub) | undefined;
+  } = {},
 ) {
   const { wrapStore, ...seams } = deps;
   const store = await migratedStore();
@@ -270,18 +272,38 @@ export async function apiHarness(
     doorbell,
     jobs,
   });
-  // Work a response leaves running (waitUntil, such as the media sweep) settles before the request returns.
+  // Work a response leaves running (waitUntil, such as the media sweep) settles before the request returns. A test
+  // that must see the response itself, before that work (the media upload route's deadlines), or count the work a
+  // request registers, listens with `watch`.
+  const watchers = new Set<Watcher>();
   const send = async (request: Request): Promise<Response> => {
     const ctx = createExecutionContext();
+    const waitUntil = ctx.waitUntil.bind(ctx);
+    ctx.waitUntil = (work: Promise<unknown>) => {
+      for (const watcher of watchers) {
+        watcher.registered?.();
+      }
+      waitUntil(work);
+    };
     const response = await app.fetch(request, testEnv, ctx);
+    for (const watcher of watchers) {
+      watcher.answered?.(response);
+    }
     await waitOnExecutionContext(ctx);
     return response;
+  };
+  const watch = (watcher: Watcher): (() => void) => {
+    watchers.add(watcher);
+    return () => watchers.delete(watcher);
   };
   // A request to the instance domain; send takes one to any URL.
   const request = (path: string, init?: RequestInit): Promise<Response> =>
     send(new Request(`https://kopje.test${path}`, init));
-  return { store, team, request, send, now, env: testEnv, doorbell, jobs };
+  return { store, team, request, send, watch, now, env: testEnv, doorbell, jobs };
 }
+
+// What a test hears of a request in flight: each waitUntil it registers, and its response before that work settles.
+export type Watcher = { registered?: () => void; answered?: (response: Response) => void };
 
 export function bearer(token: string, init: RequestInit = {}): RequestInit {
   return { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } };

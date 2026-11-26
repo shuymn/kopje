@@ -27,11 +27,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   verdict, and for `still@standard-1` it checks a still of the packaged clip (its PNG and Images) and records
   nothing, the media rebuild recording its own probe of that profile. The instance template gains a
   commented, optional block that adds it (`deploy/README.md`, "Video and audio"); without the block nothing changes.
-  Uploads stay image-only in this release. An instance that adds it must also export `MediaProcessor` from
-  `src/index.ts` (`export { default, MediaProcessor, Store } from "kopje"`), or `wrangler deploy` fails; the
+  An instance that adds it must also export `MediaProcessor` from `src/index.ts`
+  (`export { default, MediaProcessor, Store } from "kopje"`), or `wrangler deploy` fails; the
   template's file does. Its `v2-media-processor` migration is permanent: to turn the processor off, remove only the
   `"containers"` entry.
-- The media processor's side of video and audio uploads, run before any route accepts one
+- The media processor's side of video and audio uploads
   ([docs/media-processor.md](docs/media-processor.md)): with the binding and `MEDIA_UPLOAD_MONTHLY_JOBS` above 0, the
   cron runs the activation probe of `normalize@standard-4` for the deployed version, redispatches uploads whose start
   was lost, and once an hour removes inputs under `incoming/` more than a day old that no upload holds. An upload's
@@ -42,7 +42,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   container. `kopje-admin media-processor probe` is refused in maintenance and while the Store is read-only.
 - Local media URLs serve the processor's video (`full.mp4`) and audio (`full.mp3`) as cached remote media is served:
   HEAD, one byte range with 206, an unsatisfiable one with 416, several with the whole file, and 304 to a matching
-  `If-None-Match`, so players can seek. Nothing writes such files yet; image URLs answer as before.
+  `If-None-Match`, so players can seek. Image URLs answer as before.
 - The backup copies an original larger than 16 MiB by streaming it through age into a multipart upload, so originals
   up to 64 MiB (video and audio files) are backed up without being held in memory; each invocation now also aborts
   stray multipart uploads under `media/`. The bucket's lifecycle rule that aborts incomplete multipart uploads
@@ -51,10 +51,21 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   after the output check, and a video's still is made by the media processor when its block is added, or its preview
   is cleared to the plain poster (counted as `fallback`). The new `--stills` option gives stills to videos without one
   later. A still costs one job of the new `MEDIA_UPLOAD_MONTHLY_JOBS` budget (default 0: none) and three Images
-  transformations ([docs/backup.md](docs/backup.md), "Restore"). Nothing writes such rows yet.
+  transformations ([docs/backup.md](docs/backup.md), "Restore").
+- Video and audio uploads on `/api/v1/media` and `/api/v2/media`, once the media processor is added, its probe of
+  `normalize@standard-4` passed and `MEDIA_UPLOAD_MONTHLY_JOBS` is above 0
+  ([docs/media-processor.md](docs/media-processor.md), "Uploads"). The file, at most 90 MiB, is streamed into R2 while
+  the request is read and re-encoded to an MP4 or an MP3; each queued upload spends one job of the budget.
+  `/api/v2/media` answers 202 at once; `/api/v1/media` waits up to `V1_TIME_MS` (8 minutes) and then answers
+  with a 503. Two uploads processing at once make a third answer 503. A request whose first file is video or audio
+  refuses a second file with 422 ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). Without the processor
+  nothing changes.
 
 ### Changed
 
+- While video and audio uploads are active, `/api/v1/instance` and `/api/v2/instance` advertise their types and
+  `video_size_limit` (94,371,840), `video_frame_rate_limit` (120) and `video_matrix_limit` (8,294,400) in
+  `configuration.media_attachments`; otherwise they advertise images only, as before.
 - An image upload's deadline is judged when the Store commits the upload, by the Store's clock, so time the request
   spends in transit counts: an upload completed just before its deadline by the Worker's clock may be refused with 422
   "Validation failed: The upload expired".

@@ -1287,8 +1287,8 @@ function isDuration(value: unknown): value is number {
 // MediaAttachmentSerializer writes it (Mastodon v4.7.5): the width and the height each where meta.original has it (a
 // video's; an audio file's verified facts have none), and the duration as ISO 8601 (ActiveSupport::Duration#iso8601 of
 // the stored seconds, a Float in Mastodon, so 8 is "PT8.0S"). Each only as the verifier states it (isEdge,
-// isDuration). JavaScript writes every such duration in decimal (String has no exponent from 1e-6 on); Ruby writes one
-// below 1e-4 with an exponent, which ISO 8601 has no form for, so there Kopje writes the decimal.
+// isDuration). The duration is written to the millisecond (isoSeconds): a stored audio duration is the computed
+// samples / rate with up to seventeen digits, and Fedify's parse (Temporal) refuses more than nine fractional digits.
 export type PlayableDocument = { width?: number; height?: number; duration?: string };
 
 export function playableDocumentFacts(type: string, meta: string | null): PlayableDocument {
@@ -1301,10 +1301,18 @@ export function playableDocumentFacts(type: string, meta: string | null): Playab
   return {
     ...(isEdge(width) ? { width } : {}),
     ...(isEdge(height) ? { height } : {}),
-    ...(isDuration(duration)
-      ? { duration: `PT${Number.isInteger(duration) ? `${duration}.0` : String(duration)}S` }
-      : {}),
+    ...(isDuration(duration) ? { duration: `PT${isoSeconds(duration)}S` } : {}),
   };
+}
+
+// Positive seconds to the millisecond, in decimal (never an exponent), a whole number as Ruby's Float writes it: 8 is
+// "8.0", 29.963854166666668 is "29.964".
+function isoSeconds(seconds: number): string {
+  const ms = Math.round(seconds * 1000);
+  const fraction = String(ms % 1000)
+    .padStart(3, "0")
+    .replace(/0+$/, "");
+  return `${Math.floor(ms / 1000)}.${fraction === "" ? "0" : fraction}`;
 }
 
 // An upload still processing, as its owner reads it (Mastodon's not_processed?, the serializer's url nil): url,

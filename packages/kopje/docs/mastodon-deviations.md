@@ -1436,7 +1436,10 @@ Request parameters:
   Kopje does a form's.
 - Of repeated parts of a declared file parameter (`avatar`, `header`, `file`, `thumbnail`), text or file, the last is
   the one read, as Rails assigns them; on `/api/v{1,2}/media` a file followed by a string answers 422 `File can't be
-  blank`, where Mastodon answers 400.
+  blank`, where Mastodon answers 400. While video and audio uploads are active
+  ([media-processor.md](media-processor.md)), a request whose first `file` part is video or audio answers 422
+  `Validation failed: File was sent more than once` to any later `file` part, file or text, where Mastodon takes the
+  last.
 - A query value of a declared file parameter is read only when the body has none (Rails lets the query win).
 - An integer parameter (`limit`, `offset`, a mute's `duration`, a filter's `expires_in`, `poll[expires_in]`, oEmbed's
   `maxwidth` and `maxheight`) whose `to_i` is past 9,007,199,254,740,991 (2^53 − 1) is read as that, where Ruby reads
@@ -1491,7 +1494,7 @@ Request parameters:
 - `GET /api/v1/domain_blocks/preview` answers 400 to an absent `domain` or one empty once trimmed (JavaScript's white
   space, U+FEFF included). Mastodon's preview requires none and counts the accounts whose domain is the one it
   normalizes, `nil` for an absent one, so it counts the local accounts followed and following. Accepted, 2026-11-18.
-- Kopje media are images, so `thumbnail` (on `/api/v{1,2}/media` and `/api/v1/media/:id`) and
+- Kopje makes every preview itself, so `thumbnail` (on `/api/v{1,2}/media` and `/api/v1/media/:id`) and
   `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
   Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`
   is none. Text that is not a data URI answers 422, where Mastodon answers 500. The check runs before the file is
@@ -1664,6 +1667,41 @@ Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, a
 
 Media (the `MediaAttachment` entity):
 
+- A local upload is an image, or, while the media processor accepts uploads ([media-processor.md](media-processor.md)),
+  a video or audio file, which is always re-encoded (Mastodon passes an H.264 and AAC MP4 through): video to an H.264
+  and AAC MP4 of at most 1080p at 60 fps, 720p at 30 fps past 120 s and 480p at 30 fps past 300 s, audio to MP3. The
+  file is at most 90 MiB (`video_size_limit` 94,371,840; Mastodon takes 99 MiB) and refused past it with 422 `Validation
+  failed: File file size must be less than 90 MB`; video over 600 s, audio over 20 minutes and a file past the
+  processing envelope its endpoint publishes are refused with 422 `Validation failed: File is too long or too large to
+  process` (v1 at once, v2 on the GET that finds it failed). v1 waits for the result up to `V1_TIME_MS` from the
+  request's arrival (a constant of the release, 8 minutes, [media-processor.md](media-processor.md)) and then
+  answers 503 `Media processing took too long. Try a shorter file.`, the upload cancelled unless it finished first or
+  the cancellation was not received (the give-up, or S10's reply lost or failed): a completion after the 503 stays
+  unattached and the sweep removes it after its grace; Mastodon's v1 waits as long as the processing takes. When the
+  slot's request finds the processor inactive (its probe failed after the reservation), a v1 request goes on as an
+  image, with the image path's waits: after the 503 it may still deduct three units from the month's Images allowances,
+  whether or not the file is an image, and an image completing then is unattached and swept the same way. v2 answers 202
+  with the masked entity (`url` and `meta` null), as Mastodon does for a video; when the route's own repeat of its queue
+  call (after a reply lost in the RPC) finds the upload already queued, it answers 202 with what the owner's GET shows
+  then, and the masked entity when that read fails or takes longer than 30 s (`STORE_CALL_MS`), the owner's next GET
+  showing the result; a new POST is a new upload, charged on its own. Both answer 503 `Media processing is busy. Try
+  again in a moment.` while two video or audio uploads are already processing, and a failed processing is not tried
+  again by the server (Mastodon retries the job). An audio file has no artwork (`preview_url` null), where Mastodon
+  extracts the cover. While the processor is not accepting uploads, video and audio are refused as before (422
+  `Validation failed: File content type is invalid`). So are they under a `Content-Type` outside the plain form every
+  common client sends (`multipart/form-data`, then `;`-separated `name=token` or `name="quoted"` parameters with no
+  backslash, and exactly one `boundary` of RFC 2046's characters): the request is read whole, as an image's, with the
+  image path's limits and errors (a file over 16 MB is refused for its size before its type).
+- A video or audio upload whose form has several errors may report another of them than Mastodon: a `thumbnail` sent
+  before the `file` part is refused (422 `Validation failed: Thumbnail must be blank`) before any part after the file is
+  read, so a description too long after the file is not the error reported, where Mastodon reports the description
+  first. A `thumbnail` file after the file past 1 MiB (with the text parts after the file, `API_BODY_LIMIT`) answers 413
+  `Request body is too large` before the description is judged. A `thumbnail` after the file, a malformed query and the
+  other orders answer as for an image; of several `thumbnail` parts the last counts, so a thumbnail file followed by an
+  empty `thumbnail` is no thumbnail, as on the image path and in Mastodon.
+- A local video's or audio file's `Document` in its Note writes `duration` to the millisecond (`PT29.964S`), where
+  Mastodon writes its stored seconds as ffprobe gives them (to the microsecond); the API's `meta` keeps the stored
+  value.
 - A local upload's `blurhash` (avatars and headers included; 4 × 4 components, alpha dropped) is computed, as
   Mastodon's BlurhashTranscoder computes one from the `small` style, from Images' raw RGBA output of Kopje's preview (at
   most 640 pixels an edge, where Mastodon's small style is 230,400 pixels), fitted within 100 pixels by area averaging

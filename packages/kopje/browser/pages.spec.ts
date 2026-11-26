@@ -23,6 +23,7 @@ import {
   L1_PAGE_HEADERS,
   PRIVATE_PAGE_HEADERS,
   PUBLIC_PAGE_HEADERS,
+  remoteMediaHeaders,
   UNAVAILABLE_PAGE_HEADERS,
 } from "./headers";
 import { type FixturePage, ORIGIN, pageNamed, type PageName, PAGES } from "./pages";
@@ -728,6 +729,61 @@ test("status: video and audio load nothing before play, and gifv shows controls 
     .first()
     .evaluate((video: HTMLVideoElement) => video.play().catch(() => undefined));
   await expect.poll(() => media).toEqual([`${ORIGIN}/media/51/full.bin`]);
+});
+
+// A local video or audio upload as the status page plays it (#1828 PR4-4, design 4.17): its file served from the
+// instance origin with the headers the media route sends a video or audio file (headers.ts remoteMediaHeaders, the same
+// serveObject answer), under the public page's CSP, whose media-src 'self' lets it load. The audio file is decoded (its
+// duration read); the video's request is made and no CSP violation is reported for either (this Chromium may lack the
+// H.264 decoder, so the video's decoding is not asserted).
+test("status: a local video and audio file load under the page's media-src", async ({ page }) => {
+  const files: Record<string, { type: string; bytes: Buffer }> = {
+    "/media/51/full.bin": {
+      type: "video/mp4",
+      bytes: readFileSync(new URL("../test/fixtures/av/cap-44k.mp4", import.meta.url)),
+    },
+    "/media/55/full.bin": {
+      type: "audio/mpeg",
+      bytes: readFileSync(new URL("../test/fixtures/av/mp3.mp3", import.meta.url)),
+    },
+  };
+  const requested: string[] = [];
+  await open(page, pageNamed("status"));
+  await page.route(`${ORIGIN}/media/**`, (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const file = files[path];
+    requested.push(path);
+    if (file === undefined) {
+      return route.fulfill({ status: 404, headers: { ...ASSET_HEADERS }, body: "" });
+    }
+    return route.fulfill({
+      status: 200,
+      headers: { ...remoteMediaHeaders(file.type), "content-length": String(file.bytes.length) },
+      body: file.bytes,
+    });
+  });
+  await page.evaluate(() => {
+    (window as unknown as { violations: string[] }).violations = [];
+    document.addEventListener("securitypolicyviolation", (event) =>
+      (window as unknown as { violations: string[] }).violations.push(event.violatedDirective),
+    );
+  });
+  const audio = page.locator('audio[src$="/media/55/full.bin"]');
+  const duration = await audio.evaluate(
+    (player: HTMLAudioElement) =>
+      new Promise<number>((resolve, reject) => {
+        player.addEventListener("loadedmetadata", () => resolve(player.duration), { once: true });
+        player.addEventListener("error", () => reject(new Error(`media error ${player.error?.code}`)), { once: true });
+        player.preload = "metadata";
+        player.load();
+      }),
+  );
+  expect(duration).toBeGreaterThan(0);
+  await page
+    .locator('video[src$="/media/51/full.bin"]')
+    .evaluate((video: HTMLVideoElement) => video.play().catch(() => undefined));
+  await expect.poll(() => requested).toEqual(expect.arrayContaining(["/media/51/full.bin", "/media/55/full.bin"]));
+  expect(await page.evaluate(() => (window as unknown as { violations: string[] }).violations)).toEqual([]);
 });
 
 // The local-time rewrite by the real bundle under the production CSP, in two zones on either side of

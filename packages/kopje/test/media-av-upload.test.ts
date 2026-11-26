@@ -2,15 +2,33 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DOOMED_AT } from "../src/domain/media";
-import { deleteOwnerMedia, ownerMedia, updateOwnerMedia, V2_PROCESS_MS } from "../src/domain/media-processing";
+import { DOOMED_AT, TRANSFORMS_PER_UPLOAD } from "../src/domain/media";
+import {
+  AV_UPLOAD_LIMIT,
+  deleteOwnerMedia,
+  DISPATCH_MS,
+  MAX_AV_INFLIGHT,
+  ownerMedia,
+  PART_BYTES,
+  R2_CALL_MS,
+  STORE_CALL_MS,
+  T_REPLY,
+  updateOwnerMedia,
+  V1_POLL_MS,
+  V1_TIME_MS,
+  V2_PROCESS_MS,
+} from "../src/domain/media-processing";
+import { incomingOrphans } from "../src/jobs/media-jobs";
+import { MEDIA_BODY_LIMIT, sweepMedia } from "../src/mastodon/media";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
-import { fileKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
+import { fileKey, incomingKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
 import { readRestore } from "../src/platform/restore-marker";
 import type { StoreStub } from "../src/platform/store-client";
 import { toStoreUnavailable } from "../src/platform/store-errors";
+import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { markedRun } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
+import { concat } from "./av-helpers";
 import { imageUpload } from "./av-posting-helpers";
 import { BUILD, deferred, gateMarker, holdingMarker, rejectionOf, testKernel } from "./helpers";
 import { DESCRIPTION_TOO_LONG, OVERLONG_DESCRIPTIONS } from "./media-helpers";
@@ -20,6 +38,8 @@ import {
   type AvWorld,
   avWorld,
   bookmark,
+  charged,
+  gate,
   clock,
   completed,
   failed,
@@ -36,6 +56,21 @@ import {
   VIDEO,
   VIDEO_NO_STILL,
 } from "./media-processing-helpers";
+import {
+  answerOf,
+  hookedBucket,
+  input,
+  lastUpload,
+  mp3,
+  mp4,
+  multipartBody,
+  postMedia,
+  postWatched,
+  type RouteWorld,
+  routeWorld,
+  SlowBody,
+  videoPart,
+} from "./media-route-helpers";
 import { observedSql } from "./read-helpers";
 import { storeWith } from "./setup-helpers";
 
@@ -54,20 +89,16 @@ const NOT_FOUND = { error: "Record not found" };
 
 type Who = "alice" | "bob";
 
-async function answer(response: Response): Promise<{ status: number; body: unknown }> {
-  return { status: response.status, body: await response.json() };
-}
-
 function get(w: AvWorld, id: string, who: Who = "alice") {
-  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token)).then(answer);
+  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token)).then(answerOf);
 }
 
 function put(w: AvWorld, id: string, body: Record<string, unknown>, who: Who = "alice") {
-  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token, json(body, { method: "PUT" }))).then(answer);
+  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token, json(body, { method: "PUT" }))).then(answerOf);
 }
 
 function del(w: AvWorld, id: string, who: Who = "alice") {
-  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token, { method: "DELETE" })).then(answer);
+  return w.h.request(`/api/v1/media/${id}`, bearer(w.h.users[who].token, { method: "DELETE" })).then(answerOf);
 }
 
 async function description(w: AvWorld, id: string): Promise<string | undefined> {
@@ -1137,5 +1168,1209 @@ describe("the owner's two passes (store.ts markedRun)", () => {
       clock(T0 + 5 * SECOND);
       expect(await counted(w, ownerMedia, up.id)).toEqual({ answer: status, reads });
     }
+  });
+});
+
+// ---- The upload route (#1828 PR4-4, mastodon/media-av.ts): the route's side of the plan's 1.1 and 1.4, its v1 wait, and
+// the part rules, through the production route with the Store's own operations; held calls by explicit gates.
+
+async function slotOf(w: RouteWorld, id: string) {
+  return (await held(w.store, id)).slot;
+}
+
+describe("a video or audio upload through the route (v2)", () => {
+  it("stages the file into incoming/<id>, queues it with its text, dispatches one run and answers 202 as GET's 206", async () => {
+    const w = await routeWorld();
+    const file = mp4(20_000);
+    const response = await postMedia(
+      w,
+      multipartBody([videoPart(file), { name: "description", data: "a clip" }, { name: "focus", data: "0.25,-0.5" }]),
+    );
+    const accepted = await answerOf(response);
+    expect(accepted.status).toBe(202);
+    const id = (accepted.body as { id: string }).id;
+    expect(await input(id)).toEqual(file);
+    expect(w.runs).toEqual([{ id, token: expect.any(String), teardownId: (await slotOf(w, id))?.teardown_id }]);
+    expect(await charged(w.store)).toBe(1);
+    expect((await held(w.store, id)).row?.state).toBe("pending");
+    const shown = await get(w, id);
+    expect(shown).toEqual({ status: 206, body: accepted.body });
+    expect(accepted.body).toMatchObject({ type: "video", url: null, description: "a clip" });
+  });
+
+  // The AV reader frames the body as the image path's parser does (code review r1 M6): an LF delimiter ends the file,
+  // so the description after it is the upload's and no delimiter is staged; a malformed close is refused.
+  it("ends the file at an LF delimiter, as formData() does: the input is the file, the description is read", async () => {
+    const w = await routeWorld();
+    const file = mp4(20_000);
+    const enc = new TextEncoder();
+    const B = "kopje-route-boundary";
+    const body = concat(
+      enc.encode(
+        `--${B}\r\nContent-Disposition: form-data; name="file"; filename="v.mp4"\r\nContent-Type: video/mp4\r\n\r\n`,
+      ),
+      file,
+      enc.encode(`\n--${B}\r\nContent-Disposition: form-data; name="description"\r\n\r\na clip\r\n--${B}--\r\n`),
+    );
+    const response = await postMedia(w, { body, contentType: `multipart/form-data; boundary=${B}` });
+    const accepted = await answerOf(response);
+    expect(accepted).toMatchObject({ status: 202, body: { description: "a clip" } });
+    expect(await input((accepted.body as { id: string }).id)).toEqual(file);
+  });
+
+  it("refuses a closing delimiter followed by junk: 422, nothing queued", async () => {
+    const w = await routeWorld();
+    const { body } = multipartBody([videoPart()]);
+    const text = new TextEncoder().encode("junk");
+    const closed = concat(body.subarray(0, body.byteLength - 2), text);
+    const response = await postMedia(w, {
+      body: closed,
+      contentType: "multipart/form-data; boundary=kopje-route-boundary",
+    });
+    expect(response.status).toBe(422);
+    await leftNothing(w);
+  });
+
+  it("takes audio by its signature", async () => {
+    const w = await routeWorld();
+    const accepted = await answerOf(
+      await postMedia(w, multipartBody([{ name: "file", data: mp3(), filename: "a.mp3", type: "audio/mpeg" }])),
+    );
+    expect(accepted).toMatchObject({ status: 202, body: { type: "audio" } });
+  });
+});
+
+async function tokenOf(w: RouteWorld, id: string): Promise<string> {
+  const [row] = await sql<{ file_token: string }>(w.store, "SELECT file_token FROM media_attachments WHERE id = ?", id);
+  return row?.file_token ?? "";
+}
+
+// S4 for the upload `id` as the processor makes it: its start_id.
+async function startJob(w: RouteWorld, id: string): Promise<string> {
+  const answer = await w.store.startNormalize(BUILD, { id, token: await tokenOf(w, id), invocation: `inv-${id}` });
+  if (answer.status !== "started") {
+    throw new Error(`not started: ${JSON.stringify(answer)}`);
+  }
+  return answer.startId;
+}
+
+async function completeJob(w: RouteWorld, id: string, startId: string, facts = VIDEO): Promise<void> {
+  const done = await w.store.completeAvUpload(BUILD, { id, token: await tokenOf(w, id), startId, facts });
+  if (done.status !== "done") {
+    throw new Error(`not completed: ${done.status}`);
+  }
+}
+
+// What a refused upload leaves: no input, nothing charged, no processing row or slot, no run.
+async function leftNothing(w: RouteWorld): Promise<void> {
+  const id = await lastUpload(w);
+  expect(await input(id)).toBeNull();
+  expect(await charged(w.store)).toBe(0);
+  expect(await held(w.store, id)).toMatchObject({ row: null, slot: null });
+  expect(w.runs).toEqual([]);
+}
+
+const PNG_PART = { name: "file", data: imageBytes(), filename: "a.png", type: "image/png" };
+const THUMB_FILE = { name: "thumbnail", data: imageBytes(), filename: "t.png", type: "image/png" };
+
+function imageBytes(): Uint8Array {
+  // A PNG's signature and IHDR start: sniffImageType reads it as image/png.
+  return new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1,
+  ]);
+}
+
+describe("the parts of a video or audio upload (P7, C2-M6)", () => {
+  it("refuses a second file part after the video (MP4 then PNG): 422, no input, nothing charged", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody([videoPart(), PNG_PART]));
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: File was sent more than once" },
+    });
+    await leftNothing(w);
+    // The guarded branch ran: S1 took a slot and S2 released it.
+    expect(w.gate.calls).toEqual(expect.arrayContaining(["takeAvSlot", "releaseStaging"]));
+  });
+
+  it("takes PNG then MP4 down the image pipeline, which answers what it answers for that body", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody([PNG_PART, videoPart()]));
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: File content type is invalid" },
+    });
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+    expect(w.gate.calls).toContain("startTransforms");
+  });
+
+  it.each([
+    ["before", (file: ReturnType<typeof videoPart>) => [THUMB_FILE, file]],
+    ["after", (file: ReturnType<typeof videoPart>) => [file, THUMB_FILE]],
+  ])("refuses a thumbnail part %s the file: 422, no input, nothing charged", async (_, parts) => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody(parts(videoPart())));
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Thumbnail must be blank" },
+    });
+    await leftNothing(w);
+  });
+
+  it("reads the description and focus after the file", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(
+      w,
+      multipartBody([videoPart(), { name: "focus", data: "0.5,0.5" }, { name: "description", data: "after" }]),
+    );
+    expect(await answerOf(response)).toMatchObject({ status: 202, body: { description: "after" } });
+    const id = await lastUpload(w);
+    expect(
+      await sql(w.store, "SELECT description, focus_x, focus_y, focus_given FROM media_attachments WHERE id = ?", id),
+    ).toEqual([{ description: "after", focus_x: 0.5, focus_y: 0.5, focus_given: 1 }]);
+  });
+
+  it("refuses an invalid trailing description once every part is read: S2 releases the slot, nothing charged", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(
+      w,
+      multipartBody([videoPart(), { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) }]),
+    );
+    expect(await answerOf(response)).toEqual({ status: 422, body: DESCRIPTION_TOO_LONG });
+    await leftNothing(w);
+    expect(w.gate.calls).toContain("releaseStaging");
+  });
+  it("decides a text file part or a thumbnail file before the video without taking a slot", async () => {
+    for (const first of [{ name: "file", data: "text" }, THUMB_FILE]) {
+      const w = await routeWorld();
+      const response = await postMedia(w, multipartBody([first, videoPart()]));
+      expect(response.status).toBe(422);
+      expect(w.gate.calls).toContain("reserveMedia");
+      expect(w.gate.calls).not.toContain("takeAvSlot");
+    }
+  });
+
+  it.each([
+    ["released", false],
+    ["no longer the route's (a restore fenced it)", true],
+  ])(
+    "a staging whose R2 completion lands after its cut: S2 %s, the input deleted only on released (1.1)",
+    async (_, fenced) => {
+      const landed = deferred();
+      const hold = deferred();
+      // The completion commits, and its reply is held past the cut.
+      const { bucket } = hookedBucket({ holdComplete: { committed: () => landed.resolve(), reply: hold.promise } });
+      const w = await routeWorld({ bucket });
+      const response = postMedia(w, multipartBody([videoPart()]));
+      await landed.promise;
+      const id = await lastUpload(w);
+      expect(await input(id)).not.toBeNull();
+      if (fenced) {
+        await restore(w.store, await bookmark(w.store), Date.now());
+      }
+      await w.advance(Math.max(...w.timers.pending));
+      hold.resolve();
+      expect(await answerOf(await response)).toEqual({
+        status: 503,
+        body: { error: "Media processing took too long to receive. Try again." },
+      });
+      expect(w.gate.calls).toContain("releaseStaging");
+      if (fenced) {
+        expect(await input(id)).not.toBeNull();
+      } else {
+        expect(await input(id)).toBeNull();
+      }
+    },
+  );
+
+  // The form's error order on the AV path (code review r1 M7): the query first, as Rack reads it; a thumbnail as
+  // thumbnailSent counts one (empty text is none); a thumbnail before the file refused before any slot (P7), one after
+  // it after the description, as the image path orders them.
+  it("answers a malformed query 400 before a thumbnail before the file, taking no slot", async () => {
+    const w = await routeWorld();
+    const { body, contentType } = multipartBody([THUMB_FILE, videoPart()]);
+    const response = await w.h.request("/api/v2/media?a[]=1&a[b]=2", {
+      method: "POST",
+      headers: { authorization: `Bearer ${w.h.users.alice.token}`, "content-type": contentType },
+      body,
+    });
+    expect(await answerOf(response)).toEqual({ status: 400, body: { error: "Malformed request body" } });
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+  });
+
+  it("refuses a text thumbnail before the file before any slot", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody([{ name: "thumbnail", data: "data:x" }, videoPart()]));
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Thumbnail must be blank" },
+    });
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+  });
+
+  it("takes an empty text thumbnail as none, as the image path does", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody([{ name: "thumbnail", data: "" }, videoPart()]));
+    expect(response.status).toBe(202);
+  });
+
+  it("answers an invalid description before a thumbnail file after the file, as the image path orders them", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(
+      w,
+      multipartBody([
+        videoPart(),
+        THUMB_FILE,
+        { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) },
+      ]),
+    );
+    expect(await answerOf(response)).toEqual({ status: 422, body: DESCRIPTION_TOO_LONG });
+    await leftNothing(w);
+  });
+
+  // Deviation (docs/mastodon-deviations.md): a thumbnail before the file is refused before the description is read.
+  it("answers a thumbnail before the file over an invalid description after it", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(
+      w,
+      multipartBody([
+        THUMB_FILE,
+        videoPart(),
+        { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) },
+      ]),
+    );
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Thumbnail must be blank" },
+    });
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+  });
+});
+
+describe("the staging of a video or audio upload (P6)", () => {
+  it("refuses a file of exactly AV_UPLOAD_LIMIT + 1 bytes and takes one of AV_UPLOAD_LIMIT", async () => {
+    const over = await routeWorld();
+    const refused = await postMedia(over, multipartBody([videoPart(mp4(AV_UPLOAD_LIMIT + 1))]));
+    expect(refused.status).toBe(422);
+    await leftNothing(over);
+    const at = await routeWorld();
+    const taken = await postMedia(at, multipartBody([videoPart(mp4(AV_UPLOAD_LIMIT))]));
+    expect(taken.status).toBe(202);
+  });
+
+  it("stops reading the bytes before the type is known at MEDIA_BODY_LIMIT: 422, no slot", async () => {
+    const chunk = 64 * 1024;
+    const { body: rest, contentType } = multipartBody([videoPart()]);
+    // A preamble before the first delimiter: only the reader's ceiling bounds it.
+    const bytes = new Uint8Array(MEDIA_BODY_LIMIT + 1024 * 1024 + rest.byteLength).fill(0x61);
+    bytes.set(rest, bytes.byteLength - rest.byteLength);
+    const body = new SlowBody(bytes, { chunk });
+    const w = await routeWorld();
+    const response = await postMedia(w, { body: body.stream(), contentType });
+    expect(response.status).toBe(422);
+    // The chunk that passed the ceiling, and the one the stream pulled ahead.
+    expect(body.pulled).toBeLessThanOrEqual(MEDIA_BODY_LIMIT + 2 * chunk);
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+  });
+
+  it("stops reading at AV_UPLOAD_LIMIT + 1 bytes of the file, holding at most PART_BYTES and one read", async () => {
+    const parts: number[] = [];
+    let body: SlowBody | null = null;
+    let peak = 0;
+    const { bucket } = hookedBucket({
+      onPart: (part) => {
+        parts.push(part.byteLength);
+        // What was read and not yet written: the part itself and what the reader holds besides it.
+        peak = Math.max(peak, (body?.pulled ?? 0) - parts.slice(0, -1).reduce((a, b) => a + b, 0));
+      },
+    });
+    const w = await routeWorld({ bucket });
+    const chunk = 256 * 1024;
+    const { body: bytes, contentType } = multipartBody([videoPart(mp4(AV_UPLOAD_LIMIT + 1 + 4 * chunk))]);
+    body = new SlowBody(bytes, { chunk });
+    const response = await postMedia(w, { body: body.stream(), contentType });
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: File file size must be less than 90 MB" },
+    });
+    // Reading stopped at the chunk that passed the cap: never the rest of the file.
+    expect(body.pulled).toBeLessThanOrEqual(AV_UPLOAD_LIMIT + 1 + 2 * chunk);
+    expect(body.pulled).toBeGreaterThan(AV_UPLOAD_LIMIT);
+    expect(parts.every((n) => n === PART_BYTES)).toBe(true);
+    expect(peak).toBeLessThanOrEqual(PART_BYTES + chunk);
+    await leftNothing(w);
+  });
+
+  it("answers spent 429 at the sniff with Images room left, with no input (P15)", async () => {
+    const w = await routeWorld({ budget: 1 });
+    expect((await postMedia(w, multipartBody([videoPart()]))).status).toBe(202);
+    const second = await postMedia(w, multipartBody([videoPart()]));
+    expect(await answerOf(second)).toEqual({
+      status: 429,
+      body: { error: "This server's media processing budget for the month is used up" },
+    });
+    const id = await lastUpload(w);
+    expect(await input(id)).toBeNull();
+    expect(await held(w.store, id)).toMatchObject({ row: null, slot: null });
+    expect(await charged(w.store)).toBe(1);
+  });
+
+  it("answers busy 503 to the upload beyond MAX_AV_INFLIGHT slow ones, with no input", async () => {
+    const w = await routeWorld();
+    const slow = Array.from({ length: MAX_AV_INFLIGHT }, () => {
+      // Held past the sniff (SNIFF_BYTES), so S1 has taken the slot.
+      const { body, contentType } = multipartBody([videoPart(mp4(200_000))]);
+      const stream = new SlowBody(body, { chunk: 1024, holdAt: 150_000 });
+      const response = postMedia(w, { body: stream.stream(), contentType });
+      response.catch(() => {});
+      return { stream, response };
+    });
+    for (const { stream } of slow) {
+      await stream.reachedHold.promise;
+    }
+    const busy = await postMedia(w, multipartBody([videoPart()]));
+    expect(await answerOf(busy)).toEqual({
+      status: 503,
+      body: { error: "Media processing is busy. Try again in a moment." },
+    });
+    expect(await input(await lastUpload(w))).toBeNull();
+    for (const { stream, response } of slow) {
+      stream.release();
+      expect((await response).status).toBe(202);
+    }
+  });
+});
+
+describe("the route's rows of 1.1 and 1.4", () => {
+  it("repeats S3 once when its committed reply is lost: queued, one charge, one run", async () => {
+    const w = await routeWorld();
+    w.gate.drops.set("queueNormalize", 1);
+    const accepted = await answerOf(await postMedia(w, multipartBody([videoPart()])));
+    expect(accepted.status).toBe(202);
+    const id = await lastUpload(w);
+    expect(w.gate.calls.filter((c) => c === "queueNormalize")).toHaveLength(2);
+    expect(await charged(w.store)).toBe(1);
+    expect(w.runs).toEqual([{ id, token: expect.any(String), teardownId: (await slotOf(w, id))?.teardown_id }]);
+  });
+
+  it("answers 503 when S3's reply is lost twice, deleting nothing: the dispatch round starts it once", async () => {
+    const w = await routeWorld();
+    w.gate.drops.set("queueNormalize", 2);
+    const file = mp4(10_000);
+    expect((await postMedia(w, multipartBody([videoPart(file)]))).status).toBe(503);
+    const id = await lastUpload(w);
+    expect(await input(id)).toEqual(file);
+    expect(await charged(w.store)).toBe(1);
+    expect(w.runs).toEqual([]);
+    expect(await held(w.store, id)).toMatchObject({ row: { state: "pending" }, slot: { phase: "processing" } });
+    clock(Date.now() + DISPATCH_MS);
+    const round = await w.store.mediaDispatchRound(BUILD);
+    expect(round).toMatchObject({ runs: [{ id }] });
+  });
+
+  it("H3: a lost S3 reply whose repeat is held while S12 starts and the job completes answers settled, 202, one charge, no second run", async () => {
+    const w = await routeWorld();
+    w.gate.drops.set("queueNormalize", 1);
+    const repeat = w.gate.hold("queueNormalize", "before", 1);
+    const reached = w.gate.reached("queueNormalize");
+    const file = mp4(10_000);
+    const response = postMedia(w, multipartBody([videoPart(file)]));
+    await reached;
+    const id = await lastUpload(w);
+    clock(Date.now() + DISPATCH_MS);
+    expect(await w.store.mediaDispatchRound(BUILD)).toMatchObject({ runs: [{ id }] });
+    const startId = await startJob(w, id);
+    expect((await held(w.store, id)).row?.state).toBe("running");
+    await completeJob(w, id, startId);
+    repeat.resolve();
+    const posted = await answerOf(await response);
+    expect(posted.status).toBe(202);
+    expect(w.runs).toEqual([]);
+    expect(await charged(w.store)).toBe(1);
+    expect(await input(id)).toEqual(file);
+    // The 202 shows the upload as GET shows it now: completed (code review r1 M5).
+    const shown = await get(w, id);
+    expect(shown.status).toBe(200);
+    expect(posted.body).toEqual(shown.body);
+  });
+
+  it("a settled S3 repeat of a running job answers 202 with GET's masked entity (code review r1 M5)", async () => {
+    const w = await routeWorld();
+    w.gate.drops.set("queueNormalize", 1);
+    const repeat = w.gate.hold("queueNormalize", "before", 1);
+    const reached = w.gate.reached("queueNormalize");
+    const response = postMedia(w, multipartBody([videoPart(), { name: "description", data: "kept" }]));
+    await reached;
+    const id = await lastUpload(w);
+    await startJob(w, id);
+    repeat.resolve();
+    const posted = await answerOf(await response);
+    const shown = await get(w, id);
+    expect(shown.status).toBe(206);
+    expect(posted).toEqual({ status: 202, body: shown.body });
+  });
+
+  it("a settled S3 repeat after a restore failed the job (K3) answers 202, and GET then the failure (code review r1 M5)", async () => {
+    const w = await routeWorld();
+    w.gate.drops.set("queueNormalize", 1);
+    const repeat = w.gate.hold("queueNormalize", "before", 1);
+    const reached = w.gate.reached("queueNormalize");
+    const response = postMedia(w, multipartBody([videoPart()]));
+    await reached;
+    const id = await lastUpload(w);
+    clock(Date.now() + SECOND);
+    await restore(w.store, await bookmark(w.store), Date.now());
+    clock(Date.now() + SECOND);
+    repeat.resolve();
+    const posted = await answerOf(await response);
+    expect(posted).toMatchObject({ status: 202, body: { id, url: null } });
+    const shown = await w.h.request(`/api/v1/media/${id}`, bearer(w.h.users.alice.token));
+    expect(shown.status).toBe(422);
+  });
+
+  it("M5: a probe failure while the body is read refuses the queue (422, input deleted, nothing charged), and a queued job still finishes", async () => {
+    const w = await routeWorld();
+    expect((await postMedia(w, multipartBody([videoPart()]))).status).toBe(202);
+    const earlier = await lastUpload(w);
+    const { body, contentType } = multipartBody([videoPart(mp4(200_000))]);
+    const stream = new SlowBody(body, { chunk: 1024, holdAt: 150_000 });
+    const response = postMedia(w, { body: stream.stream(), contentType });
+    await stream.reachedHold.promise;
+    await failProbe(w);
+    stream.release();
+    expect(await answerOf(await response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: File content type is invalid" },
+    });
+    const id = await lastUpload(w);
+    expect(await input(id)).toBeNull();
+    expect(await charged(w.store)).toBe(1);
+    expect(w.runs.map((r) => r.id)).toEqual([earlier]);
+    await completeJob(w, earlier, await startJob(w, earlier));
+  });
+
+  it("takes the image pipeline when S1 finds the probe failed after the reservation", async () => {
+    const w = await routeWorld();
+    const hold = w.gate.hold("takeAvSlot");
+    const reached = w.gate.reached("takeAvSlot");
+    const response = postMedia(w, multipartBody([videoPart()]));
+    await reached;
+    await failProbe(w);
+    hold.resolve();
+    expect(await answerOf(await response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: File content type is invalid" },
+    });
+    expect(w.gate.calls).toContain("startTransforms");
+    expect(await held(w.store, await lastUpload(w))).toMatchObject({ row: null, slot: null });
+  });
+});
+
+// The Images counters (the instance's and the account's), by name.
+async function transformCounters(w: RouteWorld): Promise<string[]> {
+  const rows = await sql<{ value: string }>(
+    w.store,
+    "SELECT value FROM kopje_state WHERE name LIKE 'images_transforms:%' OR name LIKE 'images_account_transforms:%' ORDER BY name",
+  );
+  return rows.map((r) => r.value);
+}
+
+// A failed probe of the normalize profile for this build: uploads are inactive.
+async function failProbe(w: RouteWorld): Promise<void> {
+  await sql(
+    w.store,
+    "UPDATE kopje_state SET value = json_set(value, '$.ok', json('false')) WHERE name = 'media_probe:normalize@standard-4'",
+  );
+}
+
+describe("the v1 wait (P8, H1, C2-M3, r4 H1, M5, W5)", () => {
+  // A v1 upload sent at the route's time now, waiting at its first poll: its id, arrival, cut and give-up on the
+  // route's clock, and its response.
+  async function waiting(w: RouteWorld, parts = [videoPart()]) {
+    const arrival = Date.now() + w.skew.ms;
+    const polled = w.timers.waitFor(V1_POLL_MS);
+    const response = postMedia(w, multipartBody(parts), "v1");
+    response.catch(() => {});
+    await polled;
+    const id = await lastUpload(w);
+    return { id, arrival, cut: arrival + V1_TIME_MS - T_REPLY, giveUp: arrival + V1_TIME_MS, response };
+  }
+
+  // Moves the route's clock to `at` (the Store's to `at` less the skew) and fires its due waits.
+  const routeAt = (w: RouteWorld, at: number) => w.advance(at - w.skew.ms);
+
+  it("answers S10's 200 once S9 shows the completion, as the owner's GET shows it", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await completeJob(w, v.id, await startJob(w, v.id));
+    await routeAt(w, v.arrival + V1_POLL_MS);
+    const answered = await answerOf(await v.response);
+    expect(answered.status).toBe(200);
+    expect(await get(w, v.id)).toEqual(answered);
+  });
+
+  it("answers a video without a still with VIDEO_POSTER (P16)", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await completeJob(w, v.id, await startJob(w, v.id), VIDEO_NO_STILL);
+    await routeAt(w, v.arrival + V1_POLL_MS);
+    const answered = await answerOf(await v.response);
+    expect(answered).toMatchObject({ status: 200, body: { preview_url: `https://kopje.test${VIDEO_POSTER}` } });
+  });
+
+  it.each([
+    ["timeout", 500, "Error processing thumbnail for uploaded media"],
+    ["unavailable", 500, "Error processing thumbnail for uploaded media"],
+    ["refused", 422, "Validation failed: File is too long or too large to process"],
+    ["envelope", 422, "Validation failed: File is too long or too large to process"],
+  ] as const)("answers a failure %s with %i", async (cause, status, error) => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    const startId = await startJob(w, v.id);
+    await w.store.failNormalize(BUILD, { id: v.id, startId, cause });
+    await routeAt(w, v.arrival + V1_POLL_MS);
+    expect(await answerOf(await v.response)).toEqual({ status, body: { error } });
+  });
+
+  it("decides at the route's cut, whatever the Store's deadline_at: S10 dooms the running job, and nothing completes after the 503", async () => {
+    const w = await routeWorld();
+    // S1 delayed after it was sent: the Store's reply_by, and deadline_at, fall after the route's cut.
+    const s1 = w.gate.hold("takeAvSlot");
+    const reached = w.gate.reached("takeAvSlot");
+    const arrival = Date.now();
+    const polled = w.timers.waitFor(V1_POLL_MS);
+    const response = postMedia(w, multipartBody([videoPart()]), "v1");
+    await reached;
+    clock(Date.now() + 10 * SECOND);
+    s1.resolve();
+    await polled;
+    const id = await lastUpload(w);
+    const startId = await startJob(w, id);
+    const deadline = (await held(w.store, id)).row?.deadline_at ?? 0;
+    expect(deadline).toBeGreaterThan(arrival + V1_TIME_MS - T_REPLY);
+    expect(w.gate.calls).not.toContain("v1Final");
+    await w.advance(arrival + V1_TIME_MS - T_REPLY);
+    expect(await answerOf(await response)).toEqual({
+      status: 503,
+      body: { error: "Media processing took too long. Try a shorter file." },
+    });
+    expect(await held(w.store, id)).toMatchObject({ row: null, att: { gc_at: DOOMED_AT } });
+    const late = await w.store.completeAvUpload(BUILD, { id, token: await tokenOf(w, id), startId, facts: VIDEO });
+    expect(late.status).toBe("refused");
+  });
+
+  it.each([
+    ["ahead of", 30 * SECOND],
+    ["behind", -30 * SECOND],
+  ])("cuts on its own clock, %s the Store's", async (_, skew) => {
+    const w = await routeWorld();
+    w.skew.ms = skew;
+    const v = await waiting(w);
+    await startJob(w, v.id);
+    await routeAt(w, v.cut - 1);
+    expect(w.gate.calls).not.toContain("v1Final");
+    await routeAt(w, v.cut);
+    expect((await v.response).status).toBe(503);
+    expect(w.gate.calls).toContain("v1Final");
+    expect(Date.now()).toBe(v.cut - skew);
+  });
+
+  it("completion just before the cut, with a normal S10 reply in the reserve, answers 200", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    const startId = await startJob(w, v.id);
+    clock(v.cut - 1);
+    await completeJob(w, v.id, startId);
+    await w.advance(v.cut);
+    expect((await v.response).status).toBe(200);
+  });
+
+  it("W5: S10 committed with its reply lost answers 503, the upload doomed", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await startJob(w, v.id);
+    w.gate.drops.set("v1Final", 1);
+    await w.advance(v.cut);
+    expect(await answerOf(await v.response)).toEqual({
+      status: 503,
+      body: { error: "Media processing took too long. Try a shorter file." },
+    });
+    expect((await held(w.store, v.id)).att?.gc_at).toBe(DOOMED_AT);
+  });
+
+  it("W5: S10 failing before its commit answers 503, and K4 dooms the upload at its deadline_at", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await startJob(w, v.id);
+    w.gate.fails.set("v1Final", 1);
+    await w.advance(v.cut);
+    expect((await v.response).status).toBe(503);
+    const after = await held(w.store, v.id);
+    expect(after.row?.state).toBe("running");
+    clock(after.row?.deadline_at ?? 0);
+    await w.store.mediaDispatchRound(BUILD);
+    expect(await held(w.store, v.id)).toMatchObject({ row: null, att: { gc_at: DOOMED_AT } });
+  });
+
+  it("maintenance begun during the wait answers the maintenance 503 and dooms nothing; K4 after it", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await startJob(w, v.id);
+    await gate(w.store, "maintenance", true);
+    await w.advance(v.cut);
+    const answered = await v.response;
+    expect(await answerOf(answered)).toEqual({
+      status: 503,
+      body: { error: "This server is under maintenance. Try again later." },
+    });
+    expect((await held(w.store, v.id)).row?.state).toBe("running");
+    await gate(w.store, "maintenance", false);
+    clock((await held(w.store, v.id)).row?.deadline_at ?? 0);
+    await w.store.mediaDispatchRound(BUILD);
+    expect((await held(w.store, v.id)).att?.gc_at).toBe(DOOMED_AT);
+  });
+
+  it("a completion before maintenance answers 200 in maintenance", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await completeJob(w, v.id, await startJob(w, v.id));
+    await gate(w.store, "maintenance", true);
+    await w.advance(v.arrival + V1_POLL_MS);
+    expect((await v.response).status).toBe(200);
+  });
+
+  it("Q4: a restore during the wait answers 503 with the upload doomed, S10's K3 first", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await startJob(w, v.id);
+    await restore(w.store, await bookmark(w.store), Date.now());
+    await w.advance(v.cut);
+    expect((await v.response).status).toBe(503);
+    expect(await held(w.store, v.id)).toMatchObject({ row: null, att: { gc_at: DOOMED_AT } });
+  });
+
+  it("Q4: a restore during the wait answers 503 with the upload doomed, the round's K3 first", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await startJob(w, v.id);
+    await restore(w.store, await bookmark(w.store), Date.now());
+    await w.store.mediaDispatchRound(BUILD);
+    expect((await held(w.store, v.id)).row).toMatchObject({ state: "failed", failure: "restored" });
+    await w.advance(v.arrival + V1_POLL_MS);
+    expect((await v.response).status).toBe(503);
+    expect(await held(w.store, v.id)).toMatchObject({ row: null, att: { gc_at: DOOMED_AT } });
+  });
+
+  it("a held ingress read answers 503 by V1_TIME_MS from arrival: nothing charged, S2 released, no input", async () => {
+    const w = await routeWorld();
+    const arrival = Date.now();
+    const { body, contentType } = multipartBody([videoPart(mp4(200_000))]);
+    const stream = new SlowBody(body, { chunk: 1024, holdAt: 150_000 });
+    const response = postMedia(w, { body: stream.stream(), contentType }, "v1");
+    await stream.reachedHold.promise;
+    await w.advance(arrival + V1_TIME_MS - T_REPLY);
+    expect(await answerOf(await response)).toEqual({
+      status: 503,
+      body: { error: "Media processing took too long to receive. Try again." },
+    });
+    expect(Date.now()).toBeLessThanOrEqual(arrival + V1_TIME_MS);
+    expect(w.gate.calls).toContain("releaseStaging");
+    await leftNothing(w);
+  });
+
+  it("W5: S3's reply lost twice answers 503 with nothing deleted", async () => {
+    const w = await routeWorld();
+    w.gate.drops.set("queueNormalize", 2);
+    const response = await postMedia(w, multipartBody([videoPart()]), "v1");
+    expect(response.status).toBe(503);
+    const id = await lastUpload(w);
+    expect(await input(id)).not.toBeNull();
+    expect(w.gate.calls).not.toContain("v1Final");
+  });
+
+  it("W5: the give-up answers 503 at V1_TIME_MS while S10 is held, though S10 then decides 200", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await completeJob(w, v.id, await startJob(w, v.id));
+    const s10 = w.gate.hold("v1Final");
+    const reached = w.gate.reached("v1Final");
+    await w.advance(v.cut);
+    await reached;
+    await w.advance(v.giveUp);
+    s10.resolve();
+    expect(await answerOf(await v.response)).toEqual({
+      status: 503,
+      body: { error: "Media processing took too long. Try a shorter file." },
+    });
+  });
+
+  // One clock (code review r2 M1): S10 is waited for until the give-up, no inner bound shortening it.
+  it("S10 started early and answered between STORE_CALL_MS and the give-up answers 200", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await completeJob(w, v.id, await startJob(w, v.id));
+    const s10 = w.gate.hold("v1Final", "after");
+    const reached = w.gate.reached("v1Final");
+    await routeAt(w, v.arrival + 2 * SECOND);
+    await reached;
+    await routeAt(w, v.arrival + 2 * SECOND + STORE_CALL_MS);
+    clock(v.arrival + 3 * SECOND + STORE_CALL_MS);
+    s10.resolve();
+    expect((await v.response).status).toBe(200);
+  });
+
+  it("D45: S10's 200 received before the give-up fires is the answer, though the clock is past V1_TIME_MS", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await completeJob(w, v.id, await startJob(w, v.id));
+    const s10 = w.gate.hold("v1Final", "after");
+    const reached = w.gate.reached("v1Final");
+    await w.advance(v.cut);
+    await reached;
+    clock(v.giveUp + SECOND);
+    s10.resolve();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    w.timers.fire();
+    expect((await v.response).status).toBe(200);
+  });
+
+  it("the route's answer to S10's 503 received at the cut is the decided 503: the upload is doomed", async () => {
+    const w = await routeWorld();
+    const v = await waiting(w);
+    await startJob(w, v.id);
+    await w.advance(v.cut);
+    expect((await v.response).status).toBe(503);
+    expect((await held(w.store, v.id)).att?.gc_at).toBe(DOOMED_AT);
+  });
+});
+
+describe("Images and the active path (Q1, route side)", () => {
+  it("answers an audio upload with Images spent 202, charging no Images", async () => {
+    const w = await routeWorld();
+    const month = new Date(Date.now()).toISOString().slice(0, 7);
+    await sql(w.store, "INSERT INTO kopje_state (name, value) VALUES (?, '100000000')", `images_transforms:${month}`);
+    const response = await postMedia(
+      w,
+      multipartBody([{ name: "file", data: mp3(), filename: "a.mp3", type: "audio/mpeg" }]),
+    );
+    expect(response.status).toBe(202);
+    expect(await sql(w.store, "SELECT value FROM kopje_state WHERE name = ?", `images_transforms:${month}`)).toEqual([
+      { value: "100000000" },
+    ]);
+  });
+});
+
+// Every wait of the route bounded, and no write started after its cut (code review r1 H1, M1-M3, LOW).
+describe("the route's bounded waits (code review r1)", () => {
+  const RECEIVE = { error: "Media processing took too long to receive. Try again." };
+
+  it("H1: a v1 body held before the sniff answers 503 at V1_TIME_MS: no slot, nothing charged, reservation abandoned", async () => {
+    const w = await routeWorld();
+    const arrival = Date.now();
+    const { body, contentType } = multipartBody([videoPart(mp4(200_000))]);
+    const stream = new SlowBody(body, { chunk: 512, holdAt: 1024 });
+    const response = postMedia(w, { body: stream.stream(), contentType }, "v1");
+    await stream.reachedHold.promise;
+    await w.advance(arrival + V1_TIME_MS);
+    expect(await answerOf(await response)).toEqual({ status: 503, body: RECEIVE });
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+    const id = await lastUpload(w);
+    expect(await charged(w.store)).toBe(0);
+    expect((await held(w.store, id)).att?.gc_at).toBe(DOOMED_AT);
+  });
+
+  it("H1: a v1 reservation held past V1_TIME_MS answers 503, and the late reservation is abandoned", async () => {
+    const w = await routeWorld();
+    const arrival = Date.now();
+    const gate = w.gate.hold("reserveMedia", "after");
+    const reached = w.gate.reached("reserveMedia");
+    const response = postMedia(w, multipartBody([videoPart()]), "v1");
+    await reached;
+    await w.advance(arrival + V1_TIME_MS);
+    gate.resolve();
+    expect(await answerOf(await response)).toEqual({ status: 503, body: RECEIVE });
+    const id = await lastUpload(w);
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+    expect((await held(w.store, id)).att?.gc_at).toBe(DOOMED_AT);
+  });
+
+  it("H1: once the sniff reads an image, the image path keeps its own deadline past V1_TIME_MS", async () => {
+    const plain = await routeWorld();
+    const parts = [PNG_PART, { name: "description", data: "x".repeat(200_000) }];
+    const expected = await answerOf(await postMedia(plain, multipartBody(parts), "v1"));
+    const w = await routeWorld();
+    const arrival = Date.now();
+    const { body, contentType } = multipartBody(parts);
+    const stream = new SlowBody(body, { chunk: 1024, holdAt: body.byteLength - 1024 });
+    const response = postMedia(w, { body: stream.stream(), contentType }, "v1");
+    await stream.reachedHold.promise;
+    await w.advance(arrival + V1_TIME_MS + SECOND);
+    stream.release();
+    expect(await answerOf(await response)).toEqual(expected);
+  });
+
+  it("M1: a multipart create answering after the staging cut is aborted when it answers", async () => {
+    const hold = deferred();
+    const { bucket, counts } = hookedBucket({ holdCreate: hold.promise });
+    const w = await routeWorld({ bucket });
+    const response = postMedia(w, multipartBody([videoPart()]));
+    await vi.waitFor(() => expect(counts.creates).toBe(1));
+    await w.advance(Math.max(...w.timers.pending));
+    hold.resolve();
+    expect(await answerOf(await response)).toEqual({ status: 503, body: RECEIVE });
+    await vi.waitFor(() => expect(counts.aborts).toBe(1));
+    expect(counts.completes).toBe(0);
+  });
+
+  it("M2: an abort that never answers still lets S2 run, and the refusal answers by R2_CALL_MS", async () => {
+    const { bucket, counts } = hookedBucket({ stallAbort: true });
+    const w = await routeWorld({ bucket });
+    const response = postMedia(w, multipartBody([videoPart(), PNG_PART]));
+    await vi.waitFor(() => expect(counts.aborts).toBe(1));
+    await w.advance(Date.now() + R2_CALL_MS);
+    expect(await answerOf(await response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: File was sent more than once" },
+    });
+    expect(w.gate.calls).toContain("releaseStaging");
+  });
+
+  it("M2: a stream cancel that never settles still lets the refusal answer, S2 run", async () => {
+    const w = await routeWorld();
+    const { body, contentType } = multipartBody([videoPart(), PNG_PART]);
+    const stream = new SlowBody(body, { stallCancel: true });
+    const response = postMedia(w, { body: stream.stream(), contentType });
+    expect((await response).status).toBe(422);
+    expect(stream.cancelled).toBe(true);
+    expect(w.gate.calls).toContain("releaseStaging");
+  });
+
+  it("M2: an input delete that never answers after S2's released still abandons and answers by R2_CALL_MS", async () => {
+    const { bucket, counts } = hookedBucket({ stallDelete: true });
+    const w = await routeWorld({ bucket });
+    const response = postMedia(
+      w,
+      multipartBody([videoPart(), { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) }]),
+    );
+    await vi.waitFor(() => expect(counts.deletes).toBe(1));
+    await w.advance(Date.now() + R2_CALL_MS);
+    expect((await response).status).toBe(422);
+    expect(w.gate.calls).toContain("abandonMedia");
+  });
+
+  it.each(["takeAvSlot", "queueNormalize"])(
+    "M2: v2's %s held past STORE_CALL_MS answers 503, deleting nothing",
+    async (call) => {
+      const w = await routeWorld();
+      w.gate.hold(call);
+      const reached = w.gate.reached(call);
+      const response = postMedia(w, multipartBody([videoPart()]));
+      await reached;
+      await w.advance(Date.now() + STORE_CALL_MS);
+      expect(await answerOf(await response)).toEqual({
+        status: 503,
+        body: { error: "Media processing is unavailable. Try again later." },
+      });
+      if (call === "queueNormalize") {
+        expect(await input(await lastUpload(w))).not.toBeNull();
+      }
+    },
+  );
+
+  it("M3: a final part answering after the cut starts no complete()", async () => {
+    const hold = deferred();
+    const { bucket, counts, partReached } = hookedBucket({ holdPart: hold.promise });
+    const w = await routeWorld({ bucket });
+    const response = postMedia(w, multipartBody([videoPart()]));
+    await partReached;
+    const cut = Math.max(...w.timers.pending);
+    clock(cut + SECOND);
+    hold.resolve();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    w.timers.fire();
+    expect(await answerOf(await response)).toEqual({ status: 503, body: RECEIVE });
+    expect(counts.completes).toBe(0);
+  });
+
+  it("LOW: S9 is read every V1_POLL_MS from the start of the poll before, its reply time included", async () => {
+    const w = await routeWorld();
+    const s9 = w.gate.hold("v1Outcome", "after");
+    const reached = w.gate.reached("v1Outcome");
+    const response = postMedia(w, multipartBody([videoPart()]), "v1");
+    response.catch(() => {});
+    await reached;
+    clock(Date.now() + SECOND);
+    const next = w.timers.waitFor(V1_POLL_MS - SECOND);
+    s9.resolve();
+    await next;
+  });
+
+  it("LOW: a v2 upload read in many chunks leaves no wait pending", async () => {
+    const w = await routeWorld();
+    const { body, contentType } = multipartBody([videoPart(mp4(200_000))]);
+    const stream = new SlowBody(body, { chunk: 1024 });
+    expect((await postMedia(w, { body: stream.stream(), contentType })).status).toBe(202);
+    expect(w.timers.pending).toEqual([]);
+  });
+});
+
+// The answer never awaits cleanup, and one clock per request (code review r2).
+describe("the route's answers and its cleanup (code review r2)", () => {
+  const RECEIVE = { error: "Media processing took too long to receive. Try again." };
+
+  it("H1: a pre-sniff timeout answers 503 at the route's cut while abandonMedia is held", async () => {
+    const w = await routeWorld();
+    const arrival = Date.now();
+    const abandon = w.gate.hold("abandonMedia");
+    const { body, contentType } = multipartBody([videoPart(mp4(200_000))]);
+    const stream = new SlowBody(body, { chunk: 512, holdAt: 1024 });
+    const post = postWatched(w, { body: stream.stream(), contentType }, "v1");
+    await stream.reachedHold.promise;
+    await w.advance(arrival + V1_TIME_MS - T_REPLY);
+    expect(await answerOf(await post.answered)).toEqual({ status: 503, body: RECEIVE });
+    abandon.resolve();
+    await post.done;
+    expect((await held(w.store, await lastUpload(w))).att?.gc_at).toBe(DOOMED_AT);
+  });
+
+  it("H1: a pre-sniff timeout answers 503 at the route's cut while the reservation's R2 delete never answers", async () => {
+    const { bucket } = hookedBucket({ stallDelete: true });
+    const w = await routeWorld({ bucket });
+    const arrival = Date.now();
+    const { body, contentType } = multipartBody([videoPart(mp4(200_000))]);
+    const stream = new SlowBody(body, { chunk: 512, holdAt: 1024 });
+    const post = postWatched(w, { body: stream.stream(), contentType }, "v1");
+    await stream.reachedHold.promise;
+    await w.advance(arrival + V1_TIME_MS - T_REPLY);
+    expect(await answerOf(await post.answered)).toEqual({ status: 503, body: RECEIVE });
+    await w.advance(Date.now() + STORE_CALL_MS + R2_CALL_MS);
+    await post.done;
+  });
+
+  it("M2: a refusal before the slot answers while abandonMedia is held", async () => {
+    const w = await routeWorld();
+    const abandon = w.gate.hold("abandonMedia");
+    const post = postWatched(w, multipartBody([{ name: "file", data: "text" }, videoPart()]));
+    expect((await post.answered).status).toBe(422);
+    abandon.resolve();
+    await post.done;
+  });
+
+  it("M2: the Images refusal of an image answers 429 while abandonMedia is held", async () => {
+    const w = await routeWorld();
+    const month = new Date(Date.now()).toISOString().slice(0, 7);
+    await sql(w.store, "INSERT INTO kopje_state (name, value) VALUES (?, '4000')", `images_transforms:${month}`);
+    const abandon = w.gate.hold("abandonMedia");
+    const post = postWatched(w, multipartBody([PNG_PART]));
+    expect((await post.answered).status).toBe(429);
+    abandon.resolve();
+    await post.done;
+  });
+
+  it("M2: a staging refusal answers while its abort, S2 and abandonment are held", async () => {
+    const { bucket } = hookedBucket({ stallAbort: true });
+    const w = await routeWorld({ bucket });
+    const s2 = w.gate.hold("releaseStaging");
+    const post = postWatched(w, multipartBody([videoPart(), PNG_PART]));
+    expect(await answerOf(await post.answered)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: File was sent more than once" },
+    });
+    s2.resolve();
+    await w.advance(Date.now() + R2_CALL_MS);
+    await post.done;
+    expect(w.gate.calls).toContain("abandonMedia");
+  });
+
+  it("M3: the cleanup is registered with waitUntil when staging starts, before any cut", async () => {
+    const hold = deferred();
+    const { bucket, counts } = hookedBucket({ holdCreate: hold.promise });
+    const w = await routeWorld({ bucket });
+    const post = postWatched(w, multipartBody([videoPart()]));
+    await vi.waitFor(() => expect(counts.creates).toBe(1));
+    expect(post.registered()).toBeGreaterThanOrEqual(1);
+    hold.resolve();
+    expect((await post.done).status).toBe(202);
+  });
+
+  // A completion that lands after the route's delete (its abort not yet effective, code review r2 M3) is the
+  // sweep's while the doomed row stands (sweptKeys holds incoming/<id>), and the incoming/ orphan pass's after it.
+  it("M3: an input completed after the route's delete goes with the doomed row's sweep, or the orphan pass after it", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(
+      w,
+      multipartBody([videoPart(), { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) }]),
+    );
+    expect(response.status).toBe(422);
+    const id = await lastUpload(w);
+    await env.MEDIA.put(incomingKey(id), "late");
+    expect(await sweepMedia(env, { build: () => BUILD, store: () => w.store })).toBe(1);
+    expect(await input(id)).toBeNull();
+    // Landing after the row is gone: no row holds it, and the orphan pass takes it once a day old.
+    await env.MEDIA.put(incomingKey(id), "later");
+    vi.useRealTimers();
+    const real = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock(real + 25 * 60 * 60 * 1000);
+    await incomingOrphans({ build: BUILD, store: w.store, bucket: env.MEDIA });
+    expect(await input(id)).toBeNull();
+  });
+
+  it("M5: a settled repeat whose lookup passes STORE_CALL_MS answers 202 masked; GET then the completion", async () => {
+    const w = await routeWorld();
+    w.gate.drops.set("queueNormalize", 1);
+    const repeat = w.gate.hold("queueNormalize", "before", 1);
+    const reached = w.gate.reached("queueNormalize");
+    const post = postWatched(w, multipartBody([videoPart()]));
+    await reached;
+    const id = await lastUpload(w);
+    await completeJob(w, id, await startJob(w, id));
+    const lookup = w.gate.hold("getMedia");
+    const looked = w.gate.reached("getMedia");
+    repeat.resolve();
+    await looked;
+    await w.advance(Date.now() + STORE_CALL_MS);
+    expect(await answerOf(await post.answered)).toMatchObject({ status: 202, body: { id, url: null, meta: null } });
+    lookup.resolve();
+    await post.done;
+    expect((await w.h.request(`/api/v1/media/${id}`, bearer(w.h.users.alice.token))).status).toBe(200);
+  });
+
+  // The AV path streams only a Content-Type in the canonical form (multipartBoundary); any other is read whole, as
+  // before #1828, where a video is refused by its type.
+  it("reads a video under a Content-Type outside the canonical form as the image path does, taking no slot", async () => {
+    const w = await routeWorld();
+    const { body, contentType } = multipartBody([videoPart()]);
+    const boundary = contentType.slice(contentType.indexOf("=") + 1);
+    const response = await postMedia(w, { body, contentType: `${contentType}; boundary=${boundary}` });
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: File content type is invalid" },
+    });
+    expect(w.gate.calls).not.toContain("takeAvSlot");
+  });
+
+  it("streams a video under a quoted boundary, its form read under the same header", async () => {
+    const w = await routeWorld();
+    const { body, contentType } = multipartBody([videoPart(), { name: "description", data: "quoted" }]);
+    const boundary = contentType.slice(contentType.indexOf("=") + 1);
+    const response = await postMedia(w, { body, contentType: `multipart/form-data; boundary="${boundary}"` });
+    expect(await answerOf(response)).toMatchObject({ status: 202, body: { description: "quoted" } });
+  });
+
+  it("M6: `file[]` after the streamed file answers 400, as the image path's form parser does", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody([videoPart(), { name: "file[]", data: "x" }]));
+    expect(await answerOf(response)).toEqual({ status: 400, body: { error: "Malformed request body" } });
+    await leftNothing(w);
+  });
+
+  // RES-1's text bound comes first: a thumbnail past API_BODY_LIMIT answers 413 before the description is judged
+  // (docs/mastodon-deviations.md).
+  // Rails' last part wins (code review r3 M5): a trailing empty `thumbnail` means none, as on the image path.
+  it("M5: a thumbnail file then an empty thumbnail text queues, as the image path reads the last", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody([videoPart(), THUMB_FILE, { name: "thumbnail", data: "" }]));
+    expect(response.status).toBe(202);
+  });
+
+  it("M5: an empty thumbnail text then a thumbnail file answers 422", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(w, multipartBody([videoPart(), { name: "thumbnail", data: "" }, THUMB_FILE]));
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Thumbnail must be blank" },
+    });
+  });
+
+  // S2, then the delete its `released` authorizes, then the abandonment (code review r3 M3).
+  it("M3: a staging refusal's authorized delete starts while abandonMedia is held", async () => {
+    const { bucket, counts } = hookedBucket({});
+    const w = await routeWorld({ bucket });
+    const abandon = w.gate.hold("abandonMedia");
+    const abandoning = w.gate.reached("abandonMedia");
+    const post = postWatched(w, multipartBody([videoPart(), PNG_PART]));
+    expect((await post.answered).status).toBe(422);
+    await vi.waitFor(() => expect(counts.deletes).toBe(1));
+    expect(w.gate.calls).toContain("releaseStaging");
+    await abandoning;
+    abandon.resolve();
+    await post.done;
+    expect(await input(await lastUpload(w))).toBeNull();
+  });
+
+  // A documented limit: S1 answering `inactive` hands the request to the image path, whose waits are its own. v1 still answers 503 at the give-up; the image path then charges Images (the account's and the
+  // instance's TRANSFORMS_PER_UPLOAD, at startTransforms) whether or not an image comes of it, and charges no AV job.
+  // Here neither file makes an image (the harness's Images refuses the PNG as Images refuses an MP4), so the
+  // reservation is abandoned and left to the sweep; an image completing after the 503 is not exercised.
+  it.each([
+    ["an image as the last file", [videoPart(mp4(200_000)), PNG_PART]],
+    ["no image at all", [videoPart(mp4(200_000))]],
+  ] as const)(
+    "M1 (limit): S1 `inactive` hands v1 to the image path, which charges Images after the give-up's 503: %s",
+    async (_, parts) => {
+      const w = await routeWorld();
+      const arrival = Date.now();
+      const s1 = w.gate.hold("takeAvSlot");
+      const reached = w.gate.reached("takeAvSlot");
+      const { body, contentType } = multipartBody([...parts]);
+      const stream = new SlowBody(body, { chunk: 1024, holdAt: 100_000 });
+      const post = postWatched(w, { body: stream.stream(), contentType }, "v1");
+      await reached;
+      await failProbe(w);
+      s1.resolve();
+      await stream.reachedHold.promise;
+      await w.advance(arrival + V1_TIME_MS);
+      expect(await answerOf(await post.answered)).toEqual({
+        status: 503,
+        body: { error: "Media processing took too long. Try a shorter file." },
+      });
+      expect(await transformCounters(w)).toEqual([]);
+      stream.release();
+      await post.done;
+      expect(w.gate.calls).toContain("startTransforms");
+      expect(await transformCounters(w)).toEqual([String(TRANSFORMS_PER_UPLOAD), String(TRANSFORMS_PER_UPLOAD)]);
+      expect(await charged(w.store)).toBe(0);
+      expect(await held(w.store, await lastUpload(w))).toMatchObject({
+        row: null,
+        slot: null,
+        att: { type: "image", processed: 1, url: "" },
+      });
+    },
+  );
+
+  // S2's wait is a deadline on the route's clock (code review r4 M3): a `released` received past it, before its timer
+  // fired, deletes nothing; the input is left to reclamation.
+  it("M3: an S2 `released` received after its deadline, before the timer fires, deletes nothing", async () => {
+    const { bucket, counts } = hookedBucket({});
+    const w = await routeWorld({ bucket });
+    const s2 = w.gate.hold("releaseStaging", "after");
+    const reached = w.gate.reached("releaseStaging");
+    const post = postWatched(w, multipartBody([videoPart(), PNG_PART]));
+    expect((await post.answered).status).toBe(422);
+    await reached;
+    clock(Date.now() + STORE_CALL_MS + 1);
+    s2.resolve();
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    w.timers.fire();
+    await post.done;
+    expect(counts.deletes).toBe(0);
+    expect(w.gate.calls).toContain("abandonMedia");
+  });
+
+  it("M6: a thumbnail past API_BODY_LIMIT answers 413 before an invalid description", async () => {
+    const w = await routeWorld();
+    const response = await postMedia(
+      w,
+      multipartBody([
+        videoPart(),
+        { name: "thumbnail", data: new Uint8Array(1024 * 1024 + 1), filename: "t.png", type: "image/png" },
+        { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) },
+      ]),
+    );
+    expect(await answerOf(response)).toEqual({ status: 413, body: { error: "Request body is too large" } });
   });
 });

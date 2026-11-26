@@ -11,6 +11,7 @@ import type { Resolved } from "../domain/remote-statuses";
 import { webPushKeys } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import type { ImageCodec } from "../platform/images";
+import type { MediaProcessorClient } from "../platform/media-transcoder";
 import { callStore, type StoreResolver, type StoreStub } from "../platform/store-client";
 import type { RequiredScope } from "../security/scopes";
 import type { TokenGenerator } from "../security/tokens";
@@ -40,6 +41,12 @@ export type ApiDeps = {
   signAsAuthor?: (env: Env, sign: AuthorSignature) => Promise<Record<string, unknown>>;
   // The isolate's memo of recorded activity (mastodon/activity.ts); none: no activity is recorded.
   activity?: ActivityMemo;
+  // The media processor (src/media-processor.ts), null without its binding; none: video and audio uploads are
+  // inactive.
+  mediaProcessor?: (env: Env) => MediaProcessorClient | null;
+  // Resolves `ms` later on the route's clock (the v1 upload's waits and cuts, mastodon/media-av.ts); none: a timer.
+  // An aborted `signal` cancels the wait, which then never resolves.
+  wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
 };
 
 export type AuthorSignature = { activity: Record<string, unknown>; keyId: string; key: StoredKey };

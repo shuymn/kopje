@@ -21,14 +21,26 @@ describe("a playable file's Document (P16)", () => {
     expect(playableDocumentFacts("audio", JSON.stringify(avMeta.audio.meta))).toEqual(avMeta.audio.document);
   });
 
-  it("writes a whole number of seconds as Ruby's Float does, and a fraction down to one sample at 48 kHz in decimal", () => {
+  it("writes a whole number of seconds as Ruby's Float does, and any other to the millisecond in decimal", () => {
     const of = (duration: unknown) => playableDocumentFacts("audio", JSON.stringify({ original: { duration } }));
-    expect([of(8), of(0.5), of(1e-4), of(1 / 48_000), of(1200)]).toEqual([
+    expect([
+      of(8),
+      of(0.5),
+      of(29.963854166666668),
+      of(1.0005),
+      of(1199.9996),
+      of(1e-4),
+      of(1 / 48_000),
+      of(1200),
+    ]).toEqual([
       { duration: "PT8.0S" },
       { duration: "PT0.5S" },
-      { duration: "PT0.0001S" },
-      // The verifier's shortest (one sample at 48 kHz), in decimal: ISO 8601 has no exponent (code review r2).
-      { duration: "PT0.000020833333333333333S" },
+      { duration: "PT29.964S" },
+      { duration: "PT1.001S" },
+      { duration: "PT1200.0S" },
+      // The verifier's shortest (down to one sample at 48 kHz) round to zero: never an exponent, never negative.
+      { duration: "PT0.0S" },
+      { duration: "PT0.0S" },
       { duration: "PT1200.0S" },
     ]);
     // Past what the verifier produces either way, or not a positive number: left out.
@@ -50,6 +62,21 @@ describe("a playable file's Document (P16)", () => {
       of({ width: 65_536 }),
       of({ width: 0.0000012345678901234567, height: "360" }),
     ]).toEqual([{}, {}, {}]);
+  });
+
+  // An audio file's duration is stored as computed (samples / rate, as ffprobe's float in Mastodon); the Note writes
+  // it in milliseconds, as Fedify's parse (Temporal) takes at most nine fractional digits.
+  it("serves a status with an audio file whose stored duration has many fractional digits", async () => {
+    const w = await avWorld();
+    const audio = await completed(w, { facts: { ...AUDIO, duration: 29.963854166666668 } });
+    clock(T0 + 5 * SECOND);
+    const posted = await postAs(w, { status: "a song", media_ids: [audio.id] });
+    expect(posted.status).toBe(200);
+    const { uri } = posted.body as { uri: string };
+    const response = await w.h.request(new URL(uri).pathname, { headers: { accept: "application/activity+json" } });
+    expect(response.status).toBe(200);
+    const note = await response.json<{ attachment: { duration?: string }[] }>();
+    expect(note.attachment.map((a) => a.duration)).toEqual(["PT29.964S"]);
   });
 
   it("publishes a completed video's and audio file's facts in the Note, and an image's Document as before", async () => {

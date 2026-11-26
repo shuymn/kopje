@@ -9,7 +9,9 @@ import {
   T_PREVIEW_MIN,
   previewCut,
   type ProcessorFailure,
+  R2_CALL_MS,
   remainingOf,
+  STORE_CALL_MS,
   T_MIN_ENCODE,
   T_REPLY,
   T_STILL,
@@ -72,10 +74,7 @@ export type UploadDeps = ContainerControl & {
   wait: (ms: number) => Promise<void>;
 };
 
-// The most one R2 call of the cleanup (a multipart upload's abort) is awaited.
-export const R2_CALL_MS = 30_000;
-// The most S7 is awaited after an unconfirmed stop: the container may still run, and the alarm retries the stop.
-export const STORE_CALL_MS = 30_000;
+export { R2_CALL_MS, STORE_CALL_MS } from "../domain/media-processing";
 
 // A wait on the container that reached its cut.
 class StageCut extends Error {}

@@ -47,12 +47,12 @@ import { type FileRule, type ParamEntry, type Params, parseBody, readQuery, refu
 // The file plus the form's other fields (description, focus, and a thumbnail, which counts toward this bound and is
 // refused): a description of MAX_MEDIA_DESCRIPTION_LENGTH four-byte code points (40,000 bytes) with its part headers
 // fits beside a file at IMAGE_SIZE_LIMIT.
-const MEDIA_BODY_LIMIT = IMAGE_SIZE_LIMIT + 64 * 1024;
+export const MEDIA_BODY_LIMIT = IMAGE_SIZE_LIMIT + 64 * 1024;
 
 export const THUMBNAIL_MUST_BE_BLANK = "Validation failed: Thumbnail must be blank";
 
 // MediaAttachment validates `thumbnail, absence: true` unless the media is audio or video (Mastodon v4.5.11
-// app/models/media_attachment.rb:207); every local upload Kopje accepts is an image, so any thumbnail is refused.
+// app/models/media_attachment.rb:207); Kopje makes every preview itself, so a thumbnail is refused for any upload.
 // Sent: any file part, or non-empty text (a data URI is assigned through Paperclip's DataUriAdapter; other text has
 // no handler and answers 500 there, 422 here). Empty text or JSON null is absent. Only presence is read.
 export function thumbnailSent(value: string | File | undefined): boolean {
@@ -61,7 +61,7 @@ export function thumbnailSent(value: string | File | undefined): boolean {
 
 // The validation error of an upload or update form: the description first, then the thumbnail (read only when the
 // description passes).
-function mediaProblem(params: Params, description: string | undefined): string | undefined {
+export function mediaProblem(params: Params, description: string | undefined): string | undefined {
   return (
     descriptionProblem(description) ??
     (thumbnailSent(params.file("thumbnail") ?? params.get("thumbnail")) ? THUMBNAIL_MUST_BE_BLANK : undefined)
@@ -71,8 +71,9 @@ function mediaProblem(params: Params, description: string | undefined): string |
 // PUT /api/v1/media/:id reads a thumbnail only to refuse it: no allowance beyond its part's headers (RES-1).
 const THUMBNAIL_FILE: FileRule = { names: ["thumbnail"], maxBytes: 0 };
 
-const TOO_LARGE = "Validation failed: File file size must be less than 16 MB";
-const INVALID_TYPE = "Validation failed: File content type is invalid";
+export const TOO_LARGE = "Validation failed: File file size must be less than 16 MB";
+export const INVALID_TYPE = "Validation failed: File content type is invalid";
+export const FILE_BLANK = "Validation failed: File can't be blank";
 // The message of an image past IMAGE_MATRIX_LIMIT pixels, without its attribute.
 export const PIXELS_PROBLEM = `dimensions exceed ${IMAGE_MATRIX_LIMIT} pixels`;
 
@@ -127,7 +128,7 @@ async function readWithin(request: Request, ms: number): Promise<Uint8Array | "t
   }
 }
 
-function refusedForm(status: 400 | 413): MediaForm {
+export function refusedForm(status: 400 | 413): { error: string; status: 400 | 413 } {
   return { status, error: status === 413 ? "Request body is too large" : "Malformed request body" };
 }
 
@@ -141,7 +142,7 @@ async function readMediaForm(request: Request, ms: number): Promise<MediaForm> {
   }
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
-    return { error: "Validation failed: File can't be blank" };
+    return { error: FILE_BLANK };
   }
   let form: Params;
   try {
@@ -149,37 +150,42 @@ async function readMediaForm(request: Request, ms: number): Promise<MediaForm> {
     form = await parseBody(contentType, body, { names: UPLOAD_FILES, maxBytes: IMAGE_SIZE_LIMIT });
   } catch (error) {
     const status = refusedStatus(error);
-    return status === undefined ? { error: "Validation failed: File can't be blank" } : refusedForm(status);
+    return status === undefined ? { error: FILE_BLANK } : refusedForm(status);
   }
+  // The query is refused before the file part, as Rack reads it first.
   const query = readQuery(request);
   if (!query.ok) {
     return refusedForm(query.status);
   }
   const file = form.file("file");
-  if (file === undefined) {
-    return { error: "Validation failed: File can't be blank" };
+  if (file === undefined || file.size > IMAGE_SIZE_LIMIT) {
+    return { error: file === undefined ? FILE_BLANK : TOO_LARGE };
   }
-  if (file.size > IMAGE_SIZE_LIMIT) {
-    return { error: TOO_LARGE };
-  }
-  // The bounds hold for what is sent: body fields and query parameters together, each text pair as sent (Params#sent:
-  // also one a later pair or the query replaced, whatever it nested under). A thumbnail is only checked for presence
-  // and refused, and a description is judged by its own rule, so neither length is bounded here (the body's is).
-  const params = form.withQuery(query.params, UPLOAD_FILES);
+  const params = uploadParams(query.params, form);
+  return "error" in params ? params : { file: new Uint8Array(await file.arrayBuffer()), params };
+}
+
+// The upload form's parameters: `form` (the body's parts; on the video or audio path its text parts and a zero-byte
+// stand-in for each file, mastodon/media-av.ts) with the parsed `query` merged, and the form's bounds checked. The
+// bounds hold for what is sent: body fields and query parameters together, each text pair as sent (Params#sent: also
+// one a later pair or the query replaced, whatever it nested under). A thumbnail is only checked for presence and
+// refused, and a description is judged by its own rule, so neither length is bounded here (the body's is).
+export function uploadParams(query: Params, form: Params): Params | { error: string } {
+  const params = form.withQuery(query, UPLOAD_FILES);
   const long = ([key, value]: ParamEntry) =>
     key !== "thumbnail" && key !== "description" && value.length > MAX_FIELD_LENGTH;
   if (params.sent.length > MAX_FIELDS || params.sent.some(long)) {
     return { error: "Validation failed: A form field is too long" };
   }
-  return { file: new Uint8Array(await file.arrayBuffer()), params };
+  return params;
 }
 
 // `problem`: which validation error a 422 is, for a caller that names its own attribute (profile images,
 // mastodon/accounts.ts storeProfileImages).
 export type Failure = { status: number; error: string; problem?: "content_type" | "pixels" | "expired" };
 
-// What the pipeline reads of the request context: the bindings and the raw request (its body is the form).
-export type UploadContext = { env: Env; req: { raw: Request } };
+// What the pipeline reads of the request context: the bindings (the form is read from the request passed apart).
+export type UploadContext = { env: Env };
 
 const PROCESSING_FAILURES: Record<"unsupported" | "too_large" | "quota" | "failed", Failure> = {
   unsupported: { status: 422, error: INVALID_TYPE, problem: "content_type" },
@@ -188,32 +194,33 @@ const PROCESSING_FAILURES: Record<"unsupported" | "too_large" | "quota" | "faile
   failed: { status: 500, error: "Error processing uploaded media" },
 };
 
-function budgetRefusal(scope: "account" | "instance"): Failure {
+export function budgetRefusal(scope: "account" | "instance"): Failure {
   return scope === "account"
     ? { status: 429, error: "Your media processing budget for the month is used up" }
     : { status: 429, error: "This server's media processing budget for the month is used up" };
 }
 
-type UploadOutcome = { ok: true; media: MediaAttachment } | ({ ok: false } & Failure);
-
-// What the caller checks in the form once it is read, before any transformation is spent: a failure refuses the
-// upload (the API checks the description).
-type FormCheck = (params: Params) => Failure | null | Promise<Failure | null>;
+export type UploadOutcome = { ok: true; media: MediaAttachment } | ({ ok: false } & Failure);
 
 // A reservation (domain/media.ts reserveMedia): the row's id and file token, the writer deadline, and the budgets and
-// credential every later Store call of the upload takes.
-type Upload = {
+// credential every later Store call of the upload takes. `imagesRefusal`: on the active path (reserved with
+// `avCandidate`, uploads active), the Images budget an image would be refused for, or null; absent otherwise.
+export type Upload = {
   id: string;
   token: string;
   deadline: number;
   monthlyTransforms: MonthlyTransforms;
   credential: () => UserCredential;
+  imagesRefusal?: "account" | "instance" | null;
 };
 
-async function reserve(
+// `avCandidate`: the media upload route's, with the processor bound and a positive upload budget (mastodon/media-av.ts);
+// profile images and emoji reserve without it, as before #1828.
+export async function reserve(
   c: UploadContext,
   deps: ApiDeps,
   credential: () => UserCredential,
+  avCandidate?: { build: string },
 ): Promise<{ ok: true; upload: Upload } | ({ ok: false } & Failure)> {
   const token = deps.randomToken();
   const config = readConfig(c.env);
@@ -223,7 +230,13 @@ async function reserve(
     : { instance: 0, account: 0 };
   const reserved = authorized(
     await storeCall(c, deps, (s, b) =>
-      s.reserveMedia(b, { credential: credential(), token, monthlyTransforms, now: deps.now() }),
+      s.reserveMedia(b, {
+        credential: credential(),
+        token,
+        monthlyTransforms,
+        ...(avCandidate === undefined ? {} : { avCandidate }),
+        now: deps.now(),
+      }),
     ),
   );
   if (reserved.status === "retry") {
@@ -238,26 +251,25 @@ async function reserve(
         : budgetRefusal(reserved.scope)),
     };
   }
-  return { ok: true, upload: { id: reserved.id, token, deadline: reserved.deadline, monthlyTransforms, credential } };
+  const upload: Upload = { id: reserved.id, token, deadline: reserved.deadline, monthlyTransforms, credential };
+  return {
+    ok: true,
+    upload: "imagesRefusal" in reserved ? { ...upload, imagesRefusal: reserved.imagesRefusal } : upload,
+  };
 }
 
-// The upload pipeline of POST /api/v{1,2}/media: reserve, read the form, check it, transform, write, complete; a
+// The image pipeline of POST /api/v{1,2}/media for a reserved upload: read the form of `request` (the request itself,
+// or the same body replayed, mastodon/media-av.ts), check its description and thumbnail, transform, write, complete; a
 // failure abandons the reservation.
-async function receiveImageUpload(
+export async function receiveImageUpload(
   c: UploadContext,
   deps: ApiDeps,
-  credential: () => UserCredential,
-  check: FormCheck,
+  upload: Upload,
+  request: Request,
 ): Promise<UploadOutcome> {
-  const reserved = await reserve(c, deps, credential);
-  if (!reserved.ok) {
-    await c.req.raw.body?.cancel();
-    return reserved;
-  }
-  const { upload } = reserved;
   let outcome: Failure | MediaAttachment;
   try {
-    outcome = await processUpload(c, deps, upload, check);
+    outcome = await processUpload(c, deps, upload, request);
   } catch (error) {
     await discard(c, deps, upload, "keep");
     throw error;
@@ -269,41 +281,28 @@ async function receiveImageUpload(
   return { ok: true, media: outcome };
 }
 
-// POST /api/v1/media and /api/v2/media.
-export const uploadMedia: ApiHandler = async (c, deps) => {
-  const outcome = await receiveImageUpload(
-    c,
-    deps,
-    () => userCredential(c, deps),
-    (params) => {
-      const problem = mediaProblem(params, params.get("description"));
-      return problem === undefined ? null : { status: 422, error: problem };
-    },
-  );
-  return outcome.ok ? c.json(outcome.media) : mastodonError(outcome.status, outcome.error);
-};
-
 // What the upload keeps of its writer deadline after the preview's RGBA output: the deadline check, the three R2 puts
 // (the original, at most IMAGE_SIZE_LIMIT, and both outputs) and up to two completeMedia calls must all finish before
 // it, or the upload answers 422 although only its blurhash was late.
 export const UPLOAD_SAVE_RESERVE_MS = 60_000;
 
-const EXPIRED_MESSAGE = "Validation failed: The upload expired";
+export const EXPIRED_MESSAGE = "Validation failed: The upload expired";
 const EXPIRED: Failure = { status: 422, error: EXPIRED_MESSAGE, problem: "expired" };
 
 async function processUpload(
   c: UploadContext,
   deps: ApiDeps,
   upload: Upload,
-  check: FormCheck,
+  request: Request,
 ): Promise<Failure | MediaAttachment> {
-  const form = await readMediaForm(c.req.raw, upload.deadline - deps.now());
+  const form = await readMediaForm(request, upload.deadline - deps.now());
   if ("error" in form) {
     return { status: form.status ?? 422, error: form.error };
   }
-  const refused = await check(form.params);
-  if (refused !== null) {
-    return refused;
+  // Checked once the form is read and before any transformation is spent.
+  const problem = mediaProblem(form.params, form.params.get("description"));
+  if (problem !== undefined) {
+    return { status: 422, error: problem };
   }
   return transformReserved(c, deps, upload, form.file, {
     description: form.params.get("description") ?? "",
@@ -448,7 +447,7 @@ export async function writeFiles(
 // vanished reservation's objects are deleted here. If the Store cannot be asked, the objects stay for the sweep, which
 // deletes them with the reservation once its writer deadline has passed, or with a completed upload once its grace
 // period has (DETACHED_GRACE_MS).
-async function discard(
+export async function discard(
   c: UploadContext,
   deps: ApiDeps,
   upload: ProfileUpload,

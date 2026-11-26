@@ -6,6 +6,7 @@ import { MAX_FEATURED_TAGS } from "../src/domain/featured-tags";
 import { type ApiHarness, apiHarness, bearer, json, seedAccount, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
+import { passProbe } from "./media-processing-helpers";
 import { DAY_MS } from "./read-helpers";
 import { act, community, post } from "./status-helpers";
 
@@ -378,5 +379,79 @@ describe("instance contact read from a value past its bound", () => {
       expect(v2.status).toBe(200);
       expect(await v2.json()).toMatchObject({ contact: { email: "admin@kopje.test", account: null } });
     }
+  });
+});
+
+// #1828 design 4.13 (P1): while video and audio uploads are active (the processor's binding, a positive
+// MEDIA_UPLOAD_MONTHLY_JOBS and a passed probe of the normalize profile for this build), both endpoints advertise them;
+// a spent budget keeps the advertisement (the upload answers 429); otherwise both are as before.
+describe("the video and audio advertisement", () => {
+  const AV_TYPES = [
+    "video/webm",
+    "video/mp4",
+    "video/quicktime",
+    "video/ogg",
+    "audio/wave",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/x-pn-wave",
+    "audio/vnd.wave",
+    "audio/ogg",
+    "audio/vorbis",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/webm",
+    "audio/flac",
+    "audio/aac",
+    "audio/m4a",
+    "audio/x-m4a",
+    "audio/mp4",
+    "audio/3gpp",
+  ];
+  const ACTIVE_MEDIA = {
+    ...CONFIGURATION.media_attachments,
+    supported_mime_types: [...CONFIGURATION.media_attachments.supported_mime_types, ...AV_TYPES],
+    video_size_limit: 94371840,
+    video_frame_rate_limit: 120,
+    video_matrix_limit: 8294400,
+  };
+
+  async function world(options: { binding: boolean; budget: string; probe: boolean }) {
+    const h = await apiHarness(
+      { MEDIA_UPLOAD_MONTHLY_JOBS: options.budget },
+      { mediaProcessor: () => (options.binding ? ({} as never) : null) },
+    );
+    if (options.probe) {
+      await passProbe(h.store);
+    }
+    const read = async () => ({
+      v1: (await (await h.request("/api/v1/instance")).json<{ configuration: { media_attachments: unknown } }>())
+        .configuration.media_attachments,
+      v2: (await (await h.request("/api/v2/instance")).json<{ configuration: { media_attachments: unknown } }>())
+        .configuration.media_attachments,
+    });
+    return { h, read };
+  }
+
+  it("advertises video and audio on v1 and v2 while uploads are active", async () => {
+    const { read } = await world({ binding: true, budget: "10", probe: true });
+    expect(await read()).toEqual({ v1: ACTIVE_MEDIA, v2: { ...ACTIVE_MEDIA, description_limit: 10000 } });
+  });
+
+  it("keeps the advertisement with the month's budget spent", async () => {
+    const { h, read } = await world({ binding: true, budget: "1", probe: true });
+    const month = new Date(NOW).toISOString().slice(0, 7);
+    await sql(h.store, "INSERT INTO kopje_state (name, value) VALUES (?, '1')", `media_upload_jobs:${month}`);
+    expect(await read()).toEqual({ v1: ACTIVE_MEDIA, v2: { ...ACTIVE_MEDIA, description_limit: 10000 } });
+  });
+
+  it.each([
+    ["without the binding", { binding: false, budget: "10", probe: true }],
+    ["with a budget of 0", { binding: true, budget: "0", probe: true }],
+    ["without a passed probe", { binding: true, budget: "10", probe: false }],
+  ])("advertises what it did before %s", async (_, options) => {
+    const { read } = await world(options);
+    const inactive = CONFIGURATION.media_attachments;
+    expect(await read()).toEqual({ v1: inactive, v2: { ...inactive, description_limit: 10000 } });
   });
 });
