@@ -54,6 +54,31 @@ describe("media by type", () => {
       ...fields,
     });
 
+  it("keeps a video or gifv with only its original's size, as a remote one has, in the 16/9 box", async () => {
+    const remote = (id: string, type: string, width: number, height: number) =>
+      media(id, {
+        type,
+        url: `https://remote.example/media/${id}.mp4`,
+        preview_url: `https://remote.example/media/${id}.mp4`,
+        remote_url: `https://remote.example/media/${id}.mp4`,
+        meta: { original: { width, height, size: `${width}x${height}`, aspect: width / height } },
+        description: null,
+      });
+    const page = await feedPage([
+      status("1", { media_attachments: [remote("11", "video", 1, 65535), remote("12", "gifv", 1280, 720)] }),
+    ]);
+    const videos = query(parseHtml(page), "video");
+    expect(
+      videos.map((video) => ({
+        box: classes(video).includes("box"),
+        size: [attr(video, "width"), attr(video, "height")],
+      })),
+    ).toEqual([
+      { box: true, size: [null, null] },
+      { box: true, size: [null, null] },
+    ]);
+  });
+
   it("plays video, gifv and audio inline, loading nothing before play, with a poster only from a real preview", async () => {
     const page = await feedPage([
       status("1", {
