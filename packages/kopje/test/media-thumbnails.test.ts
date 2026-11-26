@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { profileUploadReady, SWEEP_BATCH } from "../src/domain/media";
+import { expiredMedia, profileUploadReady, releasedThumbnails, SWEEP_BATCH } from "../src/domain/media";
 import { BACKUP_HOLD_RECHECK_MS, THUMBNAIL_KEEP_MS } from "../src/domain/media-thumbnails";
 import { restoreMarkerKey } from "../src/platform/media-files";
 import { toStoreUnavailable } from "../src/platform/store-errors";
@@ -42,6 +42,7 @@ import {
   THUMB_BLURHASH,
   updateThumbnail,
 } from "./media-thumbnail-helpers";
+import { DAY_MS, measuredRead, measuredStatements } from "./read-helpers";
 
 // Custom thumbnails of video and audio uploads in the Store (#1828 PR6-1, domain/media-thumbnails.ts): the link
 // predicate on PUT (updateOwnerMedia) and S3 (queueNormalize), the reservation made during an upload (reserveMedia's
@@ -851,5 +852,55 @@ describe("the sweep and a thumbnail (T5, T5r, T13k)", () => {
       child.id,
     );
     expect(await expired()).toEqual([child.id]);
+  });
+
+  // RES-7 (T11): a call examines at most SWEEP_BATCH due rows, however many the hold leaves behind, and the release
+  // list at most SWEEP_BATCH rows: rows read, not only rows returned.
+  it("reads a bounded number of rows over 1,000 held children and a full release batch", async () => {
+    const w = await avWorld();
+    const HELD = 1000;
+    const due = new Date(Date.now() - 1000).toISOString();
+    await runInDurableObject(w.store, (_i, state) => {
+      const run = state.storage.sql;
+      run.exec(
+        "INSERT INTO kopje_state (name, value) VALUES ('backup', ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+        JSON.stringify({ run: { id: "run-1", stage: "media" } }),
+      );
+      for (let i = 0; i < HELD + 2 * SWEEP_BATCH; i++) {
+        const id = String(950_000_000_000_000_000n + BigInt(i));
+        const held = i < HELD;
+        // The held children are due first; the rest are replaced children awaiting their release, not yet due.
+        run.exec(
+          `INSERT INTO media_attachments (id, account_id, type, url, preview_url, file_token, processed, gc_at,
+						thumbnail_of, created_at)
+					VALUES (?, ?, 'image', '', ?, ?, 1, ?, '940000000000000000', ?)`,
+          id,
+          w.h.users.alice.id,
+          held ? null : `https://kopje.test/media/r${i}/small.webp`,
+          `r${String(i).padStart(42, "0")}`,
+          held ? due : new Date(Date.now() + DAY_MS).toISOString(),
+          new Date(T0).toISOString(),
+        );
+        if (held) {
+          run.exec(
+            "INSERT INTO backup_media (source, required_run, state) VALUES (?, 'run-1', 'pending')",
+            `originals/${id}`,
+          );
+        }
+      }
+    });
+    const expired = await measuredStatements(w.h, expiredMedia, { now: Date.now(), limit: SWEEP_BATCH }, true);
+    expect(expired.output).toEqual([]);
+    const [setUp, select, hold] = expired.statements;
+    expect(setUp?.rows).toBe(1);
+    // The batch's SWEEP_BATCH due rows and each one's membership seek, whatever the backlog behind them.
+    expect(select).toMatchObject({ returned: SWEEP_BATCH });
+    expect(select!.rows).toBeLessThanOrEqual(2 * SWEEP_BATCH + 1);
+    // The move of the held rows: each one's key seek and its index entries.
+    expect(hold!.rows).toBeLessThanOrEqual(6 * SWEEP_BATCH);
+    expect(expired.statements).toHaveLength(3);
+    const released = await measuredRead(w.h, releasedThumbnails, {});
+    expect(released.output).toHaveLength(SWEEP_BATCH);
+    expect(released.rows).toBeLessThanOrEqual(SWEEP_BATCH + 8);
   });
 });
