@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { SUSPEND_BLOCKS_SQL } from "../src/domain/audience";
-import { cachedImagesOf } from "../src/domain/remote-media";
+import { cachedImagesOf, maintainRemoteMedia } from "../src/domain/remote-media";
 import { migratedStore } from "./helpers";
 import { fragmentCount } from "./plan-audit";
 import { PLAN_AUDIT_ALLOWANCES } from "./plan-audit-allowances";
 import { auditStore, queryPlan, singletonStatistics } from "./plan-audit-store";
 import { STATISTICS } from "./plan-witness";
+import { type PlannedStatement, plannedSql } from "./read-helpers";
+import { mediaWorld } from "./remote-media-helpers";
 import { auditPlans, type Recorded, statements } from "./sql-depth-setup";
 import { community, post } from "./status-helpers";
 
@@ -143,6 +145,36 @@ describe("plan audit", () => {
   // C8: the audit alone catches a removed pin: cachedImagesOf (src/domain/remote-media.ts, witnessed under stale
   // statistics by test/remote-media-presenter.test.ts) with its slots' join unpinned. A removed pin that leaves a prefix
   // walk is not one it sees (test/plan-audit-1468.ts, tagStatus).
+  // dueDeletions (src/domain/remote-media.ts): each of its two seeks, the retried deletions and the ones never tried,
+  // joins a doomed object's still by the stills' primary key, under the audit's singleton statistics.
+  it("plans both of dueDeletions' joins to the stills as a primary-key seek", async () => {
+    const w = await mediaWorld();
+    const plans = await runInDurableObject(w.t.store, (_instance, state) => {
+      const sql = state.storage.sql;
+      singletonStatistics(sql);
+      const planned: PlannedStatement[] = [];
+      maintainRemoteMedia.run(
+        plannedSql(sql, /LEFT JOIN remote_media_stills st ON st\.token = o\.token/, planned),
+        { now: w.clock.now, restoredAt: null, cap: 4 * 1024 * 1024 * 1024, retentionDays: 0 },
+        (fn) => state.storage.transactionSync(fn),
+      );
+      return planned;
+    });
+    expect(plans).toHaveLength(2);
+    for (const { plan } of plans) {
+      expect(plan, plan.join("\n")).toContain("SEARCH st USING PRIMARY KEY (token=?) LEFT-JOIN");
+      expect(
+        plan.filter((d) => /^SCAN (st|remote_media_objects|remote_media_stills)\b/.test(d)),
+        plan.join("\n"),
+      ).toEqual([]);
+    }
+    // Each group's own partial index bounds the rows the join reads (its LIMIT is the co-routine o).
+    expect(plans.map(({ plan }) => plan.find((d) => d.startsWith("SEARCH remote_media_objects")))).toEqual([
+      "SEARCH remote_media_objects USING INDEX remote_media_objects_retry (due_at<?)",
+      "SEARCH remote_media_objects USING COVERING INDEX remote_media_objects_due (due_at<?)",
+    ]);
+  });
+
   it("fails a statement whose pin is removed", async () => {
     const store = await migratedStore();
     await runInDurableObject(store, (_instance, state) => cachedImagesOf(new Db(state.storage.sql), ["1"]));
