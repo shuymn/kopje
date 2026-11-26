@@ -842,7 +842,7 @@ describe("the sweep and a thumbnail (T5, T5r, T13k)", () => {
     expect(await childRow(w.store, a.id)).toMatchObject({ url: "", processed: 1 });
   });
 
-  it("takes the doomed uploads of a run whose release fails, and releases at the next run", async () => {
+  it("takes the doomed uploads of a run whose release fails, logs that alone, and releases at the next run", async () => {
     const w = await avWorld();
     const { parent, child: a } = await thumbnailed(w);
     await putObjects(a);
@@ -867,13 +867,49 @@ describe("the sweep and a thumbnail (T5, T5r, T13k)", () => {
     };
     const run = (bucket: R2Bucket) =>
       sweepMedia({ ...env, MEDIA: bucket }, { build: () => BUILD, store: () => w.store });
-    await expect(run(failing)).rejects.toThrow("R2 delete failed");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await run(failing)).toBe(1);
+    expect(logged.mock.calls.map(([entry]) => (entry as { event: string }).event)).toEqual([
+      "kopje.media.thumbnail_release_failed",
+    ]);
+    logged.mockRestore();
     expect(await childRow(w.store, doomed.id)).toBeUndefined();
     expect(await objects(doomed)).toEqual({ original: false, full: false, small: false });
     expect(await childRow(w.store, a.id)).toMatchObject({ url: "", preview_url: expect.any(String) });
     expect(await run(env.MEDIA)).toBe(0);
     expect(await objects(a)).toEqual({ original: true, full: false, small: false });
     expect(await childRow(w.store, a.id)).toMatchObject({ preview_url: null });
+  });
+
+  it("releases in a run whose doomed uploads fail, and throws that failure after", async () => {
+    const w = await avWorld();
+    const { parent, child: a } = await thumbnailed(w);
+    await putObjects(a);
+    await updateThumbnail(w, parent, await imageChild(w));
+    const doomed = await imageChild(w);
+    await putObjects(doomed);
+    await sql(
+      w.store,
+      "UPDATE media_attachments SET gc_at = ? WHERE id = ?",
+      new Date(Date.now() - 1000).toISOString(),
+      doomed.id,
+    );
+    // The bucket refuses to delete the doomed upload's files.
+    const failing: R2Bucket = {
+      ...env.MEDIA,
+      delete: async (keys: string | string[]) => {
+        if ([keys].flat().some((key) => key.includes(doomed.token))) {
+          throw new Error("R2 delete failed");
+        }
+        return env.MEDIA.delete(keys);
+      },
+    };
+    await expect(sweepMedia({ ...env, MEDIA: failing }, { build: () => BUILD, store: () => w.store })).rejects.toThrow(
+      "R2 delete failed",
+    );
+    expect(await objects(a)).toEqual({ original: true, full: false, small: false });
+    expect(await childRow(w.store, a.id)).toMatchObject({ preview_url: null });
+    expect(await childRow(w.store, doomed.id)).toBeDefined();
   });
 
   it("lists SWEEP_BATCH earlier retired thumbnails first, and releases a later one at the next batch", async () => {
