@@ -1155,19 +1155,19 @@ export function presentMediaOf(
 ): { media: MediaAttachment; thumbnail: boolean } {
   const media = presentOwnMedia(row, origin);
   const thumbnail = thumbnailOverlay(row);
-  if (thumbnail === null) {
-    return { media, thumbnail: false };
-  }
+  return thumbnail === null ? { media, thumbnail: false } : { media: withThumbnail(media, thumbnail), thumbnail: true };
+}
+
+// `media` showing `thumbnail`: its preview_url, meta.small (the rest of meta kept) and blurhash (presentMediaOf, and
+// v2's 202 from S3's facts, mastodon/media-av.ts).
+export function withThumbnail(media: MediaAttachment, thumbnail: ThumbnailFacts): MediaAttachment {
   const { small: _small, ...rest } = media.meta ?? {};
   const meta: MediaMeta = { ...rest, ...(thumbnail.small === null ? {} : { small: thumbnail.small }) };
   return {
-    media: {
-      ...media,
-      preview_url: thumbnail.preview_url,
-      meta: Object.keys(meta).length === 0 ? null : meta,
-      blurhash: thumbnail.blurhash,
-    },
-    thumbnail: true,
+    ...media,
+    preview_url: thumbnail.preview_url,
+    meta: Object.keys(meta).length === 0 ? null : meta,
+    blurhash: thumbnail.blurhash,
   };
 }
 

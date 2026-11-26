@@ -1494,18 +1494,22 @@ Request parameters:
 - `GET /api/v1/domain_blocks/preview` answers 400 to an absent `domain` or one empty once trimmed (JavaScript's white
   space, U+FEFF included). Mastodon's preview requires none and counts the accounts whose domain is the one it
   normalizes, `nil` for an absent one, so it counts the local accounts followed and following. Accepted, 2026-11-18.
-- Kopje makes every preview itself, so `thumbnail` (on `/api/v{1,2}/media` and `/api/v1/media/:id`) and
-  `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
-  Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`
-  is none. Text that is not a data URI answers 422, where Mastodon answers 500. The check runs before the file is
-  processed on an upload, after the media is found on `/api/v1/media/:id` (as Mastodon: media that is not the caller's
-  unattached media answers 404 first), and on an edit after the status is found and before `media_ids` are looked up,
-  for any entry with an `id` (Mastodon reads only entries for the post's media).
-  Mastodon may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger
-  than 1 MiB plus 16 KiB answers 413.
-- `PUT /api/v1/media/:id` judges its form (the description's length, the thumbnail) before the upload's processing
-  state, so a form it refuses answers that 422 for a failed video or audio upload too, where Mastodon's
-  `check_processing` answers 422 `Error processing thumbnail for uploaded media` first. Either way nothing is written.
+- `thumbnail` on an image (`/api/v{1,2}/media`, `/api/v1/media/:id`) and `media_attributes[][thumbnail]` on a status
+  edit, for any attachment, answer 422 `Validation failed: Thumbnail must be blank`; Mastodon accepts the edit's for a
+  video or audio attachment, which Kopje refuses for every input, a multipart file or a data URI, as an attached
+  upload's thumbnail would need an edit-time Images run and an `Update`. A video's or audio file's thumbnail on upload
+  and on `/api/v1/media/:id` is the "Media" section's. Any file part or non-empty text is a thumbnail; empty text or
+  JSON `null` is none on an image. Text that is not a data URI answers 422, where Mastodon answers 500. The check runs
+  before the file is processed on an upload, after the media is found on `/api/v1/media/:id` (as Mastodon: media that
+  is not the caller's unattached media answers 404 first), and on an edit after the status is found and before
+  `media_ids` are looked up, for any entry with an `id` (Mastodon reads only entries for the post's media).
+  Mastodon may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body holding
+  more than 1 MiB plus 16 KiB besides a `thumbnail` file of up to 16 MB answers 413, and so does a malformed one
+  larger than that.
+- `PUT /api/v1/media/:id` judges its form (the description's length, then a thumbnail against the media's type, once
+  the media is found) before the upload's processing state, so a form it refuses answers that 422 for a failed video
+  or audio upload too, where Mastodon's `check_processing` answers 422 `Error processing thumbnail for uploaded media`
+  first. Either way nothing is written or charged.
 - An upload (`/api/v{1,2}/media`, `/api/v1/media/:id`) with more than 16 text pairs as sent (the query's
   included), or with a text value other than `description` and `thumbnail` longer than 20,000 UTF-16 code units, answers
   422 `Validation failed: A form field is too long`, so a small image cannot carry megabytes of text (RES-1); Mastodon
@@ -1686,19 +1690,43 @@ Media (the `MediaAttachment` entity):
   then, and the masked entity when that read fails or takes longer than 30 s (`STORE_CALL_MS`), the owner's next GET
   showing the result; a new POST is a new upload, charged on its own. Both answer 503 `Media processing is busy. Try
   again in a moment.` while two video or audio uploads are already processing, and a failed processing is not tried
-  again by the server (Mastodon retries the job). An audio file has no artwork (`preview_url` null), where Mastodon
-  extracts the cover. While the processor is not accepting uploads, video and audio are refused as before (422
-  `Validation failed: File content type is invalid`). So are they under a `Content-Type` outside the plain form every
+  again by the server (Mastodon retries the job). An audio file has no artwork (`preview_url` null) unless it has a
+  thumbnail, where Mastodon extracts the cover. While the processor is not accepting uploads, video and audio are
+  refused as before (422 `Validation failed: File content type is invalid`). So are they under a `Content-Type` outside
+  the plain form every
   common client sends (`multipart/form-data`, then `;`-separated `name=token` or `name="quoted"` parameters with no
   backslash, and exactly one `boundary` of RFC 2046's characters): the request is read whole, as an image's, with the
   image path's limits and errors (a file over 16 MB is refused for its size before its type).
 - A video or audio upload whose form has several errors may report another of them than Mastodon: a `thumbnail` sent
-  before the `file` part is refused (422 `Validation failed: Thumbnail must be blank`) before any part after the file is
-  read, so a description too long after the file is not the error reported, where Mastodon reports the description
-  first. A `thumbnail` file after the file past 1 MiB (with the text parts after the file, `API_BODY_LIMIT`) answers 413
-  `Request body is too large` before the description is judged. A `thumbnail` after the file, a malformed query and the
-  other orders answer as for an image; of several `thumbnail` parts the last counts, so a thumbnail file followed by an
-  empty `thumbnail` is no thumbnail, as on the image path and in Mastodon.
+  before the `file` part is judged once the file is known to be video or audio, before any part after the file is read,
+  so a description too long after the file is not the error reported, where Mastodon reports the description first. A
+  `thumbnail` file after the file past 16 MB answers 422 `Validation failed: Thumbnail file size must be less than 16
+  MB` before the description is judged. A `thumbnail` after the file within its size, a malformed query and the other
+  orders answer as for an image. A video or audio upload takes one `thumbnail` part that is sent (a file, or text that
+  is not empty): a second answers 422 `Validation failed: Thumbnail was sent more than once`, after the file a file part
+  at its head and a text part once its first byte is read, where Rails reads the last. An empty text `thumbnail` is
+  absent and is not counted, so the part sent beside it is the thumbnail even when the empty text comes last (a file is
+  taken; text answers `Thumbnail content type is invalid`), where Rails reads that last part as none. Before an image
+  `file`, the image path's answers hold: the last `thumbnail` counts, and one sent is `Thumbnail must be blank`. Parts
+  before the `file` part are read up to 16 MB plus 64 KiB, or 17,956,864 bytes once a `thumbnail` file is among them,
+  and past it answer 422 `Validation failed: File file size must be less than 16 MB`.
+- A video's or audio file's custom `thumbnail` (on upload and on `PUT`/`PATCH /api/v1/media/:id`, as Mastodon takes it)
+  is made by Images as an image upload is: JPEG, PNG, GIF, WebP or AVIF by its signature, served as PNG for a PNG and
+  WebP for the rest, its preview at most 640 pixels an edge (Mastodon's is 230,400 pixels), at most 16,777,216 pixels,
+  and 16,777,216 bytes accepted (Mastodon refuses that size, its limit being `less_than` 16 MB) with one byte more
+  refused. It has no `meta.colors`, as no Kopje media has; Mastodon's web audio player then uses its default colours.
+  A text `thumbnail` that is not empty (a data URI, which Mastodon accepts, or anything else) answers 422 `Validation
+  failed: Thumbnail content type is invalid`. `PUT /api/v1/media/:id` with a thumbnail counts one attempt toward the 30
+  uploads per 30 minutes, as an avatar or header does, where Mastodon throttles `POST` only; a `POST` with one counts
+  one, as without. While the upload processes, its owner sees the thumbnail's `preview_url`, `meta.small` and
+  `blurhash` (on v2's 202 and the GET's 206), where Mastodon masks only `url`; without a thumbnail the mask is the
+  section above's. JSON `null`, or a `thumbnail` key sent without a value in the query or a form body, removes the
+  thumbnail, as Mastodon clears it; then `meta.small` and `blurhash` are the upload's own (its still's, or absent and
+  null for audio and a video without one), where Mastodon keeps the removed thumbnail's. A v2 audio upload with
+  embedded cover art keeps its custom thumbnail once processed, where Mastodon's worker replaces it with the cover. On
+  Cloudflare Free and Pro, a `POST` whose body passes the zone's request limit (100 MiB, 104,857,600 bytes) is refused
+  by Cloudflare (413, not a Mastodon JSON body) before Kopje reads it, so a file near the 90 MiB limit leaves about
+  10 MiB for its thumbnail and the form; a larger thumbnail goes by `PUT`.
 - A local video's or audio file's `Document` in its Note writes `duration` to the millisecond (`PT29.964S`), where
   Mastodon writes its stored seconds as ffprobe gives them (to the microsecond); the API's `meta` keeps the stored
   value.

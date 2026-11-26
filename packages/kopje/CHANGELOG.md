@@ -47,6 +47,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `TRANSFORMS_PER_POSTER` (2) Images transformations. The detailed health report (`/admin/health`) gains a
   `mediaProcessor` check (`disabled`, `provisioned`, `ready` or `degraded`), read from the Store without starting a
   container. `kopje-admin media-processor probe` is refused in maintenance and while the Store is read-only.
+- Video and audio uploads take a custom `thumbnail` image, on upload and on `PUT /api/v1/media/:id`; it is the
+  attachment's preview, is sent to followers as the `Document`'s `icon`, and is backed up and rebuilt with the upload;
+  a replaced one's original is kept 31 days so a restore brings it back.
 - Local media URLs serve the processor's video (`full.mp4`) and audio (`full.mp3`) as cached remote media is served:
   HEAD, one byte range with 206, an unsatisfiable one with 416, several with the whole file, and 304 to a matching
   `If-None-Match`, so players can seek. Image URLs answer as before.

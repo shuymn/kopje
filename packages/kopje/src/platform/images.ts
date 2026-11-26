@@ -28,8 +28,9 @@ export type ImageInfo = { format: string; width?: number; height?: number };
 // `still`: the output keeps one frame of an animated input (Images' anim: false); otherwise a WebP output keeps every
 // frame. A PNG output always keeps one (imagesCodec). `limit`: the output's bytes, read up to it and refused past it
 // before anything inspects them (a card image, CARD_IMAGE_OUTPUT_LIMIT); without it the output is read whole.
-// `guard`: runs each binding call (output() and the output's info()) and each read of the output; one that gives up
-// rejects, and a read given up cancels the output stream (readBodyPrefix), so nothing is left reading it. Without it
+// `guard`: runs each binding call (output() and the output's info()) and each read of the output, started inside it;
+// one that gives up rejects, and a read given up cancels the output stream (readBodyPrefix), so nothing is left reading
+// it. Without it
 // the calls run as they are. `format` 'rgba': raw pixels, read only by encodeRgba.
 export type CallGuard = <T>(work: () => Promise<T>) => Promise<T>;
 export type EncodeOptions = {
@@ -92,20 +93,42 @@ function stream(bytes: Uint8Array, input: CodecInput): ReadableStream<Uint8Array
 const unguarded: CallGuard = (work) => work();
 
 // The output's bytes: whole, or within `limit` (EncodeOptions), as a view over the read buffer, each read under
-// `guard`.
+// `guard`; a read given up cancels the output.
 async function outputBytes(
   image: ReadableStream<Uint8Array>,
   limit: number | undefined,
   guard: CallGuard,
 ): Promise<Uint8Array> {
-  if (limit === undefined) {
+  if (limit === undefined && guard === unguarded) {
     return new Uint8Array(await new Response(image).arrayBuffer());
   }
-  const prefix = await readBodyPrefix(image, limit, (read) => guard(() => read), { copy: false });
+  if (limit === undefined) {
+    return wholeOutput(image, guard);
+  }
+  const prefix = await readBodyPrefix(image, limit, undefined, { copy: false, start: guard });
   if (prefix.limitReached) {
     throw new ImageOutputError("output is past its byte limit");
   }
   return prefix.bytes;
+}
+
+// The whole output, each read started under `guard` (an upload's thumbnail, made by a deadline: mastodon/media.ts).
+async function wholeOutput(image: ReadableStream<Uint8Array>, guard: CallGuard): Promise<Uint8Array> {
+  const reader = image.getReader();
+  const chunks: Uint8Array[] = [];
+  try {
+    for (;;) {
+      const { done, value } = await guard(() => reader.read());
+      if (done) {
+        break;
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    reader.cancel().catch(() => {});
+    throw error;
+  }
+  return new Uint8Array(await new Blob(chunks).arrayBuffer());
 }
 
 function codecError(error: unknown): ImageCodecError {
@@ -243,8 +266,12 @@ export type ProcessResult =
 
 // `blurhash`: the preview's blurhash is made too, its RGBA output and every read of it given up at `end` (by `now`) or
 // RGBA_CALL_MS after it starts, whichever is first, and not asked for when less than RGBA_MIN_CALL_MS is left. Without
-// it (a custom emoji) nothing more is asked.
-export type ProcessOptions = { blurhash?: { end: number; now: () => number } };
+// it (a custom emoji) nothing more is asked. Its `guard(until)`: the RGBA output's guard giving up at `until` on the
+// caller's clock (an upload's thumbnail, whose waits are the route's); without it, inTime's. `guard`: runs the
+// inspection's info() and every call and read of both encodes (EncodeOptions guard), so an image made by a deadline
+// gives up each Images call at it (an upload's thumbnail, mastodon/media.ts); without it they run as they are.
+type BlurhashOptions = { end: number; now: () => number; guard?: (until: number) => CallGuard };
+export type ProcessOptions = { blurhash?: BlurhashOptions; guard?: CallGuard };
 
 export function fit(size: Size, edge: number): Size {
   const scale = Math.min(1, edge / Math.max(size.width, size.height));
@@ -347,14 +374,15 @@ export async function encodeRgba(
   };
 }
 
-// The free info() of `bytes`, its codec errors classified as processImage classifies them: a preflight before any
-// transformation is charged (the custom emoji checks, platform/emoji-image.ts).
+// The free info() of `bytes`, run under `guard`, its codec errors classified as processImage classifies them: a
+// preflight before any transformation is charged (the custom emoji checks, platform/emoji-image.ts).
 export async function inspectImage(
   codec: ImageCodec,
   bytes: Uint8Array,
+  guard: CallGuard = unguarded,
 ): Promise<{ ok: true; info: ImageInfo } | { ok: false; reason: ImageFailure; detail?: string }> {
   try {
-    return { ok: true, info: await codec.info(bytes) };
+    return { ok: true, info: await guard(() => codec.info(bytes)) };
   } catch (error) {
     return failure(error);
   }
@@ -374,7 +402,7 @@ async function previewBlurhash(
   input: Uint8Array,
   transform: Partial<Size>,
   small: Size,
-  { end, now }: { end: number; now: () => number },
+  { end, now, guard: guardUntil }: BlurhashOptions,
 ): Promise<{ blurhash: string | null; stop: BlurhashStop }> {
   if (now() >= end - RGBA_MIN_CALL_MS) {
     return { blurhash: null, stop: "deadline" };
@@ -382,7 +410,7 @@ async function previewBlurhash(
   const until = Math.min(end, now() + RGBA_CALL_MS);
   try {
     // An answer settling at or past `until` is not used either (inTime), even before the guard's timer fires.
-    const guard: CallGuard = (work) => inTime(work, until, now);
+    const guard: CallGuard = guardUntil?.(until) ?? ((work) => inTime(work, until, now));
     const rgba = await encodeRgba(codec, input, transform, small, PREVIEW_RGBA_LIMIT, guard);
     return { blurhash: imageBlurhash(rgba), stop: null };
   } catch (error) {
@@ -405,7 +433,9 @@ export async function processImage(
   if (type === null) {
     return { ok: false, reason: "unsupported" };
   }
-  const inspected = await inspectImage(codec, bytes);
+  // The encodes' options carry a guard only when one is given.
+  const guard = options.guard === undefined ? {} : { guard: options.guard };
+  const inspected = await inspectImage(codec, bytes, options.guard);
   if (!inspected.ok) {
     return inspected;
   }
@@ -423,11 +453,11 @@ export async function processImage(
     // Images applies the input's Exif orientation before it resizes, so the box is a FULL_EDGE square, which bounds the
     // long edge whichever way the image turns (scale-down keeps the aspect); `full` has the size Images served.
     const resize = Math.max(original.width, original.height) > FULL_EDGE ? { width: FULL_EDGE, height: FULL_EDGE } : {};
-    const full = await encodeChecked(codec, bytes, { ...resize, format });
+    const full = await encodeChecked(codec, bytes, { ...resize, format, ...guard });
     // The preview is made from the re-encoded image, so it starts without metadata and in the served orientation. It
     // is a still, so an animated image's preview serves as its account's avatar_static or header_static (media.ts).
     const preview = fit(full, SMALL_EDGE);
-    const small = await encodeChecked(codec, full.bytes, { ...preview, format, still: true });
+    const small = await encodeChecked(codec, full.bytes, { ...preview, format, still: true, ...guard });
     const hashed =
       options.blurhash === undefined
         ? { blurhash: null, stop: null }

@@ -42,9 +42,13 @@ export function storeMaintenanceError(reason: MaintenanceReason): Error {
 
 // Thrown on the Worker side: the Store cannot serve this call right now. The gate maps it to maintenance
 // behavior (inbox: spool, everything else: 503).
+// `cause`: the runtime's error a `transient` one was made from.
 export class StoreUnavailableError extends Error {
-  constructor(readonly reason: MaintenanceReason) {
-    super(`store unavailable: ${reason}`);
+  constructor(
+    readonly reason: MaintenanceReason,
+    options?: ErrorOptions,
+  ) {
+    super(`store unavailable: ${reason}`, options);
     this.name = "StoreUnavailableError";
   }
 }
@@ -64,7 +68,7 @@ export function toStoreUnavailable(error: unknown): StoreUnavailableError | unde
   // Overloaded, reset, and other retryable DO errors are treated like maintenance for this request.
   const flags = error as { retryable?: boolean; overloaded?: boolean };
   if (flags.retryable === true || flags.overloaded === true) {
-    return new StoreUnavailableError("transient");
+    return new StoreUnavailableError("transient", { cause: error });
   }
   return undefined;
 }

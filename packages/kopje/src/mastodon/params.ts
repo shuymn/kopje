@@ -24,7 +24,8 @@ import { rubyNumberToI, rubyToI } from "../platform/ruby-to-i";
 //
 // Bounds (RES-1), all in force before or while parsing:
 // - the body: `limit` bytes (API_BODY_LIMIT by default); a multipart body on a route with a file rule may also carry
-//   each declared file, so it may be `limit + names.length * (maxBytes + FILE_PART_SLACK)` bytes;
+//   each declared file, so it may be `limit + names.length * (maxBytes + FILE_PART_SLACK)` bytes, and, with the rule's
+//   `outside`, at most that many bytes besides the declared files it reads (FileRule);
 // - a form body's text: the UTF-8 bytes of every text entry's name and value and of the query, each as sent (also
 //   one a later one replaces), at most `limit`;
 // - the query and a urlencoded body: Rack's limits (4 MiB, 4,096 fields, a nesting 32 deep: 400); a multipart body:
@@ -46,8 +47,11 @@ export const MULTIPART_PARTS = 4096;
 export const MULTIPART_FILES = 128;
 export const PARAM_PATH_BUDGET = 2 * API_BODY_LIMIT;
 
-// The file parameters a route reads, and the most bytes one of them may have.
-export type FileRule = { names: readonly string[]; maxBytes: number };
+// The file parameters a route reads, and the most bytes one of them may have. `outside`: the most bytes of a multipart
+// body other than the body of the declared file it reads (each name's last part, when a file), so the room left for
+// a file holds nothing else (PUT /api/v1/media/:id's thumbnail, mastodon/media.ts): past it a body is refused (413),
+// before parsing too when its parse fails, which answers 400 within it.
+export type FileRule = { names: readonly string[]; maxBytes: number; outside?: number };
 // bodyOnly: the query string is not read at all, for parameters that carry secrets, which must not come from URLs
 // (the platform's invocation logs record them, as VIS-26 says of tokens).
 export type ReadOptions = { limit?: number; files?: FileRule; bodyOnly?: true };
@@ -472,10 +476,16 @@ export async function readParams(request: Request, options: ReadOptions = {}): P
   const limit = options.limit ?? API_BODY_LIMIT;
   let parsed: Params;
   let formText: number | null;
+  const outside = options.files?.outside ?? Infinity;
   try {
     ({ params: parsed, formText } = await parseCounted(contentType, body, options.files));
   } catch (error) {
-    return { ok: false, status: refusedStatus(error) ?? 400 };
+    return { ok: false, status: body.byteLength > outside ? 413 : (refusedStatus(error) ?? 400) };
+  }
+  // The map is read directly: the parameter conformance check counts accessor calls as the handler's reads.
+  const files = (options.files?.names ?? []).reduce((sum, name) => sum + (parsed.files.get(name)?.size ?? 0), 0);
+  if (body.byteLength - files > outside) {
+    return { ok: false, status: 413 };
   }
   const params = parsed.withQuery(query.params, options.files?.names ?? []);
   // A JSON body's names are generated, bounded by the path budget, and its values by the body; a form body's text,

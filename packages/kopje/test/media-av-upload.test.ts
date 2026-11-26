@@ -21,6 +21,7 @@ import {
 import { incomingOrphans } from "../src/jobs/media-jobs";
 import { MEDIA_BODY_LIMIT, sweepMedia } from "../src/mastodon/media";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
+import { IMAGE_SIZE_LIMIT } from "../src/platform/images";
 import { fileKey, incomingKey, originalKey, restoreMarkerKey } from "../src/platform/media-files";
 import { readRestore } from "../src/platform/restore-marker";
 import type { StoreStub } from "../src/platform/store-client";
@@ -1272,6 +1273,8 @@ async function leftNothing(w: RouteWorld): Promise<void> {
 
 const PNG_PART = { name: "file", data: imageBytes(), filename: "a.png", type: "image/png" };
 const THUMB_FILE = { name: "thumbnail", data: imageBytes(), filename: "t.png", type: "image/png" };
+// A thumbnail file part whose bytes are no image type by their signature.
+const NOT_IMAGE_THUMB = { name: "thumbnail", data: mp4(64), filename: "t.png", type: "image/png" };
 
 function imageBytes(): Uint8Array {
   // A PNG's signature and IHDR start: sniffImageType reads it as image/png.
@@ -1304,17 +1307,20 @@ describe("the parts of a video or audio upload (P7, C2-M6)", () => {
     expect(w.gate.calls).toContain("startTransforms");
   });
 
+  // #1828 PR6: a video or audio file takes an image thumbnail (test/media-av-thumbnails.test.ts); one that is no image
+  // is refused, before the file before any slot, after it as a staging exit.
   it.each([
-    ["before", (file: ReturnType<typeof videoPart>) => [THUMB_FILE, file]],
-    ["after", (file: ReturnType<typeof videoPart>) => [file, THUMB_FILE]],
-  ])("refuses a thumbnail part %s the file: 422, no input, nothing charged", async (_, parts) => {
+    ["before", (file: ReturnType<typeof videoPart>) => [NOT_IMAGE_THUMB, file]],
+    ["after", (file: ReturnType<typeof videoPart>) => [file, NOT_IMAGE_THUMB]],
+  ])("refuses a thumbnail part that is no image %s the file: 422, no input, nothing charged", async (_, parts) => {
     const w = await routeWorld();
     const response = await postMedia(w, multipartBody(parts(videoPart())));
     expect(await answerOf(response)).toEqual({
       status: 422,
-      body: { error: "Validation failed: Thumbnail must be blank" },
+      body: { error: "Validation failed: Thumbnail content type is invalid" },
     });
     await leftNothing(w);
+    expect(w.codec.calls).toBe(0);
   });
 
   it("reads the description and focus after the file", async () => {
@@ -1341,7 +1347,7 @@ describe("the parts of a video or audio upload (P7, C2-M6)", () => {
     expect(w.gate.calls).toContain("releaseStaging");
   });
   it("decides a text file part or a thumbnail file before the video without taking a slot", async () => {
-    for (const first of [{ name: "file", data: "text" }, THUMB_FILE]) {
+    for (const first of [{ name: "file", data: "text" }, NOT_IMAGE_THUMB]) {
       const w = await routeWorld();
       const response = await postMedia(w, multipartBody([first, videoPart()]));
       expect(response.status).toBe(422);
@@ -1398,12 +1404,12 @@ describe("the parts of a video or audio upload (P7, C2-M6)", () => {
     expect(w.gate.calls).not.toContain("takeAvSlot");
   });
 
-  it("refuses a text thumbnail before the file before any slot", async () => {
+  it("refuses a text thumbnail before the file before any slot (D-3)", async () => {
     const w = await routeWorld();
     const response = await postMedia(w, multipartBody([{ name: "thumbnail", data: "data:x" }, videoPart()]));
     expect(await answerOf(response)).toEqual({
       status: 422,
-      body: { error: "Validation failed: Thumbnail must be blank" },
+      body: { error: "Validation failed: Thumbnail content type is invalid" },
     });
     expect(w.gate.calls).not.toContain("takeAvSlot");
   });
@@ -1420,7 +1426,7 @@ describe("the parts of a video or audio upload (P7, C2-M6)", () => {
       w,
       multipartBody([
         videoPart(),
-        THUMB_FILE,
+        NOT_IMAGE_THUMB,
         { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) },
       ]),
     );
@@ -1434,14 +1440,14 @@ describe("the parts of a video or audio upload (P7, C2-M6)", () => {
     const response = await postMedia(
       w,
       multipartBody([
-        THUMB_FILE,
+        NOT_IMAGE_THUMB,
         videoPart(),
         { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) },
       ]),
     );
     expect(await answerOf(response)).toEqual({
       status: 422,
-      body: { error: "Validation failed: Thumbnail must be blank" },
+      body: { error: "Validation failed: Thumbnail content type is invalid" },
     });
     expect(w.gate.calls).not.toContain("takeAvSlot");
   });
@@ -2265,24 +2271,6 @@ describe("the route's answers and its cleanup (code review r2)", () => {
     await leftNothing(w);
   });
 
-  // RES-1's text bound comes first: a thumbnail past API_BODY_LIMIT answers 413 before the description is judged
-  // (docs/mastodon-deviations.md).
-  // Rails' last part wins (code review r3 M5): a trailing empty `thumbnail` means none, as on the image path.
-  it("M5: a thumbnail file then an empty thumbnail text queues, as the image path reads the last", async () => {
-    const w = await routeWorld();
-    const response = await postMedia(w, multipartBody([videoPart(), THUMB_FILE, { name: "thumbnail", data: "" }]));
-    expect(response.status).toBe(202);
-  });
-
-  it("M5: an empty thumbnail text then a thumbnail file answers 422", async () => {
-    const w = await routeWorld();
-    const response = await postMedia(w, multipartBody([videoPart(), { name: "thumbnail", data: "" }, THUMB_FILE]));
-    expect(await answerOf(response)).toEqual({
-      status: 422,
-      body: { error: "Validation failed: Thumbnail must be blank" },
-    });
-  });
-
   // S2, then the delete its `released` authorizes, then the abandonment (code review r3 M3).
   it("M3: a staging refusal's authorized delete starts while abandonMedia is held", async () => {
     const { bucket, counts } = hookedBucket({});
@@ -2361,16 +2349,48 @@ describe("the route's answers and its cleanup (code review r2)", () => {
     expect(w.gate.calls).toContain("abandonMedia");
   });
 
-  it("M6: a thumbnail past API_BODY_LIMIT answers 413 before an invalid description", async () => {
+  // RES-1's bound comes first (docs/mastodon-deviations.md): a thumbnail file is kept within IMAGE_SIZE_LIMIT, past it
+  // refused before the description after it is judged (#1828 PR6: its body no longer weighs against API_BODY_LIMIT).
+  it("M6: a thumbnail past IMAGE_SIZE_LIMIT answers 422 before an invalid description", async () => {
     const w = await routeWorld();
     const response = await postMedia(
       w,
       multipartBody([
         videoPart(),
-        { name: "thumbnail", data: new Uint8Array(1024 * 1024 + 1), filename: "t.png", type: "image/png" },
+        { name: "thumbnail", data: new Uint8Array(IMAGE_SIZE_LIMIT + 1), filename: "t.png", type: "image/png" },
         { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) },
       ]),
     );
-    expect(await answerOf(response)).toEqual({ status: 413, body: { error: "Request body is too large" } });
+    expect(await answerOf(response)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Thumbnail file size must be less than 16 MB" },
+    });
+    await leftNothing(w);
+  });
+});
+
+// A video upload without a thumbnail keeps main's order (G1): the form's refusals come before the file's last part is
+// sent, and empty `thumbnail` fields are absent, counted by no rule (PR6-2 code review r1 M2, LOW 1).
+describe("an upload without a thumbnail answers as before #1828 PR6 (G1)", () => {
+  it("answers the form's refusal before sending the file's last part", async () => {
+    const { bucket, counts } = hookedBucket({
+      onPart: () => {
+        throw new Error("uploadPart failed");
+      },
+    });
+    const w = await routeWorld({ bucket });
+    const body = multipartBody([
+      videoPart(),
+      { name: "description", data: "x".repeat(MAX_MEDIA_DESCRIPTION_LENGTH + 1) },
+    ]);
+    expect(await answerOf(await postMedia(w, body))).toEqual({ status: 422, body: DESCRIPTION_TOO_LONG });
+    expect(counts.parts).toBe(0);
+  });
+
+  it.each(["prefix", "suffix"])("takes two empty thumbnail fields as none (%s)", async (where) => {
+    const w = await routeWorld();
+    const empty = { name: "thumbnail", data: "" };
+    const parts = where === "prefix" ? [empty, empty, videoPart()] : [videoPart(), empty, empty];
+    expect((await postMedia(w, multipartBody(parts))).status).toBe(202);
   });
 });

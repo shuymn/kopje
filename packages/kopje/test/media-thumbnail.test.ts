@@ -21,8 +21,9 @@ import {
 } from "./media-helpers";
 import { community, getJson, outbound, post } from "./status-helpers";
 
-// `thumbnail` on media uploads, media updates and status edits: Kopje media are images, so any thumbnail is refused
-// with MediaAttachment's validation error (Mastodon v4.5.11 app/models/media_attachment.rb:207), before any work.
+// `thumbnail` on image uploads, image updates and status edits: refused with MediaAttachment's validation error
+// (Mastodon v4.7.5 app/models/media_attachment.rb:195), before any work. A video's or audio file's thumbnail (#1828
+// PR6): on PUT and PATCH, test/media-thumbnail-put.test.ts; on upload, test/media-av-thumbnails.test.ts.
 
 const REFUSED = { error: "Validation failed: Thumbnail must be blank" };
 const DATA_URI = `data:image/png;base64,${PNG_PLAIN}`;
@@ -264,13 +265,23 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a thumbnail"
     }
   });
 
-  it("bounds the body at the text limit plus one part header allowance (RES-1)", async () => {
-    const { update } = await described();
-    const small = new File([new Uint8Array(4096)], "t.bin");
-    expect((await update({ body: multipartForm([["thumbnail", small]]) })).status).toBe(422);
-    const large = new File([new Uint8Array(API_BODY_LIMIT + FILE_PART_SLACK)], "t.bin");
-    const tooLarge = await update({ body: multipartForm([["thumbnail", large]]) });
+  // #1828 PR6: a thumbnail file is read up to IMAGE_SIZE_LIMIT (an image's is then refused as must be blank); what
+  // the body holds besides it keeps the text limit plus one part header allowance (RES-1).
+  it("reads a thumbnail file up to IMAGE_SIZE_LIMIT and bounds the rest of the body (RES-1)", async () => {
+    const { h, update } = await described();
+    const calls = h.codec.calls;
+    const large = new File([new Uint8Array(IMAGE_SIZE_LIMIT + 1)], "t.bin");
+    const blank = await update({ body: multipartForm([["thumbnail", large]]) });
+    expect([blank.status, await blank.json()]).toEqual([422, REFUSED]);
+    const other = new File([new Uint8Array(API_BODY_LIMIT + FILE_PART_SLACK)], "t.bin");
+    const tooLarge = await update({
+      body: multipartForm([
+        ["thumbnail", png()],
+        ["other", other],
+      ]),
+    });
     expect([tooLarge.status, await tooLarge.json()]).toEqual([413, { error: "Request body is too large" }]);
+    expect(h.codec.calls).toBe(calls);
   });
 
   // MediaController: authentication, then set_media_attachment (404), then update!'s validation of the thumbnail.

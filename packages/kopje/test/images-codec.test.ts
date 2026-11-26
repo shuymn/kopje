@@ -5,6 +5,7 @@ import { imageBlurhash } from "../src/platform/blurhash";
 import { DeadlinePassed, within } from "../src/platform/deadline";
 import { isAnimated } from "../src/platform/image-bytes";
 import {
+  type CallGuard,
   type EncodeOptions,
   ImageCodecError,
   imagesCodec,
@@ -346,5 +347,40 @@ describe("stillEncodes's body read (r2 M6)", () => {
     // The guard's give-up passes on (the probe's no-verdict `timeout`), at the deadline rather than never.
     const settled = await Promise.race([answer.catch((error: unknown) => error), late]);
     expect(settled).toBeInstanceOf(DeadlinePassed);
+  });
+});
+
+// Each read of an output starts inside the guard, so one the guard refuses is never started (PR6-2 code review r1 M6):
+// the whole output (an upload's thumbnail) and one read within a limit (the RGBA output).
+describe("imagesCodec's guarded output reads (r1 M6)", () => {
+  it.each([
+    ["whole", { format: "image/png" }],
+    ["within a limit", { format: "rgba", limit: 10 }],
+  ] as const)("starts no read once the guard refuses (%s)", async (_, options) => {
+    let reads = 0;
+    let approved = 0;
+    const guard: CallGuard = async (work) => {
+      if (approved === 2) {
+        throw new DeadlinePassed();
+      }
+      const result = await work();
+      approved++;
+      return result;
+    };
+    const image = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          controller.enqueue(Uint8Array.of(++reads));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const binding = {
+      input: () => ({ output: () => Promise.resolve({ image: () => image }) }),
+    } as unknown as ImagesBinding;
+    await expect(imagesCodec(binding).encode(Uint8Array.of(0), { ...options, guard })).rejects.toBeInstanceOf(
+      DeadlinePassed,
+    );
+    expect(reads).toBe(1);
   });
 });

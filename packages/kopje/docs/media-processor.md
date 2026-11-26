@@ -184,6 +184,15 @@ minutes; the worst job, 8 minutes, is 5,760 GiB-s, so `MEDIA_UPLOAD_MONTHLY_JOBS
 memory. Set the budget from that bound and the allowance left for other containers. One account can spend the whole
 month's budget ([threat model](threat-model.md), "Accepted risks").
 
+Thumbnails. A video or audio upload may carry a custom `thumbnail` image, on upload or later by `PUT /api/v1/media/:id`
+([mastodon-deviations.md](mastodon-deviations.md), "Media"). It runs no container: Images makes it as an image upload,
+and it is charged three transformations to the instance's and the account's Images budgets, as an image upload is. On
+upload it is made after the file is staged and before the queue, within the staging's own time, and takes no attempt of
+its own (the upload's one counts); on `PUT` it counts one attempt. The video's own still is made beside it as without
+one, under its own admission, and shows again once the thumbnail is removed. A replaced or removed thumbnail's served
+files are deleted by the first successful release batch that lists it; its original is kept 31 days (the point-in-time
+window plus a day) so a restore can bring it back.
+
 ## Capacity and cleanup
 
 At most two uploads are processed at once (`MAX_AV_INFLIGHT`). An upload's container runs in its own Durable Object,
@@ -278,6 +287,10 @@ restore); validation then shows the poster, keeps the video cached and playable,
 once claims resume with budget left and stills on. This assumes a delete outstanding at the restore has landed or failed
 before validation reads the restored still, as the 20 minutes the cache waits after a restore before any maintenance
 provide in practice; one landing later leaves the still answering 404, with no reset.
+
+A restore to a bookmark at which a since-replaced custom thumbnail was current brings back its row and its original,
+which is kept 31 days after the replacement; its served files were deleted, so its preview answers 404 until
+`kopje-admin media-rebuild` ([backup.md](backup.md), restore step 6) makes them again from the original.
 
 ## Turning it off
 

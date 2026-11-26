@@ -41,7 +41,7 @@ export async function readBoundedBody(message: Request | Response, limit: number
 // tells an exact-cap body (limitReached false) from a longer one, which is then cancelled. `observed` (at most
 // limit + 1) is what was read, after workerd's own Content-Encoding decoding; Content-Length is never consulted. Each
 // read goes through `guard` (a deadline or abort race); when it rejects, the stream is cancelled and the rejection
-// passes on. Peak memory: the buffer, the returned copy of at most `limit` bytes and, on the copying path, the
+// passes on. `start`, in place of `guard`: each read is started inside it, so a read it refuses is never started. Peak memory: the buffer, the returned copy of at most `limit` bytes and, on the copying path, the
 // incoming chunk. `copy: false` returns a view over the buffer instead of the copy (a card image's 8 MiB body,
 // federation/card-images.ts): the buffer is then the caller's, and stays alive while the view does.
 export type BodyPrefix = { bytes: Uint8Array; limitReached: boolean; observed: number };
@@ -57,8 +57,11 @@ export async function readBodyPrefix(
   body: ReadableStream<Uint8Array> | null,
   limit: number,
   guard: <T>(read: Promise<T>) => Promise<T> = (read) => read,
-  options: { copy?: boolean } = {},
+  options: { copy?: boolean; start?: <T>(read: () => Promise<T>) => Promise<T> } = {},
 ): Promise<BodyPrefix> {
+  const { start } = options;
+  const next = <T>(read: () => Promise<T>): Promise<T> =>
+    start === undefined ? guard(observed(read())) : start(() => observed(read()));
   if (body === null) {
     return { bytes: new Uint8Array(0), limitReached: false, observed: 0 };
   }
@@ -75,7 +78,8 @@ export async function readBodyPrefix(
   try {
     if (byob !== null) {
       while (offset < size) {
-        const { done, value } = await guard(observed(byob.read(new Uint8Array(buffer, offset, size - offset))));
+        const into = new Uint8Array(buffer, offset, size - offset);
+        const { done, value } = await next(() => byob.read(into));
         // The view's buffer is detached by every read, the EOF read included: take it back each time.
         if (value === undefined) {
           // Only a stream cancelled elsewhere ends without the view; its bytes went with the buffer.
@@ -91,7 +95,7 @@ export async function readBodyPrefix(
       const dest = new Uint8Array(buffer);
       const chunks = reader as ReadableStreamDefaultReader<Uint8Array>;
       while (offset < size) {
-        const { done, value } = await guard(observed(chunks.read()));
+        const { done, value } = await next(() => chunks.read());
         if (done) {
           break;
         }

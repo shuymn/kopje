@@ -104,7 +104,7 @@ against their own instance. TLS is assumed between all parties.
 | Interaction lists                                                           | R2, R4, R7           | none: an anonymous viewer (VIS-4)                                                                           | main: `src/domain/web-pages/status.ts`                                                                                                                                                                                                                                                                       |
 | `/actor/outbox`                                                             | R1, R2               | none (public)                                                                                               | main: `src/federation/federation.ts`                                                                                                                                                                                                                                                                         |
 | `/authorize_interaction`                                                    | R2, R4, R7           | none for GET; session (AUTH-8), Origin and form token (WEB-4) for POST                                      | main: `src/app/interaction.tsx`, `src/domain/interaction.ts`                                                                                                                                                                                                                                                 |
-| Media upload and serving, Images transformation                             | R2–R4                | bearer token; capability URL for reads                                                                      | main: `src/mastodon/media.ts`                                                                                                                                                                                                                                                                                |
+| Media upload and serving, Images transformation                             | R2–R4                | bearer token; capability URL for reads                                                                      | main: `src/mastodon/media.ts`, `src/mastodon/media-av.ts`, `src/domain/media-processing.ts` (`updateOwnerMedia`, `queueNormalize`)                                                                                                                                                                           |
 | Cached remote media `/media/r/:token/:file`                                 | R2–R4                | none; capability URL (MEDIA-7)                                                                              | main: `src/web/media.ts`, `src/platform/media-files.ts`                                                                                                                                                                                                                                                      |
 | Web Push registration                                                       | R3                   | bearer token with `push`                                                                                    | main: `src/mastodon/push.ts`, `src/domain/push.ts`                                                                                                                                                                                                                                                           |
 | Streaming API `/api/v1/streaming` (WebSocket)                               | R2–R4                | bearer token or subprotocol (VIS-26)                                                                        | main: `src/mastodon/streaming.ts`, `src/stream-hub.ts`, `src/domain/streaming.ts`                                                                                                                                                                                                                            |
@@ -3166,6 +3166,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   never read, updated, deleted, attached, scheduled or made a profile image through the API: `liveMediaSql` excludes
   every `custom_emojis` row (`notEmojiSql` in `src/domain/media.ts`); `test/media-reconcile.test.ts` ("keeps both emoji
   and their files").
+  _Enforced (main)_ for a video's or audio file's custom thumbnail (#1828 PR6): it is an image upload of the owner's
+  (its own row, id and file token), and once linked (`thumbnail_of` set, current or retired) it is never the owner's
+  media: `liveMediaSql` in `src/domain/media.ts` excludes it, so GET, PUT, PATCH and DELETE by its id answer 404,
+  `media_ids` naming it are not found, and it is never an avatar or header. Only the owner links one, to their own
+  local video or audio upload processing or finished, through one keyed predicate (`thumbnailLinkSql`: the
+  thumbnail's id and file token as its reservation made them, the same account, an unattached, unscheduled, completed
+  image with a content type), on `PUT`/`PATCH /api/v1/media/:id` (`updateOwnerMedia`) and in S3 (`queueNormalize`),
+  each in one Store transaction; `test/media-thumbnails.test.ts` ("PUT's link (updateOwnerMedia's thumbnail, T3)",
+  "thumbnail rows are never the owner's media (T2, MEDIA-1)"), `test/media-thumbnail-put.test.ts`,
+  `test/media-av-thumbnails.test.ts`.
 - **MEDIA-2: R2 keys are server-made.** Keys derive from server-generated ids and stored records; no filename, path
   segment or encoded separator from a request selects or overwrites a key. Originals are not publicly readable.
   _Enforced (main):_ `src/platform/media-files.ts` (originals at `originals/<id>`, served
@@ -3379,6 +3389,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   abandons the reservation (`abandonEmoji`, only that id and token), whose keys go only when the Store does not keep
   it. The sweep, the purge and `profileReleaseSql` exclude emoji images, and the foreign key of `custom_emojis`
   refuses deleting one; `test/local-emojis.test.ts` ("emoji completion").
+  A custom thumbnail of a video or audio upload (#1828 PR6) builds its keys as an image upload's, from its own
+  reservation (`originals/<id>`, `files/<token>/{full,small}`); a thumbnail made during a POST is reserved for that
+  staging upload only (`reserveMedia`'s `thumbnailFor`, its restore marker read on that branch). `updateOwnerMedia`,
+  which retires a thumbnail, is a media-delete operation, refused while the rebuild's lease is live. A current
+  thumbnail is doomed with its parent's row (the trigger `media_attachments_thumbnail_delete`, which also clears its
+  `url`, so the rebuild never remakes it) and taken by a later sweep batch. A replaced or removed one is retired: its
+  served files are deleted by the sweep's release step from its stored id and token (`releasedThumbnails`,
+  `forgetThumbnailFiles` in `src/domain/media.ts`, never `originals/`), and its original is kept `THUMBNAIL_KEEP_MS`
+  (the 30-day PITR window plus a day) from its retirement, longer while a backup holds it `pending`, so a restore to a
+  bookmark that names it finds its original and `media-rebuild` remakes its preview; a late discard of a linked
+  thumbnail is kept (`abandonMedia`). The request discards a thumbnail no link committed (`discard`, then `sweepSoon`),
+  on POST only once the making's own writes have settled; `test/media.test.ts` (the sweep and release cases),
+  `test/media-thumbnails-pitr.test.ts`, `test/media-thumbnail-put.test.ts` ("keeps the attempt and charge of a
+  thumbnail whose link is refused", "replaces a thumbnail"), `test/media-av-thumbnails.test.ts` ("answers at the end
+  while the thumbnail's R2 put is pending, and discards it only once the put settles").
 - **MEDIA-3: served images are re-encoded.** An uploaded image, and a card image, is served only as Images output with
   location metadata removed; if transformation fails, the upload is refused and original bytes are never served.
   Cached remote files are not transformed; MEDIA-6 holds for them.
@@ -3407,7 +3432,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   it refuses an original whose served type differs from the row's (its URLs name that type).
   `test/media-rebuild.test.ts` ("makes both files … and corrects meta", "reports a missing original and a type
   mismatch"). The RGBA output of an upload's preview, from which its blurhash is computed, is only hashed: it is never
-  stored or served.
+  stored or served. A video's or audio file's custom thumbnail (#1828 PR6) is an image upload through the same
+  `processImage`, so it is served only as Images output (its `small` as the parent's preview, its `full` at its own
+  token), and one Images refuses refuses the request; `test/media-av-thumbnails.test.ts` ("ends the staging on …
+  while making it").
   Custom emoji (`src/platform/emoji-image.ts`): an input is PNG, GIF or WebP by signature, below 262,144 bytes, with
   edges of at most 1,024 read by the free `info()` before anything is charged; the published `full` is below 262,144
   bytes (what Mastodon downloads, `CustomEmoji::LIMIT`) and `small` at most 524,288, judged before any R2 write. The
@@ -3736,9 +3764,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/mastodon/params.ts`; `test/gate.test.ts` ("refuses an inbox body over 1 MiB", "stops reading a streamed inbox
   body"). _Enforced (main)_ for API bodies: a route's body stops at its limit (1 MiB unless the route sets one), and a
   route that reads files (`readParams`' file rule: the avatar and header of `update_credentials` and of the profile
-  update, `PATCH` and `PUT /api/v1/profile`, and the settings page's image) takes a multipart body of the limit plus
-  each file and its part headers (17,858,560 bytes for `update_credentials` and the profile update), chosen from
-  `Content-Type` before any byte is read, while its text, each part as sent, stays within the limit in UTF-8 bytes; a
+  update, `PATCH` and `PUT /api/v1/profile`, the settings page's image, and the thumbnail of `PUT`/`PATCH
+  /api/v1/media/:id`) takes a multipart body of the limit plus each file and its part headers (17,858,560 bytes for
+  `update_credentials` and the profile update, 17,842,176 for the media update), chosen from `Content-Type` before any
+  byte is read, while its text, each part as sent, stays within the limit in UTF-8 bytes, and, for the media update
+  (the rule's `outside`), all but the thumbnail file's body within the limit plus one part's headers; a
   JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty arrays) or
   2,097,152 UTF-16 code units of all its keys, charged before each key is built, and past 32 levels of nesting; the
   query, and a urlencoded body, are refused past Rack's limits (4 MiB, 4,096 fields), a multipart body at its 4,096th
@@ -3827,16 +3857,48 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/media-processing-ownership.test.ts` ("table 1.1, the Store's side").
   _Enforced (main)_ for the video and audio upload route (`src/mastodon/media-av.ts`), for the cases its route tests
   cover; the staging gates of #1828 PR4-4 are pending. Reading: the token is authorized and the reservation made before
-  any body byte is read; the bytes read before the type is known stop within two chunks of `MEDIA_BODY_LIMIT`, the
-  stream's read-ahead included, at the reservation's deadline, and on v1 at the route's cut (arrival + `V1_TIME_MS` −
-  `T_REPLY`); a request handed back to the image path, by a `Content-Type` outside the canonical form both parsers read
-  alike (`multipartBoundary` in `src/platform/multipart-stream.ts`), by the sniff or by S1 answering `inactive` (the
+  any body byte is read; the bytes read before the type is known stop within two chunks of `MEDIA_BODY_LIMIT`, or of
+  `PREFIX_THUMBNAIL_LIMIT` (`MEDIA_BODY_LIMIT` + `API_BODY_LIMIT` + `SNIFF_BYTES`, 17,956,864 bytes) once a `thumbnail`
+  file part comes before the file, the stream's read-ahead included, and past it answer 422 as before; at the
+  reservation's deadline, and on v1 at the route's cut (arrival + `V1_TIME_MS` − `T_REPLY`); a request handed back to
+  the image path, by a `Content-Type` outside the canonical form both parsers read alike (`multipartBoundary` in
+  `src/platform/multipart-stream.ts`), by the sniff or by S1 answering `inactive` (the
   probe failed after the reservation), is read there as before, with the image path's waits; a video or audio file is
   streamed into R2 in parts of `PART_BYTES` (8 MiB), the route holding at most one part and one read, and refused at
   `AV_UPLOAD_LIMIT`
-  (90 MiB) + 1 bytes; the parts after it stay within `API_BODY_LIMIT`, a thumbnail file's bytes counted (its 413 comes
-  before the description is judged); a part head within 16 KiB (`PART_HEAD_LIMIT` in
-  `src/platform/multipart-stream.ts`), and the closing line's padding is dropped as it is read, one scan per chunk.
+  (90 MiB) + 1 bytes; the parts after it hold within `API_BODY_LIMIT` (weighed as sent: head, body and delimiter),
+  except the body of one `thumbnail` file, held within `IMAGE_SIZE_LIMIT` + 1 bytes (its 422 comes before the
+  description is judged); a part head within 16 KiB (`PART_HEAD_LIMIT` in `src/platform/multipart-stream.ts`), and the
+  closing line's padding is dropped as it is read, one scan per chunk, so the bytes pulled after the file are bounded by
+  the staging's time only, as before #1828 PR6; what is held is bounded as above.
+  The custom thumbnail of a video or audio upload (#1828 PR6, "Multipart" and "POST timing" of its plan): once the file
+  is sniffed as video or audio, one sent `thumbnail` part is taken (a second answers 422, a file after the file at its
+  head, none of its bytes read, text by its first byte; empty text is none); one before the file is judged (text, size
+  and signature) before S1, one after it once the form is. The file's last part is sent, and its buffer released, before
+  a trailing thumbnail file is collected, so the two are never held together; without one it is sent once the form is
+  judged, as before #1828 PR6. The allocation peaks, each under the 128 MB isolate: before S1, the kept chunks, the
+  collected parts and the part being collected, each at most the prefix ceiling C, about 3C + one read (54 MB); during
+  the staging, a thumbnail sent before the file (at most 16 MiB) beside the part buffer (`PART_BYTES`) and one read;
+  after the file, the trailing thumbnail's chunks and its built body (2 × 16 MiB); while it is made, the image path's
+  peak (the thumbnail, Images' two outputs and the preview's RGBA) with no part buffer left. The thumbnail is made after
+  the staging and before S3, by the staging's end (`end`: the staging time S1 answered and, on v1, the route's cut): no
+  step starts at or past it, and every Images call (the inspection's `info()`, each encode's `output()`, every read of
+  its output, started inside the guard, and its `info()`) is given up at it on the route's clock (`ProcessOptions`
+  `guard` in `src/platform/images.ts`), the preview's RGBA output at its own shorter end (`RGBA_CALL_MS`, the blurhash's
+  `guard`). The route awaits it no later than `end`, then takes the staging exit (503, S2), and a thumbnail made later
+  is discarded in the cleanup once the making's own writes have settled. `PUT`/`PATCH /api/v1/media/:id` checks the
+  token before a multipart body is read (`checkCredential`, as `credentialsUpdate`) and again, with the time then,
+  before answering a body it cannot parse (`refuseAfterAuth`, as `withParams`), and reads a `thumbnail` file of up to
+  `IMAGE_SIZE_LIMIT` beside at most `API_BODY_LIMIT` + `FILE_PART_SLACK` bytes of anything else (`FileRule` `outside` in
+  `src/mastodon/params.ts`; a malformed body past that answers 413 as before). `test/media-av-thumbnails.test.ts`
+  ("refuses a second thumbnail part after the file at its head, its bytes unread (D-9)", "keeps main's prefix ceiling
+  without a thumbnail file, and refuses past the raised one with one (422)", "sends the file's last part before reading
+  a thumbnail after it (88 MiB - 1, then IMAGE_SIZE_LIMIT)", "reads no part of a trailing thumbnail while the file's
+  last part is still being sent (C45)", "the making by the staging's end (POST timing)"), `test/media-av-upload.test.ts`
+  ("answers the form's refusal before sending the file's last part"), `test/images-codec.test.ts` ("starts no read once
+  the guard refuses"), `test/media-thumbnail-put.test.ts` ("reads no body for an invalid token", "keeps main's bound on
+  what the body holds besides the thumbnail file, malformed bodies included (G1)", "checks the token again before
+  answering a multipart body it cannot parse (r1 M4)").
   Staging writes start only before `STAGING_MS` from the staging's start and, on v1, before the route's cut; a staging
   past `MAX_AV_INFLIGHT` answers 503 before its file is staged. The response is due on v1 by the give-up (arrival +
   `V1_TIME_MS`): every wait before S10 is cut at the route's cut, and S10 is waited for until the give-up; after S1's
@@ -5068,6 +5130,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (ChargeOnce)", "S4 with less than T_MIN_ENCODE left after the remaining fixed parts fails the job timeout"),
   `test/media-processing.test.ts` ("the allocation (P8)"), `test/media.test.ts` ("the active path's reservation
   (Q1)").
+  _Enforced (main)_ for a video's or audio file's custom thumbnail (#1828 PR6): it is an image made by Images in the
+  request, charged `TRANSFORMS_PER_UPLOAD` to the instance and account budgets at `startTransforms`, before Images is
+  called, never a unit of `MEDIA_UPLOAD_MONTHLY_JOBS`, with no container. On `POST` it is part of the upload its
+  parent's attempt admitted: `reserveMedia`'s `thumbnailFor` counts no attempt and admits it only for that parent of the
+  same account, with its file token, staging under the same `staged_at` before its `staged_until` and not fenced by a
+  restore, else `staging_gone` (the staging exit's 503) with nothing counted. `PUT`/`PATCH /api/v1/media/:id` with a
+  thumbnail counts one attempt, as an avatar or header upload does. Every refusal of the form, the target or its state
+  comes before the reservation, so it charges nothing; a thumbnail whose link is refused after it was made keeps its
+  attempt and charge, as an image upload that fails after Images does. The video's own still is still made under its own
+  admission. `test/media-av-thumbnails.test.ts` ("takes the 30th POST of the window with a thumbnail: the thumbnail
+  takes no attempt (fork h)", "links a thumbnail sent …"), `test/media-thumbnail-put.test.ts` ("links it on an
+  unattached video and a scheduled audio file, one attempt and the Images charge each (T14, T17)", "judges in Kopje's
+  order, the form before the failed state, charging nothing", "keeps the attempt and charge of a thumbnail whose link is
+  refused"), `test/media-thumbnails.test.ts` ("reserveMedia's thumbnailFor (T17's Store cases)").
   _Enforced (main)_ for remote stills (#1828): the cron's stills round claims at most one still a tick, each claim
   charged one unit of `MEDIA_STILL_MONTHLY_JOBS` (per UTC month of the Store's clock, covering its container and its at
   most two Images transformations and one metadata call, which `IMAGES_MONTHLY_TRANSFORMS` does not count), at most
@@ -5681,9 +5757,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   exist (`test/plan-audit.test.ts` ("reads one suspend block however many there are")); _Gap:_ the listed statements
   (#1468), statements no test runs, statements where the probe is not only a predicate (its text also a name, as an
   implicit column name a `NATURAL JOIN` or `USING` matches, or its index forced elsewhere with `INDEXED BY`), which
-  the allowance's attribution does not cover, and prefix or range walks the plan shows as a search. _Enforced
-  (main)_ for statements the runtime's SQLite would refuse: every statement the Workers suites run prepares at
-  `CTE_GUARD_LIMIT` (96) on Node's SQLite 3.54.1, 4 below workerd's limit on expression depth and on the tables and
+  the allowance's attribution does not cover, and prefix or range walks the plan shows as a search. The custom
+  thumbnails' statements (#1828 PR6: the link predicate, the retirement, the overlay's three reads, the release list
+  and its mark, the sweep's backup hold, the import's link check, the triggers' seeks) each walk
+  `media_attachments_thumbnail`, `media_attachments_thumbnail_release` or a primary key, and the sweep's hold reads at
+  most `SWEEP_BATCH` due rows plus one seek each (`test/plan-audit.test.ts`, `test/migrations.test.ts`
+  ("0123_media_thumbnails"), `test/media-thumbnails.test.ts` ("reads a bounded number of rows over 1,000 held children
+  and a full release batch")). _Enforced (main)_ for statements the runtime's SQLite would refuse: every statement the
+  Workers suites run prepares at `CTE_GUARD_LIMIT` (96) on Node's SQLite 3.54.1, 4 below workerd's limit on expression
+  depth and on the tables and
   subqueries numbered before a CTE reference (`test-node/sql-depth.ts`, which calibrates the host's SQLite first;
   `test/sql-cursor-calibration.test.ts` on workerd); the statements rewritten to stay within that limit return
   main's rows, read no more rows than main's and run as often, with and without suspend blocks and at the read caps,
@@ -6450,7 +6532,11 @@ so the Store isolate's 128 MB holds them together.
   with their tombstones, the links kept, and the cards shown without them")). So is the Store record of video and audio
   processing (`media_processing`, `media_av_slots`; #1828): a job, a staging or a slot names a container and an input
   of the Store it was made on, so an imported Store starts with none (`test/media-processing.test.ts` ("the dump
-  (DATA-3)")). So is the remote media cache
+  (DATA-3)")). A custom thumbnail's link (`media_attachments.thumbnail_of`, #1828 PR6) is dumped with its row, unlike
+  `media_processing`, and an import checks every current link once every row is in (`ThumbnailLinkCheck` in
+  `src/platform/store-import.ts`: the parent exists, of the same account, local, video or audio; refused
+  `thumbnail-link-invalid`), a replaced one being allowed to name a parent the sweep removed
+  (`test/dump-import.test.ts` ("thumbnails (0123_media_thumbnails)")). So is the remote media cache
   (`remote_media`, `remote_media_objects`, `remote_media_usage`, `remote_media_stills`; MEDIA-7): a restored or
   imported Store starts it empty, presents the remote URLs, fills it again from the backfill, and its orphan sweep
   deletes the files under `remote/` it does not know (`test-node/schema-coverage.test.ts`,

@@ -1288,7 +1288,7 @@ export type UpdatedMedia = OwnerMedia | { status: "blank" } | { status: "gone" }
 // `thumbnail` (#1828 PR6, D26), for a video or audio upload processing or finished: an image upload of the owner's,
 // by its id and file token, linked as the current thumbnail when it passes the link predicate (linkThumbnail, which
 // retires the one it replaces), else `gone` with nothing written; a repeat for the thumbnail already current is
-// answered as linked, its link unchanged; `null` retires the current one (Mastodon's thumbnail: nil). On any other
+// answered as linked with nothing written, the description and focus included; `null` retires the current one (Mastodon's thumbnail: nil). On any other
 // upload a thumbnail answers `blank`, and null is no thumbnail. A retirement leaves served files for the sweep to
 // delete, so this is a media-delete operation, refused while the media rebuild's lease is live (MEDIA-2). It reads the
 // restore marker only as ownerState does.
@@ -1312,7 +1312,12 @@ export const updateOwnerMedia = userMediaDeleteOperation.atStoreTime("now")<
     if (!playable) {
       return { status: "blank" };
     }
-    if (!currentThumbnail(db, id, thumbnail) && !linkThumbnail(db, id, thumbnail, now)) {
+    // A repeat for the thumbnail already current writes nothing (W-T5): a description or focus written since its
+    // link committed stays.
+    if (currentThumbnail(db, id, thumbnail)) {
+      return shownOwn(db, own, state);
+    }
+    if (!linkThumbnail(db, id, thumbnail, now)) {
       return { status: "gone" };
     }
   } else if (thumbnail === null && playable) {
