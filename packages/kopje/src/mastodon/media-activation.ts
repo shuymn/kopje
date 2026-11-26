@@ -435,8 +435,8 @@ const STILL_CHECK_MS = 75_000;
 
 // The still profile's check on request: the packaged clip copied to incoming/probe-<nonce>, a still of it on the
 // profile's object (stills.probe), verifyStill, and Images (stillEncodes); the copy deleted, each step ending by `end`
-// (probeSteps). It records nothing: the profile's record is the media rebuild's, which probes it under its own lease
-// (L4). As the activation probe, `fail` only on evidence of the build: the container's answers showing it does not
+// (probeSteps). It records nothing: the media rebuild is the profile's one recording prober for now, through the claim
+// the generic probe shares (media-probes.ts claimProbeIn). As the activation probe, `fail` only on evidence of the build: the container's answers showing it does not
 // speak the protocol (StillOutcome `evidence`: its /healthz, a 404 on /still or a 405, a 200 breaking the reply),
 // verifyStill refusing the PNG, or Images refusing it as input; `pass` with imagesVerified false when Images answered
 // 9422; `no-verdict` for anything else (the container's refusal of the clip, every other code, and Images' own output

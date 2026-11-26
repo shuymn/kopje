@@ -3184,7 +3184,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   maintenance call hands it out), outside maintenance and a restore's settle period, it lists one page of at most
   1,000 keys and deletes those uploaded more than a day before whose token the ledger does not hold
   (`remoteMediaOrphans` in `src/domain/remote-media.ts`); since every token is reserved before its put, such a key is
-  one a restore or an import left behind. A due sweep's whole budget is kept from that round's other maintenance, and
+  one a restore or an import left behind. A remote still's key, `remote/<token>/s<attempt>` (one per attempt, #1828),
+  of a token the ledger holds is deleted once no slot names it, its attempt can no longer record on the Store's clock,
+  and it was uploaded more than `LATE_PUT_MS` (75 minutes) before; a key a slot names is kept at any age
+  (`test/remote-media-stills.test.ts` ("keeps a named key at any age, deletes an unnamed one only past LATE_PUT_MS, and
+  keeps main's rule elsewhere", "keeps a key whose attempt can still record on the Store's clock, whatever its
+  uploaded time")). A due sweep's whole budget is kept from that round's other maintenance, and
   its page cursor moves only after the page's delete returned (`remoteMediaSwept`), so a page whose delete failed is
   listed again an hour later and a sweep that keeps failing costs one round an hour. `test/remote-media.test.ts`
   ("sweeps only unknown objects older than a day, once an hour"), `test/remote-media-serving.test.ts` ("serves the
@@ -3535,6 +3540,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
     resumes after it", "does not let an object whose heads fail every time hold back the walk", "after a restore during
     a held delete, confirms nothing restored and fetches the missing file again"), `src/platform/dump-catalog.ts`,
     `test-node/schema-coverage.test.ts`.
+  - Remote stills, the Store's part (#1828, migration `0122_remote_media_stills`, `src/domain/remote-media-stills.ts`;
+    no round makes one yet and nothing queues one): a still is queued, in the transaction that records its video, only
+    for a cached remote video or gifv with no preview of its own while `still@standard-1` passed for the running
+    build. A claim reserves `STILL_OUTPUT_LIMIT` (2 MiB) on the object, ledger and usage together with one delta, and
+    is admitted only within the cap less `LANE1_HEADROOM`, deferred otherwise; reclamation never dooms anything for a
+    still. Each claim names a fresh attempt, the still's key `remote/<token>/s<attempt>` (never a stable key), takes a
+    unit of the month's stills budget and a lease, and a video gets at most `STILL_CLAIMS` (3). The put is admitted
+    only for the lease's attempt, and the record only before the claim's `STILL_ROUND_MS`, under the same fence; it
+    names the key on the slot and moves the charge to the still's bytes. A failure or a dropped row releases the
+    reservation. A doomed video waits `LATE_PUT_MS` after its still's claim, and its deletion deletes the named key;
+    a key no slot names is never charged and is left to the sweep (MEDIA-2). Every slot writer that clears a slot
+    clears its named still. Every operation reads the restore marker where a restore changes its answer, refusing on
+    an unknown one. `test/remote-media-stills.test.ts`.
   - Walks across rounds: each records the progress it completed, and an item that fails every time holds back
     none behind it: the claims (a file that fails is retried later while the others are fetched), the backfill (an
     account whose URL is refused gets no slot, and the cursor moves past accounts already processed), the audit, the
@@ -6385,9 +6403,10 @@ so the Store isolate's 128 MB holds them together.
   processing (`media_processing`, `media_av_slots`; #1828): a job, a staging or a slot names a container and an input
   of the Store it was made on, so an imported Store starts with none (`test/media-processing.test.ts` ("the dump
   (DATA-3)")). So is the remote media cache
-  (`remote_media`, `remote_media_objects`, `remote_media_usage`; MEDIA-7): a restored or imported Store starts it
-  empty, presents the remote URLs, fills it again from the backfill, and its orphan sweep deletes the files under
-  `remote/` it does not know (`test-node/schema-coverage.test.ts`).
+  (`remote_media`, `remote_media_objects`, `remote_media_usage`, `remote_media_stills`; MEDIA-7): a restored or
+  imported Store starts it empty, presents the remote URLs, fills it again from the backfill, and its orphan sweep
+  deletes the files under `remote/` it does not know (`test-node/schema-coverage.test.ts`,
+  `test/remote-media-stills.test.ts` ("leaves out the stills, the lease and the stills counter")).
   The instance activity's tables are dumped and restored as stored, held to the CHECKs of `0072_activity_tracking`,
   and a restore counts nothing (`test/instance-activity.test.ts` ("round-trip as stored…")); its kept answer is not
   dumped.
