@@ -4213,7 +4213,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   notifications: the Store operation that returns it owns one budget of `ANSWER_BYTES` (8 MiB of the answer's JSON,
   containers included) or a stated unit or count bound, and admits items whole in traversal order, the first whatever
   its size, so what is held past the admitted answer is one chunk of rows and one item at their maxima ("Heap at 8 MiB
-  per answer"). An answer that presents statuses owns `STATUS_ANSWER_BYTES` instead (7,839,744 bytes, 8 MiB less 536
+  per answer"). An answer that presents statuses owns `STATUS_ANSWER_BYTES` instead (7,831,552 bytes, 8 MiB less 544
   KiB), a composite one (search with statuses among its types) from its first admission: the timelines and status
   lists, a context, quotes, statuses by id, trending statuses, notifications, grouped notifications, notification
   requests, conversations, admin reports and annual reports. Each byte an answer admits is held three times in the
@@ -5486,7 +5486,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   measure of the 254 KiB past which it is skipped and logged with no string made (254 KiB keeps the largest frame and
   its terminating byte within 256 KiB). A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 48,491,343.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 48,493,123.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
   a turn presents at most 18,726,544 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,396,167 being the most JSON a streamed subject presents, the quote
@@ -6000,16 +6000,16 @@ logs (6.01 MB escaped, 4.64 MB raw, the fill of the largest SQLite read) are mea
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
 | Account occurrence, with the account it moved to                 | 124,499           | 142,608         | 150,428           | 1         | 216   | 1.8%           |
 | Moved-to account (nested), derived from its caps                 | 12,464            |                 | 11,340            | 1         |       | 0.1%           |
-| Status                                                           | 4,619,421         | 2,818,202       | 2,826,006         | 1,597     | 3,292 | 33.7%          |
-| Quote (the status and its quoted status)                         | 7,160,230         | 5,626,757       | 5,642,122         | 2,140     | 6,566 | 67.3%          |
-| Boost of a quote                                                 | 7,456,539         | 6,037,893       | 6,059,222         | 2,199     | 7,650 | 72.2%          |
-| Conversation: 12 participants presented, its last status a quote | 8,859,413         | 7,338,022       | 7,396,167         | 2,191     | 9,149 | 88.2%          |
-| Notification group: 8 sample accounts, its status a quote        | 8,235,624         | 6,768,045       | 6,811,930         | 2,191     | 8,306 | 81.2%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,545,780         | 6,231,588       | 6,254,323         | 2,158     | 7,599 | 74.6%          |
+| Status                                                           | 4,619,777         | 2,818,202       | 2,826,006         | 1,597     | 3,292 | 33.7%          |
+| Quote (the status and its quoted status)                         | 7,160,942         | 5,626,757       | 5,642,122         | 2,140     | 6,566 | 67.3%          |
+| Boost of a quote                                                 | 7,457,251         | 6,037,893       | 6,059,222         | 2,199     | 7,650 | 72.2%          |
+| Conversation: 12 participants presented, its last status a quote | 8,860,125         | 7,338,022       | 7,396,167         | 2,191     | 9,149 | 88.2%          |
+| Notification group: 8 sample accounts, its status a quote        | 8,236,336         | 6,768,045       | 6,811,930         | 2,191     | 8,306 | 81.2%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,546,492         | 6,231,588       | 6,254,323         | 2,158     | 7,599 | 74.6%          |
 | An admin.report notification of that report                      | 2,374,225         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
 | A moderation_warning notification, its local account at bounds   | 134,434           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,434           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 7,295,567         | 5,769,491       | 5,788,421         | 2,163     | 6,786 | 69.0%          |
+| A filtered favourite of the quote, as include_filtered lists it  | 7,296,279         | 5,769,491       | 5,788,421         | 2,163     | 6,786 | 69.0%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,813,156         | 4,262,293       |                   | 1,343     | 3,192 | 50.8%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,318,877       |                   |           |       | 75.3%          |
 | Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
@@ -6154,8 +6154,8 @@ accounts, its first status (a quote) and nothing more, or a small first status a
 and its reporter (a remote one, from a `Flag`) and its comment are at their bounds: the comment's CHECK (migration
 `0054_remote_reports`) holds 20,000 bytes, which a stored NUL followed by U+0001 makes about 120 KB of JSON (Kopje's
 writers make about 30 KB: 5,000 code points). Every shape stays within 89% of an answer of 8 MiB with filter results
-included, measured and conservative alike, and so within `STATUS_ANSWER_BYTES`, 93.5% of 8 MiB: 89% of 8 MiB is 95.2% of
-it, and the largest shape, the conversation's conservative JSON, 94.34%. So an answer that admits whole items always
+included, measured and conservative alike, and so within `STATUS_ANSWER_BYTES`, 93.4% of 8 MiB: 89% of 8 MiB is 95.3% of
+it, and the largest shape, the conversation's conservative JSON, 94.44%. So an answer that admits whole items always
 fits its first. The 89% ceiling accommodates the conversation's 14
 account arrays and four status/poll arrays, allowing 40 typical emoji per status and 20 per profile. Through the real
 Store RPC, maximal answers of plain notifications, grouped notifications, conversations, admin reports and the directory
@@ -6169,7 +6169,7 @@ answer that presents statuses at most `STATUS_ANSWER_BYTES` (RES-3), since every
   object and 32 B per value. Peaks add 25% headroom to rows.
 - Presented objects take at most three times their JSON bytes (a string takes no more than its JSON bytes, since JSON
   only adds escapes, and the rest is per-object overhead; an assumption, as workerd exposes no heap to measure): the
-  admitted answer's 25.2 MB (23.52 MB at `STATUS_ANSWER_BYTES`), the first rejected item's three times its JSON.
+  admitted answer's 25.2 MB (23.49 MB at `STATUS_ANSWER_BYTES`), the first rejected item's three times its JSON.
   Every string field counts on its own, even one that repeats another's string (an attachment's `remote_url` is its
   `url`), and rows and presented objects often share the same string instances, which the model does not credit
   either.
@@ -6265,7 +6265,7 @@ which the read returns with each collection (as restored text in the raw fill, a
 single row sums each column's largest value the same way (1.20 MB, the escaped poll row, which is at least RowMeter's
 count); the rejected item is three times the item's
 conservative JSON (above); the admitted answer three times its budget, `STATUS_ANSWER_BYTES` for each answer below
-(23.52 MB). The test measures its own maxima, whatever runs before it, and
+(23.49 MB). The test measures its own maxima, whatever runs before it, and
 asserts the timelines' peaks within half of the Store isolate's 128 MB with at least 4,096 bytes to spare, and the
 groups' and reports' within the whole. The peaks follow from the fills and the constants, which the test pins, so it
 asserts them exactly too (`HEAP_PEAKS` in `test/presented-maxima.ts`): `test-node/presented-maxima.test.ts` compares the
@@ -6275,7 +6275,7 @@ two Store tables below (the rows, the rejected items and the answers' peaks) and
 | ---------------------------------------------- | ----------------------- | --------------------- |
 | Boost of a quote (the largest timeline item)   | 20.27 MB                | 18.18 MB              |
 | Group: its status (a quote), 8 sample accounts | 22.33 MB                | 20.44 MB              |
-| Report: its status and 4 accounts              | 20.50 MB                | 18.76 MB              |
+| Report: its status and 4 accounts              | 20.51 MB                | 18.76 MB              |
 
 Groups and reports also keep the presentation's state: the compiled filters (50 filters of 20 keywords, about
 0.5 MB) and the filter results cached by status (at most 50 results of about 1.2 KB each, 60 KB a status) for the
@@ -6286,15 +6286,15 @@ pass, and the passes are at most four), 200 for a page of reports (its at most 1
 
 | Answer (Store isolate)                      | Normal   | Backstop fired, the dropped chunk still live | A single item |
 | ------------------------------------------- | -------- | -------------------------------------------- | ------------- |
-| Timelines (largest item a boost of a quote) | 61.99 MB | 64.00 MB                                     | 61.99 MB      |
-| Groups                                      | 76.40 MB | 79.22 MB                                     | 76.40 MB      |
-| Reports                                     | 75.30 MB | 78.12 MB                                     | 75.30 MB      |
+| Timelines (largest item a boost of a quote) | 61.97 MB | 63.97 MB                                     | 61.97 MB      |
+| Groups                                      | 76.38 MB | 79.20 MB                                     | 76.38 MB      |
+| Reports                                     | 75.28 MB | 78.10 MB                                     | 75.28 MB      |
 
 A chunk of several takes at most its target of heap: 392 KiB (0.40 MB) for timelines, 1 MiB (1.05 MB) for groups and
 reports. Normal: the rows are the larger of 1.25 × the target and the item's rows, plus the admitted answer, the
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 392 KiB timeline cap and `STATUS_ANSWER_BYTES`, the largest multiple of 8 KiB that does with that
-cap (each byte of budget is three of heap, so 8 KiB more would pass half by 20,071.5 bytes), keep the fallback below
+cap (each byte of budget is three of heap, so 8 KiB more would leave 2,724.5 bytes, under the spare below), keep the fallback below
 half the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to spare under 64 MB
 (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 69,694 under its
 ceiling): each remote account row's and moved-to account's cached profile images (two rows at their caps, MEDIA-7),
@@ -6318,8 +6318,8 @@ a timeline's largest item pass half at a chunk of one; it shows none.
 | ------------------------------------------------- | ------------- | -------------- |
 | RPC copy (serialized; deserialized in the Worker) | 8.4 MB        | 25.2 MB        |
 | The Worker's JSON string and the body             |               | 25.2 MB        |
-| Peak, normal                                      | 61.99 MB      | 50 MB          |
-| Peak, the backstop fired                          | 64.00 MB      | 50 MB          |
+| Peak, normal                                      | 61.97 MB      | 50 MB          |
+| Peak, the backstop fired                          | 63.97 MB      | 50 MB          |
 
 The Store's peak is the timelines' (the answer table above, normal and with the backstop fired and the dropped chunk
 still live), while an item is admitted; the RPC copy comes after it. The Worker's JSON string is counted at two bytes

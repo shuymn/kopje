@@ -63,6 +63,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- Answers that present statuses stop at 7,831,552 bytes of JSON (`STATUS_ANSWER_BYTES`), 544 KiB short of 8 MiB
+  instead of 536 KiB, to keep the Store's heap model within its spare once a cached remote video's still is read with
+  its attachment; a page that reaches it ends one whole item earlier at most, and its `Link` (or offset, or `more`)
+  continues after it.
 - While video and audio uploads are active, `/api/v1/instance` and `/api/v2/instance` advertise their types and
   `video_size_limit` (94,371,840), `video_frame_rate_limit` (120) and `video_matrix_limit` (8,294,400) in
   `configuration.media_attachments`; otherwise they advertise images only, as before.

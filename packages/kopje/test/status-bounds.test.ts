@@ -1589,8 +1589,12 @@ async function cachedEmojis(t: Setup, fill: Fill): Promise<void> {
 }
 
 // The raw fill's cached attachments (remote-media.ts): each remote attachment's file and icon cached at the packed cap,
-// for its current URLs and category. As cachedEmojis, the slot's insert trigger is dropped for this fixture's Store
+// for its current URLs and category, each file with a named still and a blurhash of BLURHASH_BYTES holding ':' (the
+// packed file at CACHED_MEDIA_BYTES). As cachedEmojis, the slot's insert trigger is dropped for this fixture's Store
 // (the fixtures' URLs pass the slot's stored bounds, which nothing read here depends on).
+// A blurhash of 5 × 5 components, BLURHASH_BYTES long, of ':' after its size flag and quantization.
+const STILL_BLURHASH = `e0${":".repeat(52)}`;
+
 async function cachedMedia(t: Setup, fill: Fill): Promise<void> {
   if (fill !== "raw") {
     return;
@@ -1603,9 +1607,9 @@ async function cachedMedia(t: Setup, fill: Fill): Promise<void> {
     await sql(
       t.store,
       `INSERT OR IGNORE INTO remote_media (kind, owner_id, account_id, url, host, category, lane, generation, enqueued_at,
-				token, ext, still_ext, stored_at)
+				token, ext, still_ext, stored_at, still_key, still_blurhash)
 			SELECT '${kind}', m.id, m.account_id, ${url}, 'm.example', ${category}, 0, 0, 1, lower(hex(randomblob(32))), 'webp',
-				'webp', 1
+				'webp', 1, ${kind === "attachment" ? `'s' || lower(hex(randomblob(16))), '${STILL_BLURHASH}'` : "NULL, NULL"}
 			FROM media_attachments m JOIN accounts a ON a.id = m.account_id
 			WHERE a.domain IS NOT NULL AND m.file_token IS NULL AND ${url} IS NOT NULL AND ${category} IS NOT NULL`,
     );
