@@ -16147,9 +16147,9 @@ describe("0123_media_thumbnails", () => {
   const EPOCH = "1970-01-01T00:00:00.000Z";
   const token = (c: string) => c.repeat(43);
 
-  it("follows 0122 and is declared foreignKeys: 'unchanged'", () => {
+  it("follows 0122, and checks every reference: it adds a unique key to an existing table", () => {
     expect(NAMES[at - 1]).toBe("0122_remote_media_stills");
-    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
   });
 
   // A Store at 0122 with a local video, a local image, a remote video and another account's video, then upgraded.

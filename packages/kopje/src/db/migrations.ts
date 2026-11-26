@@ -249,5 +249,5 @@ export const MIGRATIONS: readonly { name: string; sql: string; foreignKeys?: "un
   { name: "0120_tagged_collections", sql: m0120 },
   { name: "0121_media_processing", sql: m0121 },
   { name: "0122_remote_media_stills", sql: m0122 },
-  { name: "0123_media_thumbnails", sql: m0123, foreignKeys: "unchanged" },
+  { name: "0123_media_thumbnails", sql: m0123 },
 ];
