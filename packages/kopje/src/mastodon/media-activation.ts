@@ -215,12 +215,12 @@ export async function probeFinish(
 // media rebuild's probe, mastodon/media-rebuild-av.ts), from the container's answer (`out`) and, for a still
 // verifyStill accepted, Images' answer on it (imagesVerdict): `fail` on the container's evidence of the build
 // (StillOutcome `evidence`) or a PNG verifyStill refuses, no-verdict for every other failure of the container (its
-// refusal of the clip among them); null when the still is verified and Images is to be asked.
-export function stillProbeVerdict(out: StillOutcome): ProbeVerdict | null {
+// refusal of the clip among them); the `still` stage, its PNG, when the still is verified and Images is to be asked.
+export function stillProbeVerdict(out: StillOutcome): ProbeStage {
   if (!out.ok) {
     return { outcome: out.evidence !== undefined ? "fail" : "no-verdict", reason: out.failure };
   }
-  return verifyStill(out.png) !== null ? { outcome: "fail", reason: "still" } : null;
+  return verifyStill(out.png) !== null ? { outcome: "fail", reason: "still" } : { outcome: "still", png: out.png };
 }
 
 // Images on the verified still: `pass` (unverified on 9422), `fail` only when it refused the PNG as input, and
@@ -475,11 +475,11 @@ async function stillCheckWork(
     if (out === OVER) {
       return { outcome: "no-verdict", reason: "timeout", image: null };
     }
-    const verdict = stillProbeVerdict(out);
-    if (verdict !== null || !out.ok) {
-      return { ...(verdict ?? { outcome: "no-verdict", reason: "operation" }), image: out.image };
+    const stage = stillProbeVerdict(out);
+    if (stage.outcome !== "still") {
+      return { ...stage, image: out.image };
     }
-    const png = out.png;
+    const png = stage.png;
     // Images is a step of the request: past its cut (the request's deadline, or the check's), no verdict.
     const encoded = await step(
       () => stillEncodes(deps.images, png, pngSize(png), (work) => within(work, deadline, deps.now)),

@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { isProbeProfile, type ProbeProfile } from "../platform/media-transcoder";
 import { setState } from "./kopje-state";
 import { readOperation, writeOperation } from "./operation";
 
@@ -7,9 +8,9 @@ import { readOperation, writeOperation } from "./operation";
 //
 //   media_probe:<profile>          the verdict: the Worker version (the build) it passed or failed for, the image tag
 //                                  the container reported, when (Store time), and for a pass whether Images re-encoded
-//                                  its still (imagesVerified; absent from the rebuild's own still records)
-//   media_probe_attempt:<profile>  the last claim of a probe: its build, when, and (for claimProbe's) its claim token
-//                                  and the outcome recorded under it
+//                                  its still (imagesVerified)
+//   media_probe_attempt:<profile>  the last claim of a probe: its build, when, its claim token and the outcome
+//                                  recorded under it (neither in one an earlier release's media rebuild wrote)
 //   media_probe_failure:<profile>  the last infrastructure failure an upload met on the profile: its build and when
 //
 // A use is admitted while its profile's verdict passed for the running build (probePassed); an infrastructure failure
@@ -21,8 +22,8 @@ import { readOperation, writeOperation } from "./operation";
 // recordProbeResultIn, only under the claim it is given, so two probers never both record. A claim keeps the verdict, so
 // a probe that reaches none leaves admission as it was.
 
-const PROBE_PROFILES = ["normalize@standard-4", "still@standard-1"] as const;
-export type ProbeProfile = (typeof PROBE_PROFILES)[number];
+// The profiles probed, as the processor's client names them (platform/media-transcoder.ts PROBE_PROFILES).
+export type { ProbeProfile };
 
 // The profile an upload runs on, whose pass admits video and audio uploads (design 4.15).
 export const NORMALIZE_PROFILE: ProbeProfile = "normalize@standard-4";
@@ -59,7 +60,7 @@ const PROBE_ATTEMPT = "media_probe_attempt:";
 const PROBE_FAILURE = "media_probe_failure:";
 
 export function probeName(kind: "record" | "attempt" | "failure", profile: ProbeProfile): string {
-  if (!PROBE_PROFILES.includes(profile)) {
+  if (!isProbeProfile(profile)) {
     throw new Error("not a recorded probe profile");
   }
   return `${kind === "record" ? PROBE_RECORD : kind === "attempt" ? PROBE_ATTEMPT : PROBE_FAILURE}${profile}`;
@@ -212,12 +213,20 @@ export const claimProbe = writeOperation.atStoreTime("now")<
   ProbeClaim
 >((db, { profile, build, due, now }) => claimProbeIn(db, profile, build, due, now));
 
-// claimProbe's decision and write, which the media rebuild's claim shares (media-rebuild.ts claimRebuildProbe).
-export function claimProbeIn(db: Db, profile: ProbeProfile, build: string, due: boolean, now: number): ProbeClaim {
+// claimProbe's decision and write, which the media rebuild's claim shares (media-rebuild.ts claimRebuildProbe), passing
+// the profile's state it has read in the same transaction as `read`.
+export function claimProbeIn(
+  db: Db,
+  profile: ProbeProfile,
+  build: string,
+  due: boolean,
+  now: number,
+  read?: ProbeState,
+): ProbeClaim {
   if (!printable(build, PROBE_VERSION_BYTES)) {
     throw new Error("not a build");
   }
-  const state = probeState(db, profile, now);
+  const state = read ?? probeState(db, profile, now);
   if (due && !probeDue(state, build)) {
     return { status: "not_due" };
   }

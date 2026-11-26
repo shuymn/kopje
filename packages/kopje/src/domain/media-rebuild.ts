@@ -509,7 +509,7 @@ export const claimRebuildProbe = mediaRebuildOperation.atStoreTime("now")<
   if (!probeDue(state, build)) {
     return { status: "passed" };
   }
-  const claimed = claimProbeIn(db, STILL_PROFILE, build, false, now);
+  const claimed = claimProbeIn(db, STILL_PROFILE, build, false, now, state);
   if (claimed.status === "claimed") {
     return claimed;
   }

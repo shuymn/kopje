@@ -529,10 +529,10 @@ async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => nu
       return RETRY;
     }
     const container = stillProbeVerdict(out);
-    if (container !== null || !out.ok) {
-      verdict = container ?? { outcome: "no-verdict", reason: "operation" };
+    if (container.outcome !== "still") {
+      verdict = container;
     } else {
-      const png = out.png;
+      const png = container.png;
       const encoded = await call.bounded(
         () => stillEncodes(call.images, png, pngSize(png), (work) => within(work, until, call.now)),
         until,
