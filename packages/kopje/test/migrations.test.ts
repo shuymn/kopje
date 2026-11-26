@@ -16273,6 +16273,10 @@ describe("0123_media_thumbnails", () => {
       // An unrelated column, and a row with no link at all.
       set("description = 'd'")();
       sql.exec("UPDATE media_attachments SET type = 'audio' WHERE id = ?", REMOTE);
+      // gc_at alone: a retired child of no parent that kept its url (an insert's shape the guard admits), made current
+      // by its gc_at only.
+      insert(sql, { id: SECOND, file_token: token("d"), thumbnail_of: GONE, gc_at: T })();
+      expect(() => sql.exec("UPDATE media_attachments SET gc_at = NULL WHERE id = ?", SECOND)).toThrow(REFUSED);
     });
   });
 
