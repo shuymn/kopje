@@ -15929,7 +15929,8 @@ describe("0122_remote_media_stills", () => {
   due_at INTEGER CHECK (due_at IS NULL OR (typeof(due_at) = 'integer' AND due_at >= 0)),
   claimed_at INTEGER CHECK (claimed_at IS NULL OR (typeof(claimed_at) = 'integer' AND claimed_at >= 0)),
   attempt TEXT CHECK (attempt IS NULL
-    OR (typeof(attempt) = 'text' AND length(CAST(attempt AS BLOB)) = 32 AND attempt NOT GLOB '*[^0-9a-f]*')),
+    OR (typeof(attempt) = 'text' AND length(CAST(attempt AS BLOB)) = 32 AND instr(CAST(attempt AS BLOB), x'00') = 0
+      AND attempt NOT GLOB '*[^0-9a-f]*')),
   outcome TEXT CHECK (outcome IS NULL OR outcome IN ('retry', 'park')),
   still_charge INTEGER NOT NULL CHECK (typeof(still_charge) = 'integer' AND still_charge BETWEEN 0 AND 2097152),
   CHECK ((claims = 0) = (claimed_at IS NULL)),
@@ -16047,6 +16048,40 @@ DROP TRIGGER remote_media_bounds_update;`;
         generation: 1,
         still_key: null,
       });
+    });
+  });
+
+  it("refuses a still key and an attempt of the right length with an embedded NUL, inserted or updated", async () => {
+    await upgraded((sql) => {
+      const key = `s${"a".repeat(30)}\u0000Z`;
+      const attempt = `${"a".repeat(30)}\u0000Z`;
+      // The slot: updated, then inserted again.
+      expect(() => sql.exec("UPDATE remote_media SET still_ext = 'webp', still_key = ? WHERE id = 1", key)).toThrow(
+        SLOT_REFUSED,
+      );
+      const slot = sql.exec("SELECT * FROM remote_media WHERE id = 1").one();
+      sql.exec("DELETE FROM remote_media WHERE id = 1");
+      const row = { ...slot, still_ext: "webp", still_key: key };
+      const columns = Object.keys(row);
+      expect(() =>
+        sql.exec(
+          `INSERT INTO remote_media (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+          ...Object.values(row),
+        ),
+      ).toThrow(SLOT_REFUSED);
+      // The still: inserted, then updated.
+      const still = (value: string) =>
+        sql.exec(
+          `INSERT INTO remote_media_stills (token, state, claims, claimed_at, attempt, still_charge)
+						VALUES (?, 'stored', 1, 2, ?, 1)`,
+          TOKEN,
+          value,
+        );
+      expect(() => still(attempt)).toThrow(/CHECK constraint failed|remote_media_stills/);
+      still(ATTEMPT);
+      expect(() => sql.exec("UPDATE remote_media_stills SET attempt = ? WHERE token = ?", attempt, TOKEN)).toThrow(
+        /CHECK constraint failed|remote_media_stills/,
+      );
     });
   });
 

@@ -2411,11 +2411,12 @@ export function remoteMediaSlotPastBoundSql(row: string): string {
 export const STILL_ATTEMPT = /^[0-9a-f]{32}$/;
 
 // True when `value` is neither NULL nor an attempt nonce (STILL_ATTEMPT), judged in order: the storage class, the
-// bytes, then the digits (which also refuses NUL).
+// bytes, an embedded NUL (where GLOB stops reading), then the digits.
 export function stillAttemptPastSql(value: string): string {
   return `CASE WHEN ${value} IS NULL THEN 0
 	WHEN typeof(${value}) <> 'text' THEN 1
 	WHEN length(CAST(${value} AS BLOB)) <> 32 THEN 1
+	WHEN instr(CAST(${value} AS BLOB), x'00') > 0 THEN 1
 	WHEN ${value} GLOB '*[^0-9a-f]*' THEN 1
 	ELSE 0 END`;
 }
@@ -2425,6 +2426,7 @@ export function stillKeyPastSql(value: string): string {
   return `CASE WHEN ${value} IS NULL THEN 0
 	WHEN typeof(${value}) <> 'text' THEN 1
 	WHEN length(CAST(${value} AS BLOB)) <> 33 THEN 1
+	WHEN instr(CAST(${value} AS BLOB), x'00') > 0 THEN 1
 	WHEN substr(${value}, 1, 1) <> 's' THEN 1
 	WHEN substr(${value}, 2) GLOB '*[^0-9a-f]*' THEN 1
 	ELSE 0 END`;

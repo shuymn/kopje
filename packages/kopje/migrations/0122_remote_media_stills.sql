@@ -30,7 +30,8 @@ CREATE TABLE remote_media_stills (
   due_at INTEGER CHECK (due_at IS NULL OR (typeof(due_at) = 'integer' AND due_at >= 0)),
   claimed_at INTEGER CHECK (claimed_at IS NULL OR (typeof(claimed_at) = 'integer' AND claimed_at >= 0)),
   attempt TEXT CHECK (attempt IS NULL
-    OR (typeof(attempt) = 'text' AND length(CAST(attempt AS BLOB)) = 32 AND attempt NOT GLOB '*[^0-9a-f]*')),
+    OR (typeof(attempt) = 'text' AND length(CAST(attempt AS BLOB)) = 32 AND instr(CAST(attempt AS BLOB), x'00') = 0
+      AND attempt NOT GLOB '*[^0-9a-f]*')),
   outcome TEXT CHECK (outcome IS NULL OR outcome IN ('retry', 'park')),
   still_charge INTEGER NOT NULL CHECK (typeof(still_charge) = 'integer' AND still_charge BETWEEN 0 AND 2097152),
   CHECK ((claims = 0) = (claimed_at IS NULL)),
@@ -113,6 +114,7 @@ WHEN CASE WHEN typeof(NEW.kind) <> 'text' OR NEW.kind NOT IN ('avatar', 'header'
 	WHEN CASE WHEN NEW.still_key IS NULL THEN 0
 	WHEN typeof(NEW.still_key) <> 'text' THEN 1
 	WHEN length(CAST(NEW.still_key AS BLOB)) <> 33 THEN 1
+	WHEN instr(CAST(NEW.still_key AS BLOB), x'00') > 0 THEN 1
 	WHEN substr(NEW.still_key, 1, 1) <> 's' THEN 1
 	WHEN substr(NEW.still_key, 2) GLOB '*[^0-9a-f]*' THEN 1
 	ELSE 0 END THEN 1
@@ -197,6 +199,7 @@ WHEN CASE WHEN typeof(NEW.kind) <> 'text' OR NEW.kind NOT IN ('avatar', 'header'
 	WHEN CASE WHEN NEW.still_key IS NULL THEN 0
 	WHEN typeof(NEW.still_key) <> 'text' THEN 1
 	WHEN length(CAST(NEW.still_key AS BLOB)) <> 33 THEN 1
+	WHEN instr(CAST(NEW.still_key AS BLOB), x'00') > 0 THEN 1
 	WHEN substr(NEW.still_key, 1, 1) <> 's' THEN 1
 	WHEN substr(NEW.still_key, 2) GLOB '*[^0-9a-f]*' THEN 1
 	ELSE 0 END THEN 1
@@ -230,6 +233,7 @@ WHEN CASE WHEN NEW.token IS NULL OR CASE WHEN NEW.token IS NULL THEN 0
 	WHEN CASE WHEN NEW.attempt IS NULL THEN 0
 	WHEN typeof(NEW.attempt) <> 'text' THEN 1
 	WHEN length(CAST(NEW.attempt AS BLOB)) <> 32 THEN 1
+	WHEN instr(CAST(NEW.attempt AS BLOB), x'00') > 0 THEN 1
 	WHEN NEW.attempt GLOB '*[^0-9a-f]*' THEN 1
 	ELSE 0 END THEN 1
 	WHEN NEW.outcome IS NOT NULL AND (typeof(NEW.outcome) <> 'text' OR NEW.outcome NOT IN ('retry', 'park')) THEN 1
@@ -253,6 +257,7 @@ WHEN CASE WHEN NEW.token IS NULL OR CASE WHEN NEW.token IS NULL THEN 0
 	WHEN CASE WHEN NEW.attempt IS NULL THEN 0
 	WHEN typeof(NEW.attempt) <> 'text' THEN 1
 	WHEN length(CAST(NEW.attempt AS BLOB)) <> 32 THEN 1
+	WHEN instr(CAST(NEW.attempt AS BLOB), x'00') > 0 THEN 1
 	WHEN NEW.attempt GLOB '*[^0-9a-f]*' THEN 1
 	ELSE 0 END THEN 1
 	WHEN NEW.outcome IS NOT NULL AND (typeof(NEW.outcome) <> 'text' OR NEW.outcome NOT IN ('retry', 'park')) THEN 1
