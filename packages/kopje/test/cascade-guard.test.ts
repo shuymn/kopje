@@ -109,6 +109,8 @@ const WRITING_TRIGGERS: Record<string, string> = {
     "fires only on a text change of a status that keeps its measure: every hide (statuses.ts local delete, remote-removal.ts hideRemoteStatus) clears filter_text_units in the same SET, so it writes no other row",
   polls_revision:
     "one polls row, the poll's own revision, per update of a column it watches (POLL_REVISION_COLUMNS), which no batched delete or purge makes: a status's removal deletes its poll (STATUS_EXEMPT's polls entry) and a vote purge deletes poll_votes and keeps the counts; the updates are the poll's own writers (polls.ts resetPoll, editPoll, countVotes, storeRemotePoll, markPollFetched, pollRound) and the local DELETE's end mark (statuses.ts deleteStatus), within its request maximum (test/local-delete.test.ts REQUEST_ROWS, whose status has a poll)",
+  media_attachments_thumbnail_delete:
+    "one media_attachments row (the deleted upload's current thumbnail, by media_attachments_thumbnail) per deleted local video or audio upload: purgeMedia deletes at most SWEEP_BATCH, the import reset at most RESET_BATCH_ROWS a step, and the batched deletes of remote media (inbox.ts, remote-statuses.ts) take only rows without a file token, which are never a parent, so it writes none there",
 };
 
 // Streaming subscriptions of the account on `user`, `user:notification`, a list, `direct`, `public` and a hashtag, which
