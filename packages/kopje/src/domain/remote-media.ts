@@ -49,7 +49,7 @@ import {
 } from "./audience";
 import { isIntegerKey } from "./ids";
 import { hostCovered, hostMediaRejected } from "./instance-domain-blocks";
-import { setState, state } from "./kopje-state";
+import { setState, state, writeState } from "./kopje-state";
 import { probePassed } from "./media-probes";
 import { writeOperation } from "./operation";
 
@@ -62,10 +62,12 @@ import { writeOperation } from "./operation";
 // retention of their arrival.
 //
 // A slot (one remote file of one owner) is pending (due_at set), failed (failed_at set) or stored (token set: the
-// object it shows). An object (one R2 token, remote/<token>/full and remote/<token>/still) is reserved (claimed,
-// recorded before any key exists, MEDIA-2), stored, or doomed (its deletion due at due_at); it is charged
-// `charge` bytes: a reservation R (the kind's file cap plus its still cap), its actual bytes once stored, and a doomed
-// one keeps what it had until its deletion is confirmed. remote_media_usage holds bytes (every charge), doomed (the
+// object it shows). An object (one R2 token: remote/<token>/full, an animated image's still remote/<token>/still, and
+// a video's stills remote/<token>/s<attempt>, one key per attempt, remote-media-stills.ts) is reserved (claimed,
+// recorded before any key exists, MEDIA-2), stored, or doomed (its deletion due at due_at, after any late put of its
+// keys can land: doomObject); it is charged `charge` bytes: a reservation R (the kind's file cap plus its still cap),
+// its actual bytes once stored (plus a video's still_charge), and a doomed one keeps what it had until its deletion is
+// confirmed. remote_media_usage holds bytes (every charge), doomed (the
 // doomed charges) and pending (the slots with due_at set); every transition changes it in the same transaction, here
 // only, so it is exact by construction (the audit only logs drift).
 //
@@ -1009,28 +1011,24 @@ function namedStill(db: Db, token: string, attempt: string): { still_charge: num
 }
 
 // The still-only reset after a restore (design 4.8; validation's answer for a named still that is missing, or unknown
-// VALIDATION_FAILURES times): fenced on the object stored and its row stored with the attempt the batch named. The slot
-// names no still, the still's charge is released, and the row is queued again, due now, its claims back to 0 (a restore
-// is the operator's, and each claim costs a unit). The video stays cached and playable; a key that survives becomes one
-// no row names, which the sweep deletes. False, and nothing changed, when the fence does not hold.
-function resetNamedStill(db: Db, token: string, attempt: string, now: number): boolean {
-  const row = namedStill(db, token, attempt);
-  if (row === undefined) {
-    return false;
-  }
+// VALIDATION_FAILURES times), on the row namedStill fenced (the object stored, its row stored with the attempt the
+// batch named) in the same transaction, `charge` its still_charge. The slot names no still, the still's charge is
+// released, and the row is queued again, due now, its claims back to 0 (a restore is the operator's, and each claim
+// costs a unit). The video stays cached and playable; a key that survives becomes one no row names, which the sweep
+// deletes.
+function resetNamedStill(db: Db, token: string, charge: number, now: number): void {
   db.run(
     `UPDATE remote_media SET still_ext = NULL, still_key = NULL, still_blurhash = NULL
 			WHERE id = (SELECT slot_id FROM remote_media_objects WHERE token = ?1)`,
     token,
   );
-  chargeStill(db, token, -row.still_charge);
+  chargeStill(db, token, -charge);
   db.run(
     `UPDATE remote_media_stills SET state = 'queued', due_at = ?2, claims = 0, claimed_at = NULL, attempt = NULL,
 			outcome = NULL, still_charge = 0 WHERE token = ?1`,
     token,
     now,
   );
-  return true;
 }
 
 // What turns remote stills on, as the caller passes it (#1828 PR5): the media processor bound, the month's stills budget
@@ -1610,7 +1608,9 @@ function validationCursor(db: Db): {
     // still; all an earlier release counted), and those of its named still `stillVariant` (s<attempt>).
     failures: isTime(stored.failures) ? stored.failures : 0,
     stillVariant:
-      typeof stored.stillVariant === "string" && /^s[0-9a-f]{32}$/.test(stored.stillVariant)
+      typeof stored.stillVariant === "string" &&
+      stored.stillVariant.startsWith("s") &&
+      STILL_ATTEMPT.test(stored.stillVariant.slice(1))
         ? stored.stillVariant
         : null,
     stillFailures: isTime(stored.stillFailures) ? stored.stillFailures : 0,
@@ -1624,7 +1624,7 @@ function validationBatch(db: Db, now: number, restoredAt: number): { batch: Remo
   const progress = validationCursor(db);
   const cursor = progress.restore === restoredAt ? progress.cursor : "";
   if (progress.restore !== restoredAt) {
-    setState(db, STATE.validation, JSON.stringify({ restore: restoredAt, cursor }));
+    writeState(db, STATE.validation, { restore: restoredAt, cursor });
   }
   const rows = db.all<{ token: string; still: number; named: string | null }>(
     `SELECT o.token, o.still_type IS NOT NULL AS still,
@@ -1687,7 +1687,7 @@ export const maintainRemoteMedia = writeOperation.atStoreTime("now")<
     counts.restored = started.restored;
     if (validation.length === 0) {
       setState(db, STATE.validated, String(restoredAt));
-      setState(db, STATE.validation, JSON.stringify({ restore: restoredAt, cursor: "" }));
+      writeState(db, STATE.validation, { restore: restoredAt, cursor: "" });
     }
   }
   // The retention the configuration gives, recorded for the writers (retentionDays).
@@ -1871,31 +1871,26 @@ export const recordRemoteMediaValidation = writeOperation.atStoreTime("now")<
     } else if (named !== undefined && named[1] !== "present") {
       // A result naming an attempt the stored row no longer names is stale: it counts toward nothing and changes
       // nothing.
-      const attempt = named[0].slice(1);
-      if (namedStill(db, token, attempt) !== undefined) {
+      const row = namedStill(db, token, named[0].slice(1));
+      if (row !== undefined) {
         if (named[1] === "unknown" && !failedOut(token, named[0])) {
           break;
         }
-        if (resetNamedStill(db, token, attempt, now)) {
-          stills++;
-        }
+        resetNamedStill(db, token, row.still_charge, now);
+        stills++;
       }
     }
     last = token;
     failures = none;
   }
-  setState(
-    db,
-    STATE.validation,
-    JSON.stringify({
-      restore,
-      cursor: last,
-      failedToken: failures.token,
-      failures: failures.object,
-      stillVariant: failures.stillVariant,
-      stillFailures: failures.still,
-    }),
-  );
+  writeState(db, STATE.validation, {
+    restore,
+    cursor: last,
+    failedToken: failures.token,
+    failures: failures.object,
+    stillVariant: failures.stillVariant,
+    stillFailures: failures.still,
+  });
   return { status: "recorded", reset, stills };
 });
 
