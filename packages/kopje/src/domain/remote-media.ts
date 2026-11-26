@@ -1036,11 +1036,13 @@ function queueStill(db: Db, slot: string, token: string, stills: StillsActivatio
   if (!stillsActive(db, stills, now)) {
     return;
   }
-  const qualifies = db.first(
-    `SELECT 1 AS x FROM remote_media r WHERE r.id = CAST(?1 AS INTEGER) AND ${stillQualifiesSql("r")}`,
+  // The slot by its rowid, the rule evaluated in the projection on that row alone (remote-media-stills.ts slotRowHolds).
+  const qualifies = db.first<{ qualifies: number }>(
+    `SELECT CASE WHEN ${stillQualifiesSql("r")} THEN 1 ELSE 0 END AS qualifies FROM remote_media r
+			WHERE r.id = CAST(?1 AS INTEGER)`,
     slot,
   );
-  if (qualifies !== undefined) {
+  if (qualifies?.qualifies === 1) {
     db.run(
       "INSERT INTO remote_media_stills (token, state, claims, due_at, still_charge) VALUES (?1, 'queued', 0, ?2, 0)",
       token,

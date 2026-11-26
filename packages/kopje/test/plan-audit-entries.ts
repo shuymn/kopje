@@ -1324,30 +1324,6 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-media.ts#<anonymous> in maintainRemoteMedia); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "26383ec040af8d9f",
-    scans: ["remote_media: SCAN r USING INDEX remote_media_owner"],
-    site: "src/domain/remote-media.ts#queueStill < src/domain/remote-media.ts#<anonymous>",
-    disposition: "background",
-    reason:
-      'a job or round traversal (remote-media.ts#<anonymous> in recordRemoteMedia, the slot it records); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "2938936fede8bc57",
-    scans: ["remote_media: SCAN r USING INDEX remote_media_owner"],
-    site: "src/domain/remote-media-stills.ts#<anonymous>",
-    disposition: "background",
-    reason:
-      'a job or round traversal (remote-media-stills.ts, one still claim a cron tick); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "c5ba187b2ab7a81f",
-    scans: ["remote_media: SCAN r USING INDEX remote_media_owner"],
-    site: "src/domain/remote-media-stills.ts#slotHolds < src/domain/remote-media-stills.ts#<anonymous>",
-    disposition: "background",
-    reason:
-      'a job or round traversal (remote-media-stills.ts, one still claim a cron tick); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
     id: "e3baadedab9c6595",
     scans: ["remote_media: SCAN r USING INDEX remote_media_expiry"],
     site: "src/domain/remote-media.ts#fenced < src/domain/remote-media.ts#<anonymous> in admitRemoteMedia",

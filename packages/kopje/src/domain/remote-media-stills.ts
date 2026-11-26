@@ -91,15 +91,25 @@ function rowOf(db: Db, token: unknown): Row | undefined {
 }
 
 // Whether the object `token` is stored and its slot is its current one, eligible (remote-media.ts slotEligibleSql) and
-// qualifying (stillQualifiesSql).
+// qualifying (stillQualifiesSql): the ledger row by its key, then the slot by its rowid (slotRowHolds).
 function slotHolds(db: Db, token: string): boolean {
+  const object = db.first<{ slot_id: number | null }>(
+    "SELECT slot_id FROM remote_media_objects WHERE token = ?1 AND state = 'stored'",
+    token,
+  );
+  return object?.slot_id != null && slotRowHolds(db, object.slot_id, token);
+}
+
+// Whether the slot `slot` names `token` and is eligible and qualifying: one seek of its rowid, its eligibility evaluated
+// in the projection on that row alone, so the planner cannot turn the terms' EXISTS into joins that walk remote_media.
+function slotRowHolds(db: Db, slot: number, token: string): boolean {
   return (
-    db.first(
-      `SELECT 1 AS x FROM remote_media_objects o CROSS JOIN remote_media r ON r.id = o.slot_id
-			WHERE o.token = ?1 AND o.state = 'stored' AND r.token = o.token AND ${slotEligibleSql("r")}
-				AND ${stillQualifiesSql("r")}`,
+    db.first<{ holds: number }>(
+      `SELECT CASE WHEN r.token = ?2 AND ${slotEligibleSql("r")} AND ${stillQualifiesSql("r")} THEN 1 ELSE 0 END AS holds
+			FROM remote_media r WHERE r.id = ?1`,
+      slot,
       token,
-    ) !== undefined
+    )?.holds === 1
   );
 }
 
@@ -173,10 +183,9 @@ export const claimRemoteStill = writeOperation.atStoreTime("now")<
   if (restore !== null && (now - restore < REMOTE_SETTLE_MS || restore > validated)) {
     return { status: "restoring" };
   }
-  const walk = db.all<Row & { token: string; object: string | null; holds: number }>(
+  const walk = db.all<Row & { token: string; object: string | null; slot: number | null }>(
     `SELECT w.token, st.state, st.claims, st.claimed_at, st.attempt, st.outcome, st.still_charge, o.state AS object,
-				EXISTS (SELECT 1 FROM remote_media r WHERE r.id = o.slot_id AND r.token = o.token AND ${slotEligibleSql("r")}
-					AND ${stillQualifiesSql("r")}) AS holds
+				o.slot_id AS slot
 			FROM (SELECT token, due_at FROM remote_media_stills INDEXED BY remote_media_stills_due WHERE due_at <= ?1
 				ORDER BY due_at LIMIT ${STILL_CLAIM_WALK}) w
 			CROSS JOIN remote_media_stills st ON st.token = w.token
@@ -197,7 +206,7 @@ export const claimRemoteStill = writeOperation.atStoreTime("now")<
       db.run("UPDATE remote_media_stills SET due_at = NULL WHERE token = ?1", row.token);
       continue;
     }
-    if (row.holds !== 1) {
+    if (row.slot === null || !slotRowHolds(db, row.slot, row.token)) {
       chargeStill(db, row.token, -row.still_charge);
       bytes -= row.still_charge;
       db.run("DELETE FROM remote_media_stills WHERE token = ?1", row.token);

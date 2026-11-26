@@ -41,6 +41,7 @@ import { sql } from "./api-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD, rejectionOf } from "./helpers";
 import { dumpViaRpc } from "./ops-helpers";
+import { plannedRun, type PlannedStatement, staleStatistics } from "./read-helpers";
 import { mp4 } from "./remote-media-fixtures";
 import { claimWith, fence, mediaWorld, type MediaWorld } from "./remote-media-helpers";
 
@@ -293,6 +294,84 @@ describe("the queue (P18a, P18b)", () => {
     expect(await slotOf(w, claimed.slot)).toMatchObject({ token: null });
     expect(await w.usage()).toEqual(usage);
   });
+});
+
+describe("the slot's seek (P19e)", () => {
+  it(
+    "seeks the slot by its rowid in the queue, the claim's walk and the record, reading as much after ANALYZE and growth",
+    { timeout: 180_000 },
+    async () => {
+      const w = await mediaWorld();
+      await passStill(w);
+      // One pass of the three: a video's record queues its still, the claim walks to it, and its record names it.
+      const capture = async () => {
+        const account = await w.remote({ avatar: null });
+        const { media } = await w.attach(account.id, `https://files.example/seek/${++videos}.mp4`, { type: "video" });
+        const pending = (await claimWith(w, token, 8)).claims.find((c) => c.kind === "attachment")!;
+        const queued = await plannedRun(w.t, /AS qualifies/, recordRemoteMedia, {
+          ...fence(pending),
+          now: w.clock.now,
+          outcome: {
+            kind: "stored",
+            contentType: "video/mp4",
+            stillType: null,
+            bytes: 1000,
+            hosts: ["files.example"],
+            category: "video",
+          },
+          stills: STILLS,
+        });
+        expect(queued.result).toEqual({ held: true });
+        const claimed = await plannedRun(w.t, /AS holds|ORDER BY due_at LIMIT/, claimRemoteStill, {
+          ...STILLS,
+          cap: CAP,
+          now: w.clock.now,
+          restoredAt: null,
+        });
+        expect(claimed.result).toMatchObject({ status: "claimed", token: pending.token });
+        const attempt = (claimed.result as { attempt: string }).attempt;
+        const recorded = await plannedRun(w.t, /AS holds|SELECT slot_id FROM remote_media_objects/, recordRemoteStill, {
+          token: pending.token,
+          attempt,
+          facts: { bytes: 5000, blurhash: BLURHASH },
+          now: w.clock.now,
+          restoredAt: null,
+        });
+        expect(recorded.result).toEqual({ status: "recorded" });
+        expect(media).not.toBe("");
+        return [...queued.plans, ...claimed.plans, ...recorded.plans];
+      };
+      const { before, after } = await staleStatistics(w.t, {
+        capture,
+        // Past the 20,000 pending slots the cache keeps: attachment slots of other owners, around the video's in the
+        // owner index.
+        grow: () =>
+          sql(
+            w.t.store,
+            `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 21000)
+						INSERT INTO remote_media (kind, owner_id, account_id, url, host, category, lane, generation, enqueued_at)
+						SELECT 'attachment', printf('6%017d', i), printf('6%017d', i), 'https://files.example/extra/' || i,
+							'files.example', 'video', 1, 0, 1 FROM n`,
+          ),
+      });
+      const shape = (plans: PlannedStatement[]) => plans.map((p) => p.query.slice(0, 40));
+      expect(shape(after)).toEqual(shape(before));
+      // The queue's rule, the walk, the walk's slot, the record's ledger row and slot, and its write of the slot.
+      expect(before).toHaveLength(6);
+      for (const plans of [before, after]) {
+        for (const { plan } of plans) {
+          expect(
+            plan.filter((d) => /^SCAN (r|o|st)\b/.test(d)),
+            plan.join("\n"),
+          ).toEqual([]);
+        }
+        for (const { query, plan } of plans.filter((p) => /AS (holds|qualifies)/.test(p.query))) {
+          expect(plan, query).toContain("SEARCH r USING INTEGER PRIMARY KEY (rowid=?)");
+        }
+      }
+      expect(after.map((p) => p.rows)).toEqual(before.map((p) => p.rows));
+    },
+  );
 });
 
 describe("the claim (P19a)", () => {
