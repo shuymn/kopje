@@ -15,6 +15,7 @@ import {
   chargePosterTransforms,
   chargeUploadJob,
   deleteOwnMedia,
+  fenced,
   DETACHED_GRACE_MS,
   DOOMED_AT,
   describeMedia,
@@ -349,16 +350,6 @@ function avReservation(att: Attachment): boolean {
 // same as none, so they never answer for it or doom it.
 function avAttachment(att: Attachment | null): Attachment | null {
   return att !== null && avReservation(att) ? att : null;
-}
-
-// K3's fence: the attachment was reserved at or before the last restore. Asked only where K3 decides the answer or the
-// write, so the marker is read (and an unknown one refuses) only there (restoreTime).
-function fenced(att: Attachment | null, restoredAt: Marker): boolean {
-  if (att === null) {
-    return false;
-  }
-  const at = restoreTime(restoredAt);
-  return at !== null && Date.parse(att.created_at) <= at;
 }
 
 function deleteRow(db: Db, id: string): void {

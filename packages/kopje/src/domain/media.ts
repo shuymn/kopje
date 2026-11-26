@@ -120,15 +120,11 @@ export const DOOMED_AT = iso(0);
 // or audio upload's thumbnail (media-thumbnails.ts), current or retired (MEDIA-1, MEDIA-5). `now` is a parameter
 // expression, the Store's time (#1828 plan section 3, "One media clock").
 export function liveMediaSql(m: string, now: string): string {
-  return `(${m}.thumbnail_of IS NULL AND ${usableMediaSql(m, now)})`;
-}
-
-// liveMediaSql but for the thumbnail clause: what a thumbnail link asks of the image it links (thumbnailLinkSql).
-function usableMediaSql(m: string, now: string): string {
-  return `(${m}.processed = 1 AND ${m}.url <> '' AND (${m}.gc_at IS NULL OR ${m}.gc_at > ${now})
+  const usable = `(${m}.processed = 1 AND ${m}.url <> '' AND (${m}.gc_at IS NULL OR ${m}.gc_at > ${now})
 		AND NOT EXISTS (SELECT 1 FROM accounts ${m}_pa WHERE ${m}_pa.id = ${m}.account_id
 			AND ${m}.url IN (${m}_pa.avatar_url, ${m}_pa.header_url))
 		AND ${notEmojiSql(m)})`;
+  return `(${m}.thumbnail_of IS NULL AND ${usable})`;
 }
 
 // The link predicate (#1828 PR6, media-thumbnails.ts): the image upload `c` may become the thumbnail of the upload `p`.
@@ -136,8 +132,18 @@ function usableMediaSql(m: string, now: string): string {
 // video or audio upload. The caller names `c` by its id and its file token, the reservation it made. S3 and the
 // owner's PUT link through it (media-processing.ts queueNormalize, updateOwnerMedia).
 export function thumbnailLinkSql(c: string, p: string, now: string): string {
-  return `${c}.thumbnail_of IS NULL AND ${c}.status_id IS NULL AND ${c}.scheduled_status_id IS NULL
-		AND ${usableMediaSql(c, now)} AND ${thumbnailChildSql(c, p)}`;
+  return `${c}.status_id IS NULL AND ${c}.scheduled_status_id IS NULL AND ${liveMediaSql(c, now)}
+		AND ${thumbnailChildSql(c, p)}`;
+}
+
+// K3's fence: the upload `row` was reserved at or before the last restore. Asked only where K3 decides the answer or the
+// write, so the marker is read (and an unknown one refuses) only there (restoreTime).
+export function fenced(row: { created_at: string } | null, restoredAt: Marker): boolean {
+  if (row === null) {
+    return false;
+  }
+  const at = restoreTime(restoredAt);
+  return at !== null && Date.parse(row.created_at) <= at;
 }
 
 // MEDIA-5: a custom emoji's image (migration 0055_local_custom_emojis) is kept for good, disabled or not, imported
@@ -270,11 +276,7 @@ function reserveThumbnail(
     parent.stagedAt,
     storeNow,
   );
-  if (staging === undefined) {
-    return { status: "staging_gone" };
-  }
-  const restored = restoreTime(input.restoredAt);
-  if (restored !== null && Date.parse(staging.created_at) <= restored) {
+  if (staging === undefined || fenced(staging, input.restoredAt)) {
     return { status: "staging_gone" };
   }
   const refused = budgetRefusal(db, accountId, input.monthlyTransforms, input.now);
@@ -504,11 +506,8 @@ export const startTransforms = userWriteOperation.atStoreTime("storeNow")<
   if (open === undefined) {
     return { status: "expired" };
   }
-  if (open.type === AV_CANDIDATE_TYPE) {
-    const restored = restoreTime(restoredAt);
-    if (restored !== null && Date.parse(open.created_at) <= restored) {
-      return { status: "expired" };
-    }
+  if (open.type === AV_CANDIDATE_TYPE && fenced(open, restoredAt)) {
+    return { status: "expired" };
   }
   const refused = budgetRefusal(db, accountId, monthlyTransforms, now);
   if (refused !== null) {
