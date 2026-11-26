@@ -137,7 +137,7 @@ import { ACCOUNT_EMOJIS_FULL, accountAtCap, padded, STATUS_EMOJIS_FULL, statusAt
 import { BUILD, freshStore as newStore, migratedStore, rejectionOf, tableNames, testKernel as kernel } from "./helpers";
 import { BREAK_WITNESSES } from "./migration-fixtures";
 import { TEMPLATE_FIXTURES } from "./oembed-template-fixtures";
-import { watchedCursor } from "./read-helpers";
+import { explainPlan, watchedCursor } from "./read-helpers";
 import { byText } from "./sort";
 import {
   blurhashOf,
@@ -16260,7 +16260,9 @@ describe("0123_media_thumbnails", () => {
         expect(refused, name).toThrow(REFUSED);
       }
       // A second current child of the parent: the unique index.
-      expect(insert(sql, { id: SECOND, file_token: token("d") })).toThrow(/UNIQUE/);
+      expect(insert(sql, { id: SECOND, file_token: token("d") })).toThrow(
+        /UNIQUE constraint failed: media_attachments.thumbnail_of/,
+      );
       // Retired, its parent gone: allowed while retired; refused when made current, or given its parent's id (no row
       // holds that id, so no primary key refuses it).
       set("gc_at = ?, url = '', thumbnail_of = ?", T, GONE)();
@@ -16284,27 +16286,22 @@ describe("0123_media_thumbnails", () => {
   // current child through media_attachments_thumbnail, the UPDATE guard the parent by its key.
   it("seeks the current child and the parent by their keys in the trigger bodies", async () => {
     await upgraded((sql) => {
-      const plan = (query: string, ...values: SqlStorageValue[]) =>
-        sql
-          .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, ...values)
-          .toArray()
-          .map((row) => row.detail);
       expect(
-        plan(
+        explainPlan(
+          sql,
           "UPDATE media_attachments SET gc_at = '1970-01-01T00:00:00.000Z', url = '' WHERE thumbnail_of = ? AND gc_at IS NULL",
           PARENT,
         ),
-      ).toEqual([
-        expect.stringMatching(/^SEARCH media_attachments USING INDEX media_attachments_thumbnail \(thumbnail_of=\?\)$/),
-      ]);
+      ).toBe("SEARCH media_attachments USING INDEX media_attachments_thumbnail (thumbnail_of=?)");
       expect(
-        plan(
+        explainPlan(
+          sql,
           `SELECT 1 FROM media_attachments p WHERE p.id = ? AND p.account_id = ? AND p.file_token IS NOT NULL
 						AND p.type IN ('video', 'audio')`,
           PARENT,
           A,
         ),
-      ).toEqual([expect.stringMatching(/^SEARCH p USING INDEX sqlite_autoindex_media_attachments_1 \(id=\?\)$/)]);
+      ).toBe("SEARCH p USING INDEX sqlite_autoindex_media_attachments_1 (id=?)");
     });
   });
 

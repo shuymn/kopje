@@ -1670,7 +1670,10 @@ describe("dump", () => {
       ["a retired child that keeps its url", "none", { gc_at: T }],
       ["a retired child never completed", "none", { gc_at: T, url: "", processed: 0 }],
     ] as const) {
-      for (const order of ["child first", "parent first"] as const) {
+      // Without a parent row the order is the same dump: one case.
+      for (const order of parentOf === "none"
+        ? (["child first"] as const)
+        : (["child first", "parent first"] as const)) {
         it(`refuses ${name} (${order}) as thumbnail-link-invalid`, async () => {
           const source = await seeded(0);
           await runInDurableObject(source, (_instance, state) => {

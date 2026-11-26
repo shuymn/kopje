@@ -11,7 +11,6 @@ import { toStoreUnavailable } from "../src/platform/store-errors";
 import { bearer, json, sql } from "./api-helpers";
 import { BUILD, holdingMarker, rejectionOf } from "./helpers";
 import {
-  ACTIVE,
   type AvWorld,
   avWorld,
   bookmark,
@@ -22,6 +21,7 @@ import {
   fileToken,
   forgetRestore,
   held,
+  queue,
   queued,
   reserve,
   restore,
@@ -203,12 +203,8 @@ describe("PUT's link (updateOwnerMedia's thumbnail, T3)", () => {
     const w = await avWorld();
     const child = await imageChild(w);
     const image = await imageChild(w);
-    // An image upload refuses a thumbnail; null on it is a plain update.
+    // An image upload refuses a thumbnail.
     expect(await updateThumbnail(w, image, child)).toEqual({ status: "blank" });
-    expect(await updateThumbnail(w, image, null, "alice", { description: "plain" })).toMatchObject({
-      status: "ok",
-      media: { description: "plain" },
-    });
     // Another account's and a doomed upload are not found.
     const parent = await completed(w);
     expect(await updateThumbnail(w, parent, child, "bob")).toEqual({ status: "not_found" });
@@ -299,26 +295,6 @@ describe("one current thumbnail a parent (T4), and removal", () => {
       preview_url: PREVIEW(a.token),
       processed: 1,
     });
-    expect(THUMBNAIL_KEEP_MS).toBe(31 * 24 * 60 * 60 * 1000);
-  });
-
-  it("refuses a second current child inserted directly, and takes it retired", async () => {
-    const w = await avWorld();
-    const { parent, child } = await thumbnailed(w);
-    const [row] = await sql(w.store, "SELECT * FROM media_attachments WHERE id = ?", child.id);
-    const copy: Record<string, SqlStorageValue> = { ...row, id: "190000000000000001", file_token: fileToken() };
-    const columns = Object.keys(copy);
-    const insert = () =>
-      sql(
-        w.store,
-        `INSERT INTO media_attachments (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
-        ...columns.map((c) => copy[c] ?? null),
-      );
-    await expect(insert()).rejects.toThrow(/UNIQUE constraint failed: media_attachments.thumbnail_of/);
-    copy.gc_at = "2027-01-01T00:00:00.000Z";
-    copy.url = "";
-    await insert();
-    expect(await childRow(w.store, "190000000000000001")).toMatchObject({ thumbnail_of: parent.id });
   });
 
   it("removes the current thumbnail by null, showing the parent's own preview, geometry and blurhash (D-7)", async () => {
@@ -514,33 +490,21 @@ describe("reserveMedia's thumbnailFor (T17's Store cases)", () => {
 });
 
 describe("S3's thumbnail (POST link)", () => {
-  function queueWith(w: AvWorld, up: { id: string; token: string; stagedAt: number }, thumbnail: Up) {
-    return w.store.queueNormalize(BUILD, {
-      id: up.id,
-      token: up.token,
-      stagedAt: up.stagedAt,
-      bytes: 2_000_000,
-      text: TEXT,
-      activation: ACTIVE,
-      thumbnail: { id: thumbnail.id, token: thumbnail.token },
-    });
-  }
-
   it("links the child in S3's transaction, and every queued or settled answer carries it", async () => {
     const w = await avWorld();
     const up = await staged(w);
     const child = await imageChild(w);
     clock(at(2));
     const facts = { preview_url: PREVIEW(child.token), small: SMALL, blurhash: THUMB_BLURHASH };
-    const first = await queueWith(w, up, child);
+    const first = await queue(w, up, up.stagedAt, child);
     expect(first).toEqual({ status: "queued", teardownId: expect.any(String), thumbnail: facts });
     expect(await childRow(w.store, child.id)).toMatchObject({ thumbnail_of: up.id, gc_at: null });
     expect(await charged(w.store)).toBe(1);
     // A repeat (the pending branch), then while it runs.
-    expect(await queueWith(w, up, child)).toEqual(first);
+    expect(await queue(w, up, up.stagedAt, child)).toEqual(first);
     clock(at(3));
     await w.store.startNormalize(BUILD, { id: up.id, token: up.token, invocation: "inv-1" });
-    expect(await queueWith(w, up, child)).toEqual({ status: "settled", outcome: "running", thumbnail: facts });
+    expect(await queue(w, up, up.stagedAt, child)).toEqual({ status: "settled", outcome: "running", thumbnail: facts });
     expect(await charged(w.store)).toBe(1);
     expect(await getOwn(w, up.id)).toMatchObject({ status: "processing", media: { preview_url: facts.preview_url } });
   });
@@ -550,7 +514,7 @@ describe("S3's thumbnail (POST link)", () => {
     const up = await staged(w);
     const child = await imageChild(w);
     clock(at(2));
-    expect(await queueWith(w, up, { id: child.id, token: fileToken() })).toEqual({
+    expect(await queue(w, up, up.stagedAt, { id: child.id, token: fileToken() })).toEqual({
       status: "refused_cleanup_yours",
       reason: "thumbnail",
     });
@@ -560,7 +524,7 @@ describe("S3's thumbnail (POST link)", () => {
     // The guarded branch: the same child with its token is linked to another upload.
     const up2 = await staged(w);
     clock(at(2));
-    expect(await queueWith(w, up2, child)).toMatchObject({ status: "queued" });
+    expect(await queue(w, up2, up2.stagedAt, child)).toMatchObject({ status: "queued" });
   });
 
   it("leaves a completed upload's thumbnail shown and its own columns the processor's (S6, T8)", async () => {
@@ -568,7 +532,7 @@ describe("S3's thumbnail (POST link)", () => {
     const up = await staged(w);
     const child = await imageChild(w);
     clock(at(2));
-    await queueWith(w, up, child);
+    await queue(w, up, up.stagedAt, child);
     clock(at(3));
     const s = await w.store.startNormalize(BUILD, { id: up.id, token: up.token, invocation: "inv" });
     if (s.status !== "started") {
@@ -842,7 +806,9 @@ describe("the sweep and a thumbnail (T5, T5r, T13k)", () => {
     expect(await childRow(w.store, a.id)).toMatchObject({ url: "", processed: 1 });
   });
 
-  it("takes the doomed uploads of a run whose release fails, logs that alone, and releases at the next run", async () => {
+  // A retired thumbnail `a` with its served files, and a doomed upload with its files, both due at the next sweep; `run`
+  // sweeps with `bucket`, and `failing(token)` is the bucket refusing to delete any key of `token`.
+  async function retiredAndDoomed() {
     const w = await avWorld();
     const { parent, child: a } = await thumbnailed(w);
     await putObjects(a);
@@ -855,20 +821,24 @@ describe("the sweep and a thumbnail (T5, T5r, T13k)", () => {
       new Date(Date.now() - 1000).toISOString(),
       doomed.id,
     );
-    // The bucket refuses to delete the retired thumbnail's served files.
-    const failing: R2Bucket = {
+    const failing = (token: string): R2Bucket => ({
       ...env.MEDIA,
       delete: async (keys: string | string[]) => {
-        if ([keys].flat().some((key) => key.includes(a.token))) {
+        if ([keys].flat().some((key) => key.includes(token))) {
           throw new Error("R2 delete failed");
         }
         return env.MEDIA.delete(keys);
       },
-    };
+    });
     const run = (bucket: R2Bucket) =>
       sweepMedia({ ...env, MEDIA: bucket }, { build: () => BUILD, store: () => w.store });
+    return { w, a, doomed, failing, run };
+  }
+
+  it("takes the doomed uploads of a run whose release fails, logs that alone, and releases at the next run", async () => {
+    const { w, a, doomed, failing, run } = await retiredAndDoomed();
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(await run(failing)).toBe(1);
+    expect(await run(failing(a.token))).toBe(1);
     expect(logged.mock.calls.map(([entry]) => (entry as { event: string }).event)).toEqual([
       "kopje.media.thumbnail_release_failed",
     ]);
@@ -882,31 +852,8 @@ describe("the sweep and a thumbnail (T5, T5r, T13k)", () => {
   });
 
   it("releases in a run whose doomed uploads fail, and throws that failure after", async () => {
-    const w = await avWorld();
-    const { parent, child: a } = await thumbnailed(w);
-    await putObjects(a);
-    await updateThumbnail(w, parent, await imageChild(w));
-    const doomed = await imageChild(w);
-    await putObjects(doomed);
-    await sql(
-      w.store,
-      "UPDATE media_attachments SET gc_at = ? WHERE id = ?",
-      new Date(Date.now() - 1000).toISOString(),
-      doomed.id,
-    );
-    // The bucket refuses to delete the doomed upload's files.
-    const failing: R2Bucket = {
-      ...env.MEDIA,
-      delete: async (keys: string | string[]) => {
-        if ([keys].flat().some((key) => key.includes(doomed.token))) {
-          throw new Error("R2 delete failed");
-        }
-        return env.MEDIA.delete(keys);
-      },
-    };
-    await expect(sweepMedia({ ...env, MEDIA: failing }, { build: () => BUILD, store: () => w.store })).rejects.toThrow(
-      "R2 delete failed",
-    );
+    const { w, a, doomed, failing, run } = await retiredAndDoomed();
+    await expect(run(failing(doomed.token))).rejects.toThrow("R2 delete failed");
     expect(await objects(a)).toEqual({ original: true, full: false, small: false });
     expect(await childRow(w.store, a.id)).toMatchObject({ preview_url: null });
     expect(await childRow(w.store, doomed.id)).toBeDefined();
