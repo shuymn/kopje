@@ -5138,12 +5138,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   restore, else `staging_gone` (the staging exit's 503) with nothing counted. `PUT`/`PATCH /api/v1/media/:id` with a
   thumbnail counts one attempt, as an avatar or header upload does. Every refusal of the form, the target or its state
   comes before the reservation, so it charges nothing; a thumbnail whose link is refused after it was made keeps its
-  attempt and charge, as an image upload that fails after Images does. The video's own still is still made under its
-  own admission. `test/media-av-thumbnails.test.ts` ("takes the 30th POST of the window with a thumbnail: the thumbnail
+  attempt and charge, as an image upload that fails after Images does. The video's own still is still made under its own
+  admission. `test/media-av-thumbnails.test.ts` ("takes the 30th POST of the window with a thumbnail: the thumbnail
   takes no attempt (fork h)", "links a thumbnail sent …"), `test/media-thumbnail-put.test.ts` ("links it on an
-  unattached video and a scheduled audio file, one attempt and the Images charge each (T14, T17)", "judges in
-  Mastodon's order, charging nothing", "keeps the attempt and charge of a thumbnail whose link is refused"),
-  `test/media-thumbnails.test.ts` ("reserveMedia's thumbnailFor (T17's Store cases)").
+  unattached video and a scheduled audio file, one attempt and the Images charge each (T14, T17)", "judges in Kopje's
+  order, the form before the failed state, charging nothing", "keeps the attempt and charge of a thumbnail whose link is
+  refused"), `test/media-thumbnails.test.ts` ("reserveMedia's thumbnailFor (T17's Store cases)").
   _Enforced (main)_ for remote stills (#1828): the cron's stills round claims at most one still a tick, each claim
   charged one unit of `MEDIA_STILL_MONTHLY_JOBS` (per UTC month of the Store's clock, covering its container and its at
   most two Images transformations and one metadata call, which `IMAGES_MONTHLY_TRANSFORMS` does not count), at most

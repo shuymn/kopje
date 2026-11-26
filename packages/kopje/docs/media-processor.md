@@ -190,8 +190,8 @@ and it is charged three transformations to the instance's and the account's Imag
 upload it is made after the file is staged and before the queue, within the staging's own time, and takes no attempt of
 its own (the upload's one counts); on `PUT` it counts one attempt. The video's own still is made beside it as without
 one, under its own admission, and shows again once the thumbnail is removed. A replaced or removed thumbnail's served
-files are deleted by the next sweep; its original is kept 31 days (the point-in-time window plus a day) so a restore
-can bring it back.
+files are deleted by the first successful release batch that lists it; its original is kept 31 days (the point-in-time
+window plus a day) so a restore can bring it back.
 
 ## Capacity and cleanup
 

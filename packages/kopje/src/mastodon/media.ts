@@ -79,7 +79,7 @@ export const RECEIVE_TOO_LONG = "Media processing took too long to receive. Try 
 export const UNAVAILABLE = "Media processing is unavailable. Try again later.";
 
 // MediaAttachment validates `thumbnail, absence: true` unless the media is audio or video (Mastodon v4.7.5
-// app/models/media_attachment.rb:210): an image refuses any thumbnail; a video or audio file takes an image, made by
+// app/models/media_attachment.rb:195): an image refuses any thumbnail; a video or audio file takes an image, made by
 // Images as an image upload is (#1828 PR6, D26: makeThumbnail). Sent: any file part, or non-empty text (a data URI is
 // assigned through Paperclip's DataUriAdapter; other text has no handler and answers 500 there, 422 here: D-3). Empty
 // text is absent, and so is JSON null, which on a video or audio file removes its thumbnail (removal).
@@ -733,10 +733,12 @@ async function replyOf<T>(call: () => Promise<T>): Promise<T | typeof LOST> {
 }
 
 // A PUT or PATCH with a thumbnail (`thumbnail`: a file, or text that is not empty) or removing it (null: JSON null,
-// or the key sent without a value), in Mastodon's order (#1828 PR6 plan, "PUT order"): the upload found (404), the
-// description, the thumbnail judged against the upload's type (an image's must be blank; a video's or audio file's
-// text is refused, D-3, and its file by size and signature), a failed upload's 422, all before anything is charged;
-// then the thumbnail made (storeThumbnail: one attempt and the Images budgets, D-4) and linked by updateOwnerMedia, its
+// or the key sent without a value), in Kopje's order (#1828 PR6 plan, "PUT order"; docs/mastodon-deviations.md): the
+// upload found (404), the description, the thumbnail judged against the upload's type (an image's must be blank; a
+// video's or audio file's text is refused, D-3, and its file by size and signature), then a failed upload's 422, all
+// before anything is charged. Mastodon v4.7.5's MediaController#update answers a failed upload's 422
+// (check_processing) before `update!` validates the thumbnail (app/models/media_attachment.rb:195). Then the
+// thumbnail is made (storeThumbnail: one attempt and the Images budgets, D-4) and linked by updateOwnerMedia, its
 // link repeated once when the reply is lost (the Store keys it on the thumbnail, so a repeat after a later link
 // changes nothing); a removal is sent once, a lost reply answered 503, so it never retires a thumbnail linked after it
 // (fork g). A thumbnail no link commits is discarded, its attempt and charge kept (fork i), and the sweep run after the
