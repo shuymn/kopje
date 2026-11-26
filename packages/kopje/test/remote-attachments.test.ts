@@ -942,6 +942,10 @@ describe("the presented attachment (presentMedia)", () => {
     });
     // No cached icon: an image's still, else the file itself.
     expect(presentMedia(row({ cached: file }), ORIGIN).preview_url).toBe(`${ORIGIN}/media/r/${token("F")}/still.png`);
+    // An uncached remote icon gives way to the cached file of a static image, as to its still.
+    expect(presentMedia(row({ cached: `${token("F")}:png:` }), ORIGIN).preview_url).toBe(
+      `${ORIGIN}/media/r/${token("F")}/full.png`,
+    );
     expect(presentMedia(row({ cached: `${token("F")}:png:`, preview_url: null }), ORIGIN).preview_url).toBe(
       `${ORIGIN}/media/r/${token("F")}/full.png`,
     );

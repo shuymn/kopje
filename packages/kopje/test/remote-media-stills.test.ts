@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { selectSql } from "../src/db/columns";
 import { probeName } from "../src/domain/media-probes";
 import {
   CACHED_MEDIA_BYTES,
@@ -30,13 +31,14 @@ import {
   STILL_LEASE_MS,
 } from "../src/domain/remote-media-stills";
 import { type MediaRow, presentMedia } from "../src/domain/status-presenter";
+import { STATUS_MEDIA_COLUMN_MAP } from "../src/domain/status-rows";
 import { STILL_OUTPUT_LIMIT } from "../src/platform/av-bytes";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
 import { REMOTE_MEDIA_CACHE_MIN_BYTES } from "../src/platform/config";
 import { R2_DELETE_KEYS, remoteMediaPath, restoreMarkerKey } from "../src/platform/media-files";
 import { type Restore, withMarker } from "../src/platform/restore-marker";
 import type { StoreOperation } from "../src/platform/store-kernel";
-import { BLURHASH_BYTES, mediaCacheSql, STILL_CHARGE_MAX } from "../src/platform/stored-bounds";
+import { BLURHASH_BYTES, STILL_CHARGE_MAX } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { harness } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
@@ -840,7 +842,7 @@ describe("the record (P19b)", () => {
 });
 
 describe("the failure (P19c, the Store's part)", () => {
-  it("settles a retry once, releasing its reservation; a replay at a later clock changes nothing", async () => {
+  it("settles a retry once, releasing its reservation; a replay, live lease or later clock, writes nothing", async () => {
     const w = await mediaWorld();
     await passStill(w);
     const v = await video(w, { stills: STILLS });
@@ -857,7 +859,16 @@ describe("the failure (P19c, the Store's part)", () => {
     expect(await stillOf(w, v.token)).toMatchObject({ outcome: "retry", still_charge: 0, due_at: due });
     expect(await chargeOf(w, v.token)).toBe(reserved! - STILL_OUTPUT_LIMIT);
     // keepLease: the lease stays.
-    expect(await leaseOf(w)).toMatchObject({ holder: attempt });
+    const held = await leaseOf(w);
+    expect(held).toMatchObject({ holder: attempt });
+    // A replay while the lease is live, asking for its release: a pure answer, the lease kept.
+    at(w, claimedAt + 1001);
+    expect(await failStill(w, v.token, attempt, "retry", false, "unknown")).toEqual({
+      out: { status: "settled", outcome: "retry" },
+      reads: 0,
+    });
+    expect(await leaseOf(w)).toEqual(held);
+    // Five hours on, asking for another outcome.
     at(w, claimedAt + 5 * 60 * 60 * 1000);
     expect(await failStill(w, v.token, attempt, "park", false, "unknown")).toEqual({
       out: { status: "settled", outcome: "retry" },
@@ -865,25 +876,8 @@ describe("the failure (P19c, the Store's part)", () => {
     });
     expect(await stillOf(w, v.token)).toMatchObject({ outcome: "retry", still_charge: 0, due_at: due });
     expect(await chargeOf(w, v.token)).toBe(reserved! - STILL_OUTPUT_LIMIT);
-    // A replay is a pure answer: the lease the settlement kept stays, whatever keepLease says.
-    expect(await leaseOf(w)).toMatchObject({ holder: attempt });
-    await totalsAgree(w);
-  });
-
-  it("does not release a held lease on failure replay", async () => {
-    const w = await mediaWorld();
-    await passStill(w);
-    const v = await video(w, { stills: STILLS });
-    const { attempt } = (await claim(w)).out as { attempt: string };
-    await failStill(w, v.token, attempt, "retry", true);
-    const held = await leaseOf(w);
-    expect(held).toMatchObject({ holder: attempt });
-    at(w, w.clock.now + 1);
-    expect(await failStill(w, v.token, attempt, "retry", false, "unknown")).toEqual({
-      out: { status: "settled", outcome: "retry" },
-      reads: 0,
-    });
     expect(await leaseOf(w)).toEqual(held);
+    await totalsAgree(w);
   });
 
   it("parks on the first claim, and settles a failure past claimed_at + STILL_ROUND_MS", async () => {
@@ -1222,13 +1216,11 @@ describe("slot writers clear a named still (P21b)", () => {
 
 describe("presentation (P21a, P21c)", () => {
   const ORIGIN = "https://kopje.test";
-  // The attachment row as the status presenter reads it, its packed columns from the production SQL.
+  // The attachment row as the status presenter reads it: the production column map.
   const presented = async (w: MediaWorld, media: string) => {
     const [row] = await sql<MediaRow>(
       w.t.store,
-      `SELECT m.id, m.type, m.url, m.preview_url, m.description, m.meta, NULL AS focus_x, 0 AS focus_y, m.blurhash,
-				1 AS remote, ${mediaCacheSql("m", "attachment")} AS cached, ${mediaCacheSql("m", "thumbnail")} AS cached_preview
-			FROM media_attachments m WHERE m.id = ?`,
+      `SELECT ${selectSql(STATUS_MEDIA_COLUMN_MAP)} FROM media_attachments m WHERE m.id = ?`,
       media,
     );
     return presentMedia({ ...row!, description: row!.description ?? "" }, ORIGIN);
@@ -1277,27 +1269,6 @@ describe("presentation (P21a, P21c)", () => {
     await sql(w.t.store, "UPDATE media_attachments SET url = ? WHERE id = ?", `${v.url}?2`, v.media);
     await w.db((d) => syncAttachmentFiles(d, v.media, w.clock.now));
     expect(await presented(w, v.media)).toMatchObject({ preview_url: `${ORIGIN}${VIDEO_POSTER}`, blurhash: null });
-  });
-
-  it("keeps an image's cached preview: its file over an uncached remote icon, or its animated still", () => {
-    const row = (over: Partial<MediaRow>): MediaRow => ({
-      id: "800000000000000001",
-      type: "image",
-      url: "https://files.example/m/1.png",
-      preview_url: "https://files.example/p/1.png",
-      description: "",
-      meta: null,
-      focus_x: null,
-      focus_y: 0,
-      blurhash: null,
-      remote: 1,
-      cached: null,
-      cached_preview: null,
-      ...over,
-    });
-    const t = "F".repeat(43);
-    expect(presentMedia(row({ cached: `${t}:png:` }), ORIGIN).preview_url).toBe(`${ORIGIN}/media/r/${t}/full.png`);
-    expect(presentMedia(row({ cached: `${t}:gif:png` }), ORIGIN).preview_url).toBe(`${ORIGIN}/media/r/${t}/still.png`);
   });
 
   it("parses a packed file at CACHED_MEDIA_BYTES, and refuses one past it or malformed", () => {
