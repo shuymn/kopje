@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { selectSql } from "../src/db/columns";
 import { probeName } from "../src/domain/media-probes";
 import {
   LATE_PUT_MS,
@@ -10,6 +11,8 @@ import {
   REMOTE_SETTLE_MS,
   VALIDATION_FAILURES,
 } from "../src/domain/remote-media";
+import { type MediaRow, presentMedia } from "../src/domain/status-presenter";
+import { STATUS_MEDIA_COLUMN_MAP } from "../src/domain/status-rows";
 import { remoteStillsRound, type RemoteStillsDeps } from "../src/jobs/remote-stills";
 import { type RemoteVariant, remoteMediaPath, restoreMarkerKey } from "../src/platform/media-files";
 import type { StillMaker } from "../src/platform/media-transcoder";
@@ -156,9 +159,24 @@ const served = async (w: MediaWorld, token: string, variant: RemoteVariant, type
     )
   ).status;
 
-// After the restore's settle period, validation reaches the token: the still-only reset, the video kept and served, the
-// row queued again with its claims back to 0, the charge totals exact; and a new still is made under a new URL.
+// The attachment as the Mastodon API presents it.
+const ORIGIN = "https://kopje.test";
+const presented = async (w: MediaWorld, media: string) => {
+  const [row] = await sql<MediaRow>(
+    w.t.store,
+    `SELECT ${selectSql(STATUS_MEDIA_COLUMN_MAP)} FROM media_attachments m WHERE m.id = ?`,
+    media,
+  );
+  return presentMedia({ ...row!, description: row!.description ?? "" }, ORIGIN);
+};
+
+// After the restore's settle period, validation reaches the token: the API advertises the restored still until then
+// and the poster after the still-only reset, the video kept and served, the row queued again with its claims back to
+// 0, the charge totals exact; once claims resume, a new still is made under a new URL.
 async function expectStillReset(w: MediaWorld, v: Awaited<ReturnType<typeof cachedVideo>>, restoredAt: number) {
+  const video = `${ORIGIN}/media/r/${v.token}/full.mp4`;
+  const restored = `${ORIGIN}/media/r/${v.token}/s${v.attempt}.webp`;
+  expect(await presented(w, v.media)).toMatchObject({ url: video, preview_url: restored });
   at(w, restoredAt + REMOTE_SETTLE_MS);
   expect((await w.round({}, VARS)).validated).toBe(1);
   expect(await slotStill(w, v.slot)).toEqual({ token: v.token, still_key: null, still_ext: null });
@@ -172,6 +190,7 @@ async function expectStillReset(w: MediaWorld, v: Awaited<ReturnType<typeof cach
   // The object's charge is its file's again: the still's released.
   expect(await w.objects()).toMatchObject([{ token: v.token, state: "stored", charge: v.charge }]);
   expect(await served(w, v.token, "full", "video/mp4")).toBe(200);
+  expect(await presented(w, v.media)).toMatchObject({ url: video, preview_url: `${ORIGIN}/assets/video-poster.png` });
   await w.exact();
   // Claims wait for the walk to end (remote_media_validated_at), which the next maintenance records.
   expect(await stillsRound(w)).toEqual({ status: "unclaimed", claim: { status: "restoring" } });
