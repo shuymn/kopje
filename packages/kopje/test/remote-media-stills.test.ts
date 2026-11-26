@@ -362,6 +362,29 @@ describe("the claim (P19a)", () => {
     expect(await w.t.store.claimRemoteStill(BUILD, { ...STILLS, cap: CAP })).toMatchObject({ status: "claimed" });
   });
 
+  it("prunes the stills counters before the previous month on a claim, and no upload counter", async () => {
+    const w = await mediaWorld();
+    await passStill(w);
+    await video(w, { stills: STILLS });
+    const month = (ms: number) => new Date(ms).toISOString().slice(0, 7);
+    const now = new Date(w.clock.now);
+    const previous = month(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+    const older = month(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 2, 1));
+    for (const name of [`media_still_jobs:${older}`, `media_still_jobs:${previous}`, `media_upload_jobs:${older}`]) {
+      await sql(w.t.store, "INSERT INTO kopje_state (name, value) VALUES (?, '5')", name);
+    }
+    expect((await claim(w)).out).toMatchObject({ status: "claimed" });
+    const counters = await sql<{ name: string; value: string }>(
+      w.t.store,
+      "SELECT name, value FROM kopje_state WHERE name LIKE 'media_%_jobs:%' ORDER BY name",
+    );
+    expect(counters).toEqual([
+      { name: `media_still_jobs:${previous}`, value: "5" },
+      { name: `media_still_jobs:${month(w.clock.now)}`, value: "1" },
+      { name: `media_upload_jobs:${older}`, value: "5" },
+    ]);
+  });
+
   it("reserves STILL_OUTPUT_LIMIT, a unit, a fresh attempt and the lease, with exact charge totals", async () => {
     const w = await mediaWorld();
     await passStill(w);
