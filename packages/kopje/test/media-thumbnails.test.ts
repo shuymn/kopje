@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Db } from "../src/db/sql";
 import { expiredMedia, profileUploadReady, releasedThumbnails, SWEEP_BATCH } from "../src/domain/media";
 import { BACKUP_HOLD_RECHECK_MS, THUMBNAIL_KEEP_MS } from "../src/domain/media-thumbnails";
+import { sweepMedia } from "../src/mastodon/media";
 import { restoreMarkerKey } from "../src/platform/media-files";
 import { toStoreUnavailable } from "../src/platform/store-errors";
 import { bearer, json, sql } from "./api-helpers";
@@ -754,6 +755,40 @@ describe("the sweep and a thumbnail (T5, T5r, T13k)", () => {
     });
     expect(await objects(a)).toMatchObject({ original: true });
     expect(await childRow(w.store, a.id)).toMatchObject({ url: "", processed: 1 });
+  });
+
+  it("takes the doomed uploads of a run whose release fails, and releases at the next run", async () => {
+    const w = await avWorld();
+    const { parent, child: a } = await thumbnailed(w);
+    await putObjects(a);
+    await updateThumbnail(w, parent, await imageChild(w));
+    const doomed = await imageChild(w);
+    await putObjects(doomed);
+    await sql(
+      w.store,
+      "UPDATE media_attachments SET gc_at = ? WHERE id = ?",
+      new Date(Date.now() - 1000).toISOString(),
+      doomed.id,
+    );
+    // The bucket refuses to delete the retired thumbnail's served files.
+    const failing: R2Bucket = {
+      ...env.MEDIA,
+      delete: async (keys: string | string[]) => {
+        if ([keys].flat().some((key) => key.includes(a.token))) {
+          throw new Error("R2 delete failed");
+        }
+        return env.MEDIA.delete(keys);
+      },
+    };
+    const run = (bucket: R2Bucket) =>
+      sweepMedia({ ...env, MEDIA: bucket }, { build: () => BUILD, store: () => w.store });
+    await expect(run(failing)).rejects.toThrow("R2 delete failed");
+    expect(await childRow(w.store, doomed.id)).toBeUndefined();
+    expect(await objects(doomed)).toEqual({ original: false, full: false, small: false });
+    expect(await childRow(w.store, a.id)).toMatchObject({ url: "", preview_url: expect.any(String) });
+    expect(await run(env.MEDIA)).toBe(0);
+    expect(await objects(a)).toEqual({ original: true, full: false, small: false });
+    expect(await childRow(w.store, a.id)).toMatchObject({ preview_url: null });
   });
 
   it("lists SWEEP_BATCH earlier retired thumbnails first, and releases a later one at the next batch", async () => {

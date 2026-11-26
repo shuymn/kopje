@@ -554,13 +554,21 @@ export const deleteMedia: ApiHandler = async (c, deps) => {
 export type SweepDeps = { build: (env: Env) => string; store: StoreResolver };
 
 // Deletes doomed uploads: their R2 objects first, then their rows, one bounded batch (domain/media.ts). Returns how
-// many rows were deleted. In maintenance the Store refuses and the sweep waits for the next run. First the release
+// many rows were deleted. In maintenance the Store refuses and the sweep waits for the next run. Then the release
 // (domain/media-thumbnails.ts): one bounded batch of retired thumbnails, their served files deleted, never their
-// originals, then marked released; a lost mark is redone by the next run, which deletes absent keys.
+// originals, then marked released; a lost mark is redone by the next run, which deletes absent keys. The release runs
+// after the batch, so its failure never holds back a doomed upload.
 export async function sweepMedia(env: Env, deps: SweepDeps): Promise<number> {
   const store = deps.store(env);
   const build = deps.build(env);
+  let purged = 0;
   try {
+    const expired = await callStore(() => store.expiredMedia(build, { limit: SWEEP_BATCH }));
+    if (expired.length > 0) {
+      const keys = expired.flatMap((m) => (m.token === null ? [originalKey(m.id)] : sweptKeys(m.id, m.token)));
+      await deleteKeys(env.MEDIA, keys);
+      purged = await callStore(() => store.purgeMedia(build, { ids: expired.map((m) => m.id) }));
+    }
     const released = await callStore(() => store.releasedThumbnails(build, {}));
     if (released.length > 0) {
       await deleteKeys(
@@ -569,16 +577,10 @@ export async function sweepMedia(env: Env, deps: SweepDeps): Promise<number> {
       );
       await callStore(() => store.forgetThumbnailFiles(build, { ids: released.map((m) => m.id) }));
     }
-    const expired = await callStore(() => store.expiredMedia(build, { limit: SWEEP_BATCH }));
-    if (expired.length === 0) {
-      return 0;
-    }
-    const keys = expired.flatMap((m) => (m.token === null ? [originalKey(m.id)] : sweptKeys(m.id, m.token)));
-    await deleteKeys(env.MEDIA, keys);
-    return await callStore(() => store.purgeMedia(build, { ids: expired.map((m) => m.id) }));
+    return purged;
   } catch (error) {
     if (error instanceof StoreUnavailableError) {
-      return 0;
+      return purged;
     }
     throw error;
   }
