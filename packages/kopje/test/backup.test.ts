@@ -1917,3 +1917,121 @@ describe("SigV4 (independent vectors)", () => {
     });
   }
 });
+
+// G6-4 (#1828 PR6 T12, T12o): a custom thumbnail (media_attachments.thumbnail_of) is backed up while current, and the
+// sweep and the capture are ordered by the Store: a captured child the copying run holds pending is held, and a child
+// the sweep selected is never captured again.
+describe("backup of thumbnails (#1828 PR6)", () => {
+  const PARENT = snowflake(NOW - 3 * DAY);
+  // The video upload the thumbnails belong to; its original is not in R2.
+  async function parent(store: StoreStub): Promise<void> {
+    await sql(
+      store,
+      `INSERT INTO media_attachments (id, account_id, type, url, file_token, content_type, processed)
+			VALUES (?, ?, 'video', 'https://kopje.test/media/v/full.mp4', ?, 'video/mp4', 1)`,
+      PARENT,
+      ACCOUNT,
+      "p".repeat(43),
+    );
+  }
+  async function child(store: StoreStub, id: string, bytes: Uint8Array): Promise<string> {
+    const source = await addMedia(store, id, bytes);
+    await sql(store, "UPDATE media_attachments SET thumbnail_of = ? WHERE id = ?", PARENT, id);
+    return source;
+  }
+  // Replaced and due: url cleared, gc_at past the Store's time (as retireThumbnail and THUMBNAIL_KEEP_MS leave it).
+  async function retire(store: StoreStub, id: string, gcAt = Date.now() - 1000): Promise<void> {
+    await sql(store, "UPDATE media_attachments SET url = '', gc_at = ? WHERE id = ?", new Date(gcAt).toISOString(), id);
+  }
+  const expired = async (store: StoreStub) =>
+    (await store.expiredMedia(BUILD, { limit: 10 })).map((row) => row.id).toSorted();
+  const gcAt = async (store: StoreStub, id: string) =>
+    (await sql<{ gc_at: string }>(store, "SELECT gc_at FROM media_attachments WHERE id = ?", id))[0]!.gc_at;
+  // A run paused in its media stage after its first copy: each media PUT takes the rest of the invocation.
+  function pauseAfterFirstCopy(h: Harness): void {
+    h.s3.before = (op, key) => {
+      if (op === "put" && key?.includes("/media/") === true) {
+        h.s3.before = undefined;
+        h.clock.now += 13 * MINUTE;
+      }
+    };
+  }
+
+  it("indexes a current thumbnail's original, copied with its digest, and no replaced one's (T12)", async () => {
+    const h = await harness();
+    await parent(h.store);
+    const bytes = new TextEncoder().encode("current thumbnail");
+    const current = await child(h.store, snowflake(NOW - DAY, 1), bytes);
+    const replaced = await addMedia(h.store, snowflake(NOW - DAY, 2), new TextEncoder().encode("replaced"));
+    await sql(
+      h.store,
+      "UPDATE media_attachments SET thumbnail_of = ?, url = '', gc_at = ? WHERE id = ?",
+      PARENT,
+      new Date(Date.now() + DAY).toISOString(),
+      replaced.slice("originals/".length),
+    );
+    expect(await h.run()).toBe("done");
+    const { index } = await restore(h);
+    expect(index.find((e) => e.source === current)).toMatchObject({
+      state: "copied",
+      plaintext: { size: bytes.byteLength, sha256: await sha256Hex(bytes) },
+    });
+    expect(index.map((e) => e.source)).not.toContain(replaced);
+  });
+
+  it("holds a captured thumbnail the run holds pending, then takes it once copied (T12o, capture first)", async () => {
+    const h = await harness();
+    await parent(h.store);
+    await addMedia(h.store, snowflake(NOW - DAY, 1), new TextEncoder().encode("first"));
+    const source = await child(h.store, snowflake(NOW - DAY, 2), new TextEncoder().encode("held"));
+    const id = source.slice("originals/".length);
+    pauseAfterFirstCopy(h);
+    expect(await h.run()).toBe("paused");
+    expect((await backupState(h.store)).run).toMatchObject({ stage: "media" });
+    // The child is replaced and falls due while its copy waits: the sweep holds it and moves it back.
+    await retire(h.store, id);
+    expect(await expired(h.store)).toEqual([]);
+    expect(Date.parse(await gcAt(h.store, id))).toBeGreaterThan(Date.now() + 30 * MINUTE);
+    expect(await env.MEDIA.head(source)).not.toBeNull();
+    h.clock.now += 16 * MINUTE;
+    expect(await h.run()).toBe("done");
+    expect((await restore(h)).index.find((e) => e.source === source)).toMatchObject({ state: "copied" });
+    // Copied, it is taken at its due time.
+    await retire(h.store, id);
+    expect(await expired(h.store)).toEqual([id]);
+  });
+
+  it("never captures a thumbnail the sweep selected, nor holds its old entry (T12o, selection first)", async () => {
+    const h = await harness();
+    await parent(h.store);
+    await addMedia(h.store, snowflake(NOW - DAY, 1), new TextEncoder().encode("first"));
+    const source = await child(h.store, snowflake(NOW - DAY, 2), new TextEncoder().encode("selected"));
+    // An original after the child, which keeps the second run in its media stage.
+    await addMedia(h.store, snowflake(NOW - DAY, 3), new TextEncoder().encode("last"));
+    const id = source.slice("originals/".length);
+    expect(await h.run()).toBe("done");
+    expect((await restore(h)).index.find((e) => e.source === source)).toMatchObject({ state: "copied" });
+    // Replaced and due: the sweep selects it.
+    await retire(h.store, id);
+    expect(await expired(h.store)).toEqual([id]);
+    // A capture to a new destination turns the old copied entry pending, outside the new run's membership; the
+    // copying run does not hold the selected child.
+    h.env = backupEnv({ BACKUP_S3_PREFIX: "moved/" });
+    h.clock.now = NOW + DAY;
+    pauseAfterFirstCopy(h);
+    expect(await h.run()).toBe("paused");
+    expect((await backupState(h.store)).run).toMatchObject({ stage: "media" });
+    const due = await gcAt(h.store, id);
+    expect(await expired(h.store)).toEqual([id]);
+    expect(await gcAt(h.store, id)).toBe(due);
+    // The sweep's delete and purge, then the run ends with no entry for the child.
+    await env.MEDIA.delete(source);
+    expect(await h.store.purgeMedia(BUILD, { ids: [id] })).toBe(1);
+    h.clock.now += 16 * MINUTE;
+    expect(await h.run()).toBe("done");
+    const { index, manifest } = await restore(h);
+    expect(index.map((e) => e.source)).not.toContain(source);
+    expect(manifest.media).toMatchObject({ absent: 1 });
+    expect(index.filter((e) => e.state === "absent").map((e) => e.source)).toEqual([`originals/${PARENT}`]);
+  });
+});
