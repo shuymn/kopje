@@ -7,7 +7,7 @@ import type { OwnerMedia, UpdatedMedia } from "../domain/media-processing";
 import type { MediaAttachment } from "../domain/status-presenter";
 import { readBoundedBody } from "../platform/body";
 import { accountMonthlyTransforms, readConfig } from "../platform/config";
-import { DeadlinePassed, inTime } from "../platform/deadline";
+import { DeadlinePassed } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { sniffImageType } from "../platform/image-bytes";
 import {
@@ -364,6 +364,41 @@ async function processUpload(
   });
 }
 
+// A guard giving up the work it runs at `end` on the request's clock (deps.now, its waits deps.wait when set, as the
+// upload route's are): not started at or past it, rejected with DeadlinePassed when `end` comes first, and its result
+// not used when it arrives at or past `end` (platform/deadline.ts inTime).
+function deadlineGuard(deps: Pick<ApiDeps, "now" | "wait">, end: number): CallGuard {
+  return async (work) => {
+    if (deps.now() >= end) {
+      throw new DeadlinePassed();
+    }
+    const running = work();
+    running.catch(() => {});
+    const stop = new AbortController();
+    const wait =
+      deps.wait ??
+      ((ms: number, signal?: AbortSignal) =>
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, ms);
+          signal?.addEventListener("abort", () => clearTimeout(timer));
+        }));
+    try {
+      const result = await Promise.race([
+        running,
+        wait(end - deps.now(), stop.signal).then((): never => {
+          throw new DeadlinePassed();
+        }),
+      ]);
+      if (deps.now() >= end) {
+        throw new DeadlinePassed();
+      }
+      return result;
+    } finally {
+      stop.abort();
+    }
+  };
+}
+
 // The transformation of a reserved upload's bytes: the Store revalidates the reservation and charges the
 // transformations, Images re-encodes, R2 keeps the original and the served files, and the Store completes the row.
 // With `end` (a thumbnail made during a video or audio upload's staging, makeThumbnail), each step starts only before
@@ -399,7 +434,7 @@ async function transformReserved(
   if (started.status === "budget_exhausted") {
     return budgetRefusal(started.scope);
   }
-  const guard: CallGuard = (work) => inTime(work, end, deps.now);
+  const guard = deadlineGuard(deps, end);
   const processed = await begin(() =>
     processImage(deps.images(c.env), bytes, {
       blurhash: { end: Math.min(end, upload.deadline - UPLOAD_SAVE_RESERVE_MS), now: deps.now },
