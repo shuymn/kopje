@@ -3153,7 +3153,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   _Enforced (main)_ for a video or audio upload still processing or failed (#1828): its owner alone reads, updates
   and deletes it, by the same ownership rule; another account gets 404 in every state, and nothing of the upload
   changes. While it is processing, before its `deadline_at`, its owner's answer is 206 with `url`, `preview_url`,
-  `meta` and `blurhash` null, so no URL of an unfinished upload is shown; once failed, or past its `deadline_at` read
+  `meta` and `blurhash` null, so no URL of an unfinished upload is shown, except its current custom thumbnail's
+  `preview_url`, `meta.small` and `blurhash`, a completed image's (#1828 PR6, `processingMedia`); once failed, or past its `deadline_at` read
   at the Store's time, 422, a PUT writing nothing; a staging reservation (its request still holds it) and a doomed
   one are not found; DELETE is S11, which dooms it in any other state and keeps its processing slot. Attaching one
   refuses with `not_ready`. A completed upload's URLs are on the instance origin and http(s) (HTML-3):

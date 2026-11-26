@@ -737,7 +737,8 @@ export type MediaDeleted = "deleted" | "in_use" | "not_found";
 // Media an edit dropped is attached (shown 0), so it is in use. An unattached row with no gc_at that is not a profile
 // image is one the cutover kept for good (cli/lib/cutover/convert.js) and could not link to a status: an image legacy
 // kept unattached, or one that earlier versions of no single status name (migration 0015_media_shown links the
-// others). No Kopje write leaves such a row, so it is refused as in use too.
+// others). No other Kopje write leaves such a row (a current custom thumbnail is one, and liveMediaSql never finds it),
+// so it is refused as in use too.
 //
 // The rules for one row of `accountId`, at `now` (media-processing.ts deleteOwnerMedia, S11's for a finished upload,
 // passes the row's `used` and `kept` as it read them).
