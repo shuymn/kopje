@@ -995,13 +995,18 @@ describe("media rebuild only while nothing deletes media, one call at a time", (
     await runInDurableObject(h.store, (_instance, state) => {
       state.storage.sql.exec("DELETE FROM kopje_state WHERE name = 'maintenance'");
     });
+    const credential = { tokenHash: "0".repeat(64), scope: ["write:media"], now: NOW } as const;
     for (const call of [
-      h.store.expiredMedia(BUILD, { limit: 1 }),
-      h.store.purgeMedia(BUILD, { ids: [] }),
-      h.store.dueOrphans(BUILD),
-      h.store.forgetOrphans(BUILD, { tokens: [] }),
+      () => h.store.expiredMedia(BUILD, { limit: 1 }),
+      () => h.store.purgeMedia(BUILD, { ids: [] }),
+      () => h.store.dueOrphans(BUILD),
+      () => h.store.forgetOrphans(BUILD, { tokens: [] }),
+      () => h.store.releasedThumbnails(BUILD, {}),
+      () => h.store.forgetThumbnailFiles(BUILD, { ids: [] }),
+      // PUT's media update may retire a thumbnail, whose sweep deletes its files (#1828 PR6 T3d).
+      () => h.store.updateMedia(BUILD, { credential, id: "1", changes: { description: "x" } }),
     ]) {
-      expect(toStoreUnavailable(await rejectionOf(call))?.reason).toBe("rebuild-in-progress");
+      expect(toStoreUnavailable(await rejectionOf(call()))?.reason).toBe("rebuild-in-progress");
     }
     // Other writes are not affected by the lease.
     expect(await h.store.sweepOAuth(BUILD, { now: NOW })).toBeDefined();
