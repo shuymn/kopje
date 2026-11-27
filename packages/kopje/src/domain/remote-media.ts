@@ -1981,7 +1981,9 @@ export const CACHED_IMAGE_COLUMNS = fixedColumns(
 // of `ids` (a presentation chunk, at most ANSWER_CHUNK accounts and their moved-to targets), read outside the row heap
 // in one statement of one seek of remote_media_owner per id and kind, each kept only while slotOwnsSql holds (the slot
 // is the account's current URL, byte for byte: a stale URL shows nothing cached). A local account (ID-3) owns no slot.
-// The policy part of eligibility is the account's availability, which the presenter reads with the row. At most
+// The policy part of eligibility is the account's availability and its stored domain's reject_media rule, which the
+// presenter reads with the row (account-columns.ts `available`, `media_rejected`) and which withhold the images whether
+// or not a slot is still stored: the validity walk retires such a slot later (MEDIA-7). At most
 // ids × CACHED_IMAGE_KINDS × CACHED_IMAGE_BYTES bytes.
 // cachedImagesOf's one statement: ?1 the ids, ?2 the kinds, both JSON arrays.
 function cachedImagesSql(): string {

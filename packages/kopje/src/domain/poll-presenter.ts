@@ -2,6 +2,7 @@ import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, POLL_VOTES_KEY_INDEX, POLLS_STATUS_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { emojiCacheSql, STATUS_EMOJIS_BYTES } from "../platform/stored-bounds";
+import { presentedMediaRejectedSql } from "./audience";
 import { type CustomEmoji, emojiCacheOf, pollEmojis, presentEmojis } from "./custom-emojis";
 import { OWN_VOTE_COLUMNS, POLL_COLUMN_MAP } from "./status-rows";
 
@@ -118,16 +119,19 @@ export function presentPoll(
   if (poll === undefined) {
     return null;
   }
-  const stored = db.first<{ emojis: string | null; emoji_cache: string | null }>(
+  // #1560: no emoji while a domain block's reject_media withholds the author's media, as in the status.
+  const stored = db.first<{ emojis: string | null; emoji_cache: string | null; rejected: number }>(
     `SELECT CASE WHEN s.reblog_of_id IS NULL THEN s.emojis END AS emojis,
-			CASE WHEN s.reblog_of_id IS NULL THEN ${emojiCacheSql("s.emojis", "au.domain")} END AS emoji_cache
+			CASE WHEN s.reblog_of_id IS NULL THEN ${emojiCacheSql("s.emojis", "au.domain")} END AS emoji_cache,
+			${presentedMediaRejectedSql("au")} AS rejected
 		FROM statuses s INDEXED BY ${STATUSES_ID_INDEX} CROSS JOIN accounts au INDEXED BY ${ACCOUNTS_ID_INDEX}
 			ON au.id = s.account_id
 		WHERE s.id = ?1`,
     statusId,
   );
   const cache = emojiCacheOf(stored?.emoji_cache ?? null, origin);
-  return withStatusEmojis(poll, presentEmojis(stored?.emojis ?? null, STATUS_EMOJIS_BYTES, cache));
+  const emojis = stored?.rejected === 1 ? [] : presentEmojis(stored?.emojis ?? null, STATUS_EMOJIS_BYTES, cache);
+  return withStatusEmojis(poll, emojis);
 }
 
 // `poll` with the emojis of its status (`emojis`) its choices reference (custom-emojis.ts pollEmojis).

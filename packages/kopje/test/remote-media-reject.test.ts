@@ -10,7 +10,7 @@ import {
   VALIDITY_WALK,
 } from "../src/domain/remote-media";
 import { sql } from "./api-helpers";
-import { blockDomain, setRejectMedia } from "./domain-block-helpers";
+import { blockDomain, setRejectMedia, unblockDomain } from "./domain-block-helpers";
 import { deferred } from "./helpers";
 import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import {
@@ -311,6 +311,9 @@ describe("reject_media (R38) in the remote media cache", () => {
       };
       await accounts(10);
       await blockDomain(w.t.store, "far.example", "noop");
+      // A block with reject_media of an unrelated domain, so the rule's guard (audience.ts REJECT_MEDIA_BLOCKS_SQL)
+      // lets every slot walk.
+      await rejectMedia(w, "unrelated.example");
       const capture = async () => {
         const { result, plans } = await plannedRun(
           w.t,
@@ -346,11 +349,17 @@ describe("reject_media (R38) in the remote media cache", () => {
       expect(before.cursor).toBe("0");
       expect(after.cursor).toBe(String(after.ids[VALIDITY_WALK - 1]));
       for (const { plan } of [before, after]) {
-        // The rule walks seek by domain; the only scan of the blocks is availability's guard, an EXISTS over the
-        // partial index of the suspend blocks (audience.ts SUSPEND_BLOCKS_SQL).
+        // The rule walks seek by domain; the only scans of the blocks are the guards, each an EXISTS over a partial
+        // index: availability's of the suspend blocks and the rule's of the reject_media blocks (audience.ts
+        // SUSPEND_BLOCKS_SQL, REJECT_MEDIA_BLOCKS_SQL).
         expect(scansOf(plan, ["pn", "pr"]), plan.join("\n")).toEqual([]);
+        const scans = scansOf(plan, ["instance_domain_blocks"]);
         expect(
-          scansOf(plan, ["instance_domain_blocks"]).every((scan) => scan.endsWith("instance_domain_blocks_suspend")),
+          scans.every((scan) => /instance_domain_blocks_(suspend|reject_media)$/.test(scan)),
+          plan.join("\n"),
+        ).toBe(true);
+        expect(
+          scans.some((scan) => scan.endsWith("instance_domain_blocks_reject_media")),
           plan.join("\n"),
         ).toBe(true);
       }
@@ -364,4 +373,45 @@ describe("reject_media (R38) in the remote media cache", () => {
       await w.exact();
     },
   );
+  // RES-7, MEDIA-7: without a block with reject_media, the rule's guard (audience.ts REJECT_MEDIA_BLOCKS_SQL) keeps the
+  // validity walk from reading any block for the rule. The accounts' stored domain, the deepest walk, has a noop block
+  // on its suffix, which the rule's walk would read for every slot; the round reads as many rows with it as without it,
+  // before and after 3,000 other noop blocks under stale statistics.
+  it("reads no block for the rule's walk while no block has reject_media, after ANALYZE and growth", async () => {
+    const w = await mediaWorld();
+    await backfillDone(w);
+    const deep = [...Array.from({ length: MAX_BLOCK_LABELS + 2 }, (_, i) => `l${i}`), "far", "example"].join(".");
+    // Each avatar on another host, so the slot's own host coverage (slotEligibleSql) reads no block of the suffix.
+    for (let i = 0; i < 10; i++) {
+      await w.remote({ avatar: `https://files.example/a/deep${i}.png`, header: null }, deep);
+    }
+    const suffix = await blockDomain(w.t.store, "far.example", "noop");
+    const capture = async () => {
+      const { result, plans } = await plannedRun(
+        w.t,
+        /FROM remote_media WHERE id > CAST\(\?1 AS INTEGER\) ORDER BY id/,
+        maintainRemoteMedia,
+        { now: w.clock.now, restoredAt: null, cap: CAP },
+        true,
+      );
+      expect(result.counts.retired).toBe(0);
+      expect(plans).toHaveLength(1);
+      return plans[0]!.rows;
+    };
+    const { before, after } = await staleStatistics(w.t, {
+      capture,
+      grow: () =>
+        sql(
+          w.t.store,
+          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000)
+					INSERT INTO instance_domain_blocks (domain, severity, created_at, updated_at)
+					SELECT 'g' || i || '.example', 'noop', 'x', 'x' FROM n`,
+        ),
+    });
+    await unblockDomain(w.t.store, suffix.id);
+    const unblocked = await capture();
+    expect(await w.slots()).toHaveLength(10);
+    expect([before, after]).toEqual([unblocked, unblocked]);
+    await w.exact();
+  });
 });

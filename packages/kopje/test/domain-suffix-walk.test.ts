@@ -3,7 +3,12 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { hostCoveredSql, hostMediaRejectedSql, MAX_BLOCK_LABELS } from "../src/domain/audience";
+import {
+  hostCoveredSql,
+  hostMediaRejectedSql,
+  MAX_BLOCK_LABELS,
+  presentedMediaRejectedSql,
+} from "../src/domain/audience";
 import { actorDomainBlocked } from "../src/domain/instance-domain-blocks";
 import { DNS_NAME_UTF8_BYTES } from "../src/platform/domain-name";
 import { migratedStore } from "./helpers";
@@ -13,7 +18,7 @@ import { migratedStore } from "./helpers";
 // key within them has at most a dot per byte, so its walk is at most DNS_NAME_UTF8_BYTES rows.
 
 // The walk without the bound, as it stood: the reference the bounded one agrees with on every key within it.
-const walkedSql = (rule: string) => `EXISTS (WITH RECURSIVE pk(d) AS (SELECT ?1),
+const walkedSql = (rule: string, key = "?1") => `EXISTS (WITH RECURSIVE pk(d) AS (SELECT ${key}),
 	ps(d, dots) AS (SELECT d, length(d) - length(replace(d, '.', '')) FROM pk
 		UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1
 			AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn WHERE ps.dots BETWEEN 1 AND ${MAX_BLOCK_LABELS - 1}
@@ -22,9 +27,13 @@ const walkedSql = (rule: string) => `EXISTS (WITH RECURSIVE pk(d) AS (SELECT ?1)
 	WHERE ps.dots BETWEEN 1 AND ${MAX_BLOCK_LABELS - 1} AND ${rule})`;
 const WALKED = walkedSql("pr.severity = 'suspend'");
 const WALKED_MEDIA = walkedSql("pr.reject_media = 1");
+// The same walk of a stored domain, as the presenters key it.
+const WALKED_STORED_MEDIA = walkedSql("pr.reject_media = 1", "rtrim(?1, '.')");
 
 const BOUNDED = hostCoveredSql("?1");
 const BOUNDED_MEDIA = hostMediaRejectedSql("?1");
+// The presenters' verdict over an account row whose stored domain is the key.
+const PRESENTED_MEDIA = `(SELECT ${presentedMediaRejectedSql("pa")} FROM (SELECT ?1 AS domain) pa)`;
 
 const bytes = (key: string) => new TextEncoder().encode(key).byteLength;
 
@@ -156,6 +165,44 @@ describe("a domain block's suffix walk", () => {
     expect(result.idn).toEqual([0, 0, 0, 0]);
   });
 
+  // #1560, MEDIA-7: a key past the bound has its media rejected by the cache's rule (mediaRejectedSql) and shown by the
+  // presenters' verdict (presentedMediaRejectedSql), with or without a block with reject_media, so neither answer
+  // depends on an unrelated block. The keys: AT_BOUND itself; one of 1,014 bytes under it; and AT_BOUND with a trailing
+  // dot, 1,013 bytes as the cache's host and 1,012 after the presenters' rtrim of a stored domain. The first phase has
+  // only an unrelated noop block, so the rule's guard takes its ELSE branch; the second has a reject_media block of
+  // AT_BOUND.
+  it("rejects a key past the bound in the cache and not in the presenters, with or without a flagged block", async () => {
+    const store = await migratedStore();
+    const keys = [AT_BOUND, `z.${AT_BOUND}`, `${AT_BOUND}.`];
+    const phases = await runInDurableObject(store, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec(`INSERT INTO instance_domain_blocks (domain, severity, created_at, updated_at)
+				VALUES ('other.example', 'noop', '', '')`);
+      const one = (query: string, key: string) => sql.exec<{ c: number }>(`SELECT ${query} AS c`, key).one().c;
+      const answers = () => keys.map((key) => [one(BOUNDED_MEDIA, key), one(PRESENTED_MEDIA, key)]);
+      const without = answers();
+      sql.exec(
+        `INSERT INTO instance_domain_blocks (domain, severity, reject_media, created_at, updated_at)
+				VALUES (?, 'noop', 1, '', '')`,
+        AT_BOUND,
+      );
+      return { bytes: keys.map(bytes), phases: [without, answers()] };
+    });
+    expect(phases.bytes).toEqual([DNS_NAME_UTF8_BYTES, DNS_NAME_UTF8_BYTES + 2, DNS_NAME_UTF8_BYTES + 1]);
+    expect(phases.phases).toEqual([
+      [
+        [0, 0],
+        [1, 0],
+        [1, 0],
+      ],
+      [
+        [1, 1],
+        [1, 0],
+        [1, 1],
+      ],
+    ]);
+  });
+
   // The bounded walk finds the rule the walk as it stood finds for every key within the bound: keys of any depth,
   // empty labels, non-ASCII ones, NUL and other control characters included, under blocks on any of their suffixes of
   // 2 to MAX_BLOCK_LABELS labels, suspend or noop; and a key past the bound is covered.
@@ -165,13 +212,15 @@ describe("a domain block's suffix walk", () => {
     await fc.assert(
       fc.asyncProperty(
         fc.array(label, { minLength: 1, maxLength: 40 }),
-        fc.array(fc.tuple(fc.integer({ min: 2, max: MAX_BLOCK_LABELS }), fc.boolean()), { maxLength: 4 }),
+        fc.array(fc.tuple(fc.integer({ min: 2, max: MAX_BLOCK_LABELS }), fc.boolean(), fc.boolean()), {
+          maxLength: 4,
+        }),
         async (labels, blocks) => {
           const key = labels.join(".");
           const result = await runInDurableObject(store, (_instance, state) => {
             const sql = state.storage.sql;
             sql.exec("DELETE FROM instance_domain_blocks");
-            for (const [depth, suspend] of blocks) {
+            for (const [depth, suspend, rejectMedia] of blocks) {
               const domain = labels.slice(-depth).join(".");
               const valid = sql
                 .exec<{ ok: number }>(
@@ -181,17 +230,30 @@ describe("a domain block's suffix walk", () => {
                 .one().ok;
               if (valid === 1) {
                 sql.exec(
-                  `INSERT OR IGNORE INTO instance_domain_blocks (domain, severity, created_at, updated_at)
-									VALUES (?, ?, '', '')`,
+                  `INSERT OR IGNORE INTO instance_domain_blocks (domain, severity, reject_media, created_at, updated_at)
+									VALUES (?, ?, ?, '', '')`,
                   domain,
                   suspend ? "suspend" : "noop",
+                  rejectMedia ? 1 : 0,
                 );
               }
             }
             const one = (query: string) => sql.exec<{ c: number }>(`SELECT ${query} AS c`, key).one().c;
-            return { bounded: one(BOUNDED), walked: one(WALKED) };
+            return {
+              bounded: one(BOUNDED),
+              walked: one(WALKED),
+              media: [one(BOUNDED_MEDIA), one(WALKED_MEDIA), one(PRESENTED_MEDIA), one(WALKED_STORED_MEDIA)],
+            };
           });
-          expect(result.bounded, JSON.stringify(key)).toBe(bytes(key) <= DNS_NAME_UTF8_BYTES ? result.walked : 1);
+          const within = bytes(key) <= DNS_NAME_UTF8_BYTES;
+          expect(result.bounded, JSON.stringify(key)).toBe(within ? result.walked : 1);
+          // The guarded reject_media rule (audience.ts mediaRejectedSql) answers as the walk; the presenters' verdict
+          // too, as 0 past the bound.
+          const [media, walkedMedia, presented, walkedStored] = result.media;
+          expect(media, JSON.stringify(key)).toBe(within ? walkedMedia : 1);
+          expect(presented, JSON.stringify(key)).toBe(
+            bytes(key.replace(/\.+$/, "")) <= DNS_NAME_UTF8_BYTES ? walkedStored : 0,
+          );
         },
       ),
       { numRuns: 400 },

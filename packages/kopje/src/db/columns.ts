@@ -12,14 +12,29 @@ export function selectSql(columns: ColumnMap): string {
     .join(", ");
 }
 
+// The expressions marked fixedNumeric, which rowHeapSql counts without evaluating them.
+const FIXED_NUMERIC = new Set<string>();
+
+// Marks `expression`, a column of a ColumnMap whose value is 0, 1 or NULL, as one digit at most: rowHeapSql counts it as
+// VALUE_BYTES + 2 and never evaluates it, so an expression that costs a read (a domain block's rule) adds none to the
+// heap estimate.
+export function fixedNumeric(expression: string): string {
+  FIXED_NUMERIC.add(expression);
+  return expression;
+}
+
 // Bounds rowHeapBytes (src/db/sql.ts): ROW_OBJECT_BYTES, plus VALUE_BYTES and twice each value's UTF-8 bytes.
 // octet_length loads no value; UTF-8 bytes bound UTF-16 code units. A number overcounts by its decimal digits, NULL
-// adds nothing. balancedSum keeps the expression depth logarithmic (SQLite refuses deeper than 100;
-// test-node/sql-depth.ts).
+// adds nothing; a fixedNumeric column counts as one digit. balancedSum keeps the expression depth logarithmic (SQLite
+// refuses deeper than 100; test-node/sql-depth.ts).
 export function rowHeapSql(columns: ColumnMap): string {
   return balancedSum([
     String(ROW_OBJECT_BYTES),
-    ...Object.values(columns).map((expression) => `(${VALUE_BYTES} + coalesce(2 * octet_length(${expression}), 0))`),
+    ...Object.values(columns).map((expression) =>
+      FIXED_NUMERIC.has(expression)
+        ? String(VALUE_BYTES + 2)
+        : `(${VALUE_BYTES} + coalesce(2 * octet_length(${expression}), 0))`,
+    ),
   ]);
 }
 

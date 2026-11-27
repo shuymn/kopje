@@ -37,7 +37,14 @@ import { callStore, defaultStore, type StoreResolver } from "../platform/store-c
 import { StoreUnavailableError } from "../platform/store-errors";
 import { generateRsaKeyPair } from "../security/key-wrap";
 import { randomToken, type TokenGenerator } from "../security/tokens";
-import { MEDIA_ROUTE, REMOTE_MEDIA_ROUTE, serveMedia, serveRemoteMedia } from "../web/media";
+import {
+  MEDIA_PROXY_ROUTE,
+  MEDIA_ROUTE,
+  REMOTE_MEDIA_ROUTE,
+  serveMedia,
+  serveMediaProxy,
+  serveRemoteMedia,
+} from "../web/media";
 import { ADMIN_PREFIX, adminRoutes, isAdminPath } from "./admin";
 import { authorizeRoutes } from "./authorize";
 import { errorPage, type ErrorStatus } from "./error-pages";
@@ -288,9 +295,10 @@ export function createApp({
         return signAsAuthor(config.ok ? userKek(config.config) : "", sign);
       }),
   };
-  // Media reads no Store (web/media.ts): its capability URLs answer on any host.
+  // Media reads no Store (web/media.ts): its capability URLs, and the media proxy's 404, answer on any host.
   app.get(REMOTE_MEDIA_ROUTE, decidesHost(serveRemoteMedia));
   app.get(MEDIA_ROUTE, decidesHost(serveMedia));
+  app.get(MEDIA_PROXY_ROUTE, decidesHost(serveMediaProxy));
   const authorize = authorizeRoutes({ ...apiDeps, fetch: (input, init) => fetch(input, init), keygen });
   const setup = setupRoutes({ ...apiDeps, fetch: (input, init) => fetch(input, init), keygen });
   const web = webRoutes(apiDeps);

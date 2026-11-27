@@ -228,14 +228,15 @@ settings page):
   Otherwise they equal `avatar` and `header`.
 - A local animated WebP stays animated in `avatar` and `header`, where Mastodon flattens it to one frame. An APNG is
   served as a still PNG, as Images makes animated output only as GIF or WebP.
-- A remote account's `avatar` and `header` are Kopje's cached copy on the instance's own origin (`/media/r/…`) once
-  the cron has fetched it, and the remote URL until then or when no copy can be made, where Mastodon shows its own
-  copy or `missing.png`. A copy is the remote file's own bytes with their metadata stripped, never converted, cropped
-  or resized. Only JPEG, PNG, GIF and WebP below 2 MiB are cached (Mastodon takes 8 MB), from https URLs, at most
-  16,777,216 pixels and with no rotation or mirroring in their metadata; anything else (AVIF, HEIC, SVG) keeps its
-  remote URL. `avatar_static` and `header_static` are a still remuxed from the cached file, within 2 MiB: an animated
-  GIF's or WebP's first frame (the WebP frame without its background colour) and an APNG's default image, the cached
-  file itself when it is still or no still can be made; Mastodon makes a still for a GIF or an image it converts.
+- A remote account's `avatar` and `header` are Kopje's cached copy on the instance's own origin (`/media/r/…`) once the
+  cron has fetched it, and the remote URL until then or when no copy can be made, where Mastodon shows its own copy or
+  `missing.png`; while a domain block with `reject_media` rules the account's stored domain, both are the default
+  images, as Mastodon's (Media, below). A copy is the remote file's own bytes with their metadata stripped, never
+  converted, cropped or resized. Only JPEG, PNG, GIF and WebP below 2 MiB are cached (Mastodon takes 8 MB), from https
+  URLs, at most 16,777,216 pixels and with no rotation or mirroring in their metadata; anything else (AVIF, HEIC, SVG)
+  keeps its remote URL. `avatar_static` and `header_static` are a still remuxed from the cached file, within 2 MiB: an
+  animated GIF's or WebP's first frame (the WebP frame without its background colour) and an APNG's default image, the
+  cached file itself when it is still or no still can be made; Mastodon makes a still for a GIF or an image it converts.
   Without a cached copy they equal the remote URLs. The cache's bytes are capped by `REMOTE_MEDIA_CACHE_BYTES` (default
   4 GiB), and a profile image is kept while its account shows it. A suspended account's copies are deleted, where
   Mastodon keeps them private.
@@ -1654,16 +1655,15 @@ Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, a
   from it, or the cached file itself when it is still or no still fits 256 KiB. Mastodon serves its own copy and a
   static PNG it generates. Only PNG, GIF and WebP below 256 KiB from https URLs are cached; anything else, an emoji not
   fetched yet and one whose fetch failed keep the remote URL, where Mastodon does not save an emoji whose image fails.
+  While a domain block with `reject_media` rules the account's stored domain, none is listed, as Mastodon's.
 - Only the first 16 entries of a status's, an account's or a moved-to account's snapshot show their cached copy; the
   others keep their remote URLs. Reading more with each row would pass the Store's memory bound for a page.
 - An entry's JSON is measured with the URLs it shows, so a snapshot near its byte bound may drop its last entries once
   its emoji are cached.
-- Edit history (`StatusEdit`) keeps each version's remote URLs.
+- Edit history (`StatusEdit`) keeps each version's remote URLs, and lists none under a block with `reject_media`.
 - A cached emoji is deleted 90 days after the last snapshot that names it was stored, and once a domain block covers
   its domain or rejects its media, each when the cron's validity walk reaches it (500 slots a round); Mastodon keeps an
   emoji until its domain is purged.
-- An emoji of a domain whose block has `reject_media` is listed with its remote URL; Mastodon stores no emoji from
-  such a domain, so its entities list none.
 
 Media (the `MediaAttachment` entity):
 
@@ -1746,32 +1746,40 @@ Media (the `MediaAttachment` entity):
 - A remote attachment's `url` is Kopje's cached copy of its file on the instance's own origin (`/media/r/…`) once the
   cron has fetched it, and its remote URL until then or when no copy can be made; `preview_url` is the cached copy of
   its icon, else for an image the still of its cached file (the file itself when it is still), else its remote icon,
-  else `url` for an image or an unknown file. Mastodon shows its own copy and the `small` style it makes from every
-  image, video and gifv; Kopje makes no `small` style. Where the operator turns remote stills on, a video or gifv cached
-  after that, with no icon of its own (one that is not the file itself), shows a still frame Kopje made from its cached
-  file, at most 640 pixels on its long edge, and, when the attachment has no blurhash, the still's; otherwise, and while
-  its still is not made yet or cannot be made, it shows `/assets/video-poster.png`, a plain dark image. Mastodon makes a
-  frame from every video and gifv it stores. An audio file without an icon shows `null`, as Mastodon's. An icon that is
-  the file itself (its fragment aside) counts as none. A video's preview is never the video file, which a client would
-  fetch whole as an image, and in a status or its history never `null`, which Mastodon for Android takes as an invalid
-  attachment and drops; edit history applies the same to versions recorded before, and the public pages show such a
-  video without a poster. `remote_url` and `preview_remote_url` stay the remote URLs, as in Mastodon. An attachment is
-  cached only when it arrived within `MEDIA_CACHE_RETENTION_DAYS` (default 14; 0 keeps every one), and its copy is
-  deleted once stored longer, as Mastodon's media cache retention deletes its copies. Images (JPEG, PNG, GIF, WebP and
-  AVIF) below 16 MiB, at most 16,777,216 pixels, are cached with their metadata stripped, an animated one with a still
-  below 2 MiB; video and audio (MP4, M4A, WebM, MP3, FLAC and WAV) below 40 MiB with a declared length are cached as
-  served; icons below 2 MiB. Ogg, HEIC and HEIF, QuickTime and anything past a cap keep the remote URL (Mastodon takes
-  16 MB images and 99 MB video). The cache's bytes are capped by `REMOTE_MEDIA_CACHE_BYTES` with the other remote media.
+  else `url` for an image or an unknown file, except for an attachment withheld by a domain block with `reject_media`
+  (below). Mastodon shows its own copy and the `small` style it makes from every image, video and gifv; Kopje makes no
+  `small` style. Where the operator turns remote stills on, a video or gifv cached after that, with no icon of its own
+  (one that is not the file itself), shows a still frame Kopje made from its cached file, at most 640 pixels on its long
+  edge, and, when the attachment has no blurhash, the still's; otherwise, and while its still is not made yet or cannot
+  be made, it shows `/assets/video-poster.png`, a plain dark image. Mastodon makes a frame from every video and gifv it
+  stores. An audio file without an icon shows `null`, as Mastodon's. An icon that is the file itself (its fragment
+  aside) counts as none. A video's preview is never the video file, which a client would fetch whole as an image, and in
+  a status or its history never `null`, which Mastodon for Android takes as an invalid attachment and drops; edit
+  history applies the same to versions recorded before, and the public pages show such a video without a poster.
+  `remote_url` and `preview_remote_url` stay the remote URLs, as in Mastodon. An attachment is cached only when it
+  arrived within `MEDIA_CACHE_RETENTION_DAYS` (default 14; 0 keeps every one), and its copy is deleted once stored
+  longer, as Mastodon's media cache retention deletes its copies. Images (JPEG, PNG, GIF, WebP and AVIF) below 16 MiB,
+  at most 16,777,216 pixels, are cached with their metadata stripped, an animated one with a still below 2 MiB; video
+  and audio (MP4, M4A, WebM, MP3, FLAC and WAV) below 40 MiB with a declared length are cached as served; icons below 2
+  MiB. Ogg, HEIC and HEIF, QuickTime and anything past a cap keep the remote URL (Mastodon takes 16 MB images and 99 MB
+  video). The cache's bytes are capped by `REMOTE_MEDIA_CACHE_BYTES` with the other remote media.
 - A domain block with `reject_media` caches nothing of the accounts it rules (their profile images and attachments)
-  or of the emoji named for its domains, so they keep their remote URLs, where Mastodon shows `missing.png` for a
-  profile image and, for an attachment, a link to its media proxy, which fetches nothing for such a domain. Its rule
-  is the longest matching block, so a nearer block without `reject_media` keeps its subdomains cached; Mastodon's
+  or of the emoji named for its domains. Its rule is the longest matching block, so a nearer block without
+  `reject_media` keeps its subdomains cached and shown, also when the parent gains the flag after it; Mastodon's
   `ClearDomainMediaService` deletes the copies of every subdomain once, and the nearest rule decides only the later
-  downloads. The copies already cached are deleted when the cron's validity walk reaches them (500 slots a round),
-  shown until then.
-- Edit history shows each version's attachments as recorded then, its URLs and `blurhash` included, never a cached
-  copy; Mastodon shows the current attachment's for every version. A version recorded by an earlier release, or
-  converted from an earlier installation, shows `remote_url`, `preview_remote_url` and `blurhash` null; the current
+  downloads. The copies already cached are deleted when the cron's validity walk reaches them (500 slots a round).
+  As Mastodon presents media it never downloaded, each attachment of an account the rule names is `unknown`, with
+  `url` and `preview_url` on the instance's `/media_proxy/<id>/original` and `/small`, which answer 404 and fetch
+  nothing, and `remote_url` and `preview_remote_url` kept; Mastodon gives every such attachment `unknown` only when it
+  was received under the rule. The rule is read live with each answer, so it holds from the block's commit, cached
+  copies included, and ends when the flag is turned off or the block deleted, except for answers already cached:
+  15 s, served stale 30 s more and up to 86,400 s on an error, for the anonymous API; 300 s for the instance API;
+  60 s for the public pages; 180 s for the embed.
+- Edit history shows each version's attachments as recorded then, its URLs and `blurhash` included, never a cached copy,
+  and withheld as above under a block with `reject_media`; Mastodon shows the current attachment's for every version. A
+  version recorded by an earlier release, or converted from an earlier installation, shows `remote_url`,
+  `preview_remote_url` and `blurhash` null, except that a withheld converted entry names its stored file as its
+  `remote_url` unless that file is on the instance (`snapshotMedia` in `src/domain/statuses.ts`); the current
   attachments of a converted remote status derive their remote URLs.
 - A `focus` that is not blank is read as two numbers, each by JavaScript's `parseFloat` and clamped to −1 to 1, one
   missing or unreadable as 0 (`parseFocus` in `src/domain/media-focus.ts`), so a value that is no number (U+FEFF, an

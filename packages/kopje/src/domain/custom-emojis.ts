@@ -19,7 +19,9 @@ import { cachedImageUrls } from "./remote-media";
 // the triggers that hold it: platform/stored-bounds.ts (EMOJI_COLUMNS, migration 0053_custom_emoji_snapshots).
 // Mastodon keeps a global (shortcode, domain) registry (app/models/status.rb, account.rb); Kopje keeps what each
 // object tagged instead. A remote emoji's image is cached by (domain, url) (remote-media.ts, MEDIA-7); a presenter
-// shows the cached copy of the first EMOJI_CACHE_LIMIT entries that have one (EmojiCache), else the remote URL.
+// shows the cached copy of the first EMOJI_CACHE_LIMIT entries that have one (EmojiCache), else the remote URL. While a
+// domain block's reject_media rules the object's account's stored domain (#1560, audience.ts presentedMediaRejectedSql),
+// the presenters show none, the shortcodes left as text.
 
 // An Emoji tag as federation/remote-emoji.ts reads it: a shortcode within EMOJI_SHORTCODE and its normalized url
 // (emojiHref).

@@ -171,7 +171,11 @@ describe("answering only on the instance domain (WEB-6)", () => {
       const admin = await at(h, host, "/admin/health", { headers: { accept: "application/json" } });
       expect([301, 421], host).not.toContain(admin.status);
       expect(admin.status, host).toBe(await at(h, "kopje.test", "/admin/health").then((r) => r.status));
-      for (const path of [`/media/${"a".repeat(43)}/original.png`, `/media/r/${"a".repeat(43)}/x.png`]) {
+      for (const path of [
+        `/media/${"a".repeat(43)}/original.png`,
+        `/media/r/${"a".repeat(43)}/x.png`,
+        "/media_proxy/111111111111111111/original",
+      ]) {
         const media = await at(h, host, path);
         expect(media.status, `${host}${path}`).toBe((await at(h, "kopje.test", path)).status);
         expect([301, 421], `${host}${path}`).not.toContain(media.status);

@@ -30,7 +30,7 @@ import {
   STILL_CLAIM_WALK,
   STILL_LEASE_MS,
 } from "../src/domain/remote-media-stills";
-import { type MediaRow, presentMedia } from "../src/domain/status-presenter";
+import { type MediaAttachment, type MediaRow, presentMedia } from "../src/domain/status-presenter";
 import { STATUS_MEDIA_COLUMN_MAP } from "../src/domain/status-rows";
 import { STILL_OUTPUT_LIMIT } from "../src/platform/av-bytes";
 import { VIDEO_POSTER } from "../src/platform/brand-assets";
@@ -1241,6 +1241,29 @@ describe("presentation (P21a, P21c)", () => {
       url: `${ORIGIN}/media/r/${v.token}/full.mp4`,
       preview_url: v.still,
       blurhash: BLURHASH,
+    });
+  });
+
+  // #1560, VIS-30: a withheld attachment shows nothing derived from the cache, the still's blurhash included.
+  it("shows no still or its blurhash once a domain block's reject_media rules the author", async () => {
+    const w = await mediaWorld();
+    const v = await withStill(w);
+    const shown = async () => {
+      const { status, body } = await w.t.api<{ media_attachments: MediaAttachment[] }>(
+        `/api/v1/statuses/${v.status}`,
+        null,
+      );
+      expect(status).toBe(200);
+      return body.media_attachments[0]!;
+    };
+    expect(await shown()).toMatchObject({ preview_url: v.still, blurhash: BLURHASH });
+    await blockDomain(w.t.store, "files.example", "noop", { rejectMedia: true });
+    expect(await shown()).toMatchObject({
+      type: "unknown",
+      url: `${ORIGIN}/media_proxy/${v.media}/original`,
+      preview_url: `${ORIGIN}/media_proxy/${v.media}/small`,
+      remote_url: v.url,
+      blurhash: null,
     });
   });
 

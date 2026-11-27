@@ -887,13 +887,28 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
 - **reject_media** (Mastodon's `DomainBlock.reject_media?`): the rule of a domain, its longest matching block as for
   coverage, has `reject_media` (`mediaRejectedSql` in `src/domain/audience.ts`: `hostMediaRejectedSql`,
   `domainMediaRejectedSql`, `accountMediaRejectedSql`), so a nearer block without it exempts its subdomains from a
-  parent's. It is read live and decides no visibility, only what is cached: no file of an account whose stored domain
-  it rules (its profile images, its attachments' files and icons; by that domain alone, as Mastodon judges
-  `account.domain` and as the account's emoji slots are keyed, where coverage also reads the actor host) or of an
-  emoji named for a domain it rules is enqueued, claimed or recorded from the block's commit (`slotEligibleSql` in
-  `src/domain/remote-media.ts`), and the validity walk deletes the files already cached (500 slots a round), which
-  the presenters show until then, as for coverage; without a cached file they show the remote URL. A block with only
-  `reject_media` is not in the public block list, which Mastodon limits to silence and suspend blocks.
+  parent's. The rule walks a domain's suffixes only while some block has `reject_media` (`REJECT_MEDIA_BLOCKS_SQL`, one
+  seek of the partial index `instance_domain_blocks_reject_media`), as coverage only while a suspend block exists. It is
+  read live and decides no visibility, only what is cached and shown: no file of an account whose stored domain it rules
+  (its profile images, its attachments' files and icons; by that domain alone, as Mastodon judges `account.domain` and
+  as the account's emoji slots are keyed, where coverage also reads the actor host) or of an emoji named for a domain it
+  rules is enqueued, claimed or recorded from the block's commit (`slotEligibleSql` in `src/domain/remote-media.ts`),
+  and the validity walk deletes the files already cached (500 slots a round). The presenters withhold the media of an
+  account whose stored domain it rules, from the block's commit and whatever is cached (`presentedMediaRejectedSql`,
+  read in each presented account row's own query, #1560): the Account entity, its `moved` (judged by the target's own
+  domain) and a grouped notification's partial account show the default avatar and header and no emoji, the display
+  name's shortcodes as text, as Mastodon shows an account whose images it never downloaded. Its statuses, in every
+  presented shape (a boost's original, a quote either way, a poll, the edit history), show no emoji and each attachment
+  it owns as Mastodon shows one it never downloaded: `type` `unknown`, `url` and `preview_url` on the instance's
+  `/media_proxy/<id>/original` and `/small` (which answer 404), `remote_url` and `preview_remote_url` as stored, the
+  texts, meta and stored blurhash kept and nothing derived from the cache (`author_media_rejected` and
+  `owner_media_rejected` in `src/domain/status-rows.ts`, `withheldMedia` in `src/domain/status-presenter.ts`). An
+  attachment is judged by its owner's domain, which is its status's author's except in an imported row, and a history
+  entry by the owner of the current attachment its id names, else the author. A stored domain past `DNS_NAME_UTF8_BYTES`
+  bytes, which no server's name has, is shown as unruled. The rule holds in every answer made after the block's commit
+  and ends in every answer made after the flag is turned off or the block deleted; an answer an HTTP cache holds runs
+  out its stated lifetime ([mastodon-deviations.md](mastodon-deviations.md), Media). A block with only `reject_media` is
+  not in the public block list, which Mastodon limits to silence and suspend blocks.
 - **The public block list** (`GET /api/v1/instance/domain_blocks`, `publicDomainBlocks` in
   `src/domain/instance-domain-blocks.ts`; Mastodon's `Api::V1::Instances::DomainBlocksController`). A suspended user's
   token is answered 403 (`Your login is currently disabled`) first, whatever the settings. Then the setting

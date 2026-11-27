@@ -57,10 +57,16 @@ export function tagNameSql(column: string): string {
 // whose columns are bounded as a stored attachment's are (mediaUrlSql for its four URLs, mediaDescriptionSql,
 // mediaMetaSql, blurhashPastBoundSql; the id and type cut at SNAPSHOT_KEY_LIMIT); an entry that is not an object is
 // left out; '[]' past EDIT_MEDIA_BYTES. The bounds are of bytes: the history presenter judges each decoded URL and
-// blurhash again (statuses.ts snapshotMedia).
+// blurhash again (statuses.ts snapshotMedia). `proxy_id` (#1560): 1 when the raw id, before its cut, can name a path
+// segment of a withheld attachment's /media_proxy URL (status-presenter.ts withheldMedia), judged on its bytes: text of 1
+// to SNAPSHOT_KEY_LIMIT bytes, then no NUL (so GLOB sees the whole text), then only [0-9A-Za-z_-]; else 0.
 export const SNAPSHOT_KEY_LIMIT = 32;
 export function editMediaSql(column: string): string {
   const text = (key: string) => `(CASE WHEN json_type(value, '$.${key}') = 'text' THEN value ->> '$.${key}' END)`;
+  const raw = "(value ->> '$.id')";
+  const proxyId = `CASE WHEN json_type(value, '$.id') = 'text'
+			AND length(CAST(${raw} AS BLOB)) BETWEEN 1 AND ${SNAPSHOT_KEY_LIMIT}
+			AND instr(CAST(${raw} AS BLOB), x'00') = 0 AND ${raw} NOT GLOB '*[^0-9A-Za-z_-]*' THEN 1 ELSE 0 END`;
   const meta = `(CASE WHEN json_type(value, '$.meta') = 'object' THEN value -> '$.meta' END)`;
   return `CASE WHEN length(CAST(${column} AS BLOB)) <= ${EDIT_MEDIA_BYTES} THEN
 		(SELECT json_group_array(json_object('id', ${cutSql(text("id"), SNAPSHOT_KEY_LIMIT)},
@@ -68,6 +74,7 @@ export function editMediaSql(column: string): string {
 			'preview_url', ${mediaUrlSql(text("preview_url"))}, 'remote_url', ${mediaUrlSql(text("remote_url"))},
 			'preview_remote_url', ${mediaUrlSql(text("preview_remote_url"))}, 'text_url', NULL,
 			'meta', json(${mediaMetaSql(meta)}), 'description', ${mediaDescriptionSql(text("description"))},
-			'blurhash', CASE WHEN (${blurhashPastBoundSql(text("blurhash"))}) = 0 THEN ${text("blurhash")} END) ORDER BY key)
+			'blurhash', CASE WHEN (${blurhashPastBoundSql(text("blurhash"))}) = 0 THEN ${text("blurhash")} END,
+			'proxy_id', ${proxyId}) ORDER BY key)
 		FROM json_each(${column}) WHERE key < ${MAX_STATUS_MEDIA} AND type = 'object') ELSE '[]' END`;
 }

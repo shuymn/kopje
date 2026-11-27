@@ -106,6 +106,7 @@ against their own instance. TLS is assumed between all parties.
 | `/authorize_interaction`                                                    | R2, R4, R7           | none for GET; session (AUTH-8), Origin and form token (WEB-4) for POST                                      | main: `src/app/interaction.tsx`, `src/domain/interaction.ts`                                                                                                                                                                                                                                                 |
 | Media upload and serving, Images transformation                             | R2–R4                | bearer token; capability URL for reads                                                                      | main: `src/mastodon/media.ts`, `src/mastodon/media-av.ts`, `src/domain/media-processing.ts` (`updateOwnerMedia`, `queueNormalize`)                                                                                                                                                                           |
 | Cached remote media `/media/r/:token/:file`                                 | R2–R4                | none; capability URL (MEDIA-7)                                                                              | main: `src/web/media.ts`, `src/platform/media-files.ts`                                                                                                                                                                                                                                                      |
+| Media proxy `/media_proxy/:id/:style`                                       | R2                   | none; answers 404 without a Store, R2 or network read (VIS-30)                                              | main: `src/web/media.ts`                                                                                                                                                                                                                                                                                     |
 | Web Push registration                                                       | R3                   | bearer token with `push`                                                                                    | main: `src/mastodon/push.ts`, `src/domain/push.ts`                                                                                                                                                                                                                                                           |
 | Streaming API `/api/v1/streaming` (WebSocket)                               | R2–R4                | bearer token or subprotocol (VIS-26)                                                                        | main: `src/mastodon/streaming.ts`, `src/stream-hub.ts`, `src/domain/streaming.ts`                                                                                                                                                                                                                            |
 | Queue consumer, alarms, cron                                                | internal             | —                                                                                                           | main: `src/jobs/queue.ts`, `src/platform/store-kernel.ts`                                                                                                                                                                                                                                                    |
@@ -1846,7 +1847,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/mention-resolution-races.test.ts` ("spends the gate's verdict on the first request only")). Its inbound
   activity is ignored before any fetch but `Delete`, `DeleteActor`, `Undo` and `Reject` verified with a key already
   stored. A block's `reject_media`, whatever its severity, keeps media out of the remote media cache (MEDIA-7;
-  [visibility.md](visibility.md), "Instance domain blocks"). It is judged by the account's stored domain only, as
+  [visibility.md](visibility.md), "Instance domain blocks"), and the presenters withhold the media of the accounts it
+  rules, read live in each answer: the default avatar and header, no emoji, and each attachment `unknown` with
+  `/media_proxy` URLs, which answer 404 without a read (WEB-6), and its remote URLs kept, which a client opens only on
+  request; a page links the attachment by its remote URL and loads none of it (HTML-3). It is judged by the account's
+  stored domain only, as
   Mastodon's `reject_media?(account.domain)`, so a rule naming only the actor's host leaves that account's media
   cached, while suspend coverage judges both the stored domain and the actor host and refuses requests to a covered
   host at every hop. The OAuth admin creates, changes and deletes blocks through the Mastodon admin API (VIS-29). Each
@@ -1900,8 +1905,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   For domains: `src/domain/instance-domain-blocks.ts`, `hostCoveredSql` and `availableSql` in `src/domain/audience.ts`,
   the fetch policy in `src/federation/loader.ts`, the inbound path in `src/federation/inbound.ts`, the domain job in
   `src/domain/remote-suspension.ts`, the admin API in `src/domain/admin-domain-blocks.ts`, `mediaRejectedSql` in
-  `src/domain/audience.ts` and `slotEligibleSql` in `src/domain/remote-media.ts` for `reject_media`, migration
-  `0046_instance_domain_blocks`; `test/instance-domain-blocks.test.ts`, `test/remote-media-reject.test.ts`,
+  `src/domain/audience.ts` and `slotEligibleSql` in `src/domain/remote-media.ts` for `reject_media`, with
+  `presentedMediaRejectedSql` in `src/domain/audience.ts` and `withheldMedia` in `src/domain/status-presenter.ts` for
+  the presenters, migrations `0046_instance_domain_blocks` and `0124_reject_media_blocks`;
+  `test/instance-domain-blocks.test.ts`, `test/remote-media-reject.test.ts`,
+  `test/remote-media-reject-presenter.test.ts`, `test/web-reject-media.test.ts`, `test/streaming/reject-media.test.ts`,
   `test/domain-job.test.ts`, `test/admin-domain-blocks-replay.test.ts`, `test/instance-domain-blocks-inbound.test.ts`,
   `test/read-windows.test.ts`, `test/policy-oracle.test.ts` (against `available` and `covered` in
   `test/policy-model.ts`), `test/instance-moderation.test.ts` (generated sequences of block and suspension decisions,
@@ -2474,39 +2482,40 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   assets get `nosniff` from `public/_headers`;
   `test/web-pages.test.ts`, `test/web-session.test.ts`, `test/error-pages.test.ts`, `test-node/stylesheet.test.ts`.
 - **WEB-6: after setup, nothing is served, accepted or issued on another host.** Once setup has fixed the domain, a
-  request whose URL host is not the stored domain (the Worker's workers.dev address, another route, a port; no header
-  is read) gets no content, sets no cookie, writes nothing and issues no code or token: GET and HEAD get a 301 to the
-  same path and query on `https://<domain>` (`no-store`, so a later domain change is not shadowed), any other method
-  421 Misdirected Request. Before setup nothing changes (`/setup` judges the host itself, SETUP-1). The decision is made
-  by the request's first Store read that answers the domain: the setup gate, the inbox gate and the self-gated
-  federation reads (SETUP-1), the public pages' and the web UI's page reads, and `authorizeContext` (WEB-1); every
-  other route (the Mastodon API, `/setup` after setup) gets one `instanceDomain` read first. Answered on any host,
-  without the check: `/health`; the admin API (which authenticates itself and which the CLI reaches on its own admin
-  hostname, [cutover-runbook.md](cutover-runbook.md)); media's capability URLs and `/` (a relative redirect to
-  `/about`), which read no Store; a request no route serves (its plain 404, without a Store read); and the static
-  assets, which the platform serves before the Worker. What comes before the host's answer: the env's maintenance and
-  configuration 503s; a CORS preflight on an API or document path (204, as Mastodon's `Rack::Cors` answers before its
-  host authorization); `/oauth/authorize`'s own checks (WEB-1); an inbox POST's body, read within `INBOX_BODY_LIMIT`
-  (1 MiB) with its 413 and 415, and in spool mode the spool itself (202). The spool's replay (`handleQueue` in
-  `src/jobs/queue.ts`) hands the request to the legacy instance without a host check while a cutover is rolled back
-  (`CUTOVER_ROLLBACK`, the rollback journal), and requeues it while the env is in maintenance; then the inbox gate's
-  read requeues it while the Store refuses writes or has no domain, and otherwise drops it for its host (logged as
-  `kopje.inbox.refused`, 421) before any signature is verified, any signed fetch is made or any activity is applied. A
-  Store refusal's snapshot rescue serves a snapshot only on the domain the snapshot records (`saveSnapshot` writes it in
-  the same transaction as the domain it was rendered on); a row without a recorded domain is judged by the stored
-  domain, read through the `config()` rescue RPC (which needs no matching build), never inferred from the row; on
-  another host the rescue gives the answer above, and without a domain (the call fails, none is set) the row is not
-  served (503). The cron, the Queue's other work and the Store
-  have no request host. _Enforced (main):_ `offDomain` and `decidesHost` in `src/platform/instance-host.ts`, the
-  middleware in `src/app/app.ts`, `src/federation/setup-gate.ts`, `src/federation/routes.ts`, `processInbox` in
-  `src/federation/inbox.ts`, `rescueFromSnapshot` in `src/federation/snapshot.ts`, `saveSnapshot` in
-  `src/domain/snapshot.ts`, `siteGate` in `src/app/web.tsx`, `src/app/public-pages.tsx`, `src/app/authorize.tsx`;
-  `test/instance-host.test.ts` ("moves a GET or HEAD on another host to the same path and query on the domain",
-  "answers 421 to any other method on another host, writing nothing", "keeps the domain's own spellings: case, the
-  default port, and the Host header", "answers the health check, the admin API, media and paths no route serves on any
-  host", "changes nothing before setup has fixed the domain", "reads the domain once more only where the route does not
-  read it", "drops a spooled inbox request to another host at replay, applying nothing", "serves a rescued snapshot
-  only on the domain it records, or a legacy one on the stored domain").
+  request whose URL host is not the stored domain (the Worker's workers.dev address, another route, a port; no header is
+  read) gets no content, sets no cookie, writes nothing and issues no code or token: GET and HEAD get a 301 to the same
+  path and query on `https://<domain>` (`no-store`, so a later domain change is not shadowed), any other method 421
+  Misdirected Request. Before setup nothing changes (`/setup` judges the host itself, SETUP-1). The decision is made by
+  the request's first Store read that answers the domain: the setup gate, the inbox gate and the self-gated federation
+  reads (SETUP-1), the public pages' and the web UI's page reads, and `authorizeContext` (WEB-1); every other route (the
+  Mastodon API, `/setup` after setup) gets one `instanceDomain` read first. Answered on any host, without the check:
+  `/health`; the admin API (which authenticates itself and which the CLI reaches on its own admin hostname,
+  [cutover-runbook.md](cutover-runbook.md)); media's capability URLs, the media proxy's 404 (`/media_proxy/:id/:style`)
+  and `/` (a relative redirect to `/about`), which read no Store; a request no route serves (its plain 404, without a
+  Store read); and the static assets, which the platform serves before the Worker. What comes before the host's answer:
+  the env's maintenance and configuration 503s; a CORS preflight on an API or document path (204, as Mastodon's
+  `Rack::Cors` answers before its host authorization); `/oauth/authorize`'s own checks (WEB-1); an inbox POST's body,
+  read within `INBOX_BODY_LIMIT` (1 MiB) with its 413 and 415, and in spool mode the spool itself (202). The spool's
+  replay (`handleQueue` in `src/jobs/queue.ts`) hands the request to the legacy instance without a host check while a
+  cutover is rolled back (`CUTOVER_ROLLBACK`, the rollback journal), and requeues it while the env is in maintenance;
+  then the inbox gate's read requeues it while the Store refuses writes or has no domain, and otherwise drops it for its
+  host (logged as `kopje.inbox.refused`, 421) before any signature is verified, any signed fetch is made or any activity
+  is applied. A Store refusal's snapshot rescue serves a snapshot only on the domain the snapshot records
+  (`saveSnapshot` writes it in the same transaction as the domain it was rendered on); a row without a recorded domain
+  is judged by the stored domain, read through the `config()` rescue RPC (which needs no matching build), never inferred
+  from the row; on another host the rescue gives the answer above, and without a domain (the call fails, none is set)
+  the row is not served (503). The cron, the Queue's other work and the Store have no request host. _Enforced (main):_
+  `offDomain` and `decidesHost` in `src/platform/instance-host.ts`, the middleware in `src/app/app.ts`,
+  `src/federation/setup-gate.ts`, `src/federation/routes.ts`, `processInbox` in `src/federation/inbox.ts`,
+  `rescueFromSnapshot` in `src/federation/snapshot.ts`, `saveSnapshot` in `src/domain/snapshot.ts`, `siteGate` in
+  `src/app/web.tsx`, `src/app/public-pages.tsx`, `src/app/authorize.tsx`; `test/instance-host.test.ts` ("moves a GET or
+  HEAD on another host to the same path and query on the domain", "answers 421 to any other method on another host,
+  writing nothing", "keeps the domain's own spellings: case, the default port, and the Host header", "answers the health
+  check, the admin API, media and paths no route serves on any host", "changes nothing before setup has fixed the
+  domain", "reads the domain once more only where the route does not read it", "drops a spooled inbox request to another
+  host at replay, applying nothing", "serves a rescued snapshot only on the domain it records, or a legacy one on the
+  stored domain"), `test/media-proxy-route.test.ts` ("answers 404 to GET and HEAD of /media_proxy on any host without a
+  Store, R2 or network read").
 - **WEB-7: no cache hands one caller's API answer to a caller whose answer differs.** Every answer under `/api/*` (the
   streaming endpoints excepted, which keep Mastodon's streaming server's headers, MD-8) and of `/oauth/userinfo`
   carries `Cache-Control: private, no-store`, errors, maintenance and gate answers included, but a 2xx answer the
@@ -3096,13 +3105,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/platform/http-url.ts`, used by `presentAccount` in `src/domain/accounts.ts` and `localActorObject` in
   `src/federation/federation.ts`; `test/accounts.test.ts`, `test/federation.test.ts`. _Enforced (main)_ for attachment
   URLs in the API and in Note attachments: `presentMedia` in `src/domain/status-presenter.ts`, `noteOf` in
-  `src/domain/activities.ts` (_Gap: no test with a non-http stored attachment URL_); a remote attachment's
-  `remote_url` and `preview_remote_url` are the same values as its `url` and its icon. _Enforced (main)_ for edit
-  history: every URL of a recorded attachment passes `presentedMediaUrl`, the rule live media pass too: as decoded,
-  within 2,048 UTF-8 bytes, well-formed and without NUL, other C0 controls, DEL or U+FFFD, then normalized within
-  2,048 bytes and 4,098 JSON bytes (`snapshotMedia` in `src/domain/statuses.ts`; `test/status-bounds.test.ts`
-  ("judges a media URL as decoded, then as normalized", "judges an imported snapshot's URLs and blurhash as live
-  media")). _Enforced (main)_ for remote actors at ingest (profile URL, avatar, header, inboxes) and links in remote
+  `src/domain/activities.ts` (_Gap: no test with a non-http stored attachment URL_); a remote attachment's `remote_url`
+  and `preview_remote_url` are the same values as its `url` and its icon, except for one withheld by a domain block's
+  `reject_media` (VIS-30), whose `url` and `preview_url` are the instance's `/media_proxy` paths and whose `remote_url`
+  keeps the stored file (`withheldMedia` in `src/domain/status-presenter.ts`;
+  `test/remote-media-reject-presenter.test.ts`). _Enforced (main)_ for edit history: every URL of a recorded attachment
+  passes `presentedMediaUrl`, the rule live media pass too: as decoded, within 2,048 UTF-8 bytes, well-formed and
+  without NUL, other C0 controls, DEL or U+FFFD, then normalized within 2,048 bytes and 4,098 JSON bytes
+  (`snapshotMedia` in `src/domain/statuses.ts`; `test/status-bounds.test.ts` ("judges a media URL as decoded, then as
+  normalized", "judges an imported snapshot's URLs and blurhash as live media")). _Enforced (main)_ for remote actors at
+  ingest (profile URL, avatar, header, inboxes) and links in remote
   HTML: `src/federation/remote-actor.ts` (the profile URL, avatar and header read from the document's JSON by
   `profileUrl` and `profileImage`), `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"),
   `test/remote-actor-images.test.ts` ("keeps only an absolute http(s) URL within its bound"),
@@ -3127,7 +3139,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   http(s) is left out, a poster is an attachment's own http(s) preview and never its file, and an attachment of a type
   the page does not play is a link through `linkTo`, its stored type never written: `src/web/view/media.ts`;
   `test/web-status-content.test.ts` ("shows an attachment of another type as a link, and nothing of a URL that is not
-  http(s)").
+  http(s)"). An attachment withheld by a domain block's `reject_media` (VIS-30) is a link to its http(s) `remote_url`
+  with no preview, poster or size, so the page loads none of its files and nothing under `/media_proxy/`, and one
+  without such a `remote_url` is left out: `mediaView` in `src/web/view/media.ts`; `test/web-reject-media.test.ts`
+  ("renders no media of a rejected domain, and links the attachment's remote_url").
   _Enforced (main)_ for a card's video: its `html` is never a remote markup but Kopje's fixed iframe template
   (`cardIframe` in `src/domain/status-presenter.ts`: `allowfullscreen`, `scrolling` and `frameborder` forced, a fixed
   sandbox), from its src alone, which passes `presentedEmbedSrc` (`src/platform/stored-bounds.ts`) when it is kept and
@@ -3557,21 +3572,26 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   - Eligibility: the validity walk, the suspended accounts and a purge retire the slots that are no longer eligible
     (NET-3), a slot whose account's stored domain (never its actor host: VIS-30) or emoji domain has a rule with
     `reject_media` among them, which also no enqueue, claim or record admits; the rule is sought by the blocks' domain
-    index for each suffix, so a walk's reads grow with its slots, not with the blocks.
+    index for each suffix, so a walk's reads grow with its slots, not with the blocks, and only while some block has
+    `reject_media` (`REJECT_MEDIA_BLOCKS_SQL` in `src/domain/audience.ts`, one seek of a partial index; without one,
+    the rule reads no block and rejects only a key past `DNS_NAME_UTF8_BYTES`, as the walk does).
     `test/remote-media-reject.test.ts` ("enqueues nothing of an account, an attachment author or an emoji domain whose
     rule rejects media", "backfills nothing of a domain whose rule rejects media, in every phase", "claims nothing of a
     domain once its rule rejects media, and admits or records no claim made before it", "stores nothing of a domain
     whose rule came to reject media while the round held its fetch", "judges an account by its stored domain alone, not
     by its actor host", "retires in the validity walk every cached file of a domain whose rule came to reject media",
     "decides by the nearest block", "seeks the reject_media rule by domain for each slot the validity walk reads,
-    however many blocks, after ANALYZE and growth"). A purge retires every slot of its account before anything else,
-    writing nothing else of the account while a slot remains, and deletes the account only after the last. A slot never
-    outlives the row it names: an attachment an edit drops has its slots retired before its row goes, the removal of a
-    status retires its attachments' slots (within the batch's rows, at most five changes a slot, an audit pass's sums
-    included, as progress of the job, from a window of 64 of its attachment rows that its completion check reads too,
-    nothing for a local status) before their rows may go, and every delete of a remote attachment row keeps one a slot
-    still names. `test/remote-media.test.ts` ("retires in the validity walk a slot whose account became unavailable or
-    whose redirect host was blocked"),
+    however many blocks, after ANALYZE and growth", "reads no block for the rule's walk while no block has
+    reject_media, after ANALYZE and growth"), `test/domain-suffix-walk.test.ts` ("finds the rule the walk as it stood
+    finds", "rejects a key past the bound in the cache and not in the presenters, with or without a flagged block").
+    A purge retires every slot of its account before anything else, writing nothing else of the account while a slot
+    remains, and deletes the account only after the last. A slot never outlives the row it names: an attachment an
+    edit drops has its slots retired before its row goes, the removal of a status retires its attachments' slots
+    (within the batch's rows, at most five changes a slot, an audit pass's sums included, as progress of the job,
+    from a window of 64 of its attachment rows that its completion check reads too, nothing for a local status)
+    before their rows may go, and every delete of a remote attachment row keeps one a slot still names.
+    `test/remote-media.test.ts` ("retires in the validity walk a slot whose account became unavailable or whose
+    redirect host was blocked"),
     `test/remote-media-rounds.test.ts` ("resumes a retirement the batch budget cut short, writing nothing else first",
     "retires stored and reserved slots first, resuming over batches, and deletes the account after the last", "never
     clears a slot through the generic reference loop"), `test/remote-attachments.test.ts` ("resets a changed URL, dooms
@@ -4330,7 +4350,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   through `MOVED_ACCOUNT_COLUMNS` (`src/domain/account-columns.ts`): every text cut in SQL by its raw bytes and in the
   presenter by its decoded limit (the display name at 100 code points), URLs and actor id within 512 bytes, no note,
   fields or image descriptions, and the emojis its display name references within 2,048 bytes of JSON; one such row
-  reads at most 12,464 bytes from SQLite (25,664 of heap, its cached emoji included) and presents at most 11,340 bytes
+  reads at most 12,472 bytes from SQLite (25,696 of heap, its cached emoji included) and presents at most 11,340 bytes
   of JSON, a target past every profile bound included
   (`test/status-bounds.test.ts` ("the moved-to account"), `test/account-moved.test.ts`). The chunk's targets are read in
   one query, each account presented with its target only when admission reaches it. One account is then at most the
@@ -5655,7 +5675,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   measure of the 254 KiB past which it is skipped and logged with no string made (254 KiB keeps the largest frame and
   its terminating byte within 256 KiB). A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 48,551,863.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 48,552,743.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
   a turn presents at most 18,726,544 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,396,167 being the most JSON a streamed subject presents, the quote
@@ -5779,12 +5799,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Workers suites is planned under singleton statistics, and a whole-table or whole-index read fails the suite unless
   `test/plan-audit-entries.ts` lists it for that statement (`test/plan-audit.test.ts` ("fails a statement whose pin is
   removed")), or a reviewed fragment allowance (`test/plan-audit-allowances.ts`) stands for it: the suspend-block
-  probe (`SUSPEND_BLOCKS_SQL`) passes in a statement that, with the probe taken out, plans no such scan, and whose
-  plan shows the scan no more often than the statement contains the probe; it reads one entry however many blocks
-  exist (`test/plan-audit.test.ts` ("reads one suspend block however many there are")); _Gap:_ the listed statements
-  (#1468), statements no test runs, statements where the probe is not only a predicate (its text also a name, as an
-  implicit column name a `NATURAL JOIN` or `USING` matches, or its index forced elsewhere with `INDEXED BY`), which
-  the allowance's attribution does not cover, and prefix or range walks the plan shows as a search. The custom
+  probe (`SUSPEND_BLOCKS_SQL`) and the reject_media-block probe (`REJECT_MEDIA_BLOCKS_SQL`) each pass in a statement
+  that, with the probe taken out, plans no such scan, and whose plan shows the scan no more often than the statement
+  contains the probe; each reads one entry however many blocks exist (`test/plan-audit.test.ts` ("reads one suspend
+  block however many there are", "reads one reject_media block however many there are", "reads the partial index
+  under statistics that overstate it")); _Gap:_ the listed statements (#1468), statements no test runs, statements where
+  the probe is not only a predicate (its text also a name, as an implicit column name a `NATURAL JOIN` or `USING`
+  matches, or its index forced elsewhere with `INDEXED BY`), which the allowance's attribution does not cover, and
+  prefix or range walks the plan shows as a search. The custom
   thumbnails' statements (#1828 PR6: the link predicate, the retirement, the overlay's three reads, the release list
   and its mark, the sweep's backup hold, the import's link check, the triggers' seeks) each walk
   `media_attachments_thumbnail`, `media_attachments_thumbnail_release` or a primary key, and the sweep's hold reads at
@@ -6173,18 +6195,18 @@ logs (6.01 MB escaped, 4.64 MB raw, the fill of the largest SQLite read) are mea
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
-| Account occurrence, with the account it moved to                 | 124,499           | 142,608         | 150,428           | 1         | 216   | 1.8%           |
-| Moved-to account (nested), derived from its caps                 | 12,464            |                 | 11,340            | 1         |       | 0.1%           |
-| Status                                                           | 4,631,397         | 2,818,202       | 2,826,006         | 1,597     | 3,292 | 33.7%          |
-| Quote (the status and its quoted status)                         | 7,184,182         | 5,626,757       | 5,642,122         | 2,140     | 6,566 | 67.3%          |
-| Boost of a quote                                                 | 7,480,491         | 6,037,893       | 6,059,222         | 2,199     | 7,650 | 72.2%          |
-| Conversation: 12 participants presented, its last status a quote | 8,883,365         | 7,338,022       | 7,396,167         | 2,191     | 9,149 | 88.2%          |
-| Notification group: 8 sample accounts, its status a quote        | 8,259,576         | 6,768,045       | 6,811,930         | 2,191     | 8,306 | 81.2%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,569,732         | 6,231,588       | 6,254,323         | 2,158     | 7,599 | 74.6%          |
-| An admin.report notification of that report                      | 2,374,225         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
-| A moderation_warning notification, its local account at bounds   | 134,434           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
-| Its notification group                                           | 134,434           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 7,319,519         | 5,769,491       | 5,788,421         | 2,163     | 6,786 | 69.0%          |
+| Account occurrence, with the account it moved to                 | 124,507           | 142,608         | 150,428           | 1         | 216   | 1.8%           |
+| Moved-to account (nested), derived from its caps                 | 12,472            |                 | 11,340            | 1         |       | 0.1%           |
+| Status                                                           | 4,631,453         | 2,818,202       | 2,826,006         | 1,597     | 3,292 | 33.7%          |
+| Quote (the status and its quoted status)                         | 7,184,294         | 5,626,757       | 5,642,122         | 2,140     | 6,566 | 67.3%          |
+| Boost of a quote                                                 | 7,480,627         | 6,037,893       | 6,059,222         | 2,199     | 7,650 | 72.2%          |
+| Conversation: 12 participants presented, its last status a quote | 8,883,677         | 7,338,022       | 7,396,167         | 2,191     | 9,149 | 88.2%          |
+| Notification group: 8 sample accounts, its status a quote        | 8,259,816         | 6,768,045       | 6,811,930         | 2,191     | 8,306 | 81.2%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,569,884         | 6,231,588       | 6,254,323         | 2,158     | 7,599 | 74.6%          |
+| An admin.report notification of that report                      | 2,374,257         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
+| A moderation_warning notification, its local account at bounds   | 134,442           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
+| Its notification group                                           | 134,442           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
+| A filtered favourite of the quote, as include_filtered lists it  | 7,319,647         | 5,769,491       | 5,788,421         | 2,163     | 6,786 | 69.0%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,821,604         | 4,278,825       |                   | 1,343     | 3,208 | 51.0%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,335,409       |                   |           |       | 75.5%          |
 | Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
@@ -6450,7 +6472,7 @@ two Store tables below (the rows, the rejected items and the answers' peaks) and
 | ---------------------------------------------- | ----------------------- | --------------------- |
 | Boost of a quote (the largest timeline item)   | 20.33 MB                | 18.18 MB              |
 | Group: its status (a quote), 8 sample accounts | 22.39 MB                | 20.44 MB              |
-| Report: its status and 4 accounts              | 20.56 MB                | 18.76 MB              |
+| Report: its status and 4 accounts              | 20.57 MB                | 18.76 MB              |
 
 Groups and reports also keep the presentation's state: the compiled filters (50 filters of 20 keywords, about
 0.5 MB) and the filter results cached by status (at most 50 results of about 1.2 KB each, 60 KB a status) for the
@@ -6461,7 +6483,7 @@ pass, and the passes are at most four), 200 for a page of reports (its at most 1
 
 | Answer (Store isolate)                      | Normal   | Backstop fired, the dropped chunk still live | A single item |
 | ------------------------------------------- | -------- | -------------------------------------------- | ------------- |
-| Timelines (largest item a boost of a quote) | 61.97 MB | 63.98 MB                                     | 61.97 MB      |
+| Timelines (largest item a boost of a quote) | 61.98 MB | 63.98 MB                                     | 61.98 MB      |
 | Groups                                      | 76.39 MB | 79.21 MB                                     | 76.39 MB      |
 | Reports                                     | 75.29 MB | 78.11 MB                                     | 75.29 MB      |
 
@@ -6469,7 +6491,7 @@ A chunk of several takes at most its target of heap: 392 KiB (0.40 MB) for timel
 reports. Normal: the rows are the larger of 1.25 × the target and the item's rows, plus the admitted answer, the
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 392 KiB timeline cap and `STATUS_ANSWER_BYTES`, the largest multiple of 8 KiB that does with that
-cap (each byte of budget is three of heap, so 8 KiB more would pass half by 6,863.5 bytes), keep the
+cap (each byte of budget is three of heap, so 8 KiB more would pass half by 7,543.5 bytes), keep the
 fallback below half the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to spare
 under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 69,694 under its
 ceiling): each remote account row's and moved-to account's cached profile images (two rows at their caps, MEDIA-7),
@@ -6481,7 +6503,7 @@ not read), each account row's static images count at their stored bound (1,056 b
 hold), each status row's app name and website at their raw bounds (4,544 bytes of heap), each attachment row's blurhash
 at 140 bytes, whether it is remote at 32 and its cached file and icon (two slots at the packed cap, read with the row:
 `mediaCacheSql`; the raw fill caches both of every remote attachment), each presented attachment's four URLs at 4,098
-JSON bytes and its blurhash at 56, each moved-to account's row at its 25,664-byte heap cap and its JSON at 11,340 bytes,
+JSON bytes and its blurhash at 56, each moved-to account's row at its 25,696-byte heap cap and its JSON at 11,340 bytes,
 and its emojis' presentation holds one entry past those it admits at a time (18,060 bytes at three times its literals,
 decoded strings and the larger of its entity and an href normalization makes before rejecting it: `referencedEmojis` in
 `src/domain/custom-emojis.ts`), counted once per answer. Every row term carries 25% headroom; the peak test rejects
@@ -6493,7 +6515,7 @@ a timeline's largest item pass half at a chunk of one; it shows none.
 | ------------------------------------------------- | ------------- | -------------- |
 | RPC copy (serialized; deserialized in the Worker) | 8.4 MB        | 25.2 MB        |
 | The Worker's JSON string and the body             |               | 25.2 MB        |
-| Peak, normal                                      | 61.97 MB      | 50 MB          |
+| Peak, normal                                      | 61.98 MB      | 50 MB          |
 | Peak, the backstop fired                          | 63.98 MB      | 50 MB          |
 
 The Store's peak is the timelines' (the answer table above, normal and with the backstop fired and the dropped chunk
@@ -7155,7 +7177,7 @@ OWASP, html5sec and sanitize-html vectors in `test/fixtures/` (`test/html.test.t
 | Past `HELD_REJECTS_PER_ACCOUNT` (100) held `Reject`s, a local account's further refused `Reject`s of new pairs are dropped and logged (`kopje.delivery.reject_hold_capped`), the owner's own included while the account is saturated; a slot a replay frees may go to any pair                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Storage and recheck load bound the table (docs/visibility.md, "Held handshakes"); no per-domain cap, eviction or reserve for the owner's own `Reject`s                                                                                                                                                                                                                                                                                                                                      | the log line is seen                                                                                                     |
 | A pair keeps one held `Reject`, the newest: an older one of the pair is not sent. A newer `Reject` delivered while an older one is held (a refused `Follow` of a blocked account) leaves both to be sent; both reject                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | The receiver applies a `Reject` by its pair when its id names nothing it holds (Mastodon's `reject_embedded_follow`; Misskey by the pair alone), so the newest is enough and a second is harmless                                                                                                                                                                                                                                                                                           | a peer is seen to treat a second `Reject` otherwise                                                                      |
 | A held `Reject` whose stored `Follow` id or actor uri is not valid UTF-8 (only an import can store one) is never sent: its item fails and parks (`kopje.jobs.reject_replay.invalid_identity`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Hashing or signing a decoded identity would name another `Follow`; the operator repairs the uri and runs `kopje-admin jobs retry`                                                                                                                                                                                                                                                                                                                                                           | the log line is seen                                                                                                     |
-| Clients, and browsers viewing a public page or the embed, load from the hosts that name them, which see the viewer's address (a page sends them no referrer): a custom emoji image not yet cached, that the cache refuses (by type, size, host or a policy), or past a snapshot's first 16 entries (edit history included); a remote attachment's file or icon not yet cached, that the cache refuses (Ogg, HEIF, QuickTime, a size past its cap, a host or a policy), that arrived before the retention or was stored longer, and every attachment of the edit history; posters; avatars and headers not yet cached or that the cache refuses; a page's video and audio only once played                                                                                                                                                                                                      | The remote URL is the fallback Mastodon's media proxy replaces; the cache takes attachments within `MEDIA_CACHE_RETENTION_DAYS` (NET-3, MEDIA-7); the Store's memory bound (RES-3) holds the emoji cache read with each row to 16 entries; the URLs are http(s) and bounded (HTML-3; RES-2, stored values); a page's players ask for nothing before play (`preload="none"`, no autoplay, WEB-2)                                                                                             | more cached emoji entries fit the memory bound, the edit history shows cached files, or a remote URL must never be shown |
+| Clients, and browsers viewing a public page or the embed, load from the hosts that name them, which see the viewer's address (a page sends them no referrer): a custom emoji image not yet cached, that the cache refuses (by type, size, host or a policy), or past a snapshot's first 16 entries (edit history included); a remote attachment's file or icon not yet cached, that the cache refuses (Ogg, HEIF, QuickTime, a size past its cap, a host or a policy), that arrived before the retention or was stored longer, and every attachment of the edit history; posters; avatars and headers not yet cached or that the cache refuses; a page's video and audio only once played; none of an account whose stored domain a block with `reject_media` rules (VIS-30)                                                                                                                   | The remote URL is the fallback Mastodon's media proxy replaces; the cache takes attachments within `MEDIA_CACHE_RETENTION_DAYS` (NET-3, MEDIA-7); the Store's memory bound (RES-3) holds the emoji cache read with each row to 16 entries; the URLs are http(s) and bounded (HTML-3; RES-2, stored values); a page's players ask for nothing before play (`preload="none"`, no autoplay, WEB-2)                                                                                             | more cached emoji entries fit the memory bound, the edit history shows cached files, or a remote URL must never be shown |
 | An emoji snapshot goes stale until its object is delivered again: an emoji the author's server changes or removes keeps its old URL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Each object keeps what it tagged; a global (shortcode, domain) registry, as Mastodon keeps, is not stored                                                                                                                                                                                                                                                                                                                                                                                   | emoji are kept in a registry                                                                                             |
 | An uncached emoji's `static_url` is the same as `url`, and so is a cached one's when no still could be remuxed within 256 KiB, so such an animated emoji stays animated where a client asked for still images                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Mastodon serves a still image it generates; stills are remuxed, never decoded (MEDIA-6)                                                                                                                                                                                                                                                                                                                                                                                                     | clients need stills of every emoji                                                                                       |
 | Rows stored before migration `0053_custom_emoji_snapshots`, and converted ones, show no emoji: an account until its next refresh, a status until its next Update                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Backfilling from the stored documents would put the upgrade's time budget at risk                                                                                                                                                                                                                                                                                                                                                                                                           | a backfill fits the upgrade budget                                                                                       |

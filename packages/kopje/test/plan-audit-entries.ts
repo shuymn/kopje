@@ -14,7 +14,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "account_invitations holds at most 10 rows (account_invitations_cap, migration 0081_account_invitations)",
   },
   {
-    id: "36e808973342e606",
+    id: "06d5524649beddf3",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountRowsOf < src/domain/accounts.ts#accountsOf < src/domain/status-presenter.ts#<anonymous> < src/domain/status-presenter.ts#hydrate < src/domain/status-presenter.ts#present",
     disposition: "deliberate",
@@ -22,7 +22,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "e070eeaf55fd0c74",
+    id: "4dc4b5d2739a440c",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountRow < src/domain/accounts.ts#<anonymous>",
     disposition: "deliberate",
@@ -30,7 +30,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "bc009d2e1363986f",
+    id: "9117f55682a66e23",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#presentAccountsById < src/domain/accounts.ts#<anonymous> < src/domain/auth.ts#unlessSuspended < src/domain/accounts.ts#<anonymous>",
     disposition: "deliberate",
@@ -38,7 +38,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "06b2f827d33a6268",
+    id: "13f97f5efb065855",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#addressRow < src/domain/accounts.ts#accountByAddress < src/domain/instance.ts#contactAccount < src/domain/instance.ts#<anonymous>",
     disposition: "deliberate",
@@ -46,7 +46,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "c9e1a44a42979cc7",
+    id: "c6163a88c576a6d5",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountByLookup < src/domain/web-pages/profile.ts#remoteTagged < src/domain/web-pages/profile.ts#profilePageWithin < src/domain/web-pages/profile.ts#<anonymous> < src/domain/web-pages/site.ts#<anonymous>",
     disposition: "deliberate",
@@ -62,7 +62,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "f275cf355cdd4dc6",
+    id: "0890e327afb50da7",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#addressRow < src/domain/accounts.ts#accountByAddress < src/domain/instance.ts#contactAccount < src/domain/instance.ts#<anonymous>",
     disposition: "deliberate",
@@ -1301,7 +1301,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-collections.ts#<anonymous> in completeCollectionRead); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "c815159d143e7f09",
+    id: "e64ab2aee3bdfb7f",
     scans: ["remote_media: SCAN r"],
     site: "src/domain/remote-media.ts#<anonymous> in claimRemoteMedia",
     disposition: "background",
@@ -1333,7 +1333,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-media.ts#<anonymous> in maintainRemoteMedia); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "e3baadedab9c6595",
+    id: "cbe32c20abef3247",
     scans: ["remote_media: SCAN r USING INDEX remote_media_expiry"],
     site: "src/domain/remote-media.ts#fenced < src/domain/remote-media.ts#<anonymous> in admitRemoteMedia",
     disposition: "background",
@@ -1349,7 +1349,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-media.ts#<anonymous> in recordRemoteMediaValidation); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "05c4e0ad0523a85f",
+    id: "f552faf9e74481b8",
     scans: ["remote_media: SCAN r", "remote_media: SCAN remote_media"],
     site: "src/domain/remote-media.ts#validityWalk < src/domain/remote-media.ts#<anonymous> in maintainRemoteMedia",
     disposition: "background",
@@ -1427,7 +1427,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:267 and :537), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:52) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:227), one per month it ran",
   },
   {
-    id: "174a61d1f874ed8e",
+    id: "bbceacf6c102bd42",
     scans: ["?: SCAN c", "local_accounts: SCAN l"],
     site: "src/domain/status-presenter.ts#statusRowBounds < src/domain/status-presenter.ts#plannedChunks < src/domain/status-presenter.ts#statusStream",
     disposition: "deliberate",
