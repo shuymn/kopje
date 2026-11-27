@@ -71,10 +71,10 @@ MEMORY="${MEMORY:-8g}"
 WORK_MS="${WORK_MS:-660000}"
 STILL_MS="${STILL_MS:-30000}"
 SLOW_WORK_MS=30000
-# About 10 s of encode time once the input and the probe took theirs: 0.7 of it is past rung1.mp4's estimate at 720p30
-# (about 3.7 s) and short of its estimate at 1080p60 (about 9.8 s; plan.go's coefficients), with seconds to spare
-# either way.
-LOWER_ENCODE_MS=10500
+# Encode time for rung1.mp4 short of its 1080p60 estimate (about 9.8 s; plan.go's coefficients), which 0.7 of it
+# reaches only past 14.0 s, and past its 720p30 one (about 3.7 s), which it covers while more than 5.3 s is left: the
+# input and the probe may take about 8 s before the plan changes to 480p30 (locally they took under 30 ms).
+LOWER_ENCODE_MS=13500
 SLOW_CPUS=0.05
 MIN_SSIM_480P="${MIN_SSIM_480P:-0.95}"
 work="$(mktemp -d "${TMPDIR:-/tmp}/kopje-container-smoke.XXXXXX")"

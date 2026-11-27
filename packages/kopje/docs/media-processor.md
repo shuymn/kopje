@@ -148,7 +148,9 @@ table gives what that estimate admits with this release's constants, and at whic
 (`container/server/plan.go`) and the time allocation (`allocate` in `src/domain/media-processing.ts`) for a 90 MiB
 input (the longest input time), each stage taking its planned time, and on v1 3 s from the request's arrival to the
 queue. These are estimates, not measured wall times: measured encodes took 0.38 to 1.08 of their estimate. Every file
-is also at most 90 MiB, which at b Mb/s is about 755 / b seconds, and at most 600 s of video or 1200 s of audio.
+is also at most 90 MiB, which at b Mb/s is about 755 / b seconds, and at most 600 s of video or 1200 s of audio. The
+figures are for a video with audio (one without takes a little longer), and a rendition is a cap: a 30 fps source
+encoded at the 1080p60 rendition stays at 30 fps.
 
 | Source                                 | `/api/v1/media`                                             | `/api/v2/media`                                             |
 | -------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------- |
