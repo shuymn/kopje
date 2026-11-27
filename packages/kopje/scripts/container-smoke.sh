@@ -10,6 +10,9 @@
 # each rung's last duration (exactly 120 s of 320x180 at 60 fps and 300 s of 720p30, with audio, kept at 60 fps and at
 # 1280x720), and 119.9 s of the first with its audio starting 500 ms late, which the verifier must hold to the same rung;
 # and M4A, FLAC, Ogg, MP3 and Opus-only WebM audio.
+# Lower-rung planning (#1202): the 3 s 1080p60 input again, given LOWER_ENCODE_MS of encode time, which its estimate
+# fits at 720p30 and not on its own 1080p60 rung, is encoded at 1280x720 and 30 fps with each stream as long as the
+# input's.
 # The work deadline (#1828 PR4 plan, P8): rung1.mp4 delivered over about 4 s, to a second container held to
 # SLOW_CPUS so that its encode really takes longer than the time left, answers from its arrival within the work
 # deadline SLOW_WORK_MS (refused for the envelope, or cut at the deadline), where the old fixed stage times (an encode
@@ -68,6 +71,10 @@ MEMORY="${MEMORY:-8g}"
 WORK_MS="${WORK_MS:-660000}"
 STILL_MS="${STILL_MS:-30000}"
 SLOW_WORK_MS=30000
+# About 10 s of encode time once the input and the probe took theirs: 0.7 of it is past rung1.mp4's estimate at 720p30
+# (about 3.7 s) and short of its estimate at 1080p60 (about 9.8 s; plan.go's coefficients), with seconds to spare
+# either way.
+LOWER_ENCODE_MS=10500
 SLOW_CPUS=0.05
 MIN_SSIM_480P="${MIN_SSIM_480P:-0.95}"
 work="$(mktemp -d "${TMPDIR:-/tmp}/kopje-container-smoke.XXXXXX")"
@@ -629,6 +636,29 @@ for case in vfr.mp4 longaudio.mp4 header-short.mp4 header-long.mp4; do
   check "$ok" "$case: $got, want 200 with each stream as long as the input's"
   echo "| $case | normalize | $got | | | | | | | | |"
 done
+
+# Lower-rung planning: rung1.mp4, which the loop above saw encoded at 1080p60 with a roomy work deadline, is encoded at
+# 720p30 when only the lower rung's estimate fits, and its output passes the verifier.
+cp "$work/fixture/rung1.mp4" "$work/in/lower.mp4"
+h="$(req lower.normalized -X POST --data-binary @/in/lower.mp4 -H 'Content-Type: application/octet-stream' \
+  "http://127.0.0.1:8080/normalize?work_ms=$((LOWER_ENCODE_MS + 1000))&still_ms=1000")"
+got="$(status "$h") $(header Kopje-Error "$h")"
+ok=false
+if [ "$(status "$h")" = 200 ]; then
+  geometry="$(ffprobe -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 /o/lower.normalized)"
+  got="200, $geometry"
+  [ "$geometry" = "1280,720,30/1" ] && ok=true
+  for stream in v a; do
+    want="$(decoded "$work/in" lower.mp4 "$stream")"
+    [ "$stream" = v ] && video_length="$want"
+    have="$(decoded "$work/out" lower.normalized "$stream")"
+    [ "$(within "$have" "$want" 0.15)" = true ] || ok=false
+    got="$got, $stream $have s (input $want s)"
+  done
+  keep lower.normalized lower.mp4 video/mp4 "$video_length"
+fi
+check "$ok" "lower.mp4: $got, want 200 at 1280,720,30/1 with each stream as long as the input's"
+echo "| lower.mp4 | normalize, encode about $LOWER_ENCODE_MS ms | $got | | | | | | | | $(header Kopje-Estimate-Ms "$h") ms estimated |"
 
 # lie.mp4 and lie-av1.mp4: no frame over the pixel limit is decoded, whatever its headers declared, and the output
 # that would leave is refused as the input's (422 pixels).

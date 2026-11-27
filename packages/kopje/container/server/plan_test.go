@@ -132,18 +132,20 @@ func TestPlanCountsContradictoryHeadersAtTheirLargest(t *testing.T) {
 	}
 }
 
+// A video refused for its estimate: no rung from its duration's down fits. A source smaller than every rung (640x480 at
+// 30 fps) estimates the same on each, so missing the top rung by a millisecond misses them all.
 func TestPlanRefusesAnEstimateOverTheEncodeTime(t *testing.T) {
-	input := probeOf("60", stream("video", "h264", 1920, 1080, "30/1", "60"), stream("audio", "aac", 0, 0, "0/0", "60"))
+	input := probeOf("60", stream("video", "h264", 640, 480, "30/1", "60"), stream("audio", "aac", 0, 0, "0/0", "60"))
 	p, refused := planNormalize(input, roomy)
-	if refused != "" {
-		t.Fatalf("refused %s", refused)
+	if refused != "" || p.rung != ladder[0] {
+		t.Fatalf("got %+v %q", p, refused)
 	}
 	// Admitted while the estimate is within estimateSafety of the encode time, refused just past it.
-	limit := p.estimateMs / estimateSafety
-	if _, refused := planNormalize(input, math.Ceil(limit)); refused != "" {
-		t.Fatalf("refused at the limit: %s", refused)
+	limit := math.Ceil(p.estimateMs / estimateSafety)
+	if at, refused := planNormalize(input, limit); refused != "" || at.rung != ladder[0] {
+		t.Fatalf("at the limit: %+v %q", at, refused)
 	}
-	if _, refused := planNormalize(input, math.Floor(limit)-1); refused != refuseEnvelope {
+	if _, refused := planNormalize(input, limit-1); refused != refuseEnvelope {
 		t.Fatalf("got %q below the limit", refused)
 	}
 	hdr := probeOf("60", stream("video", "hevc", 1920, 1080, "30/1", "60"))
@@ -152,6 +154,39 @@ func TestPlanRefusesAnEstimateOverTheEncodeTime(t *testing.T) {
 	sdr, _ := planNormalize(probeOf("60", stream("video", "hevc", 1920, 1080, "30/1", "60")), roomy)
 	if !tonemapped.hdr || !(tonemapped.estimateMs > sdr.estimateMs) {
 		t.Fatalf("HDR %v estimate %v, SDR %v", tonemapped.hdr, tonemapped.estimateMs, sdr.estimateMs)
+	}
+}
+
+// 60 s of 1080p60 H.264 with AAC takes 1080p60 (its duration's rung) from 240,185 ms of encode time, 720p30 from
+// 66,003 ms and 480p30 from 38,320 ms, and is refused below that. The edges are the estimates over estimateSafety,
+// worked by hand: decoding 3,600 frames of 1920x1080 at 1 ns a pixel (7,465 ms), the audio (2,400 ms) and the fixed
+// 1,500 ms, with encoding 3,600 frames of 1920x1080 (156,764 ms), 1,800 of 1280x720 (34,836 ms) or 1,800 of 852x480
+// (15,459 ms) at 21 ns a pixel.
+func TestPlanFallsToTheFirstLowerRungThatFits(t *testing.T) {
+	input := probeOf("60", stream("video", "h264", 1920, 1080, "60/1", "60"), stream("audio", "aac", 0, 0, "0/0", "60"))
+	edges := []struct {
+		encodeMs float64
+		long     int
+	}{{240_185, 1920}, {66_003, 1280}, {38_320, 854}}
+	for i, e := range edges {
+		p, refused := planNormalize(input, e.encodeMs)
+		if refused != "" || p.rung.longEdge != e.long {
+			t.Fatalf("at %v ms: %+v %q, want the %d rung", e.encodeMs, p, refused, e.long)
+		}
+		below, refused := planNormalize(input, e.encodeMs-1)
+		switch {
+		case i == len(edges)-1:
+			if refused != refuseEnvelope {
+				t.Fatalf("at %v ms: %+v %q, want envelope", e.encodeMs-1, below, refused)
+			}
+		case refused != "" || below.rung.longEdge != edges[i+1].long:
+			t.Fatalf("at %v ms: %+v %q, want the %d rung", e.encodeMs-1, below, refused, edges[i+1].long)
+		}
+	}
+	// Never a rung above the duration's: 121 s of 1080p30 takes 720p30 however much time is left.
+	long := probeOf("121", stream("video", "h264", 1920, 1080, "30/1", "121"))
+	if p, refused := planNormalize(long, roomy); refused != "" || p.rung != ladder[1] {
+		t.Fatalf("121 s: %+v %q", p, refused)
 	}
 }
 
@@ -169,7 +204,7 @@ func TestLadderAndBitrateCap(t *testing.T) {
 		{600, 854, 30, 128_000},
 	}
 	for _, c := range cases {
-		r := rungFor(c.duration)
+		r := ladder[durationRung(c.duration)]
 		if r.longEdge != c.long || r.fps != c.fps || r.audioBitrate != c.audioRate {
 			t.Fatalf("%v s: got %+v", c.duration, r)
 		}
@@ -181,12 +216,17 @@ func TestLadderAndBitrateCap(t *testing.T) {
 	if got, want := videoMaxrate(600, 128_000), 654_936; got != want {
 		t.Fatalf("600 s maxrate %d, want %d", got, want)
 	}
-	// At the cap, a whole file stays below AV_OUTPUT_LIMIT with one second of overshoot.
-	for _, d := range []float64{60, 120, 300, 600} {
-		r := rungFor(d)
-		total := (float64(videoMaxrate(d, r.audioBitrate)+r.audioBitrate)*d + float64(videoMaxrate(d, r.audioBitrate))) / 8
-		if total >= avOutputLimit {
-			t.Fatalf("%v s: %v bytes at the cap", d, total)
+	// The nominal size at the cap, with one second of overshoot, stays within AV_OUTPUT_TARGET and that second at
+	// maxVideoMaxrate, whichever AAC bitrate a rung (its own or a lower one's) or a silent video gives, at durations
+	// around the 8 Mb/s knee (57.3 s to 58.7 s) and past it. The hard limit is the container's file-size check and the
+	// Worker's reader.
+	for _, aac := range []int{192_000, 128_000, 0} {
+		for _, d := range []float64{57, 57.3, 57.5, 57.8, 58, 58.7, 60, 120, 300, 600} {
+			maxrate := videoMaxrate(d, aac)
+			total := (float64(maxrate+aac)*d + float64(maxrate)) / 8
+			if total > avOutputTarget+maxVideoMaxrate/8 {
+				t.Fatalf("%v s with %d b/s of audio: %v bytes at the cap", d, aac, total)
+			}
 		}
 	}
 }
@@ -198,11 +238,25 @@ func TestFitWithin(t *testing.T) {
 		{640, 480, 1920, 1080, 640, 480},
 		{1920, 1080, 854, 480, 852, 480},
 		{1001, 1001, 640, 640, 640, 640},
+		// Each dimension at least 2, as the scale filter keeps it: a thin source's short edge does not reach 0.
+		{1920, 4, 854, 480, 854, 2},
+		{1, 640, 1920, 1080, 2, 640},
 	}
 	for _, c := range cases {
 		if w, h := fitWithin(c.w, c.h, c.long, c.short); w != c.ow || h != c.oh {
 			t.Fatalf("%dx%d within %d/%d: %dx%d", c.w, c.h, c.long, c.short, w, h)
 		}
+	}
+	// The estimate does not grow down the ladder, which the walk from the duration's rung relies on: here 1920x4 at
+	// 60 fps, then 1280x2 and 854x2 at 30 fps.
+	thin := stream("video", "h264", 1920, 4, "60/1", "60")
+	last := math.Inf(1)
+	for _, r := range ladder {
+		e := videoEstimate(&thin, nil, 3600, 60, r)
+		if e > last {
+			t.Fatalf("%dp rung estimates %v, over %v", r.shortEdge, e, last)
+		}
+		last = e
 	}
 }
 
@@ -285,15 +339,18 @@ func TestPlanReadsTheColourTags(t *testing.T) {
 }
 
 // The envelope's decisions (#1828 PR2, A1) at the rungs' boundaries and at each endpoint's edge, for the inputs P27
-// measured. The expected estimate is derived here from A1's coefficients and the encode time from design 4.7's
-// starting stage times, never copied from the plan, so a changed coefficient, rung or allocation fails this test.
+// measured: a video takes the first rung from its duration's down whose estimate fits, and is refused when none does.
+// The expected rung and estimate are derived here from A1's coefficients, A2's ladder and the encode time from design
+// 4.7's starting stage times, never copied from the plan, so a changed coefficient, rung, allocation or walk fails this
+// test.
 func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
 	// The coefficients (A1's, the tone map's and the encode's from the boundary bench, A8; ns per pixel, ms per second
 	// of audio), fixed work and safety factor.
 	decode := map[string]float64{"h264": 1.0, "hevc": 1.5, "vp9": 3.5}
 	const tonemap, encode, audioMs, fixedMs, safety = 11.0, 21.0, 40.0, 1500.0, 0.7
 	// Design 4.7's starting stage times (s): dispatch, start, probe, still and Images, commit, v1's reply; an assumed
-	// input streaming time and, for v1, ingress.
+	// input streaming time and, for v1, ingress. They are the PR2 bench's allocations, not the live allocate's
+	// (docs/media-processor.md, "Estimated admission limits", has those).
 	const dispatch, start, probeS, still, commit, reply, input, ingress = 2.0, 5.0, 3.0, 8.0, 6.0, 2.0, 3.2, 10.0
 	fixed := dispatch + start + probeS + still + commit
 	endpoints := []struct {
@@ -306,24 +363,42 @@ func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
 	}
 	// The ladder as A2 keeps it: the duration each rung takes, its geometry and frame rate.
 	rungs := []struct{ upTo, long, short, fps float64 }{{120, 1920, 1080, 60}, {300, 1280, 720, 30}, {600, 854, 480, 30}}
-	expected := func(w, h, fps, d float64, codec string, hdr, audio bool) float64 {
-		r := rungs[len(rungs)-1]
-		for _, c := range rungs {
-			if d <= c.upTo {
-				r = c
-				break
+	type source struct {
+		w, h, fps, d float64
+		codec        string
+		hdr, audio   bool
+	}
+	// The rung a duration takes, and the estimate on rung i: the output's even dimensions, each at least 2.
+	durationRung := func(d float64) int {
+		for i, r := range rungs {
+			if d <= r.upTo {
+				return i
 			}
 		}
-		ow, oh := fitWithin(int(w), int(h), int(r.long), int(r.short))
-		perPixel := decode[codec]
-		if hdr {
+		return len(rungs) - 1
+	}
+	estimateOn := func(s source, i int) float64 {
+		r := rungs[i]
+		f := math.Min(1, math.Min(r.long/math.Max(s.w, s.h), r.short/math.Min(s.w, s.h)))
+		out := math.Max(2, math.Trunc(s.w*f/2)*2) * math.Max(2, math.Trunc(s.h*f/2)*2)
+		perPixel := decode[s.codec]
+		if s.hdr {
 			perPixel += tonemap
 		}
-		est := fixedMs + w*h*d*fps*perPixel/1e6 + float64(ow*oh)*math.Min(d*fps, math.Ceil(d*r.fps))*encode/1e6
-		if audio {
-			est += d * audioMs
+		est := fixedMs + s.w*s.h*s.d*s.fps*perPixel/1e6 + out*math.Min(s.d*s.fps, math.Ceil(s.d*r.fps))*encode/1e6
+		if s.audio {
+			est += s.d * audioMs
 		}
 		return est
+	}
+	// The rung planned with encodeMs and its estimate; -1 when no rung from the duration's down fits.
+	expected := func(s source, encodeMs float64) (int, float64) {
+		for i := durationRung(s.d); i < len(rungs); i++ {
+			if est := estimateOn(s, i); est <= safety*encodeMs {
+				return i, est
+			}
+		}
+		return -1, 0
 	}
 	inputs := []struct {
 		name      string
@@ -359,39 +434,75 @@ func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
 			streams = append(streams, stream("audio", "aac", 0, 0, "0/0", d))
 		}
 		probe := probeOf(d, streams...)
-		want := expected(in.w, in.h, in.fps, in.duration, in.codec, in.transfer != "", in.audio)
+		src := source{in.w, in.h, in.fps, in.duration, in.codec, in.transfer != "", in.audio}
+		check := func(label string, encodeMs float64) int {
+			i, want := expected(src, encodeMs)
+			pl, refused := planNormalize(probe, encodeMs)
+			if i < 0 {
+				if refused != refuseEnvelope {
+					t.Fatalf("%s %s at %.0f ms: got %+v %q, want envelope", in.name, label, encodeMs, pl, refused)
+				}
+				return i
+			}
+			if refused != "" || pl.rung.longEdge != int(rungs[i].long) || pl.rung.shortEdge != int(rungs[i].short) ||
+				pl.rung.fps != int(rungs[i].fps) {
+				t.Fatalf("%s %s at %.0f ms: got %+v %q, want the rung %v", in.name, label, encodeMs, pl, refused, rungs[i])
+			}
+			if math.Abs(pl.estimateMs-want) > 1e-6 {
+				t.Fatalf("%s %s: estimate %v, want %v", in.name, label, pl.estimateMs, want)
+			}
+			return i
+		}
 		for _, e := range endpoints {
-			pl, refused := planNormalize(probe, e.encodeMs)
-			admitted := want <= safety*e.encodeMs
-			if admitted != (refused == "") || (!admitted && refused != refuseEnvelope) {
-				t.Fatalf("%s on %s: estimate %.0f ms against %.0f ms, got %q", in.name, e.name, want, e.encodeMs, refused)
-			}
-			if admitted && math.Abs(pl.estimateMs-want) > 1e-6 {
-				t.Fatalf("%s: estimate %v, want %v", in.name, pl.estimateMs, want)
-			}
+			check("on "+e.name, e.encodeMs)
 		}
-		// Each input's own edge: admitted with the encode time its estimate needs, refused a millisecond under it.
-		edge := want / safety
-		if _, refused := planNormalize(probe, math.Ceil(edge)); refused != "" {
-			t.Fatalf("%s refused at its edge %.0f ms: %q", in.name, edge, refused)
-		}
-		if _, refused := planNormalize(probe, math.Floor(edge)-1); refused != refuseEnvelope {
-			t.Fatalf("%s admitted under its edge %.0f ms: %q", in.name, edge, refused)
+		// Each rung's own edge for the input: admitted on that rung with the encode time its estimate needs, and a
+		// millisecond under it on the next rung, or refused under the last.
+		for i := durationRung(in.duration); i < len(rungs); i++ {
+			edge := math.Ceil(estimateOn(src, i) / safety)
+			if got := check("at its edge", edge); got != i {
+				t.Fatalf("%s at its rung %d edge %.0f ms: rung %d", in.name, i, edge, got)
+			}
+			next := i + 1
+			if next == len(rungs) {
+				next = -1
+			}
+			if got := check("under its edge", edge-1); got != next {
+				t.Fatalf("%s under its rung %d edge %.0f ms: rung %d", in.name, i, edge, got)
+			}
 		}
 	}
-	// A1's comparisons under A8's coefficients: 30 s 1080p VP9 HLG with audio estimates 69.0 s; 600 s 4K HEVC SDR 404.0 s,
-	// now refused on v2's 452.8 s of encode time, where 470 s is the edge (471 s refused); a 60 s 1080p H.264 clip
-	// (86.0 s) refused on v1 at 90 s.
-	vp9 := expected(1920, 1080, 30, 30, "vp9", true, true)
-	hevc := expected(3840, 2160, 30, 600, "hevc", false, true)
-	h264 := expected(1920, 1080, 30, 60, "h264", false, true)
-	if math.Round(vp9/100) != 690 || math.Round(hevc/100) != 4040 || math.Round(h264/100) != 860 {
-		t.Fatalf("estimates %v %v %v", vp9, hevc, h264)
+	// A1's comparisons under A8's coefficients, on each input's duration rung: 30 s 1080p VP9 HLG with audio estimates
+	// 69.0 s; 600 s 4K HEVC SDR 404.0 s (on the last rung, so none lower), refused on v2's 452.8 s of encode time,
+	// where 470 s is the edge (471 s refused); a 60 s 1080p H.264 clip 86.0 s at 1080p, which on v1 at 90 s (50.8 s
+	// of encode time) is encoded at 480p (23.1 s) and refused from 32,987 ms down.
+	vp9 := source{1920, 1080, 30, 30, "vp9", true, true}
+	hevc := source{3840, 2160, 30, 600, "hevc", false, true}
+	h264 := source{1920, 1080, 30, 60, "h264", false, true}
+	if math.Round(estimateOn(vp9, 0)/100) != 690 || math.Round(estimateOn(hevc, 2)/100) != 4040 ||
+		math.Round(estimateOn(h264, 0)/100) != 860 || math.Round(estimateOn(h264, 2)/100) != 231 {
+		t.Fatalf("estimates %v %v %v %v", estimateOn(vp9, 0), estimateOn(hevc, 2), estimateOn(h264, 0), estimateOn(h264, 2))
 	}
-	v2 := safety * endpoints[0].encodeMs
-	edge, past := expected(3840, 2160, 30, 470, "hevc", false, true), expected(3840, 2160, 30, 471, "hevc", false, true)
-	if hevc <= v2 || edge > v2 || past <= v2 || h264 <= safety*endpoints[1].encodeMs {
-		t.Fatal("A8's stated decisions do not hold")
+	v2 := endpoints[0].encodeMs
+	edge, past := hevc, hevc
+	edge.d, past.d = 470, 471
+	if i, _ := expected(hevc, v2); i >= 0 {
+		t.Fatal("600 s 4K HEVC SDR admitted on v2")
+	}
+	if i, _ := expected(edge, v2); i != 2 {
+		t.Fatal("470 s 4K HEVC SDR not admitted on v2")
+	}
+	if i, _ := expected(past, v2); i >= 0 {
+		t.Fatal("471 s 4K HEVC SDR admitted on v2")
+	}
+	if i, _ := expected(h264, endpoints[1].encodeMs); i != 2 {
+		t.Fatalf("60 s 1080p H.264 on v1 at 90 s: rung %d", i)
+	}
+	if i, _ := expected(h264, 32_988); i != 2 {
+		t.Fatal("60 s 1080p H.264 refused at 32,988 ms")
+	}
+	if i, _ := expected(h264, 32_987); i >= 0 {
+		t.Fatal("60 s 1080p H.264 admitted at 32,987 ms")
 	}
 }
 
