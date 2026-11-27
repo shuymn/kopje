@@ -164,24 +164,16 @@ func TestPlanRefusesAnEstimateOverTheEncodeTime(t *testing.T) {
 // (15,459 ms) at 21 ns a pixel.
 func TestPlanFallsToTheFirstLowerRungThatFits(t *testing.T) {
 	input := probeOf("60", stream("video", "h264", 1920, 1080, "60/1", "60"), stream("audio", "aac", 0, 0, "0/0", "60"))
-	edges := []struct {
+	for _, c := range []struct {
 		encodeMs float64
 		long     int
-	}{{240_185, 1920}, {66_003, 1280}, {38_320, 854}}
-	for i, e := range edges {
-		p, refused := planNormalize(input, e.encodeMs)
-		if refused != "" || p.rung.longEdge != e.long {
-			t.Fatalf("at %v ms: %+v %q, want the %d rung", e.encodeMs, p, refused, e.long)
+	}{{240_185, 1920}, {240_184, 1280}, {66_003, 1280}, {66_002, 854}, {38_320, 854}} {
+		if p, refused := planNormalize(input, c.encodeMs); refused != "" || p.rung.longEdge != c.long {
+			t.Fatalf("at %v ms: %+v %q, want the %d rung", c.encodeMs, p, refused, c.long)
 		}
-		below, refused := planNormalize(input, e.encodeMs-1)
-		switch {
-		case i == len(edges)-1:
-			if refused != refuseEnvelope {
-				t.Fatalf("at %v ms: %+v %q, want envelope", e.encodeMs-1, below, refused)
-			}
-		case refused != "" || below.rung.longEdge != edges[i+1].long:
-			t.Fatalf("at %v ms: %+v %q, want the %d rung", e.encodeMs-1, below, refused, edges[i+1].long)
-		}
+	}
+	if p, refused := planNormalize(input, 38_319); refused != refuseEnvelope {
+		t.Fatalf("at 38,319 ms: %+v %q, want envelope", p, refused)
 	}
 	// Never a rung above the duration's: 121 s of 1080p30 takes 720p30 however much time is left.
 	long := probeOf("121", stream("video", "h264", 1920, 1080, "30/1", "121"))
@@ -363,10 +355,10 @@ func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
 	}
 	// The ladder as A2 keeps it: the duration each rung takes, its geometry and frame rate.
 	rungs := []struct{ upTo, long, short, fps float64 }{{120, 1920, 1080, 60}, {300, 1280, 720, 30}, {600, 854, 480, 30}}
+	// A source with AAC; hdr is its transfer tag, "" for SDR.
 	type source struct {
 		w, h, fps, d float64
-		codec        string
-		hdr, audio   bool
+		codec, hdr   string
 	}
 	// The rung a duration takes, and the estimate on rung i: the output's even dimensions, each at least 2.
 	durationRung := func(d float64) int {
@@ -382,14 +374,11 @@ func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
 		f := math.Min(1, math.Min(r.long/math.Max(s.w, s.h), r.short/math.Min(s.w, s.h)))
 		out := math.Max(2, math.Trunc(s.w*f/2)*2) * math.Max(2, math.Trunc(s.h*f/2)*2)
 		perPixel := decode[s.codec]
-		if s.hdr {
+		if s.hdr != "" {
 			perPixel += tonemap
 		}
-		est := fixedMs + s.w*s.h*s.d*s.fps*perPixel/1e6 + out*math.Min(s.d*s.fps, math.Ceil(s.d*r.fps))*encode/1e6
-		if s.audio {
-			est += s.d * audioMs
-		}
-		return est
+		return fixedMs + s.w*s.h*s.d*s.fps*perPixel/1e6 + out*math.Min(s.d*s.fps, math.Ceil(s.d*r.fps))*encode/1e6 +
+			s.d*audioMs
 	}
 	// The rung planned with encodeMs and its estimate; -1 when no rung from the duration's down fits.
 	expected := func(s source, encodeMs float64) (int, float64) {
@@ -401,40 +390,32 @@ func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
 		return -1, 0
 	}
 	inputs := []struct {
-		name      string
-		codec     string
-		w, h, fps float64
-		transfer  string
-		audio     bool
-		duration  float64
+		name string
+		source
 	}{
-		{"1080p H.264 below 120 s", "h264", 1920, 1080, 30, "", true, 119.9},
-		{"1080p H.264 above 120 s", "h264", 1920, 1080, 30, "", true, 120.1},
-		{"1080p H.264 below 300 s", "h264", 1920, 1080, 30, "", true, 299.9},
-		{"1080p H.264 above 300 s", "h264", 1920, 1080, 30, "", true, 300.1},
-		{"1080p H.264 60 s", "h264", 1920, 1080, 30, "", true, 60},
-		{"4K HEVC SDR below 120 s", "hevc", 3840, 2160, 30, "", true, 119.9},
-		{"4K HEVC SDR above 120 s", "hevc", 3840, 2160, 30, "", true, 120.1},
-		{"4K HEVC SDR below 300 s", "hevc", 3840, 2160, 30, "", true, 299.9},
-		{"4K HEVC SDR above 300 s", "hevc", 3840, 2160, 30, "", true, 300.1},
-		{"4K HEVC SDR 600 s", "hevc", 3840, 2160, 30, "", true, 600},
-		{"4K HEVC HLG 30 s", "hevc", 3840, 2160, 30, "arib-std-b67", true, 30},
-		{"4K HEVC PQ 30 s", "hevc", 3840, 2160, 30, "smpte2084", true, 30},
-		{"4K HEVC HLG below 120 s", "hevc", 3840, 2160, 30, "arib-std-b67", true, 119.9},
-		{"4K HEVC PQ above 120 s", "hevc", 3840, 2160, 30, "smpte2084", true, 120.1},
+		{"1080p H.264 below 120 s", source{1920, 1080, 30, 119.9, "h264", ""}},
+		{"1080p H.264 above 120 s", source{1920, 1080, 30, 120.1, "h264", ""}},
+		{"1080p H.264 below 300 s", source{1920, 1080, 30, 299.9, "h264", ""}},
+		{"1080p H.264 above 300 s", source{1920, 1080, 30, 300.1, "h264", ""}},
+		{"1080p H.264 60 s", source{1920, 1080, 30, 60, "h264", ""}},
+		{"4K HEVC SDR below 120 s", source{3840, 2160, 30, 119.9, "hevc", ""}},
+		{"4K HEVC SDR above 120 s", source{3840, 2160, 30, 120.1, "hevc", ""}},
+		{"4K HEVC SDR below 300 s", source{3840, 2160, 30, 299.9, "hevc", ""}},
+		{"4K HEVC SDR above 300 s", source{3840, 2160, 30, 300.1, "hevc", ""}},
+		{"4K HEVC SDR 600 s", source{3840, 2160, 30, 600, "hevc", ""}},
+		{"4K HEVC HLG 30 s", source{3840, 2160, 30, 30, "hevc", "arib-std-b67"}},
+		{"4K HEVC PQ 30 s", source{3840, 2160, 30, 30, "hevc", "smpte2084"}},
+		{"4K HEVC HLG below 120 s", source{3840, 2160, 30, 119.9, "hevc", "arib-std-b67"}},
+		{"4K HEVC PQ above 120 s", source{3840, 2160, 30, 120.1, "hevc", "smpte2084"}},
 		// Not HEVC: HDR costs the tone map over the codec's own decode (A1).
-		{"1080p VP9 HLG 30 s", "vp9", 1920, 1080, 30, "arib-std-b67", true, 30},
+		{"1080p VP9 HLG 30 s", source{1920, 1080, 30, 30, "vp9", "arib-std-b67"}},
 	}
 	for _, in := range inputs {
-		d := strconv.FormatFloat(in.duration, 'f', -1, 64)
-		v := stream("video", in.codec, int(in.w), int(in.h), strconv.FormatFloat(in.fps, 'f', -1, 64)+"/1", d)
-		v.ColorTransfer = in.transfer
-		streams := []probeStream{v}
-		if in.audio {
-			streams = append(streams, stream("audio", "aac", 0, 0, "0/0", d))
-		}
-		probe := probeOf(d, streams...)
-		src := source{in.w, in.h, in.fps, in.duration, in.codec, in.transfer != "", in.audio}
+		src := in.source
+		d := strconv.FormatFloat(src.d, 'f', -1, 64)
+		v := stream("video", src.codec, int(src.w), int(src.h), strconv.FormatFloat(src.fps, 'f', -1, 64)+"/1", d)
+		v.ColorTransfer = src.hdr
+		probe := probeOf(d, v, stream("audio", "aac", 0, 0, "0/0", d))
 		check := func(label string, encodeMs float64) int {
 			i, want := expected(src, encodeMs)
 			pl, refused := planNormalize(probe, encodeMs)
@@ -458,7 +439,7 @@ func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
 		}
 		// Each rung's own edge for the input: admitted on that rung with the encode time its estimate needs, and a
 		// millisecond under it on the next rung, or refused under the last.
-		for i := durationRung(in.duration); i < len(rungs); i++ {
+		for i := durationRung(src.d); i < len(rungs); i++ {
 			edge := math.Ceil(estimateOn(src, i) / safety)
 			if got := check("at its edge", edge); got != i {
 				t.Fatalf("%s at its rung %d edge %.0f ms: rung %d", in.name, i, edge, got)
@@ -476,9 +457,9 @@ func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
 	// 69.0 s; 600 s 4K HEVC SDR 404.0 s (on the last rung, so none lower), refused on v2's 452.8 s of encode time,
 	// where 470 s is the edge (471 s refused); a 60 s 1080p H.264 clip 86.0 s at 1080p, which on v1 at 90 s (50.8 s
 	// of encode time) is encoded at 480p (23.1 s) and refused from 32,987 ms down.
-	vp9 := source{1920, 1080, 30, 30, "vp9", true, true}
-	hevc := source{3840, 2160, 30, 600, "hevc", false, true}
-	h264 := source{1920, 1080, 30, 60, "h264", false, true}
+	vp9 := source{1920, 1080, 30, 30, "vp9", "arib-std-b67"}
+	hevc := source{3840, 2160, 30, 600, "hevc", ""}
+	h264 := source{1920, 1080, 30, 60, "h264", ""}
 	if math.Round(estimateOn(vp9, 0)/100) != 690 || math.Round(estimateOn(hevc, 2)/100) != 4040 ||
 		math.Round(estimateOn(h264, 0)/100) != 860 || math.Round(estimateOn(h264, 2)/100) != 231 {
 		t.Fatalf("estimates %v %v %v %v", estimateOn(vp9, 0), estimateOn(hevc, 2), estimateOn(h264, 0), estimateOn(h264, 2))

@@ -118,10 +118,14 @@ func TestVideoArgsPinTheEncoding(t *testing.T) {
 		t.Fatalf("subtitle or data streams kept: %v", args)
 	}
 	vf := valueOf(args, "-vf")
+	// The 1080p rung's fit, each output dimension at least 2 as fitWithin (which the estimate counts) keeps it: without
+	// the floor a 1920x4 source at the 480p rung would scale to a height of 0, which ffmpeg reads as the input's 4 rows.
+	fit := "min(1,min(1920/max(iw,ih),1080/min(iw,ih)))"
+	scale1080 := "scale=w='max(2,trunc(iw*" + fit + "/2)*2)':h='max(2,trunc(ih*" + fit + "/2)*2)':"
 	// The frame cap, then a frame's ICC profile goes (the MP4 muxer would write the source's bytes into a colr box).
 	// -frames:v would end the audio with the video.
 	if slices.Contains(args, "-frames:v") || !strings.HasPrefix(vf, "trim=end_frame=36000,"+iccDrop+",") || strings.Contains(vf, "tonemap") ||
-		!strings.Contains(vf, "1920/max(iw,ih),1080/min(iw,ih)") {
+		!strings.Contains(vf, scale1080) {
 		t.Fatalf("filter %q", vf)
 	}
 	// Every frame leaves tagged BT.709 limited range, which the encoder writes to the SPS and the colr box (it takes
@@ -171,17 +175,6 @@ func TestVideoArgsFollowTheChosenRung(t *testing.T) {
 			!hasPair(a, "-fpsmax", "30") || !strings.Contains(valueOf(a, "-vf"), "854/max(iw,ih),480/min(iw,ih)") {
 			t.Fatalf("%d streams: %v", len(c.streams), a)
 		}
-	}
-}
-
-// The scale filter keeps each output dimension at least 2, as fitWithin, which the estimate counts, does: without the
-// floor a 1920x4 source at the 480p rung would scale to a height of 0, which ffmpeg reads as the input's 4 rows.
-func TestVideoArgsFloorTheOutputAtTwo(t *testing.T) {
-	vf := valueOf(videoArgs(videoPlan(false, 1), threadsDefault, "in", "out"), "-vf")
-	fit := "min(1,min(1920/max(iw,ih),1080/min(iw,ih)))"
-	want := "scale=w='max(2,trunc(iw*" + fit + "/2)*2)':h='max(2,trunc(ih*" + fit + "/2)*2)':"
-	if !strings.Contains(vf, want) {
-		t.Fatalf("filter %q", vf)
 	}
 }
 
