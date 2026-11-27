@@ -222,7 +222,11 @@ describe("field verification witnesses", () => {
     ["the rel token Me among others", relMe(LINK_BACK, "a", "nofollow Me"), true],
     ["a trailing slash", relMe(`${LINK_BACK}/`), false],
     ["no rel=me", page(`<a href="${LINK_BACK}">me</a>`), false],
-    ["a rel=me after a noscript", page(`<noscript></noscript><a rel=me href="${LINK_BACK}">`), false],
+    [
+      "a rel=me after a noscript holding a comment",
+      page(`<noscript><!-- --></noscript><a rel=me href="${LINK_BACK}">`),
+      false,
+    ],
     ["a rel=me after a select", page(`<select></select><a rel=me href="${LINK_BACK}">`), false],
     ["a rel=me inside svg", page(`<svg><a rel=me href="${LINK_BACK}"></a></svg>`), false],
     ["a rel=me after math", page(`<math></math><a rel=me href="${LINK_BACK}">`), false],

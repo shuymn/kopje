@@ -3,6 +3,7 @@ import { type DefaultTreeAdapterMap, html as parse5Html, parse } from "parse5";
 import { describe, expect, it } from "vitest";
 
 import {
+  NOSCRIPT_CHARS,
   OUTPUT_MAX_UNITS,
   outputMaxUnits,
   type PageScan,
@@ -266,18 +267,17 @@ describe("scanHtml against a scripting-off parser", () => {
     expect(await scan(page)).toMatchObject({ relMe: [], [flag]: true });
   });
 
-  it("collects no rel=me after a noscript start tag, which it reads as raw text", async () => {
+  it("collects no rel=me after a noscript holding a comment, which it reads as raw text", async () => {
     const counterexample = '<body><noscript><!--</noscript><a rel=me href="https://actor.example/u/a">--></noscript>';
     expect(parse5RelMe(counterexample)).toEqual([]);
     const result = await scan(counterexample);
-    expect(result.relMe).toEqual([]);
-    expect(result.relMeAfterNoscript).toBe(true);
+    expect(result).toMatchObject({ relMe: [], relMeAfterNoscript: true, resumed: { noscript: 0 } });
     expect(result.dropped.relMe).toBe(1);
   });
 
-  it("keeps a rel=me before the first noscript and the card metadata after it", async () => {
+  it("keeps a rel=me before a refused noscript and the card metadata after it", async () => {
     const result = await scan(
-      "<a rel=me href=before></a><noscript></noscript><a rel=me href=after></a><link rel=me href=after2>" +
+      "<a rel=me href=before></a><noscript><!-- --></noscript><a rel=me href=after></a><link rel=me href=after2>" +
         '<meta property="og:title" content="t"><link rel=canonical href=c><title>T</title>',
     );
     expect(result.relMe).toEqual(["before"]);
@@ -286,6 +286,72 @@ describe("scanHtml against a scripting-off parser", () => {
     expect(result.metas).toHaveLength(1);
     expect(result.links.map((link) => link.href)).toEqual(["after2", "c"]);
     expect(result.title).toBe("T");
+  });
+
+  it.each([
+    ["an iframe", '<noscript><iframe src="https://tags.example/ns.html"></iframe></noscript>'],
+    ["an img", '<noscript><img src="https://px.example/p?a=1&amp;b=2" width=1 height=1 alt=""/></noscript>'],
+    ["an empty noscript", "<noscript></noscript>"],
+    ["text", "<noscript>Enable JavaScript &amp; reload > here</noscript>"],
+    ["an uppercase end tag", "<noscript><IMG SRC=x></NOSCRIPT>"],
+    [
+      "listed elements",
+      "<noscript><div class=a><p><span>t</span><b>b</b><i>i</i><em>e</em><strong>s</strong></p></div></noscript>",
+    ],
+    ["a picture", "<noscript><picture><source srcset=a.webp type=image/webp><img src=a.png></picture></noscript>"],
+    [
+      "a meta, a link and a style",
+      '<noscript><meta http-equiv=refresh content="0"><link rel=stylesheet href=s.css><style>a{b:c}</style></noscript>',
+    ],
+    ["an anchor with no rel=me", "<noscript><A HREF=https://a.example/x rel=nofollow>x</A><br></noscript>"],
+    ["attributes with - and :", "<noscript><img data-x=1 xlink:href=y aria-hidden=true></noscript>"],
+    ["whitespace with a raw CR", "<noscript><img\rsrc=x\t/>\r\n<br /></noscript>"],
+    ["an unquoted value with a /", "<noscript><img src=https://a.example/x.png/></noscript>"],
+    ["an element left open", "<body><noscript><div></noscript>"],
+    ["end tags", "<noscript></p></br></div></a></noscript>"],
+    ["text at the cap", `<noscript>${"x".repeat(NOSCRIPT_CHARS)}</noscript>`],
+  ])("collects rel=me again after a noscript holding %s", async (_label, region) => {
+    const page = `<a rel=me href=before></a>${region}<a rel=me href=x>`;
+    expect(parse5RelMe(page)).toEqual(["before", "x"]);
+    expect(await scan(page)).toMatchObject({
+      relMe: ["before", "x"],
+      relMeAfterNoscript: false,
+      resumed: { noscript: 1 },
+    });
+  });
+
+  it.each([
+    ["a comment", "<noscript><!-- c --></noscript>"],
+    ["a doctype", "<noscript><!DOCTYPE html></noscript>"],
+    ["a tag outside the list", "<noscript><script></script></noscript>"],
+    ["a textarea", "<noscript><textarea></textarea></noscript>"],
+    ["a nested noscript", "<noscript><noscript></noscript>"],
+    ["an unfinished tag", "<noscript><img src=x</noscript>"],
+    ["a quoted </noscript>", '<noscript><img alt="</noscript>"></noscript>'],
+    ["a bare <", "<noscript>a < b</noscript>"],
+    ["an a rel=me", '<noscript><a rel="me" href=in></a></noscript>'],
+    ["an uppercase A REL=ME", '<noscript><A REL="ME" HREF=in></A></noscript>'],
+    ["a rel=me split by a raw CR", '<noscript><a rel="nofollow\rme" href=in></a></noscript>'],
+    ["a rel with a reference", "<noscript><a rel=&#109;e href=in></a></noscript>"],
+    ["a second rel attribute", "<noscript><a rel=nofollow rel=me href=in></a></noscript>"],
+    ["a link rel=me", "<noscript><link rel=me href=in></noscript>"],
+    ["a NUL", "<noscript>a\0b</noscript>"],
+    ["text past the cap", `<noscript>${"x".repeat(NOSCRIPT_CHARS + 1)}</noscript>`],
+    ["a tag inside an iframe", "<noscript><iframe><a rel=me href=in></iframe></noscript>"],
+    ["an iframe end tag alone", "<noscript></iframe></noscript>"],
+    ["an iframe never closed", "<noscript><iframe>x</noscript>"],
+    ["an end tag with attributes", "<noscript></div class=a></noscript>"],
+    ["attributes with no whitespace between", '<noscript><img src="a"alt=b></noscript>'],
+    ["a space before =", "<noscript><img src =a></noscript>"],
+    ["a / not before >", "<noscript><img / src=a></noscript>"],
+    ["a backtick in an unquoted value", "<noscript><img src=a`b></noscript>"],
+    ["a noscript in svg", "<svg><noscript></noscript></svg>"],
+  ])("collects no rel=me after a noscript holding %s", async (_label, region) => {
+    const page = `<a rel=me href=before></a>${region}<a rel=me href=x>`;
+    const result = await scan(page);
+    expect(result).toMatchObject({ relMe: ["before"], resumed: { noscript: 0 } });
+    expect(result.relMeAfterNoscript || result.relMeAfterForeign).toBe(true);
+    expect(result.dropped.relMe).toBeGreaterThanOrEqual(1);
   });
 
   it("collects no rel=me after a select start tag", async () => {
@@ -560,6 +626,54 @@ describe("scanHtml against a scripting-off parser", () => {
     "<font color=red>",
     "<title><g/>",
   ];
+  const NOSCRIPT_BODY = [
+    ...["img", "br", "meta", "link", "a", "div", "p", "span", "b", "i", "em", "strong", "picture", "source"].flatMap(
+      (name) => [`<${name}>`, `</${name}>`, `<${name.toUpperCase()} data-x=1 xlink:href=https://a.example/p?q=1>`],
+    ),
+    "<img src=\"https://px.example/p.gif\" alt='' />",
+    "<a href=https://a.example/x/ rel=nofollow>",
+    "<link rel=stylesheet href=s.css>",
+    '<iframe src="https://tags.example/ns.html"></iframe>',
+    "<style>a{b:c}</style>",
+    "text &amp; more",
+    "\n",
+  ];
+  const NOSCRIPT_BREAKERS = [
+    "<!--",
+    "-->",
+    "<!-- c -->",
+    "<A REL=ME HREF=ID>",
+    "<a rel=&#109;e href=ID>",
+    '<a rel="nofollow\rme" href=ID>',
+    "<link rel=me href=ID>",
+    "\r",
+    "\0",
+    '<img alt="</noscript>">',
+    "</NOSCRIPT>",
+    "</noscript>",
+    "<noscript>",
+    "<script>",
+    "</script>",
+    "<textarea>",
+    "<select>",
+    "<template>",
+    "<svg>",
+    "<math>",
+    "<table>",
+    "<frameset>",
+    "<iframe>",
+    "</iframe>",
+    "<style>",
+    "<title>",
+    "<plaintext>",
+    "<",
+    "<img",
+    '"',
+    "'",
+    "/",
+    "<head>",
+    "<body>",
+  ];
   const SVG_OPEN = ["<svg>", '<svg viewBox="0 0 16 16" class="octicon">', "<SVG>"];
   const SVG_CLOSE = ["</svg>", "</SVG>"];
   // Soup without the table fragments: a rel=me foster-parented out of a table precedes earlier ones in the spec
@@ -571,6 +685,13 @@ describe("scanHtml against a scripting-off parser", () => {
         maxLength: 8,
       })
       .map((parts) => parts.join(""));
+  const noscriptRegion = fc
+    .tuple(
+      fc.constantFrom("<noscript>", "<NOSCRIPT>", "<head><noscript>"),
+      body(NOSCRIPT_BODY, NOSCRIPT_BREAKERS),
+      fc.constantFrom("</noscript>", "</NOSCRIPT>"),
+    )
+    .map((parts) => parts.join(""));
   const svgRegion = fc
     .tuple(fc.constantFrom(...SVG_OPEN), body(SVG_BODY, SVG_BREAKERS), fc.constantFrom(...SVG_CLOSE))
     .map((parts) => parts.join(""));
@@ -583,7 +704,7 @@ describe("scanHtml against a scripting-off parser", () => {
   const structured = fc
     .tuple(
       soup,
-      fc.array(fc.tuple(fc.option(relMeAnchor), svgRegion), { minLength: 1, maxLength: 3 }),
+      fc.array(fc.tuple(fc.option(relMeAnchor), fc.oneof(svgRegion, noscriptRegion)), { minLength: 1, maxLength: 3 }),
       relMeAnchor,
       soup,
     )
@@ -597,7 +718,7 @@ describe("scanHtml against a scripting-off parser", () => {
     "never finds a rel=me the scripting-off parser does not, and returns its first first, after regions",
     { timeout: 300_000 },
     async () => {
-      const counts = { pages: 0, failed: 0, svgResumed: 0, pagesResumedWithRelMe: 0 };
+      const counts = { pages: 0, failed: 0, svgResumed: 0, noscriptResumed: 0, pagesResumedWithRelMe: 0 };
       await fc.assert(
         fc.asyncProperty(structured, async (page) => {
           counts.pages++;
@@ -614,7 +735,8 @@ describe("scanHtml against a scripting-off parser", () => {
             expect(result.relMe[0], `first in ${JSON.stringify(page)}`).toBe(oracle[0]);
           }
           counts.svgResumed += result.resumed.svg;
-          if (result.resumed.svg > 0 && result.relMe.length > 0) {
+          counts.noscriptResumed += result.resumed.noscript;
+          if (result.resumed.svg + result.resumed.noscript > 0 && result.relMe.length > 0) {
             counts.pagesResumedWithRelMe++;
           }
         }),
@@ -622,6 +744,7 @@ describe("scanHtml against a scripting-off parser", () => {
       );
       console.log(JSON.stringify({ structuredRun: counts }));
       expect(counts.svgResumed).toBeGreaterThan(0);
+      expect(counts.noscriptResumed).toBeGreaterThan(0);
       expect(counts.pagesResumedWithRelMe).toBeGreaterThan(0);
     },
   );

@@ -2755,13 +2755,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   returns timeout, publishes no scan and stops", "NET-3: failures carry the host only"),
   `test/web-page-encoding.test.ts` ("NET-3: decodes compressed bodies through workerd's fetch path and cancels them at
   the cap"), `test/html-scan.test.ts` ("never finds a rel=me the scripting-off parser does not", "refuses the
-  counterexample", "collects no rel=me after a noscript start tag", "collects no rel=me after a select start tag",
-  "collects no rel=me after an svg or math start tag the region rules refuse", "collects no rel=me after",
-  "never finds a rel=me the scripting-off parser does not, and returns its first first, after regions"),
+  counterexample", "collects no rel=me after a noscript holding a comment, which it reads as raw text", "collects no
+  rel=me after a noscript holding", "collects no rel=me after a select start tag", "collects no rel=me after an svg or
+  math start tag the region rules refuse", "collects no rel=me hidden in a CDATA section Nokogiri reads in an SVG
+  title", "never finds a rel=me the scripting-off parser does not, and returns its first first, after regions"),
   `test/html-rewriter-facts.test.ts` (the HTMLRewriter facts the scan rests on). A rel=me candidate has the token "me"
   among all its rel tokens, ASCII case-insensitively, as Mastodon's `NokogiriHandler.link_rel_include` downcases both;
-  a rel past 2,048 decoded characters is not tokenized and
-  no rel=me at or after it is collected, so a later anchor never stands first where Mastodon finds an earlier one
+  a rel past 2,048 decoded characters is not tokenized and no rel=me at or after it is collected, so a later anchor
+  never stands first where Mastodon finds an earlier one
   (`test/html-scan.test.ts` ("finds the token me past the first relTokens tokens of a rel", "collects no rel=me at or
   after a rel past REL_CHARS")); `links[].rel` is lowercased for card extraction. Search resolution's HTML page
   (NET-4) is a document fetch (NET-1), not this sink's, but its body is decoded as this sink decodes a page

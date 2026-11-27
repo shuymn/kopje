@@ -67,6 +67,8 @@ export const SCAN_LIMITS: Readonly<ScanLimits> = Object.freeze({
 // Raw UTF-16 code units of an attribute value or the title text read before decoding; past it the value is dropped
 // whole. A character reference never decodes to more code units than it spans, so this bounds decoding work only.
 export const RAW_VALUE_CHARS = 8192;
+// Raw UTF-16 code units of a <noscript>'s text kept for its region check (plainNoscript); past it the region latches.
+export const NOSCRIPT_CHARS = 4096;
 // Decoded UTF-16 code units of a rel attribute tokenized whole for the token "me"; links[].rel keeps the first
 // relTokens tokens of at most relTokenChars each.
 export const REL_CHARS = 2048;
@@ -152,6 +154,143 @@ const REL_SEPARATOR = /[\t\n\f\r ]+/;
 const TRANSCODED = new Set(["utf-16le", "utf-16be", "iso-2022-jp"]);
 
 const asciiLower = (value: string) => value.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
+
+// The tags a <noscript> region may hold (plainNoscript), as start or end tags, and those it may hold only as a start
+// tag followed by text with no "<" and their own end tag.
+const NOSCRIPT_TAGS: ReadonlySet<string> = new Set([
+  "img",
+  "br",
+  "meta",
+  "link",
+  "a",
+  "div",
+  "p",
+  "span",
+  "b",
+  "i",
+  "em",
+  "strong",
+  "picture",
+  "source",
+]);
+const NOSCRIPT_RAW_TAGS: ReadonlySet<string> = new Set(["iframe", "style"]);
+
+// HTML whitespace, ASCII alphanumerics, the attribute name characters [A-Za-z0-9_:.-], and what an unquoted value
+// may hold (anything but whitespace, quotes, "=", "<", ">" and "`"), by UTF-16 code unit; NaN past the end is none.
+const isSpace = (c: number) => c === 0x09 || c === 0x0a || c === 0x0c || c === 0x0d || c === 0x20;
+const isAlphanumeric = (c: number) => (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a);
+const isAttributeName = (c: number) => isAlphanumeric(c) || c === 0x5f || c === 0x3a || c === 0x2e || c === 0x2d;
+const isUnquoted = (c: number) =>
+  !Number.isNaN(c) && !isSpace(c) && c !== 0x22 && c !== 0x27 && c !== 0x3d && c !== 0x3c && c !== 0x3e && c !== 0x60;
+
+// Whether a <noscript>'s raw text (as lol-html reads it, scripting on) holds only what a scripting-off parser reads as
+// ordinary elements and text, so every later <a> or <link> is an element for both, in the same order (header): text
+// with no "<"; start and end tags of NOSCRIPT_TAGS written plainly (an ASCII alphanumeric name; attributes as name,
+// name=value, name="…" or name='…' after whitespace; an optional "/" before ">"; end tags as </name> with optional
+// whitespace before ">"); a NOSCRIPT_RAW_TAGS start tag, text with no "<" and its own end tag; no NUL; and no <a> or
+// <link> with a rel attribute holding "&" or the token "me" (Mastodon finds a rel=me inside a <noscript>, so resuming
+// after one would put a later link first). Names and rel tokens compare ASCII case-insensitively. One linear pass.
+function plainNoscript(text: string): boolean {
+  if (text.includes("\0")) {
+    return false;
+  }
+  const at = (i: number) => text.charCodeAt(i);
+  const name = (from: number): number => {
+    let i = from;
+    while (isAlphanumeric(at(i))) {
+      i++;
+    }
+    return i;
+  };
+  // The index past "</name" + whitespace + ">" at `from`, or -1.
+  const endTag = (from: number, expected: ReadonlySet<string> | string): number => {
+    if (at(from) !== 0x3c || at(from + 1) !== 0x2f) {
+      return -1;
+    }
+    const end = name(from + 2);
+    const tag = asciiLower(text.slice(from + 2, end));
+    if (end === from + 2 || (typeof expected === "string" ? tag !== expected : !expected.has(tag))) {
+      return -1;
+    }
+    let i = end;
+    while (isSpace(at(i))) {
+      i++;
+    }
+    return at(i) === 0x3e ? i + 1 : -1;
+  };
+  let i = 0;
+  for (let lt = text.indexOf("<"); lt >= 0; lt = text.indexOf("<", i)) {
+    if (at(lt + 1) === 0x2f) {
+      i = endTag(lt, NOSCRIPT_TAGS);
+      if (i < 0) {
+        return false;
+      }
+      continue;
+    }
+    const nameEnd = name(lt + 1);
+    const tag = asciiLower(text.slice(lt + 1, nameEnd));
+    const raw = NOSCRIPT_RAW_TAGS.has(tag);
+    if (nameEnd === lt + 1 || !(raw || NOSCRIPT_TAGS.has(tag))) {
+      return false;
+    }
+    i = nameEnd;
+    for (;;) {
+      const spaced = isSpace(at(i));
+      while (isSpace(at(i))) {
+        i++;
+      }
+      if (at(i) === 0x3e || (at(i) === 0x2f && at(i + 1) === 0x3e)) {
+        i += at(i) === 0x3e ? 1 : 2;
+        break;
+      }
+      if (!spaced || !isAttributeName(at(i))) {
+        return false;
+      }
+      const attributeStart = i;
+      while (isAttributeName(at(i))) {
+        i++;
+      }
+      const attribute = asciiLower(text.slice(attributeStart, i));
+      let value = "";
+      if (at(i) === 0x3d) {
+        const quote = at(i + 1);
+        if (quote === 0x22 || quote === 0x27) {
+          const close = text.indexOf(text[i + 1] ?? "", i + 2);
+          if (close < 0) {
+            return false;
+          }
+          value = text.slice(i + 2, close);
+          i = close + 1;
+        } else {
+          const valueStart = i + 1;
+          i = valueStart;
+          while (isUnquoted(at(i))) {
+            i++;
+          }
+          if (i === valueStart) {
+            return false;
+          }
+          value = text.slice(valueStart, i);
+        }
+      }
+      if (
+        (tag === "a" || tag === "link") &&
+        attribute === "rel" &&
+        (value.includes("&") || value.split(REL_SEPARATOR).some((token) => asciiLower(token) === "me"))
+      ) {
+        return false;
+      }
+    }
+    if (raw) {
+      const close = text.indexOf("<", i);
+      i = close < 0 ? -1 : endTag(close, tag);
+      if (i < 0) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
 
 // A raw attribute value or title text, normalized as the tokenizer would (CR and CRLF to LF, NUL to U+FFFD) and then
 // decoded once. An encoded &#13; stays a CR.
@@ -286,6 +425,8 @@ async function scanPaced(
   // ends it.
   let svgRegion: { inside: "title" | "desc" | null } | null = null;
   let titleAfterForeign = false;
+  // The open <noscript> region (header): its raw text, kept up to NOSCRIPT_CHARS.
+  let noscriptRegion: { raw: string } | null = null;
   let afterLongRel = false;
   let langSeen = false;
   // The first HTML title: its raw text while open, then done.
@@ -336,6 +477,9 @@ async function scanPaced(
     if (svgRegion !== null) {
       latchForeign();
     }
+    if (noscriptRegion !== null) {
+      latchNoscript();
+    }
     scan.relMeAfterNoscript ||= afterNoscript;
     scan.relMeAfterSelect ||= afterSelect;
     scan.relMeAfterForeign ||= afterForeign;
@@ -352,6 +496,10 @@ async function scanPaced(
   function latchForeign() {
     afterForeign = true;
     svgRegion = null;
+  }
+  function latchNoscript() {
+    afterNoscript = true;
+    noscriptRegion = null;
   }
   // Every handler is wrapped: a throw would fail the stream with no reason given, so it marks the scan broken.
   const guarded = <T>(handler: (node: T) => void) => {
@@ -456,9 +604,46 @@ async function scanPaced(
       }),
     })
     .on("noscript", {
-      element: guarded<Element>(() => {
+      element: guarded<Element>((element) => {
         scan.work.elements++;
-        afterNoscript = true;
+        if (afterNoscript) {
+          return;
+        }
+        if (noscriptRegion !== null || svgRegion !== null || element.namespaceURI !== XHTML) {
+          latchNoscript();
+          return;
+        }
+        const region = { raw: "" };
+        noscriptRegion = region;
+        try {
+          element.onEndTag(
+            guarded((end) => {
+              if (noscriptRegion !== region) {
+                return;
+              }
+              if (end.name === "noscript" && plainNoscript(region.raw)) {
+                noscriptRegion = null;
+                scan.resumed.noscript++;
+              } else {
+                latchNoscript();
+              }
+            }),
+          );
+        } catch {
+          latchNoscript();
+        }
+      }),
+      text: guarded<Text>((chunk) => {
+        scan.work.textChunks++;
+        const region = noscriptRegion;
+        if (region === null) {
+          return;
+        }
+        if (region.raw.length + chunk.text.length > NOSCRIPT_CHARS) {
+          latchNoscript();
+        } else {
+          region.raw += chunk.text;
+        }
       }),
     })
     .on("select", {
