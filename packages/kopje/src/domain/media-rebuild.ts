@@ -71,7 +71,7 @@ export type RebuildAv = {
 };
 // role: the row's own account, when local, names it as its header (`header`, also when it names it as its avatar too,
 // so nothing is cropped from the header) or as its avatar (`avatar`), which gives its files that image's shape
-// (platform/images.ts processImage); null for any other row.
+// (platform/images.ts processImage); null for a custom emoji's row and any other.
 export type RebuildRow = {
   id: string;
   token: string;
@@ -149,7 +149,9 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
     .map(({ emoji, kind, preview, metaBytes, smallWidth, smallHeight, hasSmall, blurhash, role, ...row }) => ({
       ...row,
       emoji: emoji === 1,
-      role: role === "header" ? ("header" as const) : role === "avatar" ? ("avatar" as const) : null,
+      // An emoji's row has no role, whatever names it (it is built under the emoji limits).
+      role:
+        emoji === 1 ? null : role === "header" ? ("header" as const) : role === "avatar" ? ("avatar" as const) : null,
       av:
         kind === null
           ? null
@@ -407,16 +409,16 @@ export const recordRebuild = mediaRebuildOperation.atStoreTime("now")<
 
 // The statics of the row ?1 (with token ?2) for its own account, probed by key, when that account is local
 // (`domain IS NULL`) and the row is not a custom emoji's: each of avatar_static_url and header_static_url whose image
-// is the row's URL becomes the row's still preview when its served file is animated (meta's "animated", as
-// recordRebuild wrote it) and its stored preview_url is the row's own (?3, the URL an upload of this token is given,
-// mediaUrl), else NULL (the image itself), as profileAssignSql sets an upload's; the other keeps its value. A preview
-// URL 0061's trigger would refuse is not copied. Every stored URL is compared and copied within SQL, byte for byte
-// (RES-2, DATA-6).
+// is the row's URL becomes ?3 when the row's served file is animated (meta's "animated", as recordRebuild wrote it),
+// else NULL (the image itself); the other keeps its value. ?3 is the URL of the still the rebuild just wrote, as an
+// upload of this token is given it (finishRebuild), never the stored preview_url, which a conversion may have spelled
+// with another origin. A static 0061's trigger would refuse is not written. The images' URLs are compared within SQL,
+// byte for byte (RES-2, DATA-6).
 const FINISH_REBUILD_SQL = `UPDATE accounts SET (avatar_static_url, header_static_url) = (
 		SELECT CASE WHEN accounts.avatar_url = m.url THEN still ELSE accounts.avatar_static_url END,
 			CASE WHEN accounts.header_url = m.url THEN still ELSE accounts.header_static_url END
-		FROM (SELECT url, CASE WHEN json_extract(meta, '$.animated') IS 1 AND preview_url = ?3
-				AND NOT (${staticUrlPastBoundSql("preview_url")}) THEN preview_url END AS still
+		FROM (SELECT url, CASE WHEN json_extract(meta, '$.animated') IS 1
+				AND NOT (${staticUrlPastBoundSql("?3")}) THEN ?3 END AS still
 			FROM media_attachments INDEXED BY ${MEDIA_ID_INDEX} WHERE id = ?1) m)
 	WHERE id = (SELECT account_id FROM media_attachments INDEXED BY ${MEDIA_ID_INDEX} WHERE id = ?1 AND file_token = ?2)
 		AND domain IS NULL AND NOT EXISTS (SELECT 1 FROM custom_emojis e WHERE e.id = ?1)`;
@@ -453,6 +455,8 @@ export const finishRebuild = mediaRebuildOperation.atStoreTime("now")<
   if (live === undefined) {
     return { status: "gone" };
   }
+  // The origin of the owner's URI, as completeMedia derives an upload's URLs (domain/media.ts): normalized by URL, so
+  // `https://host:443` and an IDN host give the origin an upload of the account would be served at.
   const origin = URL.parse(ownerUri(db, id) ?? "")?.origin;
   const preview =
     origin === undefined || live.contentType === null ? null : mediaUrl(origin, token, "small", live.contentType);

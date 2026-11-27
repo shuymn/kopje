@@ -324,28 +324,41 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     },
   );
 
-  it("writes both statics of an animated row both images name, and none for a preview URL not the row's own", async () => {
+  it("writes both statics of an animated row both images name, each as the URL an upload of its token is given", async () => {
     const h = await setup({ codec: shapedFramesCodec() });
-    const [second] = await localAccounts(h.store);
-    const both = await addRow(h.store, { contentType: "image/webp", original: bytes(ANIMATED_WEBP) });
-    const elsewhere = await addRow(h.store, {
-      contentType: "image/webp",
-      original: bytes(ANIMATED_WEBP),
-      account: second,
-    });
+    const [second, third, fourth] = await localAccounts(h.store);
+    // Owners whose URIs a conversion kept in other spellings of an origin: the default port, and an IDN host.
+    await sql(h.store, "UPDATE accounts SET uri = 'https://kopje.test:443/ap/users/b' WHERE id = ?", third);
+    await sql(h.store, "UPDATE accounts SET uri = 'https://bücher.example/ap/users/c' WHERE id = ?", fourth);
+    const animated = (account?: string) =>
+      addRow(h.store, { contentType: "image/webp", original: bytes(ANIMATED_WEBP), ...(account ? { account } : {}) });
+    const both = await animated();
+    const elsewhere = await animated(second);
+    const port = await animated(third);
+    const idn = await animated(fourth);
+    // A stored preview URL that is not the row's own is never published: the static is the still just written.
     await sql(
       h.store,
       "UPDATE media_attachments SET preview_url = 'https://other.test/old.webp' WHERE id = ?",
       elsewhere.id,
     );
+    await sql(
+      h.store,
+      "UPDATE media_attachments SET preview_url = 'https://kopje.test:443/x/small.webp' WHERE id = ?",
+      port.id,
+    );
     await nameImages(h.store, ACCOUNT, { avatar: both, header: both });
     await nameImages(h.store, second, { avatar: elsewhere });
+    await nameImages(h.store, third, { header: port });
+    await nameImages(h.store, fourth, { header: idn });
     const step = await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>();
-    expect(step.counts).toMatchObject({ built: 2 });
-    const preview = `https://kopje.test/media/${both.token}/small.webp`;
-    expect((await statics(h.store)).slice(0, 2)).toEqual([
-      { id: ACCOUNT, avatar_static_url: preview, header_static_url: preview },
-      { id: second, avatar_static_url: null, header_static_url: null },
+    expect(step.counts).toMatchObject({ built: 4 });
+    const own = (row: Row, origin = "https://kopje.test") => `${origin}/media/${row.token}/small.webp`;
+    expect(await statics(h.store)).toEqual([
+      { id: ACCOUNT, avatar_static_url: own(both), header_static_url: own(both) },
+      { id: second, avatar_static_url: own(elsewhere), header_static_url: null },
+      { id: third, avatar_static_url: null, header_static_url: own(port) },
+      { id: fourth, avatar_static_url: null, header_static_url: own(idn, "https://xn--bcher-kva.example") },
     ]);
   });
 
