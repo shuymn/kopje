@@ -9,7 +9,7 @@ import { inboxHandler, precheckInbox, requestInboundJobs } from "../federation/i
 import { activityStreamsRequest, INBOX_ROUTES } from "../federation/inbox-request";
 import { signAsAuthor } from "../federation/ld-sign";
 import { createPollFetcher } from "../federation/poll-refresh";
-import { createResolver } from "../federation/resolve";
+import { createAddressResolver, createResolver } from "../federation/resolve";
 import {
   FEDERATION_GET_ROUTES,
   federationHandler,
@@ -275,6 +275,7 @@ export function createApp({
     randomToken: seams.randomToken ?? randomToken,
     images,
     resolve: createResolver({ build, store, now, keygen, loader, requestJobs: jobs }),
+    resolveAddresses: createAddressResolver({ build, store, now, keygen, loader }),
     fetchPoll: createPollFetcher({ build, store, now, keygen, loader }),
     requestJobs: jobs,
     activity,

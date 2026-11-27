@@ -108,6 +108,15 @@ import { allocateLocalId, requestedId, storedIdOf } from "./ids";
 import { countStatus } from "./instance-activity";
 import { deleteCard, enqueueCard, localCardLink } from "./link-cards";
 import { DETACHED_GRACE_MS, DOOMED_AT, liveMediaSql } from "./media";
+import {
+  MENTION_ADDRESSES_PER_POST,
+  mentionGateOperation,
+  type MentionGateInput,
+  referenceKeys,
+  type ResolvedAddress,
+  selectAddresses,
+  storeMentioned,
+} from "./mention-addresses";
 import { notify } from "./notifications";
 import { editPoll, type PollInput, pollOptionsJson, writePoll } from "./polls";
 import { actorUriSql, usernameSql } from "./profile-bounds";
@@ -230,8 +239,9 @@ function localAuthor(db: Db, accountId: string): Author {
 
 type ResolvedMention = { id: string; uri: string; url: string | null; username: string; domain: string | null };
 
-// Mentions are resolved against accounts already known; nothing is fetched. A mention of the instance's own host is a
-// local mention. Suspended local accounts, and accounts the author blocks or whose domain it blocks, are not mentioned
+// Mentions are resolved against accounts stored when the write composes; nothing is fetched here (an unknown address of
+// a post or an edit was resolved and its account stored before, mention-addresses.ts). A mention of the instance's own
+// host is a local mention. Suspended local accounts, and accounts the author blocks or whose domain it blocks, are not mentioned
 // (their mention stays text, as Mastodon's ProcessMentionsService drops it). Each handle is sought through
 // accounts_domain_username (RES-7).
 function resolveMentions(
@@ -331,7 +341,7 @@ const NOT_READY = "Cannot attach files that have not finished processing. Try ag
 // publication (`scheduledId`) keeps the rules it was scheduled under. A set that is not new keeps today's outcome, so
 // a status the cutover converted with a video among images is edited and published as before, and an upload still
 // processing is not found there, as it was.
-function mediaToAttach(
+export function mediaToAttach(
   db: Db,
   accountId: string,
   mediaIds: readonly string[],
@@ -522,7 +532,7 @@ const QUOTED_USER_NOT_MENTIONED = "Validation failed: Cannot quote a non-mention
 
 // Status#prepare_contents: a local status's text or warning as it is stored (storedText), stripped as Ruby's
 // String#strip strips it.
-function preparedText(value: string): string {
+export function preparedText(value: string): string {
   return rubyStrip(storedText(value));
 }
 
@@ -533,7 +543,9 @@ function preparedText(value: string): string {
 // scheduled, never at publication, so a post an earlier release scheduled publishes as it was stored. Then the counted
 // length of a blank text, which the Worker leaves to the Store, on the pair to be written, as StatusLengthValidator
 // validates the status. null: too long.
-export function convertedPost<T extends PostInput>(input: T): T | null {
+export function convertedPost<T extends Pick<PostInput, "text" | "spoilerText" | "quotedStatusId">>(
+  input: T,
+): T | null {
   const text = storedText(input.text);
   const spoilerText = storedText(input.spoilerText);
   if (exceedsRawLength(text, spoilerText)) {
@@ -552,13 +564,17 @@ export function convertedPost<T extends PostInput>(input: T): T | null {
 // PostStatusService's checks, before any write, including the raw bound; a quote permits blank text. `scheduledId` is
 // the scheduled status being published, whose media it attaches (null: none). R36 is checked in the writing
 // transaction at posting, scheduling and publication (test/quote-authoring.test.ts concurrency table, row 1).
-// `storeNow`: the Store's time, at which the media are judged live (media.ts liveMediaSql).
+// `storeNow`: the Store's time, at which the media are judged live (media.ts liveMediaSql). `resolved`: the accounts
+// the request resolved for the text's unknown addresses (mention-addresses.ts), stored after the media check and before
+// the mentions are counted, so allowed_mentions and the direct quote check judge them, and kept when a later check
+// refuses the post, as Mastodon keeps them.
 export function preparePost(
   db: Db,
   accountId: string,
   input: PostInput,
   scheduledId: string | null,
   storeNow: number,
+  resolved: readonly ResolvedAddress[] = [],
 ): Prepared {
   // Checked as writePost stores them, so text of only U+0000 is blank, as an edit's is.
   if (exceedsRawLength(storedText(input.text), storedText(input.spoilerText))) {
@@ -585,6 +601,7 @@ export function preparePost(
   if (!Array.isArray(media)) {
     return media;
   }
+  storeMentioned(db, resolved, referenceKeys(text), new URL(author.uri).origin, storeNow);
   const requested = input.visibility ?? author.default_visibility;
   // PostStatusService#preprocess_attributes!: a quote of a private status (the poster's own: R36) is private.
   const visibility =
@@ -838,13 +855,22 @@ export function ownStatusByKey(
   present: PresentInput,
   now: number,
 ): Status | null {
-  const existing = db.first<{ id: string }>(
-    `SELECT id FROM statuses WHERE account_id = ?1 AND client_key = ?2 AND ${keyFreshSql("created_at", "?3")}`,
-    viewer.accountId,
-    key,
-    keyCutoff(now),
+  const id = keyedStatusId(db, viewer.accountId, key, now);
+  return id === null ? null : presentOwn(db, viewer.accountId, id, { ...present, viewer });
+}
+
+// The id of the status the key made within its hour, unless it is withdrawn (which ownStatusByKey cannot present, R2):
+// a repeat of the key answers it.
+export function keyedStatusId(db: Db, accountId: string, key: string, now: number): string | null {
+  return (
+    db.first<{ id: string }>(
+      `SELECT id FROM statuses WHERE account_id = ?1 AND client_key = ?2 AND ${keyFreshSql("created_at", "?3")}
+				AND withdrawn = 0`,
+      accountId,
+      key,
+      keyCutoff(now),
+    )?.id ?? null
   );
-  return existing === undefined ? null : presentOwn(db, viewer.accountId, existing.id, { ...present, viewer });
 }
 
 // The answer to a post its checks refused. Unexpected mentions are answered with the accounts, as
@@ -873,9 +899,10 @@ export function postNow(
   input: CreateStatusInput,
   applicationId: string | null,
   storeNow: number,
+  resolved: readonly ResolvedAddress[] = [],
 ): CreateStatusResult {
   const { accountId } = viewer;
-  const prepared = preparePost(db, accountId, input, null, storeNow);
+  const prepared = preparePost(db, accountId, input, null, storeNow, resolved);
   if (!isPrepared(prepared)) {
     return refusedPost(db, prepared, presentFor(input.present, accountId));
   }
@@ -961,6 +988,9 @@ export type EditStatusInput = {
   poll?: PollInput;
   // quote_approval_policy, only when the request sent one: none keeps the status's policy.
   quotePolicy?: QuotePolicyName | undefined;
+  // The accounts the request resolved for the text's unknown addresses (editMentionGate); the first
+  // MENTION_ADDRESSES_PER_POST are stored before the edit composes.
+  resolved?: ResolvedAddress[] | undefined;
   now: number;
   present: PresentInput;
 };
@@ -1097,30 +1127,11 @@ export const editStatus = userWriteOperation.atStoreTime("storeNow")<
   if (!Array.isArray(media)) {
     return media;
   }
-  // An edit keeps the status's quote (Mastodon takes no quoted_status_id on an edit), and its RE: line while the
-  // quoted status is there.
-  const quote = localQuoteOf(db, current.id);
-  // UpdateStatusService#update_immediate_attributes!: a blank text, on a status that quotes nothing, takes the warning
-  // sent (or "") as its text, whether a warning was sent or not; the warning sent is then not applied, so the status
-  // keeps its own, and sensitive is the value sent or false. A status stored with a blank text and a warning is
-  // converted so by such an edit, as Mastodon converts its own. Every later step uses the pair written.
-  const blankSent = blankText(sentText);
-  const keepsWarning = blankSent && quote === undefined;
-  // The pair as update_immediate_attributes! assigns it, on which significant_changes? judges whether the edit
-  // changes the status; Status#prepare_contents strips it only as it is saved, so the pair written is stripped. A kept
-  // warning is the stored one, compared, counted and written as stored (an imported one is not rewritten).
-  const assignedText = keepsWarning ? sentSpoiler : sentText;
-  const assignedSpoiler = keepsWarning ? current.spoiler_text : sentSpoiler;
-  const text = rubyStrip(assignedText);
-  const spoilerText = keepsWarning ? current.spoiler_text : rubyStrip(sentSpoiler);
-  // The counted length of a blank text, which the Worker leaves to the Store, and the raw bound (RES-1), on the pair
-  // written: a kept warning is the stored one.
-  if (blankSent && (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS)) {
-    return { status: "invalid", error: TOO_LONG };
+  const pair = editedPair(db, current, sentText, sentSpoiler, media.length);
+  if ("status" in pair) {
+    return pair;
   }
-  if (blankText(text) && media.length === 0 && quote === undefined) {
-    return { status: "invalid", error: "Validation failed: Text can't be blank" };
-  }
+  const { quote, keepsWarning, assignedText, assignedSpoiler, text, spoilerText } = pair;
   // UpdateStatusService#update_immediate_attributes!: the warning as sent, by Rails' present?.
   const sensitive = (input.sensitive ?? false) || (!keepsWarning && !railsBlank(input.spoilerText));
   const language = input.language ?? current.language;
@@ -1167,12 +1178,18 @@ export const editStatus = userWriteOperation.atStoreTime("storeNow")<
     }
     return status();
   }
-  const versions =
-    db.first<{ n: number }>("SELECT COUNT(*) AS n FROM status_edits WHERE status_id = ?", current.id)?.n ?? 0;
-  if (versions + (versions === 0 ? 2 : 1) > MAX_STATUS_EDITS) {
+  const versions = editCount(db, current.id);
+  if (editLimitReached(versions)) {
     return { status: "invalid", error: "Validation failed: This status has been edited too many times" };
   }
   const author = localAuthor(db, accountId);
+  storeMentioned(
+    db,
+    (input.resolved ?? []).slice(0, MENTION_ADDRESSES_PER_POST),
+    referenceKeys(text),
+    new URL(author.uri).origin,
+    input.storeNow,
+  );
   const quotedId = quote?.quotedStatusId ?? null;
   const composed = compose(db, text, author, quotedId === null ? null : quoteLink(db, quotedId));
   if (exceedsStatusBounds(composed.content, spoilerText)) {
@@ -1244,6 +1261,88 @@ export const editStatus = userWriteOperation.atStoreTime("storeNow")<
     recordOutbound(db, accountId, updateActivity(facts, editId), input.now);
   }
   return status();
+});
+
+// The pair an edit writes, or its refusal (too long, or blank), with the status's quote: an edit keeps it (Mastodon
+// takes no quoted_status_id on an edit), and its RE: line while the quoted status is there.
+// UpdateStatusService#update_immediate_attributes!: a blank text, on a status that quotes nothing, takes the warning
+// sent (or "") as its text, whether a warning was sent or not; the warning sent is then not applied, so the status
+// keeps its own, and sensitive is the value sent or false. A status stored with a blank text and a warning is converted
+// so by such an edit, as Mastodon converts its own. Every later step uses the pair written. `assignedText` and
+// `assignedSpoiler`: the pair as update_immediate_attributes! assigns it, on which significant_changes? judges whether
+// the edit changes the status; Status#prepare_contents strips it only as it is saved, so the pair written (`text`,
+// `spoilerText`) is stripped. A kept warning is the stored one, compared, counted and written as stored (an imported one
+// is not rewritten). `sentText` and `sentSpoiler` as stored (storedText), within the raw bound.
+type EditedPair = {
+  quote: ReturnType<typeof localQuoteOf>;
+  keepsWarning: boolean;
+  assignedText: string;
+  assignedSpoiler: string;
+  text: string;
+  spoilerText: string;
+};
+
+function editedPair(
+  db: Db,
+  current: Pick<OwnStatus, "id" | "spoiler_text">,
+  sentText: string,
+  sentSpoiler: string,
+  mediaCount: number,
+): EditedPair | { status: "invalid"; error: string } {
+  const quote = localQuoteOf(db, current.id);
+  const blankSent = blankText(sentText);
+  const keepsWarning = blankSent && quote === undefined;
+  const assignedText = keepsWarning ? sentSpoiler : sentText;
+  const assignedSpoiler = keepsWarning ? current.spoiler_text : sentSpoiler;
+  const text = rubyStrip(assignedText);
+  const spoilerText = keepsWarning ? current.spoiler_text : rubyStrip(sentSpoiler);
+  // The counted length of a blank text, which the Worker leaves to the Store, and the raw bound (RES-1), on the pair
+  // written: a kept warning is the stored one.
+  if (blankSent && (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS)) {
+    return { status: "invalid", error: TOO_LONG };
+  }
+  if (blankText(text) && mediaCount === 0 && quote === undefined) {
+    return { status: "invalid", error: "Validation failed: Text can't be blank" };
+  }
+  return { quote, keepsWarning, assignedText, assignedSpoiler, text, spoilerText };
+}
+
+// The versions the status's history holds.
+function editCount(db: Db, statusId: string): number {
+  return db.first<{ n: number }>("SELECT COUNT(*) AS n FROM status_edits WHERE status_id = ?", statusId)?.n ?? 0;
+}
+
+// Whether one more edit would pass MAX_STATUS_EDITS (the first also records the original).
+function editLimitReached(versions: number): boolean {
+  return versions + (versions === 0 ? 2 : 1) > MAX_STATUS_EDITS;
+}
+
+// The edit's step before any network work (mention-addresses.ts mentionGateOperation): the addresses an edit's text
+// would resolve, after the checks editStatus makes before it composes, each on the gate's state and the request's
+// time (the status the viewer's own and not a boost, the raw bound, the media, the pair written, the edit limit), none
+// when one refuses. Whether the edit changes anything is not judged here: an unchanged edit may fetch and store nothing
+// (docs/mastodon-deviations.md, Posting).
+export const editMentionGate = mentionGateOperation<
+  MentionGateInput & { id: string; text: string; spoilerText: string; mediaIds: string[] }
+>((db, input, { accountId }, domain) => {
+  const current = ownStatus(db, accountId, input.id);
+  if (current === null || current.reblog_of_id !== null) {
+    return null;
+  }
+  const sentText = storedText(input.text);
+  const sentSpoiler = storedText(input.spoilerText);
+  if (exceedsRawLength(sentText, sentSpoiler)) {
+    return null;
+  }
+  const media = mediaToAttach(db, accountId, input.mediaIds, current.id, input.now);
+  if (!Array.isArray(media)) {
+    return null;
+  }
+  const pair = editedPair(db, current, sentText, sentSpoiler, media.length);
+  if ("status" in pair || editLimitReached(editCount(db, current.id))) {
+    return null;
+  }
+  return selectAddresses(db, pair.text, accountId, domain);
 });
 
 // A policy-only change sends an Update without a history entry or edited_at; receivers apply it as an implicit update

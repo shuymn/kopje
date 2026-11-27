@@ -45,6 +45,7 @@ import {
   type RemoteRow,
   subpolicyReader,
   upsertRemoteActor,
+  webfingerUrl,
 } from "./remote-actors";
 import {
   applyFeaturedCollection,
@@ -1007,10 +1008,7 @@ export function isUrlQuery(query: string): boolean {
   return /^https?:\/\//i.test(query);
 }
 
-// The WebFinger request (RFC 7033) for acct:<username>@<host>.
-export function webfingerUrl(username: string, host: string): string {
-  return `https://${host}/.well-known/webfinger?resource=${encodeURIComponent(`acct:${username}@${host}`)}`;
-}
+export { webfingerUrl };
 
 // What a search resolution of the trimmed `query` fetches (federation/resolve.ts resolveWith), read one way for the
 // fetch and for its preparation (inbox.ts resolutionGate): an address, by its WebFinger, or a URL; local, nothing, for

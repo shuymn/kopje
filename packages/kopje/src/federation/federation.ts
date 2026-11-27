@@ -50,7 +50,7 @@ import { jsonRefusal } from "../platform/json-bounds";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-version";
 import { railsBlank } from "../platform/rails-blank";
 import { callStore, type StoreStub } from "../platform/store-client";
-import { StoreUnavailableError } from "../platform/store-errors";
+import { StoreUnavailableError, toStoreUnavailable } from "../platform/store-errors";
 import { bytesToBase64, generateWrappedKey, importPublicKeyPem, type KeyGen } from "../security/key-wrap";
 import { createKeyring, type KeyOwner, requestSigner, type Signer } from "../security/keyring";
 import { DoKvStore } from "./kv-store";
@@ -247,23 +247,36 @@ export type RemoteLoaders = {
 // document held to the JSON bounds as `document`'s are.
 export type ResolveLoader = (url: string, terminal: boolean) => Promise<ResolveAnswer>;
 
+// shared: a signer several sets of loaders share (sharedFetchSigner), in place of these loaders' own; a Store refusal it
+// rejects with is recorded in this set's state, as these loaders' own Store calls record theirs.
 export function createRemoteLoaders(
   deps: FederationDeps,
   state: FederationState,
   recipient: string | FollowerSigner | null,
   budget: FetchBudget,
   prefetched: FetchSigner | null = null,
+  shared?: () => Promise<Signer>,
 ): RemoteLoaders & { resolve: ResolveLoader } {
   const parts = federationParts(deps, state);
   const loaderDeps = { ...parts.loaderDeps, budget };
   let offered = prefetched;
   let resolved: Promise<Signer> | undefined;
   // Resolved on the first fetch only: a request refused before any fetch unwraps no key.
-  const signer = () =>
-    (resolved ??= (async () =>
-      parts.signerOf(
-        offered ?? (await parts.rpc<FetchSigner>((s) => s.fetchSigner(deps.build, { by: recipient }))),
-      ))());
+  const signer =
+    shared === undefined
+      ? () =>
+          (resolved ??= (async () =>
+            parts.signerOf(
+              offered ?? (await parts.rpc<FetchSigner>((s) => s.fetchSigner(deps.build, { by: recipient }))),
+            ))())
+      : () =>
+          shared().catch((error: unknown) => {
+            const unavailable = toStoreUnavailable(error);
+            if (unavailable !== undefined) {
+              state.storeError ??= unavailable;
+            }
+            throw error;
+          });
   // Keyed without the fragment: HTTP never sends it, so `actor#main-key` and `actor` are one fetch. Key ids are still
   // compared whole by Fedify and by receiveInbound.
   const memoized = (caps: DocumentCaps): DocumentLoader => {
@@ -285,6 +298,28 @@ export function createRemoteLoaders(
         offered = chosen;
       }
     },
+  };
+}
+
+// One instance-actor signer (DATA-7) for several sets of loaders (createRemoteLoaders' `shared`), from the fetch
+// signer a Store answer prepared (`prepared`), else read on the first fetch (fetchSigner), unwrapped on the first fetch
+// (a missing instance key is created then). It is kept once it resolves; a rejection is not kept, so the next fetch
+// prepares it again.
+export function sharedFetchSigner(deps: FederationDeps, prepared: FetchSigner | null): () => Promise<Signer> {
+  const parts = federationParts(deps, { resolvedUsername: null, source: null, storeError: null, ticket: null });
+  let kept: Promise<Signer> | undefined;
+  return () => {
+    if (kept === undefined) {
+      const preparing = (async () =>
+        parts.signerOf(prepared ?? (await parts.rpc<FetchSigner>((s) => s.fetchSigner(deps.build, { by: null })))))();
+      kept = preparing;
+      preparing.catch(() => {
+        if (kept === preparing) {
+          kept = undefined;
+        }
+      });
+    }
+    return kept;
   };
 }
 

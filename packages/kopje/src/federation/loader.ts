@@ -12,6 +12,7 @@ import {
   validatePublicUrl,
 } from "@fedify/fedify";
 
+import { MENTION_ADDRESSES_PER_POST } from "../domain/mention-addresses";
 import { readBoundedBody } from "../platform/body";
 import { hostDomain } from "../platform/domain-name";
 import { errorMessage } from "../platform/error-message";
@@ -154,6 +155,20 @@ export const REQUEST_DEADLINE_MS = 15_000;
 
 export function requestBudget(now: number): FetchBudget {
   return { fetches: REQUEST_MAX_FETCHES, bytes: REQUEST_MAX_BYTES, deadline: now + REQUEST_DEADLINE_MS };
+}
+
+// The most requests one mention address costs on its plain path (federation/resolve.ts createAddressResolver): its
+// WebFinger, the actor, and a split-domain account's two confirming WebFingers (test/mention-resolution-store-calls.test.ts
+// measures it). A post's or an edit's resolution of unknown mention addresses spends one budget for at most
+// MENTION_ADDRESSES_PER_POST of them (RES-6).
+export const ADDRESS_MAX_FETCHES = 4;
+
+export function mentionBudget(now: number): FetchBudget {
+  return {
+    fetches: MENTION_ADDRESSES_PER_POST * ADDRESS_MAX_FETCHES,
+    bytes: REQUEST_MAX_BYTES,
+    deadline: now + REQUEST_DEADLINE_MS,
+  };
 }
 
 export type LoaderDeps = {

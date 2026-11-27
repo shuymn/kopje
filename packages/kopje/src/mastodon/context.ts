@@ -5,6 +5,7 @@ import type { PresentInput } from "../domain/accounts";
 import type { StoredKey } from "../domain/actors";
 import type { AuthFailure, Authorized, Credential, Suspended, UserCredential } from "../domain/auth";
 import type { ResolutionStart } from "../domain/inbox";
+import type { AddressResolver } from "../domain/mention-addresses";
 import type { PollReservation } from "../domain/polls";
 import type { RemoteStatusInput } from "../domain/remote-status-reads";
 import type { Resolved } from "../domain/remote-statuses";
@@ -31,6 +32,9 @@ export type ApiDeps = {
   // Fetches a URL or user@domain for search with resolve=true (federation/resolve.ts), from what the resolution gate
   // answered; none: answered locally.
   resolve?: (env: Env, query: string, start?: ResolutionStart) => Promise<Resolved>;
+  // Resolves the unknown mention addresses of a post or an edit (federation/resolve.ts createAddressResolver), from what
+  // its mention gate answered; none: they stay text.
+  resolveAddresses?: AddressResolver;
   // Fetches the document of a remote poll's status for its refresh on read (federation/poll-refresh.ts), after the
   // Store reserved the attempt; none: polls are not refreshed.
   fetchPoll?: (env: Env, reservation: PollReservation) => Promise<RemoteStatusInput | null>;
