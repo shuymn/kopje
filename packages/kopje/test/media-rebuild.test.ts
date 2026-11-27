@@ -41,8 +41,7 @@ import {
   seedStore,
 } from "./ops-helpers";
 import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
-import { animatedWebp } from "./remote-media-fixtures";
-import { encodeWebp } from "./webp-fixtures";
+import { twoFrameWebp } from "./webp-fixtures";
 
 // kopje-admin media-rebuild (mastodon/media-rebuild.ts): served files made again from the originals of restored or moved
 // media, MEDIA-2/MEDIA-3, and its narrow exemption from the operator gate (OPS-8).
@@ -160,9 +159,25 @@ async function files(row: Row): Promise<boolean[]> {
   return Promise.all(["full", "small"].map(async (v) => (await env.MEDIA.head(`files/${row.token}/${v}`)) !== null));
 }
 
-// Three more local accounts, in id order after ACCOUNT.
-async function localAccounts(store: StoreStub): Promise<[string, string, string]> {
-  const ids: [string, string, string] = ["110000000000000002", "110000000000000003", "110000000000000004"];
+// A custom emoji's row (migration 0055_local_custom_emojis), as addRow makes it, with `meta` when given.
+async function emojiRow(store: StoreStub, options: Parameters<typeof addRow>[1] & { meta?: string } = {}) {
+  const row = await addRow(store, options);
+  await runInDurableObject(store, (_instance, state) => {
+    if (options.meta !== undefined) {
+      state.storage.sql.exec("UPDATE media_attachments SET meta = ? WHERE id = ?", options.meta, row.id);
+    }
+    state.storage.sql.exec(
+      "INSERT INTO custom_emojis (id, shortcode, created_at) VALUES (?, ?, '2026-10-12T00:00:00.000Z')",
+      row.id,
+      `e${row.id}`,
+    );
+  });
+  return row;
+}
+
+// `count` more local accounts, in id order after ACCOUNT.
+async function localAccounts(store: StoreStub, count: number): Promise<string[]> {
+  const ids = Array.from({ length: count }, (_, i) => String(110_000_000_000_000_002n + BigInt(i)));
   for (const id of ids) {
     await sql(
       store,
@@ -255,7 +270,7 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
 
   it("gives a rebuilt profile row its account's statics after its files are written", async () => {
     const h = await setup({ codec: shapedFramesCodec() });
-    const [second, third, fourth] = await localAccounts(h.store);
+    const [second, third] = (await localAccounts(h.store, 2)) as [string, string];
     const animatedAvatar = await addRow(h.store, { contentType: "image/webp", original: bytes(ANIMATED_WEBP) });
     const animatedHeader = await addRow(h.store, {
       contentType: "image/webp",
@@ -263,19 +278,19 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
       account: second,
     });
     const both = await addRow(h.store, { account: third });
-    const stale = await addRow(h.store, { account: fourth });
     const plain = await addRow(h.store);
     await nameImages(h.store, ACCOUNT, { avatar: animatedAvatar });
     await nameImages(h.store, second, { header: animatedHeader });
     await nameImages(h.store, third, { avatar: both, header: both });
-    await nameImages(h.store, fourth, { avatar: stale });
+    // Old statics of a still row both images name: both are cleared.
     await sql(
       h.store,
-      "UPDATE accounts SET avatar_static_url = 'https://kopje.test/media/old/small.webp' WHERE id = ?",
-      fourth,
+      `UPDATE accounts SET avatar_static_url = 'https://kopje.test/media/old/small.webp',
+				header_static_url = 'https://kopje.test/media/old/small.webp' WHERE id = ?`,
+      third,
     );
     const step = await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>();
-    expect(step.counts).toMatchObject({ built: 5 });
+    expect(step.counts).toMatchObject({ built: 4 });
     expect(await meta(h.store, animatedAvatar.id)).toEqual({
       original: { width: 400, height: 400 },
       small: { width: 400, height: 400 },
@@ -287,7 +302,6 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
       { id: ACCOUNT, avatar_static_url: preview(animatedAvatar), header_static_url: null },
       { id: second, avatar_static_url: null, header_static_url: preview(animatedHeader) },
       { id: third, avatar_static_url: null, header_static_url: null },
-      { id: fourth, avatar_static_url: null, header_static_url: null },
     ]);
     for (const row of [animatedAvatar, animatedHeader]) {
       const served = async (variant: string) =>
@@ -305,14 +319,8 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
       if (kind === "remote owner") {
         await sql(h.store, "UPDATE accounts SET domain = 'remote.test' WHERE id = ?", ACCOUNT);
       }
-      const row = await addRow(h.store, { contentType: "image/webp", original: bytes(ANIMATED_WEBP) });
-      if (kind === "emoji") {
-        await sql(
-          h.store,
-          "INSERT INTO custom_emojis (id, shortcode, created_at) VALUES (?, 'avatar_emoji', '2026-10-12T00:00:00.000Z')",
-          row.id,
-        );
-      }
+      const options = { contentType: "image/webp", original: bytes(ANIMATED_WEBP) };
+      const row = kind === "emoji" ? await emojiRow(h.store, options) : await addRow(h.store, options);
       await nameImages(h.store, ACCOUNT, { avatar: row });
       const response = await h.post(adminClaims(), "/admin/media/rebuild");
       expect(response.status).toBe(200);
@@ -326,7 +334,7 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
 
   it("writes both statics of an animated row both images name, each as the URL an upload of its token is given", async () => {
     const h = await setup({ codec: shapedFramesCodec() });
-    const [second, third, fourth] = await localAccounts(h.store);
+    const [second, third, fourth] = (await localAccounts(h.store, 3)) as [string, string, string];
     // Owners whose URIs a conversion kept in other spellings of an origin: the default port, and an IDN host.
     await sql(h.store, "UPDATE accounts SET uri = 'https://kopje.test:443/ap/users/b' WHERE id = ?", third);
     await sql(h.store, "UPDATE accounts SET uri = 'https://bücher.example/ap/users/c' WHERE id = ?", fourth);
@@ -392,7 +400,7 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
 
   it("builds a profile row in its account's shape, a header first", async () => {
     const h = await setup();
-    const [second, third] = await localAccounts(h.store);
+    const [second, third] = (await localAccounts(h.store, 2)) as [string, string];
     const avatar = await addRow(h.store, { original: bytes(WIDE_PNG) });
     const header = await addRow(h.store, { original: bytes(WIDE_PNG), account: second });
     const both = await addRow(h.store, { original: bytes(WIDE_PNG), account: third });
@@ -412,15 +420,12 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     ]);
   });
 
-  it("builds an emoji's row named as an avatar under the emoji limits, with no role", async () => {
+  it("lists and builds an emoji's row named as an avatar under the emoji limits, with no role", async () => {
     const h = await setup();
-    const emoji = await addRow(h.store, { original: await pngOf(32, 32) });
-    await sql(
-      h.store,
-      "INSERT INTO custom_emojis (id, shortcode, created_at) VALUES (?, 'avatar_emoji', '2026-10-12T00:00:00.000Z')",
-      emoji.id,
-    );
+    const emoji = await emojiRow(h.store, { original: await pngOf(32, 32) });
     await nameImages(h.store, ACCOUNT, { avatar: emoji });
+    const listed = await plannedRun(h, /^$/, rebuildCandidates, { after: null, now: NOW });
+    expect(listed.result.rows.map((row) => [row.id, row.emoji, row.role])).toEqual([[emoji.id, true, null]]);
     const step = await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>();
     expect(step).toMatchObject({ problems: [], counts: { built: 1 } });
     expect(h.codec.outputs[0]?.transforms).toEqual([]);
@@ -429,11 +434,8 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
 
   it("rebuilds an animated profile row Images left unshaped as a still, keeping a header's stored blurhash", async () => {
     const h = await setup({ codec: framesKeepingCodec() });
-    const [second] = await localAccounts(h.store);
-    const animation = animatedWebp([await encodeWebp(2000, 1000), await encodeWebp(2000, 1000, { fill: "flat" })], {
-      width: 2000,
-      height: 1000,
-    });
+    const [second] = (await localAccounts(h.store, 1)) as [string];
+    const animation = await twoFrameWebp(2000, 1000);
     const avatar = await addRow(h.store, { contentType: "image/webp", original: bytes(ANIMATED_WEBP) });
     const header = await addRow(h.store, { contentType: "image/webp", original: animation, account: second });
     await setBlurhash(h.store, header.id, SEEDED);
@@ -449,7 +451,7 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     expect(await blurhashOf(h.store, header.id)).toBe(SEEDED);
     expect(await blurhashOf(h.store, avatar.id)).toMatch(/^U.{35}$/);
     // Stills: each account shows its image as its static.
-    expect((await statics(h.store)).slice(0, 2)).toEqual([
+    expect(await statics(h.store)).toEqual([
       { id: ACCOUNT, avatar_static_url: null, header_static_url: null },
       { id: second, avatar_static_url: null, header_static_url: null },
     ]);
@@ -1713,21 +1715,6 @@ function flagsWith(lease: { until: number }): OperatorGate {
 // A custom emoji's image (migration 0055_local_custom_emojis) is held to the emoji limits of platform/emoji-image.ts
 // by the rebuild too, each a per-row problem that retains the row and writes nothing (mastodon/media-rebuild.ts).
 describe("media rebuild of custom emoji images", () => {
-  async function emojiRow(store: StoreStub, options: Parameters<typeof addRow>[1] & { meta?: string } = {}) {
-    const row = await addRow(store, options);
-    await runInDurableObject(store, (_instance, state) => {
-      if (options.meta !== undefined) {
-        state.storage.sql.exec("UPDATE media_attachments SET meta = ? WHERE id = ?", options.meta, row.id);
-      }
-      state.storage.sql.exec(
-        "INSERT INTO custom_emojis (id, shortcode, created_at) VALUES (?, ?, '2026-10-12T00:00:00.000Z')",
-        row.id,
-        `e${row.id}`,
-      );
-    });
-    return row;
-  }
-
   const rebuild = async (h: Awaited<ReturnType<typeof setup>>, body: unknown = {}) =>
     await (await h.post(adminClaims(), "/admin/media/rebuild", body)).json<Step>();
 

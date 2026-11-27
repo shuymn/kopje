@@ -11,10 +11,9 @@ import { ANIMATED_WEBP, PNG_PLAIN } from "./fixtures/images";
 import { bytes, FRAME_COLOURS, multipartForm, shapedFramesCodec } from "./media-helpers";
 import { aliceWithFollower, ESCAPED_STATIC_WITNESS, rawBytes as raw } from "./profile-fixtures";
 import { scansOf, staleStatistics } from "./read-helpers";
-import { animatedWebp } from "./remote-media-fixtures";
 import { getJson, post } from "./status-helpers";
 import { csrfOf, ORIGIN, signIn } from "./web-helpers";
-import { decodeFixture, encodeWebp } from "./webp-fixtures";
+import { decodeFixture, twoFrameWebp } from "./webp-fixtures";
 
 // Account#avatar_static and #header_static (Mastodon v4.5.11 REST::AccountSerializer, account_serializer.rb:79-81,
 // 87-89): for an upload whose served file is animated, its still preview (domain/media.ts profileAssignSql, migration
@@ -85,16 +84,7 @@ describe("avatar_static and header_static of uploads", () => {
     const h = await setup();
     // Animations whose own pixels are noise: the statics show the served files' first frame, not the input's.
     const input = async (width: number, height: number, name: string) =>
-      new File(
-        [
-          animatedWebp([await encodeWebp(width, height), await encodeWebp(width, height, { fill: "flat" })], {
-            width,
-            height,
-          }),
-        ],
-        name,
-        { type: "image/webp" },
-      );
+      new File([await twoFrameWebp(width, height)], name, { type: "image/webp" });
     const response = await h.patch([
       ["avatar", await input(600, 300, "a.webp")],
       ["header", await input(2000, 1000, "h.webp")],

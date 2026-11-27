@@ -10,15 +10,14 @@ import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, sql } from "./api-helpers";
 import { ANIMATED_GIF, ANIMATED_WEBP, PNG_PLAIN } from "./fixtures/images";
-import { bytes, columnsPng, mediaForm, multipartForm, r2Keys, TestCodec } from "./media-helpers";
+import { bytes, columnsPng, framesKeepingCodec, mediaForm, multipartForm, r2Keys, TestCodec } from "./media-helpers";
 import { singletonStatistics } from "./plan-audit-store";
 import { aliceWithFollower } from "./profile-fixtures";
 import { scopedToken } from "./read-helpers";
-import { animatedWebp } from "./remote-media-fixtures";
 import { storeWith } from "./setup-helpers";
 import { outbound } from "./status-helpers";
 import { csrfOf, ORIGIN, signIn } from "./web-helpers";
-import { decodeFixture, encodeWebp } from "./webp-fixtures";
+import { decodeFixture, twoFrameWebp } from "./webp-fixtures";
 
 // PATCH /api/v1/accounts/update_credentials with avatar and header files (multipart): the body and file bounds, the
 // token checked before the body is read, Paperclip's validations, one transaction with one Update(Person), and the
@@ -26,8 +25,7 @@ import { decodeFixture, encodeWebp } from "./webp-fixtures";
 
 const AVIF = new Uint8Array([0, 0, 0, 0x1c, ...new TextEncoder().encode("ftypavif"), 0, 0, 0, 0]);
 
-async function setup(wrapStore?: (store: StoreStub) => StoreStub) {
-  const codec = new TestCodec();
+async function setup(wrapStore?: (store: StoreStub) => StoreStub, codec = new TestCodec()) {
   const h = await aliceWithFollower({ images: () => codec, wrapStore });
   return { ...h, codec };
 }
@@ -423,14 +421,9 @@ describe("update_credentials: the avatar's and header's shape", () => {
   }, 30_000);
 
   it("sets a still avatar and header when Images leaves an animation unshaped", async () => {
-    const h = await setup();
     // Images answers every animated output at the animation's own 8×6.
-    h.codec.encodeResponder = (options) =>
-      options.format === "image/webp" && options.still !== true ? bytes(ANIMATED_WEBP) : null;
-    const header = animatedWebp([await encodeWebp(2000, 1000), await encodeWebp(2000, 1000, { fill: "flat" })], {
-      width: 2000,
-      height: 1000,
-    });
+    const h = await setup(undefined, framesKeepingCodec());
+    const header = await twoFrameWebp(2000, 1000);
     const response = await patch(
       h,
       h.users.alice.token,

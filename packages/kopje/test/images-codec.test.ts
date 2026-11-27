@@ -30,9 +30,9 @@ import {
   WIDE_PNG,
 } from "./fixtures/images";
 import { fakeBinding } from "./images-binding";
-import { bytes, columnsPng, recordRgba, TestCodec } from "./media-helpers";
+import { answerInOrder, bytes, columnsPng, recordRgba, TestCodec } from "./media-helpers";
 import { animatedWebp } from "./remote-media-fixtures";
-import { encodeWebp } from "./webp-fixtures";
+import { encodeWebp, twoFrameWebp } from "./webp-fixtures";
 
 // The chunks of a PNG (type, data) and of a WebP, walked plainly to check the fixtures.
 function pngChunks(file: Uint8Array): { type: string; data: Uint8Array }[] {
@@ -398,7 +398,7 @@ describe("imagesCodec's guarded output reads (r1 M6)", () => {
   });
 });
 
-// A profile image's full image takes its role's shape (platform/images.ts fullBox, shapeProblem): an avatar a 400×400
+// A profile image's full image takes its role's shape (platform/images.ts fullEdge, shapeProblem): an avatar a 400×400
 // cover, a header within Mastodon's 750,000-pixel box as a square; an animation Images leaves unshaped is made again
 // as a still of that shape, within the three outputs an upload is charged.
 describe("processImage of a profile image", () => {
@@ -449,28 +449,14 @@ describe("processImage of a profile image", () => {
     [[8000, 200], 3840, [3840, 96]],
     [[896, 864], 882, [882, 851]],
     [[8000, 50], 3840, [3840, 24]],
+    // A square box, so a portrait is bounded on its long edge as a landscape is.
+    [[1000, 4000], 1732, [433, 1732]],
   ] as const)("sizes a header's box from its long and short edges: %j in %j", async ([width, height], box, served) => {
     expect(HEADER_PIXELS).toBe(750_000);
     const codec = new TestCodec();
     const result = await processImage(codec, await columnsPng(width, height), { role: "header" });
     expect(codec.outputs[0]?.transforms).toEqual(box === null ? [] : [{ width: box, height: box, fit: "scale-down" }]);
     expect(result.ok && sizeOf(result.image.full)).toEqual(served);
-  });
-
-  it("boxes a header in a square, whatever its orientation", async () => {
-    const shapes: unknown[] = [];
-    for (const [width, height] of [
-      [4000, 1000],
-      [1000, 4000],
-    ] as const) {
-      const codec = new TestCodec();
-      const result = await processImage(codec, await columnsPng(width, height), { role: "header" });
-      shapes.push([codec.outputs[0]?.transforms, result.ok && sizeOf(result.image.full)]);
-    }
-    expect(shapes).toEqual([
-      [[{ width: 1732, height: 1732, fit: "scale-down" }], [1732, 433]],
-      [[{ width: 1732, height: 1732, fit: "scale-down" }], [433, 1732]],
-    ]);
   });
 
   it.each<[string, "avatar" | "header", [number, number], [number, number]]>([
@@ -482,9 +468,8 @@ describe("processImage of a profile image", () => {
     ["a header past FULL_EDGE", "header", [5000, 100], [5000, 100]],
     ["a header of another ratio", "header", [4000, 1000], [1732, 500]],
   ])("refuses a role's output that is not its shape: %s", async (_name, role, [width, height], [w, h]) => {
-    const output = await columnsPng(w, h);
     const codec = new TestCodec();
-    codec.encodeResponder = (_options, index) => (index === 0 ? output : null);
+    answerInOrder(codec, [await columnsPng(w, h)]);
     const result = await processImage(codec, await columnsPng(width, height), { ...hashed(), role });
     expect(result).toEqual({ ok: false, reason: "failed", detail: `output is not of the ${role}'s shape` });
     // One full output started, and no other: a still input has no fallback.
@@ -496,10 +481,10 @@ describe("processImage of a profile image", () => {
     ["a single-frame GIF", bytes(GIF)],
     ["an APNG", bytes(APNG)],
   ])("never falls back for %s", async (_name, input) => {
-    const webp = await encodeWebp(401, 400);
-    const png = await columnsPng(401, 400);
     const codec = new TestCodec();
-    codec.encodeResponder = (options, index) => (index === 0 ? (options.format === "image/png" ? png : webp) : null);
+    // A still of the served type that is not 400×400.
+    codec.encodeResponder = (options, index) =>
+      index === 0 ? bytes(options.format === "image/png" ? PNG_PLAIN : WEBP_PLAIN) : null;
     const result = await processImage(codec, input, { ...hashed(), role: "avatar" });
     expect(result).toEqual({ ok: false, reason: "failed", detail: "output is not of the avatar's shape" });
     expect(codec.encodeCalls).toHaveLength(1);
@@ -508,7 +493,7 @@ describe("processImage of a profile image", () => {
   it("falls back to a still avatar for an animation Images left unshaped", async () => {
     const codec = new TestCodec();
     // Images answers the animation at its own size: not a 400×400 avatar.
-    codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_WEBP) : null);
+    answerInOrder(codec, [bytes(ANIMATED_WEBP)]);
     const result = await processImage(codec, bytes(ANIMATED_WEBP), { ...hashed(), role: "avatar" });
     if (!result.ok) {
       throw new Error(result.reason);
@@ -528,20 +513,17 @@ describe("processImage of a profile image", () => {
   });
 
   it("falls back to a still header, with no RGBA, for an animation Images left unshaped", async () => {
-    const input = animatedWebp([await encodeWebp(2000, 1000), await encodeWebp(2000, 1000, { fill: "flat" })], {
-      width: 2000,
-      height: 1000,
-    });
     const codec = new TestCodec();
-    codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_WEBP) : null);
-    const result = await processImage(codec, input, { ...hashed(), role: "header" });
+    answerInOrder(codec, [bytes(ANIMATED_WEBP)]);
+    const result = await processImage(codec, await twoFrameWebp(2000, 1000), { ...hashed(), role: "header" });
     if (!result.ok) {
       throw new Error(result.reason);
     }
-    expect(codec.encodeCalls.map(({ guard: _guard, ...call }) => call)).toEqual([
+    // The preview of the still full image, asked for in a 640 square as any header's.
+    expect(codec.encodeCalls).toEqual([
       { width: 1225, height: 1225, format: "image/webp" },
       { width: 1225, height: 1225, format: "image/webp", still: true },
-      { width: 640, height: expect.any(Number), format: "image/webp", still: true },
+      { width: 640, height: 640, format: "image/webp", still: true },
     ]);
     const { full, small, blurhash } = result.image;
     expect([full.animated, small.animated, blurhash, result.blurhashStop]).toEqual([false, false, null, null]);
@@ -551,7 +533,7 @@ describe("processImage of a profile image", () => {
 
   it("falls back for an animated GIF whose output came back as another type", async () => {
     const codec = new TestCodec();
-    codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_GIF) : null);
+    answerInOrder(codec, [bytes(ANIMATED_GIF)]);
     const result = await processImage(codec, bytes(ANIMATED_GIF), { ...hashed(), role: "avatar" });
     expect(codec.encodeCalls.map((call) => [call.format, call.still ?? false])).toEqual([
       ["image/webp", false],
@@ -563,8 +545,7 @@ describe("processImage of a profile image", () => {
 
   it("fails when the still is not of the role's shape either", async () => {
     const codec = new TestCodec();
-    codec.encodeResponder = (_options, index) =>
-      index === 0 ? bytes(ANIMATED_WEBP) : index === 1 ? bytes(WEBP_PLAIN) : null;
+    answerInOrder(codec, [bytes(ANIMATED_WEBP), bytes(WEBP_PLAIN)]);
     const result = await processImage(codec, bytes(ANIMATED_WEBP), { ...hashed(), role: "avatar" });
     expect(result).toEqual({ ok: false, reason: "failed", detail: "output is not of the avatar's shape" });
     expect(codec.encodeCalls).toHaveLength(2);
@@ -572,7 +553,7 @@ describe("processImage of a profile image", () => {
 
   it("does not fall back after an output that does not walk", async () => {
     const codec = new TestCodec();
-    codec.encodeResponder = (_options, index) => (index === 0 ? new Uint8Array([...bytes(ANIMATED_WEBP), 0]) : null);
+    answerInOrder(codec, [new Uint8Array([...bytes(ANIMATED_WEBP), 0])]);
     const result = await processImage(codec, bytes(ANIMATED_WEBP), { ...hashed(), role: "avatar" });
     expect(result).toEqual({ ok: false, reason: "failed", detail: "output is malformed" });
     expect(codec.encodeCalls).toHaveLength(1);
@@ -622,14 +603,9 @@ describe("processImage of a profile image", () => {
   ])(
     "fails a header whose fallback's preview is %s",
     async (_name, make, detail) => {
-      const input = animatedWebp([await encodeWebp(2000, 1000), await encodeWebp(2000, 1000, { fill: "flat" })], {
-        width: 2000,
-        height: 1000,
-      });
-      const preview = await make();
       const codec = new TestCodec();
-      codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_WEBP) : index === 2 ? preview : null);
-      const result = await processImage(codec, input, { ...hashed(), role: "header" });
+      answerInOrder(codec, [bytes(ANIMATED_WEBP), null, await make()]);
+      const result = await processImage(codec, await twoFrameWebp(2000, 1000), { ...hashed(), role: "header" });
       expect(result).toEqual({ ok: false, reason: "failed", detail });
       expect(codec.encodeCalls).toHaveLength(3);
     },
@@ -638,7 +614,7 @@ describe("processImage of a profile image", () => {
 
   it("does not fall back without a role", async () => {
     const codec = new TestCodec();
-    codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_GIF) : null);
+    answerInOrder(codec, [bytes(ANIMATED_GIF)]);
     const result = await processImage(codec, bytes(ANIMATED_GIF), hashed());
     expect(result).toEqual({ ok: false, reason: "failed", detail: "output is not of the requested type" });
     expect(codec.encodeCalls).toHaveLength(1);
