@@ -353,52 +353,72 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     }
   });
 
-  it("stops starting rows past the call's time budget after one build, and resumes after next", async () => {
+  // A direct call on its own clock, with the setup's codec; `bucket` and `store` stand in for the real ones.
+  const budgetCall =
+    (h: Awaited<ReturnType<typeof setup>>, now: () => number, deps: { bucket?: R2Bucket; store?: StoreStub } = {}) =>
+    (after: string | null) =>
+      rebuildMedia(
+        {
+          build: BUILD,
+          store: deps.store ?? h.store,
+          bucket: deps.bucket ?? env.MEDIA,
+          images: h.codec,
+          now,
+          authority: { ...ACCESS, teamDomain: team.teamDomain },
+          monthlyTransforms: 100,
+        },
+        { after, dryRun: false },
+      );
+
+  // The media bucket, `onHead` run before each head, `onGet` before each get and `onPut` after each put lands.
+  const hookedMedia = (hooks: {
+    onHead?: (key: string) => void;
+    onGet?: (key: string) => void;
+    onPut?: (key: string) => void;
+  }) =>
+    ({
+      head: (key: string) => {
+        hooks.onHead?.(key);
+        return env.MEDIA.head(key);
+      },
+      get: (key: string, options?: R2GetOptions) => {
+        hooks.onGet?.(key);
+        return env.MEDIA.get(key, options);
+      },
+      delete: (keys: string | string[]) => env.MEDIA.delete(keys),
+      put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+        const put = await env.MEDIA.put(key, value, options);
+        hooks.onPut?.(key);
+        return put;
+      },
+    }) as unknown as R2Bucket;
+
+  it("builds two rows, stops past the call's time budget, and the next call builds the rest", async () => {
     const h = await setup();
     const rows: Row[] = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 4; i++) {
       rows.push(await addRow(h.store));
     }
     let clock = NOW;
     // Each build takes 70 seconds of the call's clock, counted once its last file is written.
     const puts = new Map<string, number>();
-    const bucket = {
-      head: (key: string) => env.MEDIA.head(key),
-      get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
-      delete: (keys: string | string[]) => env.MEDIA.delete(keys),
-      put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
-        const put = await env.MEDIA.put(key, value, options);
+    const bucket = hookedMedia({
+      onPut: (key) => {
         if (key.endsWith("/small")) {
           puts.set(key, (puts.get(key) ?? 0) + 1);
           clock += 70_000;
         }
-        return put;
       },
-    } as unknown as R2Bucket;
-    const admin = { ...ACCESS, teamDomain: team.teamDomain };
-    const call = (after: string | null) =>
-      rebuildMedia(
-        {
-          build: BUILD,
-          store: h.store,
-          bucket,
-          images: new TestCodec(),
-          now: () => clock,
-          authority: admin,
-          monthlyTransforms: 100,
-          holder: "budgeted",
-        },
-        { after, dryRun: false },
-      );
+    });
+    const call = budgetCall(h, () => clock, { bucket });
     expect(REBUILD_CALL_BUDGET_MS).toBe(120_000);
-    // 70 seconds after the first build the budget is not spent; 140 seconds after the second it is.
+    // 70 seconds after the first row the budget is not spent; 140 seconds after the second it is. The second call's
+    // budget starts again: it builds two rows too.
     const first = await call(null);
     expect(first).toMatchObject({ ok: true, done: false, stopped: null, next: rows[1]?.id, counts: { built: 2 } });
     expect(await files(rows[2]!)).toEqual([false, false]);
     const second = await call(first.ok ? first.next : null);
-    expect(second).toMatchObject({ ok: true, done: false, stopped: null, next: rows[3]?.id, counts: { built: 2 } });
-    const third = await call(second.ok ? second.next : null);
-    expect(third).toMatchObject({ ok: true, done: true, stopped: null, counts: { built: 1 } });
+    expect(second).toMatchObject({ ok: true, done: true, stopped: null, counts: { built: 2 } });
     for (const row of rows) {
       expect(await files(row)).toEqual([true, true]);
       expect(puts.get(`files/${row.token}/small`)).toBe(1);
@@ -420,19 +440,7 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
             }
           : (Reflect.get(target, property, receiver) as unknown),
     });
-    const step = await rebuildMedia(
-      {
-        build: BUILD,
-        store,
-        bucket: env.MEDIA,
-        images: new TestCodec(),
-        now: () => clock,
-        authority: { ...ACCESS, teamDomain: team.teamDomain },
-        monthlyTransforms: 100,
-        holder: "late",
-      },
-      { after: null, dryRun: false },
-    );
+    const step = await budgetCall(h, () => clock, { store })(null);
     expect(step).toMatchObject({ ok: true, done: false, stopped: null, next: rows[0]?.id, counts: { built: 1 } });
     expect(await files(rows[0]!)).toEqual([true, true]);
     expect(await files(rows[1]!)).toEqual([false, false]);
@@ -443,25 +451,12 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     const failed = await addRow(h.store);
     const second = await addRow(h.store);
     let clock = NOW;
-    const codec = new TestCodec();
     // The first row's info() answers past REBUILD_CALL_BUDGET_MS, and as no image: a failed attempt, which is handled.
-    vi.spyOn(codec, "info").mockImplementationOnce(() => {
+    vi.spyOn(h.codec, "info").mockImplementationOnce(() => {
       clock += REBUILD_CALL_BUDGET_MS + 10_000;
       return Promise.resolve({ format: "image/svg+xml" });
     });
-    const call = (after: string | null) =>
-      rebuildMedia(
-        {
-          build: BUILD,
-          store: h.store,
-          bucket: env.MEDIA,
-          images: codec,
-          now: () => clock,
-          authority: { ...ACCESS, teamDomain: team.teamDomain },
-          monthlyTransforms: 100,
-        },
-        { after, dryRun: false },
-      );
+    const call = budgetCall(h, () => clock);
     const first = await call(null);
     expect(first).toMatchObject({ done: false, stopped: null, next: failed.id, counts: { failed: 1, built: 0 } });
     expect(await files(second)).toEqual([false, false]);
@@ -470,33 +465,52 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     expect(await files(second)).toEqual([true, true]);
   });
 
+  it("ends the call at the time budget after slow refusals before any build, its cursor past them", async () => {
+    const h = await setup();
+    const refused: Row[] = [];
+    for (let i = 0; i < 3; i++) {
+      refused.push(await addRow(h.store, { original: new TextEncoder().encode("not an image") }));
+    }
+    const valid = await addRow(h.store);
+    let clock = NOW;
+    // Each original read takes 110 seconds; the three refused ones fail their signature before any build attempt.
+    const bucket = hookedMedia({
+      onGet: (key) => {
+        if (key.startsWith("originals/")) {
+          clock += 110_000;
+        }
+      },
+    });
+    const call = budgetCall(h, () => clock, { bucket });
+    // The second refusal ends at 220 seconds: the third row is not looked at.
+    const first = await call(null);
+    expect(first).toMatchObject({ done: false, stopped: null, next: refused[1]!.id, counts: { failed: 2, built: 0 } });
+    expect(h.codec.calls).toBe(0);
+    // The next call refuses the third at 110 seconds and builds the valid row.
+    const next = await call(first.ok ? first.next : null);
+    expect(next).toMatchObject({ done: true, next: valid.id, counts: { failed: 1, built: 1 } });
+    expect(await files(valid)).toEqual([true, true]);
+  });
+
   it("looks at no further row once the budget is spent: no lease renewal, R2 head or info() for it", async () => {
     const h = await setup();
     const rows = [await addRow(h.store), await addRow(h.store)];
     let clock = NOW;
     const heads: string[] = [];
     const renewals: string[] = [];
-    const codec = new TestCodec();
     // The lease and info() calls made by the time the first row's last file is written.
     let atCutoff = -1;
     let infoAtCutoff = -1;
-    const bucket = {
-      head: (key: string) => {
-        heads.push(key);
-        return env.MEDIA.head(key);
-      },
-      get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
-      delete: (keys: string | string[]) => env.MEDIA.delete(keys),
-      put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
-        const put = await env.MEDIA.put(key, value, options);
+    const bucket = hookedMedia({
+      onHead: (key) => heads.push(key),
+      onPut: (key) => {
         if (key.endsWith("/small")) {
           clock += REBUILD_CALL_BUDGET_MS;
           atCutoff = renewals.length;
-          infoAtCutoff = codec.infoCalls;
+          infoAtCutoff = h.codec.infoCalls;
         }
-        return put;
       },
-    } as unknown as R2Bucket;
+    });
     const store = new Proxy(h.store, {
       get: (target, property, receiver) =>
         property === "mediaRebuildLease"
@@ -506,22 +520,11 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
             }
           : (Reflect.get(target, property, receiver) as unknown),
     });
-    const step = await rebuildMedia(
-      {
-        build: BUILD,
-        store,
-        bucket,
-        images: codec,
-        now: () => clock,
-        authority: { ...ACCESS, teamDomain: team.teamDomain },
-        monthlyTransforms: 100,
-      },
-      { after: null, dryRun: false },
-    );
+    const step = await budgetCall(h, () => clock, { bucket, store })(null);
     expect(step).toMatchObject({ done: false, stopped: null, next: rows[0]!.id, counts: { built: 1 } });
     expect(heads.filter((key) => key.includes(rows[1]!.token))).toEqual([]);
     expect(infoAtCutoff).toBeGreaterThan(0);
-    expect(codec.infoCalls).toBe(infoAtCutoff);
+    expect(h.codec.infoCalls).toBe(infoAtCutoff);
     // After the first row's last write, only the release: the second row's turn renews nothing.
     expect(atCutoff).toBeGreaterThan(0);
     expect(renewals.slice(atCutoff)).toEqual(["release"]);

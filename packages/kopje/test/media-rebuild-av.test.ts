@@ -113,6 +113,24 @@ async function addAv(
   return { id, token, original };
 }
 
+// A complete local image row whose files are missing, as test/media-rebuild.test.ts addRow makes one, under `id` (the
+// caller's, so the candidates' order is the caller's).
+async function addImage(store: StoreStub, id: string): Promise<{ id: string; token: string }> {
+  const token = randomToken();
+  await sql(
+    store,
+    `INSERT INTO media_attachments (id, account_id, type, url, preview_url, file_token, content_type, meta, processed)
+			VALUES (?, ?, 'image', ?, ?, ?, 'image/png', '{"original":{"width":1,"height":1}}', 1)`,
+    id,
+    ACCOUNT,
+    `${ORIGIN}/media/${token}/full.png`,
+    `${ORIGIN}/media/${token}/small.png`,
+    token,
+  );
+  await env.MEDIA.put(`originals/${id}`, bytes(PNG_PLAIN));
+  return { id, token };
+}
+
 type Stored = { preview_url: string | null; meta: Record<string, unknown>; blurhash: string | null };
 
 async function rowOf(store: StoreStub, id: string): Promise<Stored> {
@@ -162,11 +180,14 @@ function maker(options: { answer?: StillOutcome; probe?: StillOutcome; onStill?:
   return { stills, calls };
 }
 
-// The media bucket, every write recorded; `afterPut` runs once a put has landed.
-function recordingBucket(afterPut?: (key: string) => Promise<void>) {
+// The media bucket, every write recorded; `afterPut` runs once a put has landed, `onHead` before each head.
+function recordingBucket(afterPut?: (key: string) => Promise<void>, onHead?: (key: string) => void) {
   const writes: string[] = [];
   const bucket = {
-    head: (key: string) => env.MEDIA.head(key),
+    head: (key: string) => {
+      onHead?.(key);
+      return env.MEDIA.head(key);
+    },
     get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
     delete: async (keys: string | string[]) => {
       writes.push(`delete ${String(keys)}`);
@@ -820,35 +841,18 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
   ] as const)("ends the call at the time budget after %s", async (_label, kind, counts) => {
     const store = await setup();
     const av = await addAv(store, kind);
-    const image = { id: mediaId(), token: randomToken() };
-    await sql(
-      store,
-      `INSERT INTO media_attachments (id, account_id, type, url, preview_url, file_token, content_type, meta, processed)
-			VALUES (?, ?, 'image', ?, ?, ?, 'image/png', '{"original":{"width":1,"height":1}}', 1)`,
-      image.id,
-      ACCOUNT,
-      `${ORIGIN}/media/${image.token}/full.png`,
-      `${ORIGIN}/media/${image.token}/small.png`,
-      image.token,
-    );
-    await env.MEDIA.put(`originals/${image.id}`, bytes(PNG_PLAIN));
+    const image = await addImage(store, mediaId());
     let clock = NOW;
     const heads: string[] = [];
-    const recording = recordingBucket((key) => {
-      if (key === `files/${av.token}/full`) {
-        clock += REBUILD_CALL_BUDGET_MS;
-      }
-      return Promise.resolve();
-    });
-    const bucket = new Proxy(recording.bucket, {
-      get: (target, property, receiver) =>
-        property === "head"
-          ? (key: string) => {
-              heads.push(key);
-              return env.MEDIA.head(key);
-            }
-          : (Reflect.get(target, property, receiver) as unknown),
-    });
+    const { bucket } = recordingBucket(
+      (key) => {
+        if (key === `files/${av.token}/full`) {
+          clock += REBUILD_CALL_BUDGET_MS;
+        }
+        return Promise.resolve();
+      },
+      (key) => heads.push(key),
+    );
     const step = await run(store, { bucket, now: () => clock, ...(kind === "video" ? { stills: null } : {}) });
     expect(step).toMatchObject({ ok: true, done: false, stopped: null, next: av.id, counts });
     expect(heads.filter((key) => key.includes(image.token))).toEqual([]);
@@ -857,36 +861,19 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
 
   it("starts no video or audio row past the time budget after an image row", async () => {
     const store = await setup();
-    const image = { id: mediaId(), token: randomToken() };
-    await sql(
-      store,
-      `INSERT INTO media_attachments (id, account_id, type, url, preview_url, file_token, content_type, meta, processed)
-			VALUES (?, ?, 'image', ?, ?, ?, 'image/png', '{"original":{"width":1,"height":1}}', 1)`,
-      image.id,
-      ACCOUNT,
-      `${ORIGIN}/media/${image.token}/full.png`,
-      `${ORIGIN}/media/${image.token}/small.png`,
-      image.token,
-    );
-    await env.MEDIA.put(`originals/${image.id}`, bytes(PNG_PLAIN));
+    const image = await addImage(store, mediaId());
     const av = await addAv(store, "audio");
     let clock = NOW;
     const heads: string[] = [];
-    const recording = recordingBucket((key) => {
-      if (key === `files/${image.token}/small`) {
-        clock += REBUILD_CALL_BUDGET_MS;
-      }
-      return Promise.resolve();
-    });
-    const bucket = new Proxy(recording.bucket, {
-      get: (target, property, receiver) =>
-        property === "head"
-          ? (key: string) => {
-              heads.push(key);
-              return env.MEDIA.head(key);
-            }
-          : (Reflect.get(target, property, receiver) as unknown),
-    });
+    const { bucket } = recordingBucket(
+      (key) => {
+        if (key === `files/${image.token}/small`) {
+          clock += REBUILD_CALL_BUDGET_MS;
+        }
+        return Promise.resolve();
+      },
+      (key) => heads.push(key),
+    );
     const step = await run(store, { bucket, now: () => clock });
     expect(step).toMatchObject({ ok: true, done: false, stopped: null, next: image.id, counts: { built: 1 } });
     expect(heads.filter((key) => key.includes(av.token))).toEqual([]);

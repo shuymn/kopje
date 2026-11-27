@@ -36,7 +36,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Local image uploads, avatars, headers and video thumbnails take up to 33,177,600 pixels (7680×4320), Mastodon's
   limit since v4.2, and `/api/v1/instance` and `/api/v2/instance` advertise it as `image_matrix_limit`. Remote media
   and link preview images keep 16,777,216. A `kopje-admin media-rebuild` call starts no new row after two minutes once
-  it has attempted one, and the command continues with the next call; it stops with exit 3 when three calls in a row
+  it has handled one, and the command continues with the next call; it stops with exit 3 when three calls in a row
   make no progress.
 
 ### Fixed
