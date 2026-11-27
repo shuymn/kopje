@@ -58,6 +58,7 @@ describe("migration lint", () => {
       "0117_retraction_counts",
       "0118_feature_grant_guard",
       "0119_answer_retractions",
+      "0124_reject_media_blocks",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();

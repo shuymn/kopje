@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { SUSPEND_BLOCKS_SQL } from "../src/domain/audience";
+import { REJECT_MEDIA_BLOCKS_SQL, SUSPEND_BLOCKS_SQL } from "../src/domain/audience";
 import { cachedImagesOf, maintainRemoteMedia } from "../src/domain/remote-media";
 import { migratedStore } from "./helpers";
 import { fragmentCount } from "./plan-audit";
@@ -240,9 +240,10 @@ describe("plan audit", () => {
 			WHERE severity = 'suspend')`;
 
     it("is SUSPEND_BLOCKS_SQL itself, with the scan its plan shows", () => {
-      expect(PLAN_AUDIT_ALLOWANCES.map(({ fragment, scan }) => ({ fragment, scan }))).toEqual([
-        { fragment: SUSPEND_BLOCKS_SQL, scan: `instance_domain_blocks: ${SUSPEND_SCAN}` },
-      ]);
+      expect(PLAN_AUDIT_ALLOWANCES.map(({ fragment, scan }) => ({ fragment, scan }))[0]).toEqual({
+        fragment: SUSPEND_BLOCKS_SQL,
+        scan: `instance_domain_blocks: ${SUSPEND_SCAN}`,
+      });
     });
 
     it("passes a statement's scan of the fragment, once for each time it contains it", async () => {
@@ -355,6 +356,111 @@ describe("plan audit", () => {
           { values: [1], rows: 1 },
         ]);
       }
+    });
+  });
+  // The reject_media blocks' allowance, as the suspend blocks': REJECT_MEDIA_BLOCKS_SQL guards the reject_media rule
+  // (audience.ts mediaRejectedSql, presentedMediaRejectedSql) as SUSPEND_BLOCKS_SQL guards coverage.
+  describe("the reject_media blocks' allowance", () => {
+    const REJECT_SCAN = "SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_reject_media";
+
+    it("is REJECT_MEDIA_BLOCKS_SQL itself, with the scan its plan shows", () => {
+      expect(PLAN_AUDIT_ALLOWANCES.map(({ fragment, scan }) => ({ fragment, scan }))).toEqual([
+        {
+          fragment: SUSPEND_BLOCKS_SQL,
+          scan: "instance_domain_blocks: SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend",
+        },
+        { fragment: REJECT_MEDIA_BLOCKS_SQL, scan: `instance_domain_blocks: ${REJECT_SCAN}` },
+      ]);
+    });
+
+    // RES-7: the fragment reads one entry of the partial index of the reject_media blocks, once in a statement however
+    // many rows test it, and however many blocks the Store holds: statistics are taken on a Store of one unflagged and
+    // one flagged block, as singleton statistics or by ANALYZE; then the flagged one is deleted, 8,000 unflagged blocks
+    // are added and one flagged block after them, so a read of the table in its order would pass the 8,000 first. Each
+    // statement's plan shows the scan of the partial index once for each time it holds the fragment.
+    it.each(STATISTICS)(
+      "reads one reject_media block however many there are, with %s statistics",
+      async (statistics) => {
+        const rowsOf = (x: string) => `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 50)
+				SELECT ${x} AS x FROM n`;
+        const probe = `SELECT ${REJECT_MEDIA_BLOCKS_SQL} AS x`;
+        const perRow = rowsOf(`CASE WHEN ${REJECT_MEDIA_BLOCKS_SQL} THEN 1 ELSE 0 END`);
+        const store = await migratedStore();
+        const measured = await runInDurableObject(store, (_instance, state) => {
+          const sql = state.storage.sql;
+          const grow = (from: number, to: number, flag: number) =>
+            sql.exec(
+              `WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+							INSERT INTO instance_domain_blocks (domain, severity, reject_media, created_at, updated_at)
+							SELECT 'd' || i || '.example', 'noop', ?, 'x', 'x' FROM n`,
+              from,
+              to,
+              flag,
+            );
+          const flagged = () =>
+            sql.exec<{ n: number }>("SELECT count(*) AS n FROM instance_domain_blocks WHERE reject_media = 1").one().n;
+          const run = (query: string) => {
+            const cursor = sql.exec<{ x: number }>(query);
+            const values = cursor.toArray().map((row) => row.x);
+            return { values: [...new Set(values)], rows: cursor.rowsRead };
+          };
+          const constant = run(rowsOf("1")).rows;
+          const read = (query: string) => {
+            const { values, rows } = run(query);
+            return { values, rows: query === perRow ? rows - constant : rows };
+          };
+          const plans = () =>
+            [probe, perRow].map((query) => details(sql, query).filter((detail) => detail === REJECT_SCAN).length);
+          grow(1, 1, 0);
+          grow(2, 2, 1);
+          if (statistics === "singleton") {
+            singletonStatistics(sql);
+          } else {
+            sql.exec("ANALYZE");
+          }
+          const before = { flagged: flagged(), reads: [read(probe), read(perRow)], plans: plans() };
+          sql.exec("DELETE FROM instance_domain_blocks WHERE reject_media = 1").toArray();
+          grow(3, 8_002, 0);
+          grow(8_003, 8_003, 1);
+          return [before, { flagged: flagged(), reads: [read(probe), read(perRow)], plans: plans() }];
+        });
+        expect(measured.map((phase) => phase.flagged)).toEqual([1, 1]);
+        for (const phase of measured) {
+          expect(phase.plans).toEqual([1, 1]);
+          expect(phase.reads).toEqual([
+            { values: [1], rows: 1 },
+            { values: [1], rows: 1 },
+          ]);
+        }
+      },
+    );
+
+    // The INDEXED BY is what holds the plan: statistics that overstate the partial index (taken when every block had
+    // reject_media, and then hand-scaled) would otherwise have the planner read the blocks' table, which the flagged
+    // block ends.
+    it("reads the partial index under statistics that overstate it", async () => {
+      const store = await migratedStore();
+      const measured = await runInDurableObject(store, (_instance, state) => {
+        const sql = state.storage.sql;
+        sql.exec(
+          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+					INSERT INTO instance_domain_blocks (domain, severity, reject_media, created_at, updated_at)
+					SELECT 'd' || i || '.example', 'noop', i = 2000, 'x', 'x' FROM n`,
+        );
+        sql.exec("ANALYZE");
+        sql.exec(
+          "UPDATE sqlite_stat1 SET stat = '1000000 1' WHERE tbl = 'instance_domain_blocks' AND idx = 'instance_domain_blocks_reject_media'",
+        );
+        sql.exec(
+          "UPDATE sqlite_stat1 SET stat = '2 1' WHERE tbl = 'instance_domain_blocks' AND idx <> 'instance_domain_blocks_reject_media'",
+        );
+        sql.exec("ANALYZE sqlite_schema");
+        const probe = `SELECT ${REJECT_MEDIA_BLOCKS_SQL} AS x`;
+        const cursor = sql.exec<{ x: number }>(probe);
+        const values = cursor.toArray().map((row) => row.x);
+        return { values, rows: cursor.rowsRead, scans: details(sql, probe).filter((d) => d.startsWith("SCAN main.")) };
+      });
+      expect(measured).toEqual({ values: [1], rows: 1, scans: [REJECT_SCAN] });
     });
   });
 });

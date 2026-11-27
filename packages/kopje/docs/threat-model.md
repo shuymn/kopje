@@ -3557,21 +3557,26 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   - Eligibility: the validity walk, the suspended accounts and a purge retire the slots that are no longer eligible
     (NET-3), a slot whose account's stored domain (never its actor host: VIS-30) or emoji domain has a rule with
     `reject_media` among them, which also no enqueue, claim or record admits; the rule is sought by the blocks' domain
-    index for each suffix, so a walk's reads grow with its slots, not with the blocks.
+    index for each suffix, so a walk's reads grow with its slots, not with the blocks, and only while some block has
+    `reject_media` (`REJECT_MEDIA_BLOCKS_SQL` in `src/domain/audience.ts`, one seek of a partial index; without one,
+    the rule reads no block and rejects only a key past `DNS_NAME_UTF8_BYTES`, as the walk does).
     `test/remote-media-reject.test.ts` ("enqueues nothing of an account, an attachment author or an emoji domain whose
     rule rejects media", "backfills nothing of a domain whose rule rejects media, in every phase", "claims nothing of a
     domain once its rule rejects media, and admits or records no claim made before it", "stores nothing of a domain
     whose rule came to reject media while the round held its fetch", "judges an account by its stored domain alone, not
     by its actor host", "retires in the validity walk every cached file of a domain whose rule came to reject media",
     "decides by the nearest block", "seeks the reject_media rule by domain for each slot the validity walk reads,
-    however many blocks, after ANALYZE and growth"). A purge retires every slot of its account before anything else,
-    writing nothing else of the account while a slot remains, and deletes the account only after the last. A slot never
-    outlives the row it names: an attachment an edit drops has its slots retired before its row goes, the removal of a
-    status retires its attachments' slots (within the batch's rows, at most five changes a slot, an audit pass's sums
-    included, as progress of the job, from a window of 64 of its attachment rows that its completion check reads too,
-    nothing for a local status) before their rows may go, and every delete of a remote attachment row keeps one a slot
-    still names. `test/remote-media.test.ts` ("retires in the validity walk a slot whose account became unavailable or
-    whose redirect host was blocked"),
+    however many blocks, after ANALYZE and growth", "reads no block for the rule's walk while no block has
+    reject_media, after ANALYZE and growth"), `test/domain-suffix-walk.test.ts` ("finds the rule the walk as it stood
+    finds", "rejects a key past the bound in the cache and not in the presenters, with or without a flagged block").
+    A purge retires every slot of its account before anything else, writing nothing else of the account while a slot
+    remains, and deletes the account only after the last. A slot never outlives the row it names: an attachment an
+    edit drops has its slots retired before its row goes, the removal of a status retires its attachments' slots
+    (within the batch's rows, at most five changes a slot, an audit pass's sums included, as progress of the job,
+    from a window of 64 of its attachment rows that its completion check reads too, nothing for a local status)
+    before their rows may go, and every delete of a remote attachment row keeps one a slot still names.
+    `test/remote-media.test.ts` ("retires in the validity walk a slot whose account became unavailable or whose
+    redirect host was blocked"),
     `test/remote-media-rounds.test.ts` ("resumes a retirement the batch budget cut short, writing nothing else first",
     "retires stored and reserved slots first, resuming over batches, and deletes the account after the last", "never
     clears a slot through the generic reference loop"), `test/remote-attachments.test.ts` ("resets a changed URL, dooms
@@ -5779,12 +5784,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Workers suites is planned under singleton statistics, and a whole-table or whole-index read fails the suite unless
   `test/plan-audit-entries.ts` lists it for that statement (`test/plan-audit.test.ts` ("fails a statement whose pin is
   removed")), or a reviewed fragment allowance (`test/plan-audit-allowances.ts`) stands for it: the suspend-block
-  probe (`SUSPEND_BLOCKS_SQL`) passes in a statement that, with the probe taken out, plans no such scan, and whose
-  plan shows the scan no more often than the statement contains the probe; it reads one entry however many blocks
-  exist (`test/plan-audit.test.ts` ("reads one suspend block however many there are")); _Gap:_ the listed statements
-  (#1468), statements no test runs, statements where the probe is not only a predicate (its text also a name, as an
-  implicit column name a `NATURAL JOIN` or `USING` matches, or its index forced elsewhere with `INDEXED BY`), which
-  the allowance's attribution does not cover, and prefix or range walks the plan shows as a search. The custom
+  probe (`SUSPEND_BLOCKS_SQL`) and the reject_media-block probe (`REJECT_MEDIA_BLOCKS_SQL`) each pass in a statement
+  that, with the probe taken out, plans no such scan, and whose plan shows the scan no more often than the statement
+  contains the probe; each reads one entry however many blocks exist (`test/plan-audit.test.ts` ("reads one suspend
+  block however many there are", "reads one reject_media block however many there are", "reads the partial index
+  under statistics that overstate it")); _Gap:_ the listed statements (#1468), statements no test runs, statements where
+  the probe is not only a predicate (its text also a name, as an implicit column name a `NATURAL JOIN` or `USING`
+  matches, or its index forced elsewhere with `INDEXED BY`), which the allowance's attribution does not cover, and
+  prefix or range walks the plan shows as a search. The custom
   thumbnails' statements (#1828 PR6: the link predicate, the retirement, the overlay's three reads, the release list
   and its mark, the sweep's backup hold, the import's link check, the triggers' seeks) each walk
   `media_attachments_thumbnail`, `media_attachments_thumbnail_release` or a primary key, and the sweep's hold reads at

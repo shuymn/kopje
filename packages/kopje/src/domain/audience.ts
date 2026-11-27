@@ -256,6 +256,12 @@ function guardedSql(covered: string): string {
   return `(CASE WHEN ${SUSPEND_BLOCKS_SQL} THEN ${covered} ELSE 0 END)`;
 }
 
+// Whether the instance has a block with reject_media at all, as SUSPEND_BLOCKS_SQL: one seek of a partial index holding
+// those blocks only (migration 0124_reject_media_blocks), naming no outer column. mediaRejectedSql and
+// presentedMediaRejectedSql walk no domain's suffixes on an instance without one.
+export const REJECT_MEDIA_BLOCKS_SQL = `EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_reject_media
+	WHERE reject_media = 1)`;
+
 // Whether the rule of one of `keys`, a SELECT of normalized domains (column d: hostDomain or blockedDomain,
 // platform/domain-name.ts), satisfies `rule`, a condition on its block `pr`. The rule that matches a domain is the
 // block on the domain itself or on its nearest parent, the longest match (Mastodon's DomainBlock.rule_for,
@@ -266,25 +272,35 @@ function guardedSql(covered: string): string {
 // and the match's; CROSS JOIN and INDEXED BY keep each a seek by domain for each suffix, whatever the statistics say
 // of the blocks: a rule no partial index serves was otherwise planned as a scan of the blocks). No stored bound limits
 // an account's domain or its actor id's host, so a key past DNS_NAME_UTF8_BYTES (1,012) bytes, which no server's name
-// has in either form (platform/domain-name.ts: RFC 1035 §2.3.4), is never walked and its rule is taken to satisfy
-// `rule` (a suspend covers it; its media are rejected); a key within them has at most a dot per byte, so its walk is at
-// most DNS_NAME_UTF8_BYTES rows. The keys and the walk are CTEs, whose expressions do
-// not add to the depth of the expression that holds this one (SQLite limits it to 100 in workerd).
-function ruledSql(keys: string, rule: string, copied = false): string {
+// has in either form (platform/domain-name.ts: RFC 1035 §2.3.4), is never walked, and `unnamed` says what its rule is:
+// "ruled" takes it to satisfy `rule` (a suspend covers it; the cache rejects its media), "unruled" to satisfy none
+// (presentedMediaRejectedSql). A key within them has at most a dot per byte, so its walk is at most
+// DNS_NAME_UTF8_BYTES rows. The keys and the walk are CTEs, whose expressions do not add to the depth of the expression
+// that holds this one (SQLite limits it to 100 in workerd).
+function ruledSql(keys: string, rule: string, copied = false, unnamed: "ruled" | "unruled" = "ruled"): string {
   const sought = `BETWEEN 1 AND ${MAX_BLOCK_LABELS - 1}`;
   // A key past the bound enters the walk as one row of no domain and -1 dots, which the walk does not step from and
-  // which satisfies the rule alone.
-  const named = `length(CAST(d AS BLOB)) <= ${DNS_NAME_UTF8_BYTES}`;
+  // which satisfies the rule alone when `unnamed` is "ruled".
+  const named = namedKeySql("d");
   const as = copied ? "AS NOT MATERIALIZED" : "AS";
+  // "unruled" needs a match, so the join is inner, and CROSS JOIN keeps the walk ps its driver: a LEFT JOIN whose WHERE
+  // requires the match was planned as a scan of the blocks' domain index under singleton statistics.
+  const unnamedRuled = unnamed === "ruled" ? "ps.dots < 0 OR " : "";
+  const join = unnamed === "ruled" ? "LEFT JOIN" : "CROSS JOIN";
   return `EXISTS (WITH RECURSIVE pk(d) ${as} (${keys}),
 			ps(d, dots) ${as} (SELECT CASE WHEN ${named} THEN d END,
 					CASE WHEN ${named} THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk
 				UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1
 					AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
 						WHERE ps.dots ${sought} AND pn.domain = ps.d))
-		SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
+		SELECT 1 FROM ps ${join} main.instance_domain_blocks pr INDEXED BY ${INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX}
 			ON ps.dots ${sought} AND pr.domain = ps.d
-		WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND ${rule}))`;
+		WHERE ${unnamedRuled}(pr.domain IS NOT NULL AND ${rule}))`;
+}
+
+// Whether the key `d` is within DNS_NAME_UTF8_BYTES bytes, so ruledSql walks it (a NULL key is not).
+function namedKeySql(d: string): string {
+  return `length(CAST(${d} AS BLOB)) <= ${DNS_NAME_UTF8_BYTES}`;
 }
 
 // Whether an instance domain block covers one of `keys` (ruledSql): the rule of one is a suspend.
@@ -293,11 +309,28 @@ function coveredSql(keys: string, copied = false): string {
 }
 
 // R38 reject_media (Mastodon's DomainBlock.reject_media?, app/models/domain_block.rb:58-60): the rule of one of `keys`
-// (ruledSql) has reject_media, so no remote media of it is cached (domain/remote-media.ts slotEligibleSql). Not
-// guarded as coverage is (guardedSql): no index holds the reject_media blocks alone, and its readers are the cache's
-// own bounded walks and enqueues.
+// (ruledSql) has reject_media, so no remote media of it is cached (domain/remote-media.ts slotEligibleSql). Guarded as
+// coverage is (guardedSql), a CASE for the same reason: without a block with reject_media the walk matches nothing, so
+// the answer is whether a key is past DNS_NAME_UTF8_BYTES (ruledSql's "ruled"), which the ELSE branch reads without a
+// block. Its answers are therefore those of the unguarded walk for every key, with or without such a block.
 function mediaRejectedSql(keys: string): string {
-  return ruledSql(keys, "pr.reject_media = 1");
+  return `(CASE WHEN ${REJECT_MEDIA_BLOCKS_SQL} THEN ${ruledSql(keys, "pr.reject_media = 1")}
+		ELSE EXISTS (WITH pk(d) AS (${keys}) SELECT 1 FROM pk WHERE (${namedKeySql("d")}) IS NOT TRUE) END)`;
+}
+
+// #1560, VIS-30: whether the presenters withhold the media of the account row `x`, already in scope, 0 or 1: the rule
+// of its stored domain has reject_media (Mastodon's DomainBlock.reject_media?(account.domain)), the same walk as
+// domainMediaRejectedSql's under the same guard, except that a key past DNS_NAME_UTF8_BYTES is unruled, as the
+// presenters showed it before the rule was read, independent of unrelated blocks. Never for a local account. One seek
+// of the guard's index on an instance without a block with reject_media, else at most 2 × (MAX_BLOCK_LABELS - 1)
+// block seeks.
+export function presentedMediaRejectedSql(x: string): string {
+  return presentedRuleSql(`SELECT rtrim(${x}.domain, '.') WHERE ${x}.domain IS NOT NULL`);
+}
+
+// presentedMediaRejectedSql's rule of `keys`, guarded, with a key past the bound unruled.
+function presentedRuleSql(keys: string): string {
+  return `(CASE WHEN ${REJECT_MEDIA_BLOCKS_SQL} THEN ${ruledSql(keys, "pr.reject_media = 1", false, "unruled")} ELSE 0 END)`;
 }
 
 // Whether an instance domain block covers `host`, an expression for a normalized domain.

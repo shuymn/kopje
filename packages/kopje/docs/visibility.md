@@ -887,7 +887,9 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
 - **reject_media** (Mastodon's `DomainBlock.reject_media?`): the rule of a domain, its longest matching block as for
   coverage, has `reject_media` (`mediaRejectedSql` in `src/domain/audience.ts`: `hostMediaRejectedSql`,
   `domainMediaRejectedSql`, `accountMediaRejectedSql`), so a nearer block without it exempts its subdomains from a
-  parent's. It is read live and decides no visibility, only what is cached: no file of an account whose stored domain
+  parent's. The rule walks a domain's suffixes only while some block has `reject_media` (`REJECT_MEDIA_BLOCKS_SQL`,
+  one seek of the partial index `instance_domain_blocks_reject_media`), as coverage only while a suspend block exists.
+  It is read live and decides no visibility, only what is cached: no file of an account whose stored domain
   it rules (its profile images, its attachments' files and icons; by that domain alone, as Mastodon judges
   `account.domain` and as the account's emoji slots are keyed, where coverage also reads the actor host) or of an
   emoji named for a domain it rules is enqueued, claimed or recorded from the block's commit (`slotEligibleSql` in

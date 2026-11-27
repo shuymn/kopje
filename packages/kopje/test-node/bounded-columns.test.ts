@@ -380,6 +380,7 @@ const SAFE_INTERPOLATIONS = new Set([
   // availableSql's coverage term, the column statusReads' hoisted row reads it into: a predicate (domain/audience.ts).
   "guardedAccountCoveredSql",
   "hostMediaRejectedSql",
+  "presentedMediaRejectedSql",
   // A status's filter text figure: whether an input is not text (a predicate) and an upper bound of its length from
   // stored bytes, a number (domain/status-presenter.ts).
   "filterOddInputsSql",
@@ -704,6 +705,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/deliveries.ts statuses.uri": { count: 1, reason: IDENTITY },
   "src/domain/audience.ts interpolation host": { count: 2, reason: PREDICATE },
   "src/domain/audience.ts interpolation a": { count: 2, reason: PREDICATE },
+  "src/domain/audience.ts interpolation x": { count: 1, reason: PREDICATE },
   "src/domain/audience.ts interpolation uriHostSql(`${a}.uri`)": { count: 1, reason: PREDICATE },
   "src/domain/audience.ts interpolation SNAPSHOT_STATE_PREFIX": { count: 1, reason: PREDICATE },
   "src/domain/audience.ts interpolation key": { count: 1, reason: PREDICATE },

@@ -1301,7 +1301,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-collections.ts#<anonymous> in completeCollectionRead); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "c815159d143e7f09",
+    id: "e64ab2aee3bdfb7f",
     scans: ["remote_media: SCAN r"],
     site: "src/domain/remote-media.ts#<anonymous> in claimRemoteMedia",
     disposition: "background",
@@ -1333,7 +1333,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-media.ts#<anonymous> in maintainRemoteMedia); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "e3baadedab9c6595",
+    id: "cbe32c20abef3247",
     scans: ["remote_media: SCAN r USING INDEX remote_media_expiry"],
     site: "src/domain/remote-media.ts#fenced < src/domain/remote-media.ts#<anonymous> in admitRemoteMedia",
     disposition: "background",
@@ -1349,7 +1349,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-media.ts#<anonymous> in recordRemoteMediaValidation); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "05c4e0ad0523a85f",
+    id: "f552faf9e74481b8",
     scans: ["remote_media: SCAN r", "remote_media: SCAN remote_media"],
     site: "src/domain/remote-media.ts#validityWalk < src/domain/remote-media.ts#<anonymous> in maintainRemoteMedia",
     disposition: "background",
