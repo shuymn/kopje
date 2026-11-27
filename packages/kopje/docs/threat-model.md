@@ -3809,10 +3809,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   for the media update (the rule's `outside`), all but the thumbnail file's body within the limit plus one part's
   headers; the query beside a JSON body, or a body of any other type, is bounded by Rack's limits below in code and by
   Workers' 16 KB URL limit in production; an `avatar` or `header` sent as a base64 data URI is text under these bounds
-  (413 past them, once the parameters parse: a form whose shapes conflict answers 400 first), decoded
-  (`profileFiles`, `src/mastodon/accounts.ts`) before anything is reserved or charged, so an input its signature
-  refuses reserves and charges nothing, and one Images then refuses is charged as the same file would be (RES-6);
-  `test/profile-images.test.ts` ("answers 413 for a data URI past the text bound, decoding nothing", "refuses a data
+  (413 past them; within the raw body limit, a form whose shapes conflict answers 400 before its text is counted),
+  decoded (`profileFiles`, `src/mastodon/accounts.ts`) before anything is reserved or charged, so an input its
+  signature refuses reserves and charges nothing, and one Images then refuses is charged as the same file would be
+  (RES-6); `test/profile-images.test.ts` ("answers 413 for a data URI past the text bound, decoding nothing", "refuses a data
   URI whose bytes are not an image, whatever it declares, charging nothing"); a
   JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty arrays) or
   2,097,152 UTF-16 code units of all its keys, charged before each key is built, and past 32 levels of nesting; the

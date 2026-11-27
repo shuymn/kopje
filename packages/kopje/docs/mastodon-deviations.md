@@ -224,7 +224,8 @@ settings page):
   declares; AVIF is refused. The multipart body may be 17,858,560 bytes (two files and their part headers beside the
   text). A urlencoded or multipart form's text and the query share 1 MiB in UTF-8 bytes; a JSON body has its own 1 MiB,
   beside which (as beside any other body type) the query is bounded by Workers' 16 KB URL limit. An otherwise
-  parseable request past its bound answers 413 (a form whose parameter shapes conflict answers 400 first), so a data
+  parseable request past its bound answers 413 (within the raw body limit, a form whose parameter shapes conflict
+  answers 400 before the text is counted), so a data
   URI's image is at most about 786,000 bytes, where Mastodon takes one under 8 MB; a larger image is sent as a
   multipart file.
 - Images are not cropped to 400×400 or capped at 1500×500; an image past 16,777,216 pixels answers 422, an error of
