@@ -381,7 +381,10 @@ export function createAddressResolver(deps: ResolverDeps): AddressResolver {
         storeError: null,
         ticket: index === 0 ? (start.prepared?.ticket ?? null) : null,
       };
-      const loaders = createRemoteLoaders(federation, state, null, budget, null, signer);
+      const loaders = createRemoteLoaders(federation, state, null, budget, null, {
+        shared: signer,
+        recordContextRefusal: true,
+      });
       const stateOf = async (uri: string) => {
         const read = await callStore(() => store().actorState(build, { uri }));
         state.ticket = read.ticket;

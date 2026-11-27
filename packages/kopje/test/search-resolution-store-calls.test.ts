@@ -163,6 +163,38 @@ describe("Store calls of a resolving search", () => {
 // nothing and resolves nothing; the offset counts only with a type; a URL is answered by its lookup alone, and one
 // whose answer is empty whatever it finds fetches nothing (docs/mastodon-deviations.md, Search); an address is resolved
 // only when accounts are searched.
+describe("a resolving search whose JSON-LD context cache write is refused", () => {
+  // Fedify's kvCache swallows a failed cache write, and search goes on as it does: only the mention resolver records
+  // such a refusal and stops (createRemoteLoaders' recordContextRefusal, OPS-8).
+  it("still answers the account", async () => {
+    const { t, bob } = await world(false);
+    const context = "https://contexts.example/ns.jsonld";
+    t.web.serve(context, { "@context": { kopjeTest: "https://contexts.example/ns#kopjeTest" } }, "application/ld+json");
+    bob.document["@context"] = [...(bob.document["@context"] as unknown[]), context];
+    t.web.serve(bob.uri, bob.document);
+    const c = countingStore(t.store);
+    let refused = 0;
+    const failing = new Proxy(c.stub, {
+      get: (target, name) =>
+        name === "kvSet" && refused++ === 0
+          ? () => Promise.reject(Object.assign(new Error("Durable Object is overloaded"), { overloaded: true }))
+          : (Reflect.get(target, name) as unknown),
+    });
+    const h = harness(failing, {}, BUILD, { keygen: fixtureKeyGen, loader: t.web.loader });
+    const response = await h.request(`/api/v2/search?resolve=true&q=${ADDRESS}`, {
+      headers: { authorization: `Bearer ${t.tokens.alice}` },
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json<{ accounts: { acct: string }[] }>()).accounts.map((a) => a.acct)).toEqual([
+      "bob@mastodon.example",
+    ]);
+    // The guarded branch ran: the context was fetched and its cache write refused.
+    expect(t.web.fetched).toContain(context);
+    expect(refused).toBeGreaterThan(0);
+    expect(await sql(t.store, "SELECT count(*) AS n FROM accounts WHERE uri = ?", bob.uri)).toEqual([{ n: 1 }]);
+  });
+});
+
 describe("the limit, offset and type of a resolving search", () => {
   const NOTHING = { accounts: [], statuses: [], hashtags: [], collections: [] };
 

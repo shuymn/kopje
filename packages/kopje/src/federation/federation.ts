@@ -250,14 +250,16 @@ export type RemoteLoaders = {
 export type ResolveLoader = (url: string, terminal: boolean) => Promise<ResolveAnswer>;
 
 // shared: a signer several sets of loaders share (sharedFetchSigner), in place of these loaders' own; a Store refusal it
-// rejects with is recorded in this set's state, as these loaders' own Store calls record theirs.
+// rejects with is recorded in this set's state, as these loaders' own Store calls record theirs. recordContextRefusal:
+// a Store refusal the JSON-LD context cache meets is recorded in the state too (recordingKv), for a caller that stops at
+// one (an address resolution, OPS-8); otherwise the cache's failed write is swallowed, as Fedify's kvCache swallows it.
 export function createRemoteLoaders(
   deps: FederationDeps,
   state: FederationState,
   recipient: string | FollowerSigner | null,
   budget: FetchBudget,
   prefetched: FetchSigner | null = null,
-  shared?: () => Promise<Signer>,
+  { shared, recordContextRefusal = false }: { shared?: () => Promise<Signer>; recordContextRefusal?: boolean } = {},
 ): RemoteLoaders & { resolve: ResolveLoader } {
   const parts = federationParts(deps, state);
   const loaderDeps = { ...parts.loaderDeps, budget };
@@ -283,7 +285,7 @@ export function createRemoteLoaders(
   };
   return {
     document: memoized({}),
-    context: boundedContexts(loaderDeps, recordingKv(parts.kv, state)),
+    context: boundedContexts(loaderDeps, recordContextRefusal ? recordingKv(parts.kv, state) : parts.kv),
     webfinger: createWebFingerLoader(loaderDeps),
     capped: memoized,
     resolve: async (url, terminal) =>
@@ -311,6 +313,7 @@ async function recordingRefusal<T>(state: FederationState, call: () => Promise<T
 
 // The context cache's KvStore, recording a Store refusal in the state: Fedify's kvCache swallows a failed write, so a
 // request that goes on (an address resolution's next address, OPS-8) would not otherwise learn the Store refused.
+// Opt-in (createRemoteLoaders' recordContextRefusal): for any other request a refused cache write stays harmless.
 function recordingKv(kv: KvStore, state: FederationState): KvStore {
   return {
     get: <T>(key: KvKey) => recordingRefusal(state, () => kv.get<T>(key)),
