@@ -235,11 +235,9 @@ into Kopje's own media (R2):
    become WebP), `url` and `preview_url` at `https://<domain>/media/<token>/{full,small}.<png|webp>`, and `meta` with
    the full size (within 3840 pixels) and the preview size (within 640) computed as the upload path sizes them. An
    avatar or header becomes the account's profile image: an unattached row with no `gc_at`, whose full URL
-   `avatar_url` or `header_url` holds. Its sizes are an attachment's until the rebuild of step 4 makes its files in the
-   profile image's shape (an avatar 400×400, a header past 750,000 pixels scaled down), records their real sizes, and
-   sets the account's `avatar_static` or `header_static` for an animated one. An image that only earlier versions of a
-   status show gets a row of that status that it does not show (`shown` 0, as an edit that drops media leaves it), one
-   per status, so its files are kept and go with the status. An earlier version that shows an image the status still
+   `avatar_url` or `header_url` holds; its sizes are an attachment's until step 4. An image that only earlier versions
+   of a status show gets a row of that status that it does not show (`shown` 0, as an edit that drops media leaves it),
+   one per status, so its files are kept and go with the status. An earlier version that shows an image the status still
    shows names that row's files, with the description that version had. Every row, also when several show the same
    image, has its own token, files and original, so Kopje's per-row lifecycle (the sweep after a deletion, backups, the
    rebuild) needs nothing else. The token is HMAC-SHA256 under the image's secret of the row's key, base64url (43
@@ -262,7 +260,9 @@ into Kopje's own media (R2):
 4. The served files (`files/<token>/full` and `small` in R2) are made from the originals by Kopje's own re-encoding.
    That step is `kopje-admin media-rebuild`, run after the import and before publication (runbook step 8); until it has
    run, the mapped URLs answer 404. It also corrects each row's sizes, which the conversion took from the image header
-   (EXIF rotation ignored).
+   (EXIF rotation ignored). A row a local account names as its avatar or header is made in that image's shape (an
+   avatar 400×400, a header past 750,000 pixels scaled down), and once its files are written the account's
+   `avatar_static` or `header_static` is set for an animated one.
 5. Other servers keep the old avatar and header URLs in their copy of each local actor until they fetch it again. The
    conversion lists the local accounts whose avatar or header it changed (mapped, or made `NULL`) in the dump, as the
    `kopje_state` row `profile_updates` (a JSON array of account ids; [dump-format.md](dump-format.md)), and writes no

@@ -234,8 +234,9 @@ settings page):
   (the upload's preview), where Mastodon's is the GIF's own size, and only for a GIF (a 1200×700 GIF header's is
   640×373 here and 1200×700 in Mastodon). An animated avatar's `avatar_static` is a 400×400 still, as Mastodon's.
   Otherwise they equal `avatar` and `header`.
-- A local animated WebP stays animated in `avatar` and `header`, where Mastodon flattens it to one frame. An APNG is
-  served as a still PNG, as Images makes animated output only as GIF or WebP.
+- A local animated WebP stays animated in `avatar` and `header` (unless Images does not resize it, above), where
+  Mastodon flattens it to one frame. An APNG is served as a still PNG, as Images makes animated output only as GIF or
+  WebP.
 - A remote account's `avatar` and `header` are Kopje's cached copy on the instance's own origin (`/media/r/…`) once the
   cron has fetched it, and the remote URL until then or when no copy can be made, where Mastodon shows its own copy or
   `missing.png`; while a domain block with `reject_media` rules the account's stored domain, both are the default
@@ -315,7 +316,7 @@ settings page):
   non-empty string other than a false value is true) and fails the document on `null` and on an empty string, which
   casts to `nil`.
 - Images uploaded before still renditions were made keep `avatar_static` and `header_static` equal to the image until
-  they are replaced.
+  they are replaced, unless `kopje-admin media-rebuild` makes their missing files, which sets an animated one's still.
 - The `preview_url` of an animated upload (status media included) is a still.
 - `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
   and interactions, or one account's posts the viewer may see, never a public index.
