@@ -439,6 +439,7 @@ describe("reject_media in the presented statuses (#1560)", () => {
     await setRejectMedia(w.t.store, block.id, false);
     expect(await status(w, r.status)).toEqual(before);
     await setRejectMedia(w.t.store, block.id, true);
+    expect((await status(w, r.status)).media_attachments).toEqual(before.media_attachments.map(withheld));
     await unblockDomain(w.t.store, block.id);
     expect(await status(w, r.status)).toEqual(before);
   });

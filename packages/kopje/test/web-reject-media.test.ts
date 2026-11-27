@@ -15,6 +15,7 @@ import { attr, byId, elements, parseHtml } from "./web-dom";
 // its http(s) remote_url (web/view/media.ts).
 
 const REJECTED = "rejected.example";
+const CONTROL = "control.example";
 const FETCHING = ["src", "srcset", "poster", "data"];
 
 // Every URL the page makes the browser fetch by itself: an element's src, srcset, poster or data, and a preload or icon
@@ -29,31 +30,40 @@ function fetched(html: string): string[] {
 const links = (html: string) =>
   elements(parseHtml(html)).flatMap((element) => (element.tagName === "a" ? [attr(element, "href") ?? ""] : []));
 
-async function world() {
-  const h = await community(["alice"]);
-  const { alice } = h.users;
-  const erin = await remoteAccount(h.store, "erin", REJECTED);
-  const emoji = JSON.stringify([["blob", `https://${REJECTED}/e.png`]]);
+// A remote account of `domain` with images and an emoji, and its public status with an image attachment `media`.
+async function remoteWithStatus(h: Awaited<ReturnType<typeof community>>, domain: string, media: string) {
+  const id = await remoteAccount(h.store, domain.split(".")[0]!, domain);
+  const emoji = JSON.stringify([["blob", `https://${domain}/e.png`]]);
   await sql(
     h.store,
-    "UPDATE accounts SET display_name = ':blob: Erin', avatar_url = ?2, header_url = ?3, emojis = ?4 WHERE id = ?1",
-    erin,
-    `https://${REJECTED}/a.png`,
-    `https://${REJECTED}/h.png`,
+    "UPDATE accounts SET display_name = ':blob: Name', avatar_url = ?2, header_url = ?3, emojis = ?4 WHERE id = ?1",
+    id,
+    `https://${domain}/a.png`,
+    `https://${domain}/h.png`,
     emoji,
   );
-  const original = await seedStatus(h.store, { accountId: erin, visibility: "public", content: "<p>:blob: hi</p>" });
-  await sql(h.store, "UPDATE statuses SET emojis = ? WHERE id = ?", emoji, original);
-  const file = `https://${REJECTED}/m/1.png`;
+  const status = await seedStatus(h.store, { accountId: id, visibility: "public", content: "<p>:blob: hi</p>" });
+  await sql(h.store, "UPDATE statuses SET emojis = ? WHERE id = ?", emoji, status);
+  const file = `https://${domain}/m/1.png`;
   await sql(
     h.store,
     "INSERT INTO media_attachments (id, account_id, status_id, type, url, preview_url) VALUES (?, ?, ?, 'image', ?, ?)",
-    "500000000000000001",
-    erin,
-    original,
+    media,
+    id,
+    status,
     file,
     `${file}s`,
   );
+  return { status, file };
+}
+
+async function world() {
+  const h = await community(["alice"]);
+  const { alice } = h.users;
+  const { status: original, file } = await remoteWithStatus(h, REJECTED, "500000000000000001");
+  // The profile also boosts a control account's status on an unruled domain, shown with its media in the same page.
+  const control = await remoteWithStatus(h, CONTROL, "500000000000000004");
+  await seedStatus(h.store, { accountId: alice.id, visibility: "public", reblogOfId: control.status });
   await seedStatus(h.store, { accountId: alice.id, visibility: "public", reblogOfId: original });
   const quote = await post(h, alice, { status: "look" });
   await acceptQuote(h, quote.id, original);
@@ -66,12 +76,12 @@ async function world() {
         return [path, await response.text()] as const;
       }),
     );
-  return { h, file, render };
+  return { h, file, control: control.file, render };
 }
 
 describe("reject_media on the pages (#1560)", () => {
   it("renders no media of a rejected domain, and links the attachment's remote_url", async () => {
-    const { h, file, render } = await world();
+    const { h, file, control, render } = await world();
     // The pages render the account, its boosted status and the quote: each fetches its files before the block.
     for (const [path, html] of await render()) {
       expect(fetched(html).filter((url) => url.includes(REJECTED)).length, path).toBeGreaterThan(0);
@@ -85,6 +95,11 @@ describe("reject_media on the pages (#1560)", () => {
       expect(links(html), path).toContain(file);
       expect(html, path).not.toContain("/media_proxy/");
     }
+    const profile = (await render()).find(([path]) => path === "/@alice")![1];
+    // Its image shown by its icon, its avatar and its emoji.
+    expect(fetched(profile)).toEqual(
+      expect.arrayContaining([`${control}s`, `https://${CONTROL}/a.png`, `https://${CONTROL}/e.png`]),
+    );
   });
 });
 
