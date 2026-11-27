@@ -433,36 +433,20 @@ describe("POST /api/v2/media", () => {
     expect(h.codec.calls).toBe(0);
   });
 
-  it("refuses an image the service reads as another type, and one over the pixel limit (MEDIA-4, RES-1)", async () => {
+  it("refuses an image the service reads as another type (MEDIA-4)", async () => {
     const h = await users();
     h.codec.infoResult = { format: "image/svg+xml" };
     expect((await upload(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS)))).status).toBe(422);
-    const big = await users();
-    big.codec.infoResult = { format: "image/jpeg", width: 7681, height: 4320 };
-    const response = await upload(big, big.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));
-    expect(response.status).toBe(422);
-    expect(await response.json()).toEqual({ error: "Validation failed: File dimensions exceed 33177600 pixels" });
-    expect(big.codec.encodeCalls).toEqual([]);
   });
 
-  // Mastodon's MAX_MATRIX_LIMIT (attachmentable.rb:8), read by the local binding from real PNGs.
+  // Mastodon's MAX_MATRIX_LIMIT (attachmentable.rb:8): a real PNG at it, read by the local binding, and one pixel past
+  // it as info() reads it (RES-1).
   it("takes an image of 33,177,600 pixels and refuses one more", async () => {
     expect(IMAGE_MATRIX_LIMIT).toBe(7680 * 4320);
     const h = await users();
     const at = await uploaded(h, h.users.alice, mediaForm(await pngOf(7680, 4320), {}, "at.png", "image/png"));
     expect(at.meta).toMatchObject({ original: { width: 3840, height: 2160 }, small: { width: 640, height: 360 } });
     expect(h.codec.encodeCalls[0]).toEqual({ width: 3840, height: 3840, format: "image/png" });
-    const past = await users();
-    const response = await upload(
-      past,
-      past.users.alice,
-      mediaForm(await pngOf(7681, 4320), {}, "past.png", "image/png"),
-    );
-    expect(response.status).toBe(422);
-    expect(await response.json()).toEqual({ error: "Validation failed: File dimensions exceed 33177600 pixels" });
-    expect(past.codec.infoCalls).toBe(1);
-    expect(past.codec.encodeCalls).toEqual([]);
-    // One pixel past it, as info() reads it.
     const one = await users();
     one.codec.infoResult = { format: "image/jpeg", width: IMAGE_MATRIX_LIMIT + 1, height: 1 };
     const over = await upload(one, one.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));

@@ -164,18 +164,17 @@ export function imagesCodec(binding: ImagesBinding, { input = "stream" }: { inpu
 // PREVIEW_RGBA_LIMIT bytes, its blurhash's fit at most 40,000), so 16 MB stays well inside both. No test models an
 // upload's peak (the card image's is test/cron-memory.test.ts).
 export const IMAGE_SIZE_LIMIT = 16 * 1024 * 1024;
-// The most pixels a local image may hold (uploads, profile images, thumbnails and the media rebuild), judged from
-// Images' info() after the body is read and before any output, and advertised as image_matrix_limit: 33,177,600
-// (7680×4320), Mastodon's MAX_MATRIX_LIMIT since v4.2 (app/models/concerns/attachmentable.rb:8, v4.7.5). Mastodon's
-// GIF_MATRIX_LIMIT (921,600) bounds its own ffmpeg conversion and has no counterpart: Images bounds an animation. The
-// Worker decodes no pixel, so the limit sets how long Images works and whether it takes the input, not memory.
-// Cloudflare Images' documented limits (https://developers.cloudflare.com/images/get-started/limits/, read
+// The most pixels a local image may hold, judged from Images' info() before any output and advertised as
+// image_matrix_limit: Mastodon's MAX_MATRIX_LIMIT since v4.2 (app/models/concerns/attachmentable.rb:8, v4.7.5).
+// Mastodon's GIF_MATRIX_LIMIT (921,600) bounds its own ffmpeg conversion and has no counterpart: Images bounds an
+// animation. The Worker decodes no pixel, so the limit sets how long Images works and whether it takes the input, not
+// memory. Cloudflare Images' documented limits (https://developers.cloudflare.com/images/get-started/limits/, read
 // 2026-11-28): a binding input of at most 20 MB (IMAGE_SIZE_LIMIT fits), 100 megapixels for a still image, 12,000
 // pixels an edge except for WebP and AVIF (7680 fits), and animations past 50 megapixels over all frames delivered
 // untransformed. Measured on den-test's Images binding (2026-11-28): 7680×4320 JPEG, PNG, WebP, AVIF and still GIF
-// files of 10.9 to 16 MiB each gave a 3840×2160 full image and a 640×360 preview, info() taking at most 4.1 s (a
-// 16 MiB AVIF), the full output 0.35 to 6.8 s, and the whole upload 2.7 to 13.7 s on the server; a 5760×5760 PNG
-// gave 3840×3840 in 3.6 s.
+// files of 10.9 to 16 MiB each gave a 3840×2160 full image and a 640×360 preview, info() taking at most 4.1 s (a 16 MiB
+// AVIF), the full output 0.35 to 6.8 s, and the whole upload 2.7 to 13.7 s on the server; a 5760×5760 PNG gave
+// 3840×3840 in 3.6 s.
 // The remote cache and card images keep their own (REMOTE_IMAGE_MATRIX_LIMIT, CARD_IMAGE_MATRIX_LIMIT).
 export const IMAGE_MATRIX_LIMIT = 33_177_600;
 

@@ -148,10 +148,6 @@ describe("verifyRemoteImage: recognition", () => {
     view.setUint32(20, 4097);
     expect(REMOTE_IMAGE_MATRIX_LIMIT).toBe(4096 * 4096);
     expect(refusal(png)).toBe("pixels");
-    // A GIF whose frame is past the limit inside a small screen.
-    const gif = bytes(GIF);
-    gif.set([0xff, 0xff, 0xff, 0xff], 13 + 6 + 8 + 5);
-    expect(refusal(gif)).toBe("pixels");
     // A JPEG's SOF0 stating 5000 × 5000.
     const jpeg = bytes(JPEG_ICC);
     const sof = jpeg.findIndex((b, i) => b === 0xff && jpeg[i + 1] === 0xc0);
@@ -172,34 +168,19 @@ describe("verifyRemoteImage: the pixel gates of the GIF and AVIF walks (REMOTE_I
       gif.set([width & 0xff, width >> 8, height & 0xff, height >> 8], 13 + 6 + 8 + 5);
       return gif;
     };
-    expect(REMOTE_IMAGE_MATRIX_LIMIT).toBe(4096 * 4096);
     expect(refusal(frame(4096, 4096))).toBe("accepted");
     expect(refusal(frame(4096, 4097))).toBe("pixels");
   });
 
   it("refuses an AVIF whose later ispe is past the limit, its first one small, and keeps one at it", async () => {
     const avif = await madeFixture("avif");
-    const at = (type: string) => avif.findIndex((_, i) => String.fromCharCode(...avif.subarray(i, i + 4)) === type) - 4;
-    // A second ispe appended to ipco (after the image's own, small one, which verifyRemoteImage's final check reads),
-    // the sizes of ipco and the boxes holding it grown by its 20 bytes.
-    const ipco = at("ipco");
-    const end = ipco + new DataView(avif.buffer, avif.byteOffset).getUint32(ipco);
-    expect(at("ispe")).toBeGreaterThan(ipco);
-    expect(at("ispe")).toBeLessThan(end);
+    // A second ispe appended to ipco, after the image's own small one (which verifyRemoteImage's final check reads).
     const secondIspe = (width: number, height: number) => {
-      const ispe = new Uint8Array(20);
-      const box = new DataView(ispe.buffer);
-      box.setUint32(0, 20);
-      ispe.set(text("ispe"), 4);
-      box.setUint32(12, width);
-      box.setUint32(16, height);
-      const out = concat(avif.subarray(0, end), ispe, avif.subarray(end));
-      const view = new DataView(out.buffer, out.byteOffset);
-      for (const parent of ["meta", "iprp", "ipco"]) {
-        const offset = at(parent);
-        view.setUint32(offset, view.getUint32(offset) + 20);
-      }
-      return out;
+      const size = new Uint8Array(8);
+      const view = new DataView(size.buffer);
+      view.setUint32(0, width);
+      view.setUint32(4, height);
+      return avifWith(avif, ["meta", "iprp", "ipco"], fullBox("ispe", 0, size));
     };
     expect(refusal(secondIspe(4096, 4096))).toBe("accepted");
     expect(refusal(secondIspe(4096, 4097))).toBe("pixels");
