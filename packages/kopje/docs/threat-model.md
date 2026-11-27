@@ -106,6 +106,7 @@ against their own instance. TLS is assumed between all parties.
 | `/authorize_interaction`                                                    | R2, R4, R7           | none for GET; session (AUTH-8), Origin and form token (WEB-4) for POST                                      | main: `src/app/interaction.tsx`, `src/domain/interaction.ts`                                                                                                                                                                                                                                                 |
 | Media upload and serving, Images transformation                             | R2–R4                | bearer token; capability URL for reads                                                                      | main: `src/mastodon/media.ts`, `src/mastodon/media-av.ts`, `src/domain/media-processing.ts` (`updateOwnerMedia`, `queueNormalize`)                                                                                                                                                                           |
 | Cached remote media `/media/r/:token/:file`                                 | R2–R4                | none; capability URL (MEDIA-7)                                                                              | main: `src/web/media.ts`, `src/platform/media-files.ts`                                                                                                                                                                                                                                                      |
+| Media proxy `/media_proxy/:id/:style`                                       | R2                   | none; answers 404 without a Store, R2 or network read (VIS-30)                                              | main: `src/web/media.ts`                                                                                                                                                                                                                                                                                     |
 | Web Push registration                                                       | R3                   | bearer token with `push`                                                                                    | main: `src/mastodon/push.ts`, `src/domain/push.ts`                                                                                                                                                                                                                                                           |
 | Streaming API `/api/v1/streaming` (WebSocket)                               | R2–R4                | bearer token or subprotocol (VIS-26)                                                                        | main: `src/mastodon/streaming.ts`, `src/stream-hub.ts`, `src/domain/streaming.ts`                                                                                                                                                                                                                            |
 | Queue consumer, alarms, cron                                                | internal             | —                                                                                                           | main: `src/jobs/queue.ts`, `src/platform/store-kernel.ts`                                                                                                                                                                                                                                                    |
@@ -2474,39 +2475,40 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   assets get `nosniff` from `public/_headers`;
   `test/web-pages.test.ts`, `test/web-session.test.ts`, `test/error-pages.test.ts`, `test-node/stylesheet.test.ts`.
 - **WEB-6: after setup, nothing is served, accepted or issued on another host.** Once setup has fixed the domain, a
-  request whose URL host is not the stored domain (the Worker's workers.dev address, another route, a port; no header
-  is read) gets no content, sets no cookie, writes nothing and issues no code or token: GET and HEAD get a 301 to the
-  same path and query on `https://<domain>` (`no-store`, so a later domain change is not shadowed), any other method
-  421 Misdirected Request. Before setup nothing changes (`/setup` judges the host itself, SETUP-1). The decision is made
-  by the request's first Store read that answers the domain: the setup gate, the inbox gate and the self-gated
-  federation reads (SETUP-1), the public pages' and the web UI's page reads, and `authorizeContext` (WEB-1); every
-  other route (the Mastodon API, `/setup` after setup) gets one `instanceDomain` read first. Answered on any host,
-  without the check: `/health`; the admin API (which authenticates itself and which the CLI reaches on its own admin
-  hostname, [cutover-runbook.md](cutover-runbook.md)); media's capability URLs and `/` (a relative redirect to
-  `/about`), which read no Store; a request no route serves (its plain 404, without a Store read); and the static
-  assets, which the platform serves before the Worker. What comes before the host's answer: the env's maintenance and
-  configuration 503s; a CORS preflight on an API or document path (204, as Mastodon's `Rack::Cors` answers before its
-  host authorization); `/oauth/authorize`'s own checks (WEB-1); an inbox POST's body, read within `INBOX_BODY_LIMIT`
-  (1 MiB) with its 413 and 415, and in spool mode the spool itself (202). The spool's replay (`handleQueue` in
-  `src/jobs/queue.ts`) hands the request to the legacy instance without a host check while a cutover is rolled back
-  (`CUTOVER_ROLLBACK`, the rollback journal), and requeues it while the env is in maintenance; then the inbox gate's
-  read requeues it while the Store refuses writes or has no domain, and otherwise drops it for its host (logged as
-  `kopje.inbox.refused`, 421) before any signature is verified, any signed fetch is made or any activity is applied. A
-  Store refusal's snapshot rescue serves a snapshot only on the domain the snapshot records (`saveSnapshot` writes it in
-  the same transaction as the domain it was rendered on); a row without a recorded domain is judged by the stored
-  domain, read through the `config()` rescue RPC (which needs no matching build), never inferred from the row; on
-  another host the rescue gives the answer above, and without a domain (the call fails, none is set) the row is not
-  served (503). The cron, the Queue's other work and the Store
-  have no request host. _Enforced (main):_ `offDomain` and `decidesHost` in `src/platform/instance-host.ts`, the
-  middleware in `src/app/app.ts`, `src/federation/setup-gate.ts`, `src/federation/routes.ts`, `processInbox` in
-  `src/federation/inbox.ts`, `rescueFromSnapshot` in `src/federation/snapshot.ts`, `saveSnapshot` in
-  `src/domain/snapshot.ts`, `siteGate` in `src/app/web.tsx`, `src/app/public-pages.tsx`, `src/app/authorize.tsx`;
-  `test/instance-host.test.ts` ("moves a GET or HEAD on another host to the same path and query on the domain",
-  "answers 421 to any other method on another host, writing nothing", "keeps the domain's own spellings: case, the
-  default port, and the Host header", "answers the health check, the admin API, media and paths no route serves on any
-  host", "changes nothing before setup has fixed the domain", "reads the domain once more only where the route does not
-  read it", "drops a spooled inbox request to another host at replay, applying nothing", "serves a rescued snapshot
-  only on the domain it records, or a legacy one on the stored domain").
+  request whose URL host is not the stored domain (the Worker's workers.dev address, another route, a port; no header is
+  read) gets no content, sets no cookie, writes nothing and issues no code or token: GET and HEAD get a 301 to the same
+  path and query on `https://<domain>` (`no-store`, so a later domain change is not shadowed), any other method 421
+  Misdirected Request. Before setup nothing changes (`/setup` judges the host itself, SETUP-1). The decision is made by
+  the request's first Store read that answers the domain: the setup gate, the inbox gate and the self-gated federation
+  reads (SETUP-1), the public pages' and the web UI's page reads, and `authorizeContext` (WEB-1); every other route (the
+  Mastodon API, `/setup` after setup) gets one `instanceDomain` read first. Answered on any host, without the check:
+  `/health`; the admin API (which authenticates itself and which the CLI reaches on its own admin hostname,
+  [cutover-runbook.md](cutover-runbook.md)); media's capability URLs, the media proxy's 404 (`/media_proxy/:id/:style`)
+  and `/` (a relative redirect to `/about`), which read no Store; a request no route serves (its plain 404, without a
+  Store read); and the static assets, which the platform serves before the Worker. What comes before the host's answer:
+  the env's maintenance and configuration 503s; a CORS preflight on an API or document path (204, as Mastodon's
+  `Rack::Cors` answers before its host authorization); `/oauth/authorize`'s own checks (WEB-1); an inbox POST's body,
+  read within `INBOX_BODY_LIMIT` (1 MiB) with its 413 and 415, and in spool mode the spool itself (202). The spool's
+  replay (`handleQueue` in `src/jobs/queue.ts`) hands the request to the legacy instance without a host check while a
+  cutover is rolled back (`CUTOVER_ROLLBACK`, the rollback journal), and requeues it while the env is in maintenance;
+  then the inbox gate's read requeues it while the Store refuses writes or has no domain, and otherwise drops it for its
+  host (logged as `kopje.inbox.refused`, 421) before any signature is verified, any signed fetch is made or any activity
+  is applied. A Store refusal's snapshot rescue serves a snapshot only on the domain the snapshot records
+  (`saveSnapshot` writes it in the same transaction as the domain it was rendered on); a row without a recorded domain
+  is judged by the stored domain, read through the `config()` rescue RPC (which needs no matching build), never inferred
+  from the row; on another host the rescue gives the answer above, and without a domain (the call fails, none is set)
+  the row is not served (503). The cron, the Queue's other work and the Store have no request host. _Enforced (main):_
+  `offDomain` and `decidesHost` in `src/platform/instance-host.ts`, the middleware in `src/app/app.ts`,
+  `src/federation/setup-gate.ts`, `src/federation/routes.ts`, `processInbox` in `src/federation/inbox.ts`,
+  `rescueFromSnapshot` in `src/federation/snapshot.ts`, `saveSnapshot` in `src/domain/snapshot.ts`, `siteGate` in
+  `src/app/web.tsx`, `src/app/public-pages.tsx`, `src/app/authorize.tsx`; `test/instance-host.test.ts` ("moves a GET or
+  HEAD on another host to the same path and query on the domain", "answers 421 to any other method on another host,
+  writing nothing", "keeps the domain's own spellings: case, the default port, and the Host header", "answers the health
+  check, the admin API, media and paths no route serves on any host", "changes nothing before setup has fixed the
+  domain", "reads the domain once more only where the route does not read it", "drops a spooled inbox request to another
+  host at replay, applying nothing", "serves a rescued snapshot only on the domain it records, or a legacy one on the
+  stored domain"), `test/media-proxy-route.test.ts` ("answers 404 to GET and HEAD of /media_proxy on any host without a
+  Store, R2 or network read").
 - **WEB-7: no cache hands one caller's API answer to a caller whose answer differs.** Every answer under `/api/*` (the
   streaming endpoints excepted, which keep Mastodon's streaming server's headers, MD-8) and of `/oauth/userinfo`
   carries `Cache-Control: private, no-store`, errors, maintenance and gate answers included, but a 2xx answer the

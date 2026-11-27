@@ -32,6 +32,17 @@ const NOT_FOUND = () =>
     headers: { "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff" },
   });
 
+// GET and HEAD /media_proxy/<id>/<original|small> (#1560, VIS-30): the URLs Mastodon's MediaAttachment entity gives an
+// attachment it holds no file of, which the presenters give each attachment withheld by a domain block's reject_media
+// (domain/status-presenter.ts withheldMedia). Kopje fetches nothing for them: every request answers the plain 404,
+// without a Store, R2 or network read, so it says nothing of whether the attachment exists. Mastodon's proxy redirects
+// to a default path a stock install does not serve (docs/mastodon-deviations.md).
+export const MEDIA_PROXY_ROUTE = "/media_proxy/:id/:style";
+
+export function serveMediaProxy(): Response {
+  return NOT_FOUND();
+}
+
 export async function serveMedia(c: Context<{ Bindings: Env }>): Promise<Response> {
   const path = keyOfPath(c.req.param("token") ?? "", c.req.param("file") ?? "");
   if (path === null) {
