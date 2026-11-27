@@ -371,22 +371,28 @@ paths are built only from validated ids. Work in a new, empty directory so nothi
 
    It goes through every local media row in bounded calls and, for each whose served files are missing, re-encodes its
    original as an upload is (metadata removed, long edge capped, a preview made), writes both files and records their
-   real sizes and its preview's blurhash. Rows whose files exist are skipped, so it can be run again at any time. Each
-   rebuilt row counts three transformations against `IMAGES_MONTHLY_TRANSFORMS` (a custom emoji's two), and none
-   against the account shares. It exits 0 when every row is served, and 3 with the rows that need a decision:
-   `original-missing` (the backup did not hold it: `pending` or `absent` in the index), `type-mismatch` (the original
-   is not of the type the row's URLs name), `failed` (Images could not re-encode it), or a stop on the Images quota
-   (9422) or the monthly budget: run it again once the allowance is back.
+   real sizes and its preview's blurhash. Rows whose files exist are skipped, so it can be run again at any time, also
+   after an interrupted run: a call the command stopped waiting for (the CLI was stopped, or Node's fetch gave up after
+   300 seconds) goes on under its lease, which lasts 10 minutes from its last renewal (a call renews it while a write
+   settles); the next run waits for it or reports that another run holds it, and the rows still lacking a file are
+   built, and charged, again. Each rebuilt row counts three transformations against `IMAGES_MONTHLY_TRANSFORMS` (a
+   custom emoji's two), and none against the account shares. A call that writes (not `--dry-run`) looks at no new row
+   after two minutes once it has handled one, and the command goes on with the next call. It exits 0 when every row is
+   served, and 3 with the rows that need a decision: `original-missing` (the backup did not hold it: `pending` or
+   `absent` in the index), `type-mismatch` (the original is not of the type the row's URLs name), `failed` (Images could
+   not re-encode it), or a stop on the Images quota (9422) or the monthly budget: run it again once the allowance is
+   back. It also exits 3 (`no-progress`) when three calls in a row return the cursor they were sent: it prints that
+   resume cursor (`the start`, or the last row handled before them) and the reason the last call reported (`deadline` or
+   `lease-overrun`, after which the call keeps its lease until it expires); run it again later.
 
    A video or audio row is handled one per call. Its file is the original itself, checked again by the output verifier
-   as it is copied (a file the check refuses is reported as `failed` and never served). A video's still preview is
-   made by the media processor when its block is added and `MEDIA_UPLOAD_MONTHLY_JOBS` has a job left this month (one
-   job and three transformations each; the first call that needs one checks the processor with a short probe clip
-   first); otherwise the row is counted as `fallback` and shows the plain video poster. A still left by an earlier,
-   interrupted run is reused. An interrupted run (the CLI stopped) keeps its lease for 10 minutes, so the next run waits
-   for it or reports that another run holds it; one interrupted during the probe leaves stills stopped (`retry`) for an
-   hour before the probe is tried again. To give stills to such videos later, once the processor is set up, run
-   `kopje-admin media-rebuild --stills`.
+   as it is copied (a file the check refuses is reported as `failed` and never served). A video's still preview is made
+   by the media processor when its block is added and `MEDIA_UPLOAD_MONTHLY_JOBS` has a job left this month (one job and
+   three transformations each; the first call that needs one checks the processor with a short probe clip first);
+   otherwise the row is counted as `fallback` and shows the plain video poster. A still left by an earlier, interrupted
+   run is reused. A run interrupted during the probe leaves stills stopped (`retry`) for an hour before the probe is
+   tried again. To give stills to such videos later, once the processor is set up, run `kopje-admin media-rebuild
+   --stills`.
 
 7. **Publish.** The imported Store stays readonly (it accepts no write and delivers nothing) until you publish it, once
    it looks right:

@@ -50,8 +50,8 @@ import {
 
 // /api/v1/media and /api/v2/media: upload, read and describe own unattached media.
 //
-// Accepted: JPEG, PNG, GIF, WebP and AVIF, by their signature (MEDIA-4), up to 16 MB and 16,777,216 pixels (RES-1).
-// Each is re-encoded through Images (EXIF and location removed, long edge capped, a preview made) and only the
+// Accepted: JPEG, PNG, GIF, WebP and AVIF, by their signature (MEDIA-4), up to 16 MB and IMAGE_MATRIX_LIMIT pixels
+// (RES-1). Each is re-encoded through Images (EXIF and location removed, long edge capped, a preview made) and only the
 // re-encoded files are served; when re-encoding fails the upload is refused and nothing is served (MEDIA-3). The
 // preview's blurhash comes from Images' RGBA output of it (platform/images.ts processImage), given up RGBA_CALL_MS
 // after it starts or UPLOAD_SAVE_RESERVE_MS before the writer deadline, whichever is first: it delays the save by at

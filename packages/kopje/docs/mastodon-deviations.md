@@ -228,8 +228,9 @@ settings page):
   answers 400 before the text is counted), so a data
   URI's image is at most about 786,000 bytes, where Mastodon takes one under 8 MB; a larger image is sent as a
   multipart file.
-- An image past 16,777,216 pixels answers 422, an error of `avatar` or `header` (Mastodon keeps the account unchanged
-  and answers 200).
+- An image past 33,177,600 pixels answers 422, an error of `avatar` or `header` (Mastodon keeps the account unchanged
+  and answers 200). A GIF has no separate limit of 921,600 pixels, which in Mastodon bounds its own conversion of a
+  GIF.
 - An avatar is cropped to 400×400 around its centre and a smaller one enlarged, as Mastodon's, a GIF too: a 600×300
   GIF is 400×400 here and 200×200 in Mastodon, whose GIF path never enlarges. A header past 750,000 pixels is scaled
   down into a square whose side is the long edge of Mastodon's box, so an Exif-rotated image is boxed the same way;
@@ -1724,7 +1725,7 @@ Media (the `MediaAttachment` entity):
   and past it answer 422 `Validation failed: File file size must be less than 16 MB`.
 - A video's or audio file's custom `thumbnail` (on upload and on `PUT`/`PATCH /api/v1/media/:id`, as Mastodon takes it)
   is made by Images as an image upload is: JPEG, PNG, GIF, WebP or AVIF by its signature, served as PNG for a PNG and
-  WebP for the rest, its preview at most 640 pixels an edge (Mastodon's is 230,400 pixels), at most 16,777,216 pixels,
+  WebP for the rest, its preview at most 640 pixels an edge (Mastodon's is 230,400 pixels), at most 33,177,600 pixels,
   and 16,777,216 bytes accepted (Mastodon refuses that size, its limit being `less_than` 16 MB) with one byte more
   refused. It has no `meta.colors`, as no Kopje media has; Mastodon's web audio player then uses its default colours.
   A text `thumbnail` that is not empty (a data URI, which Mastodon accepts, or anything else) answers 422 `Validation

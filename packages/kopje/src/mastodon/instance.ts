@@ -3,6 +3,7 @@ import { PIN_LIMIT } from "../domain/activities";
 import { MAX_FEATURED_TAGS } from "../domain/featured-tags";
 import { AV_UPLOAD_LIMIT } from "../domain/media-processing";
 import { DEFAULT_THUMBNAIL, DEFAULT_THUMBNAIL_DESCRIPTION, INSTANCE_ICONS } from "../platform/brand-assets";
+import { IMAGE_MATRIX_LIMIT } from "../platform/images";
 import { railsBlank } from "../platform/rails-blank";
 import { MAX_MEDIA_DESCRIPTION_LENGTH, PROFILE_DESCRIPTION_LIMIT } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
@@ -62,7 +63,7 @@ const CONFIGURATION = {
     // Enforced by the upload (mastodon/media.ts); GIF, WebP and AVIF are re-encoded as WebP. No video or audio type
     // is listed while uploads of them are inactive: they are refused (AV_MEDIA_ATTACHMENTS otherwise).
     image_size_limit: 16777216,
-    image_matrix_limit: 16777216,
+    image_matrix_limit: IMAGE_MATRIX_LIMIT,
     video_size_limit: 41943040,
     video_frame_rate_limit: 60,
     video_matrix_limit: 2304000,

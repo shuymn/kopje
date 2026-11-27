@@ -11,15 +11,7 @@ import { envInMaintenance, readConfig } from "../platform/config";
 import { DeadlinePassed, inTime, releaseUnstarted, withinKept } from "../platform/deadline";
 import { errorFields } from "../platform/error-message";
 import { webpSize, sniffImageType } from "../platform/image-bytes";
-import {
-  codecFailure,
-  encodeBounded,
-  encodeRgba,
-  IMAGE_MATRIX_LIMIT,
-  type ImageCodec,
-  imagesCodec,
-  type Size,
-} from "../platform/images";
+import { codecFailure, encodeBounded, encodeRgba, type ImageCodec, imagesCodec, type Size } from "../platform/images";
 import { fileKey } from "../platform/media-files";
 import { PACKAGE_VERSION } from "../platform/package-version";
 import { storeRpc } from "../platform/store-client";
@@ -28,6 +20,7 @@ import {
   CARD_IMAGE_BODY_LIMIT,
   CARD_GIF_MATRIX_LIMIT,
   CARD_IMAGE_EDGE_MAX,
+  CARD_IMAGE_MATRIX_LIMIT,
   CARD_IMAGE_OUTPUT_LIMIT,
   CARD_IMAGE_PIXELS,
 } from "../platform/stored-bounds";
@@ -77,7 +70,7 @@ import {
 //   I4   a signature that is not JPEG, PNG, GIF or WebP (sniffImageType) is no image;
 //   I5   admission #1 (the env's maintenance and the fence, as a write) refused: the claim is lost;
 //   I6   the preflight info() failing, naming another format or no size is no image;
-//   I7   a GIF past CARD_GIF_MATRIX_LIMIT or another image past IMAGE_MATRIX_LIMIT pixels is no image;
+//   I7   a GIF past CARD_GIF_MATRIX_LIMIT or another image past CARD_IMAGE_MATRIX_LIMIT pixels is no image;
 //   I8   a target edge past CARD_IMAGE_EDGE_MAX is no image;
 //   I9   admission #2 (startCardImage, which charges one transformation) before the WebP output: lost, or unattempted
 //        past the share;
@@ -170,7 +163,7 @@ async function encodeInput(
   if (info.format !== type || width === undefined || height === undefined || width < 1 || height < 1) {
     return { kind: "none", reason: "info" };
   }
-  if (width * height > (type === "image/gif" ? CARD_GIF_MATRIX_LIMIT : IMAGE_MATRIX_LIMIT)) {
+  if (width * height > (type === "image/gif" ? CARD_GIF_MATRIX_LIMIT : CARD_IMAGE_MATRIX_LIMIT)) {
     return { kind: "none", reason: "pixels" };
   }
   const target = cardImageTarget({ width, height });

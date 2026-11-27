@@ -1,6 +1,5 @@
 import {
   ascii,
-  IMAGE_MATRIX_LIMIT,
   type ImageType,
   jpegSegmentMetadata,
   MALFORMED,
@@ -27,6 +26,12 @@ import {
 //   - recognizeMedia: a video or audio file's container and category from its first RECOGNITION_PREFIX_BYTES bytes.
 // Every walk reads lengths and tags only and visits each byte a bounded number of times, so its work is linear in its
 // input (RES-2), and no output is larger than its input.
+
+// The most pixels a remote image may hold, as its headers state them (a GIF's logical screen and each of its frames, an
+// AVIF's every ispe, and the size verifyRemoteImage reads for any type): 16,777,216 (4096×4096), Mastodon's limit
+// through v4.1 and Kopje's own for remote files, which a remote server chose and the media rounds cache within their
+// own budgets. Nothing advertises it, and local uploads have their own (IMAGE_MATRIX_LIMIT, platform/images.ts).
+export const REMOTE_IMAGE_MATRIX_LIMIT = 16_777_216;
 
 // How much of a streamed file is read before its category is decided.
 export const RECOGNITION_PREFIX_BYTES = 1024 * 1024;
@@ -520,7 +525,7 @@ function gifFacts(bytes: Uint8Array): Facts | Refused {
   if (frames === 0 || width === 0 || height === 0) {
     return { refusal: "malformed" };
   }
-  if (pixels > IMAGE_MATRIX_LIMIT) {
+  if (pixels > REMOTE_IMAGE_MATRIX_LIMIT) {
     return { refusal: "pixels" };
   }
   return { width, height, animated: frames > 1, end: write };
@@ -720,7 +725,7 @@ function avifFacts(bytes: Uint8Array): AvifFacts {
   if (orientation) {
     return { refusal: "orientation" };
   }
-  if (pixels > IMAGE_MATRIX_LIMIT) {
+  if (pixels > REMOTE_IMAGE_MATRIX_LIMIT) {
     return { refusal: "pixels" };
   }
   return { width, height, animated: false, end: bytes.length, metadata };
@@ -762,8 +767,9 @@ export function remoteImageMetadata(bytes: Uint8Array, type: string): RetainedMe
 
 // Verifies a remote image whose type must be one of `types`, in place: `bytes` is the caller's to give up (the strip
 // moves what it keeps towards the start of the same buffer, and the result is a view of it). Refused: another type
-// ('type'), a file that does not walk ('malformed'), a non-identity orientation, pixels past IMAGE_MATRIX_LIMIT, an
-// AVIF with Exif, mime or foreign items ('metadata'), or an output remoteImageMetadata still flags ('metadata').
+// ('type'), a file that does not walk ('malformed'), a non-identity orientation, pixels past
+// REMOTE_IMAGE_MATRIX_LIMIT, an AVIF with Exif, mime or foreign items ('metadata'), or an output remoteImageMetadata
+// still flags ('metadata').
 export function verifyRemoteImage(
   bytes: Uint8Array,
   types: readonly ImageType[],
@@ -795,7 +801,7 @@ export function verifyRemoteImage(
   if ("refusal" in facts) {
     return { ok: false, refusal: facts.refusal };
   }
-  if (facts.width * facts.height > IMAGE_MATRIX_LIMIT) {
+  if (facts.width * facts.height > REMOTE_IMAGE_MATRIX_LIMIT) {
     return { ok: false, refusal: "pixels" };
   }
   const out = bytes.subarray(0, facts.end);

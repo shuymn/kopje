@@ -268,6 +268,24 @@ describe.each(["PUT", "PATCH"] as const)("%s /api/v1/media/:id with a video's or
     expect(await imageRows(w)).toEqual([expect.objectContaining({ id: image })]);
   });
 
+  it("refuses a thumbnail past 33,177,600 pixels with no transformation, and links one at it", async () => {
+    const w = await routeWorld();
+    const video = (await completed(w)).id;
+    w.codec.infoResult = { format: "image/png", width: 7681, height: 4320 };
+    const refused = await answerOf<Record<string, unknown>>(await send(w, method, video, multipartBody([thumbPart()])));
+    expect(refused).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Thumbnail dimensions exceed 33177600 pixels" },
+    });
+    expect(w.codec.encodeCalls).toEqual([]);
+    expect(await current(w, video)).toBeUndefined();
+    w.codec.infoResult = { format: "image/png", width: 7680, height: 4320 };
+    w.codec.infoCalls = 0;
+    const linked = await answerOf<Record<string, unknown>>(await send(w, method, video, multipartBody([thumbPart()])));
+    expect(linked.status).toBe(200);
+    expect(await current(w, video)).toBeDefined();
+  });
+
   it("keeps the attempt and charge of a thumbnail whose link is refused (the video deleted meanwhile), and sweeps it", async () => {
     const w = await routeWorld();
     const parent = await completed(w);

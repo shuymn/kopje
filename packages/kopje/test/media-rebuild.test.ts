@@ -12,7 +12,7 @@ import {
 } from "../src/domain/media-rebuild";
 import { handleScheduled } from "../src/jobs/scheduled";
 import { sweepMedia } from "../src/mastodon/media";
-import { MAX_BUILDS_PER_CALL, rebuildMedia } from "../src/mastodon/media-rebuild";
+import { MAX_BUILDS_PER_CALL, REBUILD_CALL_BUDGET_MS, rebuildMedia } from "../src/mastodon/media-rebuild";
 import { imageBlurhash } from "../src/platform/blurhash";
 import { EMOJI_IMAGE_LIMIT, EMOJI_PREVIEW_LIMIT } from "../src/platform/emoji-image";
 import { isAnimated } from "../src/platform/image-bytes";
@@ -616,6 +616,186 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     for (const row of rows) {
       expect(await files(row)).toEqual([true, true]);
     }
+  });
+
+  // A direct call on its own clock, with the setup's codec; `bucket` and `store` stand in for the real ones.
+  const budgetCall =
+    (h: Awaited<ReturnType<typeof setup>>, now: () => number, deps: { bucket?: R2Bucket; store?: StoreStub } = {}) =>
+    (after: string | null) =>
+      rebuildMedia(
+        {
+          build: BUILD,
+          store: deps.store ?? h.store,
+          bucket: deps.bucket ?? env.MEDIA,
+          images: h.codec,
+          now,
+          authority: { ...ACCESS, teamDomain: team.teamDomain },
+          monthlyTransforms: 100,
+        },
+        { after, dryRun: false },
+      );
+
+  // The media bucket, `onHead` run before each head, `onGet` before each get and `onPut` after each put lands.
+  const hookedMedia = (hooks: {
+    onHead?: (key: string) => void;
+    onGet?: (key: string) => void;
+    onPut?: (key: string) => void;
+  }) =>
+    ({
+      head: (key: string) => {
+        hooks.onHead?.(key);
+        return env.MEDIA.head(key);
+      },
+      get: (key: string, options?: R2GetOptions) => {
+        hooks.onGet?.(key);
+        return env.MEDIA.get(key, options);
+      },
+      delete: (keys: string | string[]) => env.MEDIA.delete(keys),
+      put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+        const put = await env.MEDIA.put(key, value, options);
+        hooks.onPut?.(key);
+        return put;
+      },
+    }) as unknown as R2Bucket;
+
+  it("builds two rows a call, stopping past each call's time budget, until the rows are built", async () => {
+    const h = await setup();
+    const rows: Row[] = [];
+    for (let i = 0; i < 5; i++) {
+      rows.push(await addRow(h.store));
+    }
+    let clock = NOW;
+    // Each build takes 70 seconds of the call's clock, counted once its last file is written.
+    const puts = new Map<string, number>();
+    const bucket = hookedMedia({
+      onPut: (key) => {
+        if (key.endsWith("/small")) {
+          puts.set(key, (puts.get(key) ?? 0) + 1);
+          clock += 70_000;
+        }
+      },
+    });
+    const call = budgetCall(h, () => clock, { bucket });
+    expect(REBUILD_CALL_BUDGET_MS).toBe(120_000);
+    // 70 seconds after the first row the budget is not spent; 140 seconds after the second it is. Each call's budget
+    // starts again, a resumed one's too: the second call also stops after two rows, and a third builds the last.
+    const first = await call(null);
+    expect(first).toMatchObject({ ok: true, done: false, stopped: null, next: rows[1]?.id, counts: { built: 2 } });
+    expect(await files(rows[2]!)).toEqual([false, false]);
+    const second = await call(first.ok ? first.next : null);
+    expect(second).toMatchObject({ ok: true, done: false, stopped: null, next: rows[3]?.id, counts: { built: 2 } });
+    expect(await files(rows[4]!)).toEqual([false, false]);
+    const third = await call(second.ok ? second.next : null);
+    expect(third).toMatchObject({ ok: true, done: true, stopped: null, counts: { built: 1 } });
+    for (const row of rows) {
+      expect(await files(row)).toEqual([true, true]);
+      expect(puts.get(`files/${row.token}/small`)).toBe(1);
+    }
+  });
+
+  it("builds one row even when the budget passed before it", async () => {
+    const h = await setup();
+    const rows = [await addRow(h.store), await addRow(h.store)];
+    let clock = NOW;
+    // The listing answers 130 seconds into the call, past REBUILD_CALL_BUDGET_MS.
+    const store = new Proxy(h.store, {
+      get: (target, property, receiver) =>
+        property === "mediaRebuildCandidates"
+          ? async (...args: Parameters<StoreStub["mediaRebuildCandidates"]>) => {
+              const answer = await target.mediaRebuildCandidates(...args);
+              clock += 130_000;
+              return answer;
+            }
+          : (Reflect.get(target, property, receiver) as unknown),
+    });
+    const step = await budgetCall(h, () => clock, { store })(null);
+    expect(step).toMatchObject({ ok: true, done: false, stopped: null, next: rows[0]?.id, counts: { built: 1 } });
+    expect(await files(rows[0]!)).toEqual([true, true]);
+    expect(await files(rows[1]!)).toEqual([false, false]);
+  });
+
+  it("ends the call at the time budget after a slow failed attempt, its cursor past it, and builds the next row next", async () => {
+    const h = await setup();
+    const failed = await addRow(h.store);
+    const second = await addRow(h.store);
+    let clock = NOW;
+    // The first row's info() answers past REBUILD_CALL_BUDGET_MS, and as no image: a failed attempt, which is handled.
+    vi.spyOn(h.codec, "info").mockImplementationOnce(() => {
+      clock += REBUILD_CALL_BUDGET_MS + 10_000;
+      return Promise.resolve({ format: "image/svg+xml" });
+    });
+    const call = budgetCall(h, () => clock);
+    const first = await call(null);
+    expect(first).toMatchObject({ done: false, stopped: null, next: failed.id, counts: { failed: 1, built: 0 } });
+    expect(await files(second)).toEqual([false, false]);
+    const next = await call(failed.id);
+    expect(next).toMatchObject({ done: true, next: second.id, counts: { built: 1 } });
+    expect(await files(second)).toEqual([true, true]);
+  });
+
+  it("ends the call at the time budget after slow refusals before any build, its cursor past them", async () => {
+    const h = await setup();
+    const refused: Row[] = [];
+    for (let i = 0; i < 3; i++) {
+      refused.push(await addRow(h.store, { original: new TextEncoder().encode("not an image") }));
+    }
+    const valid = await addRow(h.store);
+    let clock = NOW;
+    // Each original read takes 110 seconds; the three refused ones fail their signature before any build attempt.
+    const bucket = hookedMedia({
+      onGet: (key) => {
+        if (key.startsWith("originals/")) {
+          clock += 110_000;
+        }
+      },
+    });
+    const call = budgetCall(h, () => clock, { bucket });
+    // The second refusal ends at 220 seconds: the third row is not looked at.
+    const first = await call(null);
+    expect(first).toMatchObject({ done: false, stopped: null, next: refused[1]!.id, counts: { failed: 2, built: 0 } });
+    expect(h.codec.calls).toBe(0);
+    // The next call refuses the third at 110 seconds and builds the valid row.
+    const next = await call(first.ok ? first.next : null);
+    expect(next).toMatchObject({ done: true, next: valid.id, counts: { failed: 1, built: 1 } });
+    expect(await files(valid)).toEqual([true, true]);
+  });
+
+  it("looks at no further row once the budget is spent: no lease renewal, R2 head or info() for it", async () => {
+    const h = await setup();
+    const rows = [await addRow(h.store), await addRow(h.store)];
+    let clock = NOW;
+    const heads: string[] = [];
+    const renewals: string[] = [];
+    // The lease and info() calls made by the time the first row's last file is written.
+    let atCutoff = -1;
+    let infoAtCutoff = -1;
+    const bucket = hookedMedia({
+      onHead: (key) => heads.push(key),
+      onPut: (key) => {
+        if (key.endsWith("/small")) {
+          clock += REBUILD_CALL_BUDGET_MS;
+          atCutoff = renewals.length;
+          infoAtCutoff = h.codec.infoCalls;
+        }
+      },
+    });
+    const store = new Proxy(h.store, {
+      get: (target, property, receiver) =>
+        property === "mediaRebuildLease"
+          ? async (...args: Parameters<StoreStub["mediaRebuildLease"]>) => {
+              renewals.push(args[1].release ? "release" : "renew");
+              return target.mediaRebuildLease(...args);
+            }
+          : (Reflect.get(target, property, receiver) as unknown),
+    });
+    const step = await budgetCall(h, () => clock, { bucket, store })(null);
+    expect(step).toMatchObject({ done: false, stopped: null, next: rows[0]!.id, counts: { built: 1 } });
+    expect(heads.filter((key) => key.includes(rows[1]!.token))).toEqual([]);
+    expect(infoAtCutoff).toBeGreaterThan(0);
+    expect(h.codec.infoCalls).toBe(infoAtCutoff);
+    // After the first row's last write, only the release: the second row's turn renews nothing.
+    expect(atCutoff).toBeGreaterThan(0);
+    expect(renewals.slice(atCutoff)).toEqual(["release"]);
   });
 
   it("records the blurhash of the rebuilt preview's RGBA, charged as an upload's three transformations", async () => {

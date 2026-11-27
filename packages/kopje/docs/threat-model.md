@@ -3848,12 +3848,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `postStatus` calls, and `editStatus`, in `src/domain/statuses.ts`), and an edit to a blank text checks it again on
   the pair it writes, the status's kept warning included; `test/statuses.test.ts` ("is held to the raw bound as sent,
   in the Store, before the warning moves, posted now or scheduled", "counts the text and the kept warning as written,
-  as one string"). _Enforced (main)_ for search terms (500 characters) and media (16 MB and 16,777,216 pixels, read
-  with the body bound before parsing): `src/mastodon/search.ts`, `src/mastodon/media.ts`; `test/search.test.ts`
-  ("bounds the query"), `test/media.test.ts` ("refuses a file over 16 MB"). _Enforced (main)_ for a local bio: the
-  note as sent is refused past the status text's raw bound before its links are found and counted (`accountChanges` in
-  `src/mastodon/accounts.ts`, for `update_credentials` and the settings page alike; `test/accounts.test.ts` ("refuses
-  a note past the raw bound before parsing it")). _Enforced (main)_ for remote profiles:
+  as one string"). _Enforced (main)_ for search terms (500 characters) and media (16 MB, read with the body bound
+  before parsing, and 33,177,600 pixels, judged from Images' `info()` after the body is read and before any output):
+  `src/mastodon/search.ts`, `src/mastodon/media.ts`; `test/search.test.ts` ("bounds the query"), `test/media.test.ts`
+  ("refuses a file over 16 MB", "takes an image of 33,177,600 pixels and refuses one more"). _Enforced (main)_ for a
+  local bio: the note as sent is refused past the status text's raw bound before its links are found and counted
+  (`accountChanges` in `src/mastodon/accounts.ts`, for `update_credentials` and the settings page alike;
+  `test/accounts.test.ts` ("refuses a note past the raw bound before parsing it")). _Enforced (main)_ for remote
+  profiles:
   bios are cut at 50,000 code units before sanitizing, display names at 2,048 and image descriptions at 150 code points
   (`src/security/html.ts`, `src/federation/remote-actor.ts`; `test/profile-descriptions.test.ts`). _Enforced (main):_ a
   timeline marker's `last_read_id` stops at 255 characters, which Mastodon bounds as a bigint (`src/domain/markers.ts`;

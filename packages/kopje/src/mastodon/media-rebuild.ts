@@ -91,11 +91,19 @@ import { avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./media-rebuild-a
 // that have none.
 //
 // Bounds per call: one listing (at most SCAN_WINDOW rows scanned, REBUILD_PAGE candidates) and at most
-// MAX_BUILDS_PER_CALL rows built, one at a time (an image original is at most 16 MB), of which at most
-// MAX_AV_BUILDS_PER_CALL are video or audio rows (each streamed, within REBUILD_AV_MS), so a call stays within a
-// request's subrequests and memory.
+// MAX_BUILDS_PER_CALL build attempts (`builds`: a row admitted to build, whatever its outcome), one at a time (an image
+// original is at most 16 MB), of which at most MAX_AV_BUILDS_PER_CALL are video or audio rows (each streamed, within
+// REBUILD_AV_MS), so a call stays within a request's subrequests and memory. The time budget: once the call has moved
+// its cursor past a row (any row handled: built, failed, refused before the build, a video's fallback, files found
+// existing, an emoji's files validated), no further row is looked at after REBUILD_CALL_BUDGET_MS of the call. The
+// check comes first in each row's turn, before the lease renewal and any R2 or Images call, and the call answers with
+// `next` at the last row handled, from which the next call goes on. A row already started runs to its end under the
+// lease, so a call normally answers within the budget and one row (an image row, or at most REBUILD_AV_MS for a video
+// or audio row), inside the 300 seconds Node's fetch waits for response headers by default (undici's headersTimeout),
+// which is how kopje-admin posts it.
 
 export const MAX_BUILDS_PER_CALL = 10;
+export const REBUILD_CALL_BUDGET_MS = 120_000;
 
 // What a row leaves of its renewed lease unused, against clock differences between the Worker and the Store.
 const LEASE_MARGIN_MS = 60_000;
@@ -298,7 +306,8 @@ async function pass(
   control: Lease | null,
 ): Promise<RebuildStep> {
   const { build, store, bucket, now } = deps;
-  let deadline = now() + REBUILD_LEASE_MS - LEASE_MARGIN_MS;
+  const started = now();
+  let deadline = started + REBUILD_LEASE_MS - LEASE_MARGIN_MS;
   const bounded = <T>(work: () => Promise<T>) => within(work, deadline, now);
   // Renews the lease (a row then has the whole lease); the deadline follows the time the Store grants.
   const renew = async (): Promise<number> => {
@@ -394,6 +403,10 @@ async function pass(
         return step("quota", false);
       }
       if (control !== null) {
+        // The time budget (header).
+        if (handled !== input.after && now() - started >= REBUILD_CALL_BUDGET_MS) {
+          return step(null, false);
+        }
         await renew();
       }
       const [full, small] = await bounded(() =>

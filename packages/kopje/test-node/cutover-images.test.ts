@@ -327,7 +327,9 @@ describe("images-export", () => {
       "header-0": new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>'),
       "image-1": oversized,
       "image-2": streamed,
-      "image-3": png(5000, 5000),
+      // Past IMAGE_MATRIX_LIMIT (33,177,600) by one column; image-8 exactly at it is admitted.
+      "image-3": png(7681, 4320),
+      "image-8": png(7680, 4320),
     });
     expect(ok).toBe(false);
     expect(report).toMatchObject({

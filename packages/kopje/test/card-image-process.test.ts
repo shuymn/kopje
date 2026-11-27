@@ -8,6 +8,8 @@ import { retainedMetadata, webpSize } from "../src/platform/image-bytes";
 import { type CodecInput, encodeRgba, type ImageCodec, imagesCodec } from "../src/platform/images";
 import {
   CARD_DECODE_PIXELS,
+  CARD_GIF_MATRIX_LIMIT,
+  CARD_IMAGE_MATRIX_LIMIT,
   CARD_IMAGE_OUTPUT_LIMIT,
   CARD_IMAGE_PIXELS,
   storedBlurhash,
@@ -227,7 +229,8 @@ describe("the transitions of processCardImage", () => {
       });
       expect(h.calls).toEqual(["admit"]);
     }
-    // At the limits: 16,777,216 pixels, and a GIF of 921,600.
+    // At the limits: CARD_IMAGE_MATRIX_LIMIT pixels, and a GIF of CARD_GIF_MATRIX_LIMIT.
+    expect([CARD_IMAGE_MATRIX_LIMIT, CARD_GIF_MATRIX_LIMIT]).toEqual([4096 * 4096, 960 * 960]);
     for (const [body, info] of [
       [input, { format: "image/webp", width: 4096, height: 4096 }],
       [gif, { format: "image/gif", width: 960, height: 960 }],

@@ -1,7 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { run } from "../cli/lib/main.js";
+import { NO_PROGRESS_REPEATS, run } from "../cli/lib/main.js";
 import type { StoreStub } from "../src/platform/store-client";
 import { type AccessTeam, accessToken, adminHarness, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
 import { BUILD, LATEST_MIGRATION, migratedStore } from "./helpers";
@@ -643,6 +643,51 @@ describe("kopje-admin", () => {
       expect((await cli(argv, { fetch, io })).code, argv.join(" ")).toBe(2);
     }
     expect(seen.length).toBe(count);
+  });
+
+  it(`stops media-rebuild after ${NO_PROGRESS_REPEATS} steps in a row that make no progress, and goes on after fewer`, async () => {
+    expect(NO_PROGRESS_REPEATS).toBe(3);
+    const ROW = "120000000000000001";
+    // A step that gave up its row answers the cursor it was sent; a later call may finish the row (a video whose
+    // `full` was published before its still's deadline).
+    const cases: { steps: { next: string | null; done?: boolean }[]; code: number; after?: string | null }[] = [
+      // Two unmoved answers, then the row finishes: the command goes on and ends normally.
+      { steps: [{ next: null }, { next: null }, { next: ROW, done: true }], code: 0 },
+      // Three in a row: no fourth post.
+      { steps: [{ next: null }, { next: null }, { next: null }], code: 3, after: null },
+      // Progress resets the count.
+      {
+        steps: [{ next: null }, { next: null }, { next: ROW }, { next: ROW }, { next: ROW }, { next: ROW }],
+        code: 3,
+        after: ROW,
+      },
+    ];
+    for (const { steps, code: expected, after } of cases) {
+      const posted: { after: string | null }[] = [];
+      const result = await cli(["media-rebuild"], {
+        fetch: async (_input: string, init?: RequestInit) => {
+          posted.push(
+            await new Request("https://admin.kopje.test", { method: "POST", body: init?.body ?? null }).json(),
+          );
+          const step = steps[posted.length - 1];
+          // A post past the scripted steps ends the command with an error, so a loop shows as a failure.
+          if (step === undefined) {
+            throw new Error("posted again");
+          }
+          return Response.json({ ok: true, counts: {}, problems: [], done: false, stopped: "deadline", ...step });
+        },
+      });
+      expect([result.code, posted.length]).toEqual([expected, steps.length]);
+      if (expected === 3) {
+        expect(posted.at(-1)).toEqual(expect.objectContaining({ after }));
+        expect(JSON.parse(result.out)).toMatchObject({ stopped: "no-progress" });
+        expect(result.err).toContain(
+          `${NO_PROGRESS_REPEATS} calls in a row returned the cursor they were sent (${after ?? "the start"}; the last stopped: deadline)`,
+        );
+      } else {
+        expect(JSON.parse(result.out)).toMatchObject({ stopped: null });
+      }
+    }
   });
 
   it("checks its arguments", async () => {

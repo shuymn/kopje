@@ -7,7 +7,12 @@ import { Db } from "../src/db/sql";
 import { chargeUploadJob } from "../src/domain/media";
 import { REBUILD_LEASE_MS, REBUILD_SETTLE_MS } from "../src/domain/media-rebuild";
 import { stillActivationProbe } from "../src/mastodon/media-activation";
-import { MAX_BUILDS_PER_CALL, rebuildMedia, type RebuildStep } from "../src/mastodon/media-rebuild";
+import {
+  MAX_BUILDS_PER_CALL,
+  REBUILD_CALL_BUDGET_MS,
+  rebuildMedia,
+  type RebuildStep,
+} from "../src/mastodon/media-rebuild";
 import { MAX_AV_BUILDS_PER_CALL, PROBE_RETRY_MS, REBUILD_AV_MS } from "../src/mastodon/media-rebuild-av";
 import type { StillMaker, StillOutcome } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
@@ -17,9 +22,10 @@ import { type AccessTeam, adminTeam, setTeamAccess } from "./access-helpers";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { avFixture, concat } from "./av-helpers";
+import { PNG_PLAIN } from "./fixtures/images";
 import { BUILD, deferred, migratedStore } from "./helpers";
 import { pngOf } from "./local-emoji-helpers";
-import { TestCodec } from "./media-helpers";
+import { bytes, TestCodec } from "./media-helpers";
 import { ACCESS, dumpViaRpc, memoryIO } from "./ops-helpers";
 import { type PlannedStatement, plannedSql } from "./read-helpers";
 import { encodeWebp } from "./webp-fixtures";
@@ -107,6 +113,24 @@ async function addAv(
   return { id, token, original };
 }
 
+// A complete local image row whose files are missing, as test/media-rebuild.test.ts addRow makes one, under `id` (the
+// caller's, so the candidates' order is the caller's).
+async function addImage(store: StoreStub, id: string): Promise<{ id: string; token: string }> {
+  const token = randomToken();
+  await sql(
+    store,
+    `INSERT INTO media_attachments (id, account_id, type, url, preview_url, file_token, content_type, meta, processed)
+			VALUES (?, ?, 'image', ?, ?, ?, 'image/png', '{"original":{"width":1,"height":1}}', 1)`,
+    id,
+    ACCOUNT,
+    `${ORIGIN}/media/${token}/full.png`,
+    `${ORIGIN}/media/${token}/small.png`,
+    token,
+  );
+  await env.MEDIA.put(`originals/${id}`, bytes(PNG_PLAIN));
+  return { id, token };
+}
+
 type Stored = { preview_url: string | null; meta: Record<string, unknown>; blurhash: string | null };
 
 async function rowOf(store: StoreStub, id: string): Promise<Stored> {
@@ -156,11 +180,14 @@ function maker(options: { answer?: StillOutcome; probe?: StillOutcome; onStill?:
   return { stills, calls };
 }
 
-// The media bucket, every write recorded; `afterPut` runs once a put has landed.
-function recordingBucket(afterPut?: (key: string) => Promise<void>) {
+// The media bucket, every write recorded; `afterPut` runs once a put has landed, `onHead` before each head.
+function recordingBucket(afterPut?: (key: string) => Promise<void>, onHead?: (key: string) => void) {
   const writes: string[] = [];
   const bucket = {
-    head: (key: string) => env.MEDIA.head(key),
+    head: (key: string) => {
+      onHead?.(key);
+      return env.MEDIA.head(key);
+    },
     get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
     delete: async (keys: string | string[]) => {
       writes.push(`delete ${String(keys)}`);
@@ -804,6 +831,53 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
       counts: { built: 1 },
     });
     await expectStill(store, second);
+  });
+
+  // A video or audio row's attempt, built or a video's fallback (its file copied, its preview cleared), counts for
+  // REBUILD_CALL_BUDGET_MS: past it, the image row after it is not looked at.
+  it.each([
+    ["an audio row built", "audio", { built: 1 }],
+    ["a video's fallback", "video", { fallback: 1 }],
+  ] as const)("ends the call at the time budget after %s", async (_label, kind, counts) => {
+    const store = await setup();
+    const av = await addAv(store, kind);
+    const image = await addImage(store, mediaId());
+    let clock = NOW;
+    const heads: string[] = [];
+    const { bucket } = recordingBucket(
+      (key) => {
+        if (key === `files/${av.token}/full`) {
+          clock += REBUILD_CALL_BUDGET_MS;
+        }
+        return Promise.resolve();
+      },
+      (key) => heads.push(key),
+    );
+    const step = await run(store, { bucket, now: () => clock, ...(kind === "video" ? { stills: null } : {}) });
+    expect(step).toMatchObject({ ok: true, done: false, stopped: null, next: av.id, counts });
+    expect(heads.filter((key) => key.includes(image.token))).toEqual([]);
+    expect(await env.MEDIA.head(`files/${image.token}/full`)).toBeNull();
+  });
+
+  it("starts no video or audio row past the time budget after an image row", async () => {
+    const store = await setup();
+    const image = await addImage(store, mediaId());
+    const av = await addAv(store, "audio");
+    let clock = NOW;
+    const heads: string[] = [];
+    const { bucket } = recordingBucket(
+      (key) => {
+        if (key === `files/${image.token}/small`) {
+          clock += REBUILD_CALL_BUDGET_MS;
+        }
+        return Promise.resolve();
+      },
+      (key) => heads.push(key),
+    );
+    const step = await run(store, { bucket, now: () => clock });
+    expect(step).toMatchObject({ ok: true, done: false, stopped: null, next: image.id, counts: { built: 1 } });
+    expect(heads.filter((key) => key.includes(av.token))).toEqual([]);
+    expect(await env.MEDIA.head(`files/${av.token}/full`)).toBeNull();
   });
 
   it("gives up the still at the row's deadline and keeps the lease", async () => {

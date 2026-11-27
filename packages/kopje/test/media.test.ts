@@ -6,7 +6,7 @@ import { handleScheduled } from "../src/jobs/scheduled";
 import { sweepMedia, THUMBNAIL_MUST_BE_BLANK, UPLOAD_SAVE_RESERVE_MS } from "../src/mastodon/media";
 import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
 import { retainedMetadata } from "../src/platform/image-bytes";
-import { ImageCodecError, RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
+import { IMAGE_MATRIX_LIMIT, ImageCodecError, RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
 import { restoreMarkerKey } from "../src/platform/media-files";
 import { remoteImageMetadata } from "../src/platform/remote-media-bytes";
 import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
@@ -28,6 +28,7 @@ import {
   WIDE_PNG,
 } from "./fixtures/images";
 import { BUILD } from "./helpers";
+import { pngOf } from "./local-emoji-helpers";
 import {
   type Attachment,
   bytes,
@@ -432,16 +433,38 @@ describe("POST /api/v2/media", () => {
     expect(h.codec.calls).toBe(0);
   });
 
-  it("refuses an image the service reads as another type, and one over the pixel limit (MEDIA-4, RES-1)", async () => {
+  it("refuses an image the service reads as another type (MEDIA-4)", async () => {
     const h = await users();
     h.codec.infoResult = { format: "image/svg+xml" };
     expect((await upload(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS)))).status).toBe(422);
-    const big = await users();
-    big.codec.infoResult = { format: "image/jpeg", width: 5000, height: 4000 };
-    const response = await upload(big, big.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));
-    expect(response.status).toBe(422);
-    expect(big.codec.encodeCalls).toEqual([]);
   });
+
+  // Mastodon's MAX_MATRIX_LIMIT (attachmentable.rb:8): real PNGs at it and one column past it, read by the local
+  // binding, and one pixel past it as info() reads it (RES-1).
+  it("takes an image of 33,177,600 pixels and refuses one more", async () => {
+    expect(IMAGE_MATRIX_LIMIT).toBe(7680 * 4320);
+    const h = await users();
+    const at = await uploaded(h, h.users.alice, mediaForm(await pngOf(7680, 4320), {}, "at.png", "image/png"));
+    expect(at.meta).toMatchObject({ original: { width: 3840, height: 2160 }, small: { width: 640, height: 360 } });
+    expect(h.codec.encodeCalls[0]).toEqual({ width: 3840, height: 3840, format: "image/png" });
+    // A real PNG one column past it: refused from the one info(), with no output.
+    const past = await users();
+    const response = await upload(
+      past,
+      past.users.alice,
+      mediaForm(await pngOf(7681, 4320), {}, "past.png", "image/png"),
+    );
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: "Validation failed: File dimensions exceed 33177600 pixels" });
+    expect(past.codec.infoCalls).toBe(1);
+    expect(past.codec.encodeCalls).toEqual([]);
+    const one = await users();
+    one.codec.infoResult = { format: "image/jpeg", width: IMAGE_MATRIX_LIMIT + 1, height: 1 };
+    const over = await upload(one, one.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));
+    expect(over.status).toBe(422);
+    expect(await over.json()).toEqual({ error: "Validation failed: File dimensions exceed 33177600 pixels" });
+    expect(one.codec.encodeCalls).toEqual([]);
+  }, 30_000);
 
   it("refuses a file over 16 MB without transforming it (RES-1)", async () => {
     const h = await users();

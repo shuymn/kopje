@@ -2,11 +2,12 @@ import { env } from "cloudflare:workers";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { IMAGE_MATRIX_LIMIT, type ImageType, retainedMetadata, webpSize } from "../src/platform/image-bytes";
+import { type ImageType, retainedMetadata, webpSize } from "../src/platform/image-bytes";
 import { imagesCodec } from "../src/platform/images";
 import {
   RECOGNITION_PREFIX_BYTES,
   recognizeMedia,
+  REMOTE_IMAGE_MATRIX_LIMIT,
   remoteImageMetadata,
   stripImageOutput,
   verifyRemoteImage,
@@ -138,19 +139,15 @@ describe("verifyRemoteImage: recognition", () => {
   });
 
   it("refuses an image past the pixel limit, read from its header, and keeps one at it", () => {
-    // A PNG's IHDR stating 4096 × 4097 pixels, one row past the limit (16,777,216 = 4096 × 4096).
+    // A PNG's IHDR stating 4096 × 4097 pixels, one row past REMOTE_IMAGE_MATRIX_LIMIT (16,777,216 = 4096 × 4096).
     const png = bytes(PNG_PLAIN);
     const view = new DataView(png.buffer);
     view.setUint32(16, 4096);
     view.setUint32(20, 4096);
     expect(refusal(png.slice())).toBe("accepted");
     view.setUint32(20, 4097);
-    expect(IMAGE_MATRIX_LIMIT).toBe(4096 * 4096);
+    expect(REMOTE_IMAGE_MATRIX_LIMIT).toBe(4096 * 4096);
     expect(refusal(png)).toBe("pixels");
-    // A GIF whose frame is past the limit inside a small screen.
-    const gif = bytes(GIF);
-    gif.set([0xff, 0xff, 0xff, 0xff], 13 + 6 + 8 + 5);
-    expect(refusal(gif)).toBe("pixels");
     // A JPEG's SOF0 stating 5000 × 5000.
     const jpeg = bytes(JPEG_ICC);
     const sof = jpeg.findIndex((b, i) => b === 0xff && jpeg[i + 1] === 0xc0);
@@ -160,6 +157,35 @@ describe("verifyRemoteImage: recognition", () => {
     const webp = bytes(ANIMATED_WEBP);
     webp.set([0xff, 0xff, 0xff, 0x05, 0x00, 0x00], 24);
     expect(refusal(webp)).toBe("pixels");
+  });
+});
+
+describe("verifyRemoteImage: the pixel gates of the GIF and AVIF walks (REMOTE_IMAGE_MATRIX_LIMIT)", () => {
+  it("refuses a GIF frame past the limit inside a small screen, and keeps one at it", () => {
+    // The image descriptor's width and height (little-endian), the logical screen left as it is.
+    const frame = (width: number, height: number) => {
+      const gif = bytes(GIF);
+      gif.set([width & 0xff, width >> 8, height & 0xff, height >> 8], 13 + 6 + 8 + 5);
+      return gif;
+    };
+    expect(refusal(frame(4096, 4096))).toBe("accepted");
+    expect(refusal(frame(4096, 4097))).toBe("pixels");
+    // The largest frame a GIF can state, whose area overflows a signed 32-bit product.
+    expect(refusal(frame(0xffff, 0xffff))).toBe("pixels");
+  });
+
+  it("refuses an AVIF whose later ispe is past the limit, its first one small, and keeps one at it", async () => {
+    const avif = await madeFixture("avif");
+    // A second ispe appended to ipco, after the image's own small one (which verifyRemoteImage's final check reads).
+    const secondIspe = (width: number, height: number) => {
+      const size = new Uint8Array(8);
+      const view = new DataView(size.buffer);
+      view.setUint32(0, width);
+      view.setUint32(4, height);
+      return avifWith(avif, ["meta", "iprp", "ipco"], fullBox("ispe", 0, size));
+    };
+    expect(refusal(secondIspe(4096, 4096))).toBe("accepted");
+    expect(refusal(secondIspe(4096, 4097))).toBe("pixels");
   });
 });
 

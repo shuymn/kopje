@@ -26,7 +26,7 @@ const CONFIGURATION = {
   media_attachments: {
     supported_mime_types: ["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"],
     image_size_limit: 16777216,
-    image_matrix_limit: 16777216,
+    image_matrix_limit: 33177600,
     video_size_limit: 41943040,
     video_frame_rate_limit: 60,
     video_matrix_limit: 2304000,

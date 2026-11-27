@@ -5,6 +5,11 @@ import { dumpToFile, formatBytes, importFromFile, verifyBackup } from "./command
 // The media processor's execution profiles (src/platform/media-transcoder.ts PROBE_PROFILES).
 const PROBE_PROFILES = ["normalize@standard-4", "still@standard-1"];
 
+// media-rebuild stops after this many answers in a row that are not done and return the cursor they were sent. A call
+// can make durable progress on a row and still give it up (a video's `full` published, its still past the deadline),
+// and a later call finishes it, so one such answer is not a stop; this many in a row with the cursor unmoved is.
+export const NO_PROGRESS_REPEATS = 3;
+
 const USAGE = `Usage: kopje-admin <command> [options]
 
 Commands
@@ -963,6 +968,10 @@ export async function run({
         let after = null;
         /** @type {string | null} */
         let stopped = null;
+        // Answers in a row that returned the cursor they were sent, and why the last stopped, for the message.
+        let unmoved = 0;
+        /** @type {string | null} */
+        let stalled = null;
         // Another call holds the rebuild lease (or one of ours gave up a step and kept it): wait for it, at most
         // a little longer than the lease lasts.
         let busySince = null;
@@ -1006,6 +1015,12 @@ export async function run({
           if (step.done) {
             break;
           }
+          unmoved = step.next === after ? unmoved + 1 : 0;
+          if (unmoved >= NO_PROGRESS_REPEATS) {
+            stopped = "no-progress";
+            stalled = step.stopped;
+            break;
+          }
           after = step.next;
         }
         print({ dryRun, ...counts, "quota-stopped": stopped === "quota" || stopped === "budget", stopped, problems });
@@ -1015,7 +1030,9 @@ export async function run({
               ? "stopped: Images refused for quota (9422); run it again once the allowance renews"
               : stopped === "retry"
                 ? "stopped: the media processor or Images failed for a moment (busy or unavailable); run it again later"
-                : "stopped: the monthly transformation budget (IMAGES_MONTHLY_TRANSFORMS) is spent; raise it or wait",
+                : stopped === "no-progress"
+                  ? `stopped: ${NO_PROGRESS_REPEATS} calls in a row returned the cursor they were sent (${after ?? "the start"}; the last stopped: ${stalled ?? "no reason given"}); run it again later`
+                  : "stopped: the monthly transformation budget (IMAGES_MONTHLY_TRANSFORMS) is spent; raise it or wait",
           );
         }
         return stopped !== null || problems.length > 0 ? 3 : 0;

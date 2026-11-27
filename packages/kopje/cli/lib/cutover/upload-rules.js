@@ -3,7 +3,7 @@
 
 // The largest image file, and the most pixels, an upload may have.
 export const IMAGE_SIZE_LIMIT = 16 * 1024 * 1024;
-export const IMAGE_MATRIX_LIMIT = 16_777_216;
+export const IMAGE_MATRIX_LIMIT = 33_177_600;
 
 // The long edge of the served full image and of its preview.
 export const FULL_EDGE = 3840;
