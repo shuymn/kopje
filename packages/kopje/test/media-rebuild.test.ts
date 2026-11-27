@@ -6,7 +6,7 @@ import { run } from "../cli/lib/main.js";
 import { REBUILD_LEASE_MS, REBUILD_PAGE, REBUILD_SETTLE_MS, SCAN_WINDOW } from "../src/domain/media-rebuild";
 import { handleScheduled } from "../src/jobs/scheduled";
 import { sweepMedia } from "../src/mastodon/media";
-import { MAX_BUILDS_PER_CALL, rebuildMedia } from "../src/mastodon/media-rebuild";
+import { MAX_BUILDS_PER_CALL, REBUILD_CALL_BUDGET_MS, rebuildMedia } from "../src/mastodon/media-rebuild";
 import { imageBlurhash } from "../src/platform/blurhash";
 import { EMOJI_IMAGE_LIMIT, EMOJI_PREVIEW_LIMIT } from "../src/platform/emoji-image";
 import { type EncodeOptions, IMAGE_SIZE_LIMIT, RGBA_MIN_CALL_MS } from "../src/platform/images";
@@ -351,6 +351,91 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     for (const row of rows) {
       expect(await files(row)).toEqual([true, true]);
     }
+  });
+
+  it("stops starting rows past the call's time budget after one build, and resumes after next", async () => {
+    const h = await setup();
+    const rows: Row[] = [];
+    for (let i = 0; i < 5; i++) {
+      rows.push(await addRow(h.store));
+    }
+    let clock = NOW;
+    // Each build takes 70 seconds of the call's clock, counted once its last file is written.
+    const puts = new Map<string, number>();
+    const bucket = {
+      head: (key: string) => env.MEDIA.head(key),
+      get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
+      delete: (keys: string | string[]) => env.MEDIA.delete(keys),
+      put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+        const put = await env.MEDIA.put(key, value, options);
+        if (key.endsWith("/small")) {
+          puts.set(key, (puts.get(key) ?? 0) + 1);
+          clock += 70_000;
+        }
+        return put;
+      },
+    } as unknown as R2Bucket;
+    const admin = { ...ACCESS, teamDomain: team.teamDomain };
+    const call = (after: string | null) =>
+      rebuildMedia(
+        {
+          build: BUILD,
+          store: h.store,
+          bucket,
+          images: new TestCodec(),
+          now: () => clock,
+          authority: admin,
+          monthlyTransforms: 100,
+          holder: "budgeted",
+        },
+        { after, dryRun: false },
+      );
+    expect(REBUILD_CALL_BUDGET_MS).toBe(120_000);
+    // 70 seconds after the first build the budget is not spent; 140 seconds after the second it is.
+    const first = await call(null);
+    expect(first).toMatchObject({ ok: true, done: false, stopped: null, next: rows[1]?.id, counts: { built: 2 } });
+    expect(await files(rows[2]!)).toEqual([false, false]);
+    const second = await call(first.ok ? first.next : null);
+    expect(second).toMatchObject({ ok: true, done: false, stopped: null, next: rows[3]?.id, counts: { built: 2 } });
+    const third = await call(second.ok ? second.next : null);
+    expect(third).toMatchObject({ ok: true, done: true, stopped: null, counts: { built: 1 } });
+    for (const row of rows) {
+      expect(await files(row)).toEqual([true, true]);
+      expect(puts.get(`files/${row.token}/small`)).toBe(1);
+    }
+  });
+
+  it("builds one row even when the budget passed before it", async () => {
+    const h = await setup();
+    const rows = [await addRow(h.store), await addRow(h.store)];
+    let clock = NOW;
+    // The listing answers 130 seconds into the call, past REBUILD_CALL_BUDGET_MS.
+    const store = new Proxy(h.store, {
+      get: (target, property, receiver) =>
+        property === "mediaRebuildCandidates"
+          ? async (...args: Parameters<StoreStub["mediaRebuildCandidates"]>) => {
+              const answer = await target.mediaRebuildCandidates(...args);
+              clock += 130_000;
+              return answer;
+            }
+          : (Reflect.get(target, property, receiver) as unknown),
+    });
+    const step = await rebuildMedia(
+      {
+        build: BUILD,
+        store,
+        bucket: env.MEDIA,
+        images: new TestCodec(),
+        now: () => clock,
+        authority: { ...ACCESS, teamDomain: team.teamDomain },
+        monthlyTransforms: 100,
+        holder: "late",
+      },
+      { after: null, dryRun: false },
+    );
+    expect(step).toMatchObject({ ok: true, done: false, stopped: null, next: rows[0]?.id, counts: { built: 1 } });
+    expect(await files(rows[0]!)).toEqual([true, true]);
+    expect(await files(rows[1]!)).toEqual([false, false]);
   });
 
   it("records the blurhash of the rebuilt preview's RGBA, charged as an upload's three transformations", async () => {
@@ -705,6 +790,45 @@ describe("kopje-admin media-rebuild", () => {
     expect(JSON.parse(stopped.out)).toMatchObject({ "quota-stopped": true, stopped: "quota" });
     expect(stopped.err).toContain("9422");
     expect((await cli(h, ["media-rebuild", "extra"])).code).toBe(2);
+  });
+
+  it("stops when a step makes no progress", async () => {
+    // A call that gave up its first row answers the cursor it was sent; the CLI does not post it again.
+    for (const [steps, after] of [
+      [[{ next: null }], null],
+      [[{ next: "120000000000000001" }, { next: "120000000000000001" }], "120000000000000001"],
+    ] as const) {
+      const posted: unknown[] = [];
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await run({
+        argv: ["media-rebuild"],
+        env: {
+          KOPJE_ADMIN_URL: "https://admin.kopje.test",
+          CF_ACCESS_CLIENT_ID: "id",
+          CF_ACCESS_CLIENT_SECRET: "secret",
+        },
+        io: memoryIO(),
+        stdout: { write: (text: string) => void out.push(text), isTTY: false },
+        stderr: { write: (text: string) => void err.push(text), isTTY: false },
+        fetch: async (_input: string, init?: RequestInit) => {
+          posted.push(
+            await new Request("https://admin.kopje.test", { method: "POST", body: init?.body ?? null }).json(),
+          );
+          const step = steps[posted.length - 1];
+          // A post past the scripted steps ends the command with an error, so a loop shows as a failure.
+          if (step === undefined) {
+            throw new Error("posted again");
+          }
+          return Response.json({ ok: true, counts: {}, problems: [], done: false, stopped: "deadline", ...step });
+        },
+      });
+      expect(code).toBe(3);
+      expect(posted).toHaveLength(steps.length);
+      expect(posted.at(-1)).toMatchObject({ after: steps.length === 1 ? null : steps[0].next });
+      expect(JSON.parse(out.join(""))).toMatchObject({ stopped: "no-progress" });
+      expect(err.join("")).toContain(`handled no row after ${after ?? "the start"} (deadline)`);
+    }
   });
 
   it("exits 3 and says how when the Store is not readonly", async () => {

@@ -963,6 +963,9 @@ export async function run({
         let after = null;
         /** @type {string | null} */
         let stopped = null;
+        // Why the call that made no progress stopped (deadline or lease-overrun), for the message.
+        /** @type {string | null} */
+        let stalled = null;
         // Another call holds the rebuild lease (or one of ours gave up a step and kept it): wait for it, at most
         // a little longer than the lease lasts.
         let busySince = null;
@@ -1006,6 +1009,13 @@ export async function run({
           if (step.done) {
             break;
           }
+          // A call that handled no row (it gave up its first one, which then holds the lease until it expires) is
+          // not posted again: the same row may outlast every lease.
+          if (step.next === after) {
+            stopped = "no-progress";
+            stalled = step.stopped;
+            break;
+          }
           after = step.next;
         }
         print({ dryRun, ...counts, "quota-stopped": stopped === "quota" || stopped === "budget", stopped, problems });
@@ -1015,7 +1025,9 @@ export async function run({
               ? "stopped: Images refused for quota (9422); run it again once the allowance renews"
               : stopped === "retry"
                 ? "stopped: the media processor or Images failed for a moment (busy or unavailable); run it again later"
-                : "stopped: the monthly transformation budget (IMAGES_MONTHLY_TRANSFORMS) is spent; raise it or wait",
+                : stopped === "no-progress"
+                  ? `stopped: a call handled no row after ${after ?? "the start"} (${stalled ?? "no reason given"}); run it again later`
+                  : "stopped: the monthly transformation budget (IMAGES_MONTHLY_TRANSFORMS) is spent; raise it or wait",
           );
         }
         return stopped !== null || problems.length > 0 ? 3 : 0;

@@ -90,9 +90,14 @@ import { avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./media-rebuild-a
 // Bounds per call: one listing (at most SCAN_WINDOW rows scanned, REBUILD_PAGE candidates) and at most
 // MAX_BUILDS_PER_CALL rows built, one at a time (an image original is at most 16 MB), of which at most
 // MAX_AV_BUILDS_PER_CALL are video or audio rows (each streamed, within REBUILD_AV_MS), so a call stays within a
-// request's subrequests and memory.
+// request's subrequests and memory. Once a row is built, no further row starts after REBUILD_CALL_BUDGET_MS of the
+// call: it answers with `next` at the last row handled, and the next call goes on from there. A row already started
+// runs to its end under the lease, so a call normally answers within the budget and one row (an image row, or at most
+// REBUILD_AV_MS for a video or audio row), inside the 300 seconds Node's fetch waits for response headers by default
+// (undici's headersTimeout), which is how kopje-admin posts it.
 
 export const MAX_BUILDS_PER_CALL = 10;
+export const REBUILD_CALL_BUDGET_MS = 120_000;
 
 // What a row leaves of its renewed lease unused, against clock differences between the Worker and the Store.
 const LEASE_MARGIN_MS = 60_000;
@@ -295,7 +300,8 @@ async function pass(
   control: Lease | null,
 ): Promise<RebuildStep> {
   const { build, store, bucket, now } = deps;
-  let deadline = now() + REBUILD_LEASE_MS - LEASE_MARGIN_MS;
+  const started = now();
+  let deadline = started + REBUILD_LEASE_MS - LEASE_MARGIN_MS;
   const bounded = <T>(work: () => Promise<T>) => within(work, deadline, now);
   // Renews the lease (a row then has the whole lease); the deadline follows the time the Store grants.
   const renew = async (): Promise<number> => {
@@ -365,6 +371,8 @@ async function pass(
   const problems: RebuildProblem[] = [];
   let builds = 0;
   let avBuilds = 0;
+  // Whether this call starts no further row: MAX_BUILDS_PER_CALL built, or REBUILD_CALL_BUDGET_MS spent after one.
+  const spent = () => builds >= MAX_BUILDS_PER_CALL || (builds > 0 && now() - started >= REBUILD_CALL_BUDGET_MS);
   // Images answered 9422 to a row's RGBA output: the call stops once that row is handled.
   let quota = false;
   // The last row handled; a stop leaves the row it stopped at for the next call.
@@ -413,7 +421,7 @@ async function pass(
           handled = row.id;
           continue;
         }
-        if (builds >= MAX_BUILDS_PER_CALL || avBuilds >= MAX_AV_BUILDS_PER_CALL) {
+        if (spent() || avBuilds >= MAX_AV_BUILDS_PER_CALL) {
           return step(null, false);
         }
         builds++;
@@ -479,7 +487,7 @@ async function pass(
         handled = row.id;
         continue;
       }
-      if (control !== null && builds >= MAX_BUILDS_PER_CALL) {
+      if (control !== null && spent()) {
         return step(null, false);
       }
       const original = await bounded(() =>
