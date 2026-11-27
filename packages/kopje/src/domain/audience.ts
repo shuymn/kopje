@@ -250,10 +250,11 @@ export const MAX_BLOCK_LABELS = 8;
 export const SUSPEND_BLOCKS_SQL = `EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend
 	WHERE severity = 'suspend')`;
 
-// `covered`, an account's coverage, only while a suspend block exists. A CASE, not an AND: SQLite evaluates both
-// operands of an AND in a result column (account presentation's `available`), so only the CASE skips the walk there.
-function guardedSql(covered: string): string {
-  return `(CASE WHEN ${SUSPEND_BLOCKS_SQL} THEN ${covered} ELSE 0 END)`;
+// `ruled`, a block rule's walk (an account's coverage by default), only while `guard` holds, else `otherwise`. A CASE,
+// not an AND: SQLite evaluates both operands of an AND in a result column (account presentation's `available`), so only
+// the CASE skips the walk there.
+function guardedSql(ruled: string, guard = SUSPEND_BLOCKS_SQL, otherwise = "0"): string {
+  return `(CASE WHEN ${guard} THEN ${ruled} ELSE ${otherwise} END)`;
 }
 
 // Whether the instance has a block with reject_media at all, as SUSPEND_BLOCKS_SQL: one seek of a partial index holding
@@ -314,8 +315,11 @@ function coveredSql(keys: string, copied = false): string {
 // the answer is whether a key is past DNS_NAME_UTF8_BYTES (ruledSql's "ruled"), which the ELSE branch reads without a
 // block. Its answers are therefore those of the unguarded walk for every key, with or without such a block.
 function mediaRejectedSql(keys: string): string {
-  return `(CASE WHEN ${REJECT_MEDIA_BLOCKS_SQL} THEN ${ruledSql(keys, "pr.reject_media = 1")}
-		ELSE EXISTS (WITH pk(d) AS (${keys}) SELECT 1 FROM pk WHERE (${namedKeySql("d")}) IS NOT TRUE) END)`;
+  return guardedSql(
+    ruledSql(keys, "pr.reject_media = 1"),
+    REJECT_MEDIA_BLOCKS_SQL,
+    `EXISTS (WITH pk(d) AS (${keys}) SELECT 1 FROM pk WHERE (${namedKeySql("d")}) IS NOT TRUE)`,
+  );
 }
 
 // #1560, VIS-30: whether the presenters withhold the media of the account row `x`, already in scope, 0 or 1: the rule
@@ -325,12 +329,10 @@ function mediaRejectedSql(keys: string): string {
 // of the guard's index on an instance without a block with reject_media, else at most 2 × (MAX_BLOCK_LABELS - 1)
 // block seeks.
 export function presentedMediaRejectedSql(x: string): string {
-  return presentedRuleSql(`SELECT rtrim(${x}.domain, '.') WHERE ${x}.domain IS NOT NULL`);
-}
-
-// presentedMediaRejectedSql's rule of `keys`, guarded, with a key past the bound unruled.
-function presentedRuleSql(keys: string): string {
-  return `(CASE WHEN ${REJECT_MEDIA_BLOCKS_SQL} THEN ${ruledSql(keys, "pr.reject_media = 1", false, "unruled")} ELSE 0 END)`;
+  return guardedSql(
+    ruledSql(`SELECT rtrim(${x}.domain, '.') WHERE ${x}.domain IS NOT NULL`, "pr.reject_media = 1", false, "unruled"),
+    REJECT_MEDIA_BLOCKS_SQL,
+  );
 }
 
 // Whether an instance domain block covers `host`, an expression for a normalized domain.
