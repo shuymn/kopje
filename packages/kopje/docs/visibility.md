@@ -1325,8 +1325,8 @@ conversations (no rule before `LIMIT`), and the blocks, mutes, domain blocks and
 
 Suggestions seek the R39 source and edge windows through `follows_following`, without sorting edges before the
 cutoff. `test/suggestions-bounds.test.ts` checks fresh and stale statistics, growth below and beyond the windows with a
-10-row allowance, and all R12 terms over 10,000 distinct candidates. The measured maximum is 315,844 rows; ranking
-returns at most 40 ids.
+10-row allowance, and all R12 terms over 10,000 distinct candidates, each moved to an account the presenter does not
+show, so R39 reads its target too. The measured maximum is 326,768 rows; ranking returns at most 40 ids.
 
 A cursor range is a direct range (`id < coalesce(?2, ':')`, `edgeRangeSql`), never `(?2 IS NULL OR id < ?2)`, which
 no index can seek; `test-node/range-predicates.test.ts` checks every statement in `src`.
