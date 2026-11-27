@@ -161,7 +161,7 @@ export function requestBudget(now: number): FetchBudget {
 // WebFinger, the actor, and a split-domain account's two confirming WebFingers (test/mention-resolution-store-calls.test.ts
 // measures it). A post's or an edit's resolution of unknown mention addresses spends one budget for at most
 // MENTION_ADDRESSES_PER_POST of them (RES-6).
-export const ADDRESS_MAX_FETCHES = 4;
+const ADDRESS_MAX_FETCHES = 4;
 
 export function mentionBudget(now: number): FetchBudget {
   return {

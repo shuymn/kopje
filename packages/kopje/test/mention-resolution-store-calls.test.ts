@@ -3,13 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { MENTION_ADDRESSES_PER_POST } from "../src/domain/mention-addresses";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
-import {
-  ADDRESS_MAX_FETCHES,
-  DOCUMENT_BODY_LIMIT,
-  mentionBudget,
-  REQUEST_DEADLINE_MS,
-  REQUEST_MAX_BYTES,
-} from "../src/federation/loader";
+import { DOCUMENT_BODY_LIMIT, mentionBudget, REQUEST_DEADLINE_MS, REQUEST_MAX_BYTES } from "../src/federation/loader";
 import { sha256Hex } from "../src/security/tokens";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -247,7 +241,6 @@ describe("the request's bounds (RES-6)", () => {
   it("derives mentionBudget from the unit, and four split-domain addresses spend its fetches exactly (U6)", async () => {
     // The unit's largest row above: 4 requests (the split domain, the old handle).
     const unitFetches = 4;
-    expect(ADDRESS_MAX_FETCHES).toBe(unitFetches);
     expect(mentionBudget(0)).toEqual({
       fetches: MENTION_ADDRESSES_PER_POST * unitFetches,
       bytes: REQUEST_MAX_BYTES,

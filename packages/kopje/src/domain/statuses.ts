@@ -109,10 +109,8 @@ import { countStatus } from "./instance-activity";
 import { deleteCard, enqueueCard, localCardLink } from "./link-cards";
 import { DETACHED_GRACE_MS, DOOMED_AT, liveMediaSql } from "./media";
 import {
-  MENTION_ADDRESSES_PER_POST,
   mentionGateOperation,
   type MentionGateInput,
-  referenceKeys,
   type ResolvedAddress,
   selectAddresses,
   storeMentioned,
@@ -561,7 +559,7 @@ export function convertedPost<T extends Pick<PostInput, "text" | "spoilerText" |
   return statusLength(rubyStrip(post.text), rubyStrip(post.spoilerText)) > MAX_STATUS_CHARACTERS ? null : post;
 }
 
-// PostStatusService's checks, before any write, including the raw bound; a quote permits blank text. `scheduledId` is
+// PostStatusService's checks, before writing the status, including the raw bound; a quote permits blank text. `scheduledId` is
 // the scheduled status being published, whose media it attaches (null: none). R36 is checked in the writing
 // transaction at posting, scheduling and publication (test/quote-authoring.test.ts concurrency table, row 1).
 // `storeNow`: the Store's time, at which the media are judged live (media.ts liveMediaSql). `resolved`: the accounts
@@ -583,42 +581,25 @@ export function preparePost(
   const text = preparedText(input.text);
   const spoilerText = preparedText(input.spoilerText);
   const author = localAuthor(db, accountId);
-  let parent: ReplyParent | null = null;
-  if (input.inReplyToId !== undefined) {
-    parent = replyParent(db, accountId, input.inReplyToId);
-    if (parent === null) {
-      return { status: "reply_not_found" };
-    }
-  }
-  let quoted: Quotable | null = null;
-  if (input.quotedStatusId !== undefined) {
-    quoted = quotable(db, accountId, input.quotedStatusId);
-    if (quoted === null) {
-      return { status: "quote_not_found" };
-    }
+  let targets = postTargetRows(db, accountId, input);
+  if ("status" in targets) {
+    return targets;
   }
   const media = mediaToAttach(db, accountId, input.mediaIds, null, storeNow, scheduledId);
   if (!Array.isArray(media)) {
     return media;
   }
-  storeMentioned(db, resolved, referenceKeys(text), new URL(author.uri).origin, storeNow);
+  storeMentioned(db, text, resolved, new URL(author.uri).origin, storeNow);
   // A stored actor may have taken another handle or domain, so the status replied to and the status quoted, whose
   // judgments read their authors' accounts (canView, R36), are judged again on the accounts as now stored and answered
   // as they are above.
   if (resolved.length > 0) {
-    if (input.inReplyToId !== undefined) {
-      parent = replyParent(db, accountId, input.inReplyToId);
-      if (parent === null) {
-        return { status: "reply_not_found" };
-      }
-    }
-    if (input.quotedStatusId !== undefined) {
-      quoted = quotable(db, accountId, input.quotedStatusId);
-      if (quoted === null) {
-        return { status: "quote_not_found" };
-      }
+    targets = postTargetRows(db, accountId, input);
+    if ("status" in targets) {
+      return targets;
     }
   }
+  const { parent, quoted } = targets;
   const requested = input.visibility ?? author.default_visibility;
   // PostStatusService#preprocess_attributes!: a quote of a private status (the poster's own: R36) is private.
   const visibility =
@@ -657,17 +638,30 @@ type PostTargets = { inReplyToId?: string | undefined; quotedStatusId?: string |
 
 type PostTargetsFound = "ok" | "reply_not_found" | "quote_not_found";
 
+// The status replied to and the status quoted, each null when the post names none, or the refusal of the first the
+// poster may not see (canView) or quote (R36).
+function postTargetRows(
+  db: Db,
+  accountId: string,
+  input: PostTargets,
+): { parent: ReplyParent | null; quoted: Quotable | null } | { status: Exclude<PostTargetsFound, "ok"> } {
+  const parent = input.inReplyToId === undefined ? null : replyParent(db, accountId, input.inReplyToId);
+  if (input.inReplyToId !== undefined && parent === null) {
+    return { status: "reply_not_found" };
+  }
+  const quoted = input.quotedStatusId === undefined ? null : quotable(db, accountId, input.quotedStatusId);
+  if (input.quotedStatusId !== undefined && quoted === null) {
+    return { status: "quote_not_found" };
+  }
+  return { parent, quoted };
+}
+
 // StatusesController#set_thread then #set_quoted_status: a status replied to or quoted that the poster may not see or
 // quote answers 404 before the create action validates anything and before PostStatusService looks up the
 // Idempotency-Key. preparePost rechecks both where it writes, and alone authorizes.
 export function postTargetsOf(db: Db, accountId: string, input: PostTargets): PostTargetsFound {
-  if (input.inReplyToId !== undefined && replyParent(db, accountId, input.inReplyToId) === null) {
-    return "reply_not_found";
-  }
-  if (input.quotedStatusId !== undefined && quotable(db, accountId, input.quotedStatusId) === null) {
-    return "quote_not_found";
-  }
-  return "ok";
+  const targets = postTargetRows(db, accountId, input);
+  return "status" in targets ? targets.status : "ok";
 }
 
 // postTargetsOf as a read, for a post the Worker refuses: its 404 comes before the Worker's 422, also in readonly
@@ -916,7 +910,7 @@ export function postNow(
   input: CreateStatusInput,
   applicationId: string | null,
   storeNow: number,
-  resolved: readonly ResolvedAddress[] = [],
+  resolved: readonly ResolvedAddress[],
 ): CreateStatusResult {
   const { accountId } = viewer;
   const prepared = preparePost(db, accountId, input, null, storeNow, resolved);
@@ -1130,24 +1124,11 @@ export const editStatus = userWriteOperation.atStoreTime("storeNow")<
   Acted<Status>
 >((db, input, { accountId }, viewer) => {
   const options = { ...input.present, viewer };
-  const current = ownStatus(db, accountId, input.id);
-  if (current === null || current.reblog_of_id !== null) {
-    return { status: "not_found" };
+  const checked = checkedEdit(db, accountId, input, input.storeNow);
+  if ("status" in checked) {
+    return checked;
   }
-  const sentText = storedText(input.text);
-  const sentSpoiler = storedText(input.spoilerText);
-  if (exceedsRawLength(sentText, sentSpoiler)) {
-    return { status: "invalid", error: TOO_LONG };
-  }
-  // Before the "unchanged" test: UpdateStatusService validates the media before NoChangesSubmittedError.
-  const media = mediaToAttach(db, accountId, input.mediaIds, current.id, input.storeNow);
-  if (!Array.isArray(media)) {
-    return media;
-  }
-  const pair = editedPair(db, current, sentText, sentSpoiler, media.length);
-  if ("status" in pair) {
-    return pair;
-  }
+  const { current, media, pair } = checked;
   const { quote, keepsWarning, assignedText, assignedSpoiler, text, spoilerText } = pair;
   // UpdateStatusService#update_immediate_attributes!: the warning as sent, by Rails' present?.
   const sensitive = (input.sensitive ?? false) || (!keepsWarning && !railsBlank(input.spoilerText));
@@ -1200,13 +1181,7 @@ export const editStatus = userWriteOperation.atStoreTime("storeNow")<
     return { status: "invalid", error: "Validation failed: This status has been edited too many times" };
   }
   const author = localAuthor(db, accountId);
-  storeMentioned(
-    db,
-    (input.resolved ?? []).slice(0, MENTION_ADDRESSES_PER_POST),
-    referenceKeys(text),
-    new URL(author.uri).origin,
-    input.storeNow,
-  );
+  storeMentioned(db, text, input.resolved ?? [], new URL(author.uri).origin, input.storeNow);
   const quotedId = quote?.quotedStatusId ?? null;
   const composed = compose(db, text, author, quotedId === null ? null : quoteLink(db, quotedId));
   if (exceedsStatusBounds(composed.content, spoilerText)) {
@@ -1324,6 +1299,34 @@ function editedPair(
   return { quote, keepsWarning, assignedText, assignedSpoiler, text, spoilerText };
 }
 
+type EditRefusal = { status: "not_found" } | { status: "invalid"; error: string };
+
+// The checks an edit makes before it judges whether it changes anything, in UpdateStatusService's order, at `now`: the
+// status the viewer's own and not a boost, the raw bound, the media (before the "unchanged" test: UpdateStatusService
+// validates them before NoChangesSubmittedError), then the pair written (editedPair).
+function checkedEdit(
+  db: Db,
+  accountId: string,
+  input: { id: string; text: string; spoilerText: string; mediaIds: string[] },
+  now: number,
+): { current: OwnStatus; media: string[]; pair: EditedPair } | EditRefusal {
+  const current = ownStatus(db, accountId, input.id);
+  if (current === null || current.reblog_of_id !== null) {
+    return { status: "not_found" };
+  }
+  const sentText = storedText(input.text);
+  const sentSpoiler = storedText(input.spoilerText);
+  if (exceedsRawLength(sentText, sentSpoiler)) {
+    return { status: "invalid", error: TOO_LONG };
+  }
+  const media = mediaToAttach(db, accountId, input.mediaIds, current.id, now);
+  if (!Array.isArray(media)) {
+    return media;
+  }
+  const pair = editedPair(db, current, sentText, sentSpoiler, media.length);
+  return "status" in pair ? pair : { current, media, pair };
+}
+
 // The versions the status's history holds.
 function editCount(db: Db, statusId: string): number {
   return db.first<{ n: number }>("SELECT COUNT(*) AS n FROM status_edits WHERE status_id = ?", statusId)?.n ?? 0;
@@ -1334,32 +1337,18 @@ function editLimitReached(versions: number): boolean {
   return versions + (versions === 0 ? 2 : 1) > MAX_STATUS_EDITS;
 }
 
-// The edit's step before any network work (mention-addresses.ts mentionGateOperation): the addresses an edit's text
-// would resolve, after the checks editStatus makes before it composes, each on the gate's state and the request's
-// time (the status the viewer's own and not a boost, the raw bound, the media, the pair written, the edit limit), none
-// when one refuses. Whether the edit changes anything is not judged here: an unchanged edit may fetch and store nothing
-// (docs/mastodon-deviations.md, Posting).
+// The edit's step before any network work (mention-addresses.ts mentionGateOperation): the addresses of the pair the
+// edit would write, none when checkedEdit or the edit limit refuses. Advisory: editStatus judges them again where it
+// writes. Whether the edit changes anything is left to that write, which compares the whole status: an unchanged edit
+// may fetch and store nothing (docs/mastodon-deviations.md, Posting).
 export const editMentionGate = mentionGateOperation<
   MentionGateInput & { id: string; text: string; spoilerText: string; mediaIds: string[] }
 >((db, input, { accountId }, domain) => {
-  const current = ownStatus(db, accountId, input.id);
-  if (current === null || current.reblog_of_id !== null) {
+  const checked = checkedEdit(db, accountId, input, input.now);
+  if ("status" in checked || editLimitReached(editCount(db, checked.current.id))) {
     return null;
   }
-  const sentText = storedText(input.text);
-  const sentSpoiler = storedText(input.spoilerText);
-  if (exceedsRawLength(sentText, sentSpoiler)) {
-    return null;
-  }
-  const media = mediaToAttach(db, accountId, input.mediaIds, current.id, input.now);
-  if (!Array.isArray(media)) {
-    return null;
-  }
-  const pair = editedPair(db, current, sentText, sentSpoiler, media.length);
-  if ("status" in pair || editLimitReached(editCount(db, current.id))) {
-    return null;
-  }
-  return selectAddresses(db, pair.text, accountId, domain);
+  return selectAddresses(db, checked.pair.text, accountId, domain);
 });
 
 // A policy-only change sends an Update without a history entry or edited_at; receivers apply it as an implicit update

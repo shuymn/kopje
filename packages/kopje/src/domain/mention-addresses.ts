@@ -26,7 +26,7 @@ import { mentionKey, parseStatusText } from "./status-text";
 export const MENTION_ADDRESSES_PER_POST = 4;
 
 // key: the address's mentionKey, the key resolveMentions seeks it by; username and domain as parseAddress reads them.
-export type RemoteAddress = { key: string; username: string; domain: string };
+type RemoteAddress = { key: string; username: string; domain: string };
 
 // What the gate answers for a resolution: the instance domain, the preparation of the first address's WebFinger (its
 // verdict and the signer of every signed fetch; null for none), and the addresses, in text order.
@@ -67,11 +67,13 @@ export function mentionGateOperation<I extends MentionGateInput>(
     }
     const domain = instanceDomainOf(db);
     const addresses = domain === null ? null : run(db, input, auth.viewer as UserViewer, domain);
-    return {
-      status: "ok",
-      value:
-        domain === null || addresses === null || addresses.length === 0 ? NONE : mentionStart(db, domain, addresses),
-    };
+    const first = addresses?.[0];
+    if (domain === null || addresses === null || first === undefined) {
+      return { status: "ok", value: NONE };
+    }
+    // The first WebFinger prepared (fetch-preparation.ts): the instance actor signs (DATA-7).
+    const prepared = fetchPreparation(db, null, webfingerUrl(first.username, first.domain));
+    return { status: "ok", value: { kind: "prepared", domain, prepared, addresses } };
   });
 }
 
@@ -134,37 +136,31 @@ export function selectAddresses(db: Db, text: string, accountId: string, domain:
   return selected;
 }
 
-// The resolution of `addresses`, its first WebFinger prepared (fetch-preparation.ts): the instance actor signs (DATA-7).
-function mentionStart(db: Db, domain: string, addresses: RemoteAddress[]): { kind: "prepared" } & MentionStart {
-  const [first] = addresses;
-  return {
-    kind: "prepared",
-    domain,
-    prepared: first === undefined ? null : fetchPreparation(db, null, webfingerUrl(first.username, first.domain)),
-    addresses,
-  };
-}
-
 // Whether `actor` is the account of the typed address `key`: WebFinger confirmed its handle (federation/resolve.ts
 // confirmHandle, which requires WebFinger at that address to name the actor's id), and that handle is the address.
 export function isOwnAccount(key: string, actor: RemoteActorInput): boolean {
   return actor.confirmed !== null && mentionKey(actor.confirmed) === key;
 }
 
-// Stores, before a post or an edit composes, each resolved account that is its address's own (isOwnAccount) and whose
-// key is a reference of the text (`keys`), each in its own savepoint (isolated): none when another actor already holds
+// Stores, before a post or an edit composes, each of the first MENTION_ADDRESSES_PER_POST resolved accounts that is its
+// address's own (isOwnAccount) and whose key is a reference of `text`, each in its own savepoint (isolated): none when another actor already holds
 // the address (the holder is mentioned, never invalidated by this path), else upsertRemoteActor under the revision read
 // before the fetch (ID-1; a superseded, covered or refused document stores nothing, a frozen row takes only its routing
 // refresh). Composing then seeks every reference by its key (statuses.ts resolveMentions) and finds whatever row holds
 // the address, under mentionableBySql (R17). `origin`: the author's (ID-5).
 export function storeMentioned(
   db: Db,
+  text: string,
   resolved: readonly ResolvedAddress[],
-  keys: ReadonlySet<string>,
   origin: string,
   now: number,
 ): void {
-  for (const { key, actor, revision } of resolved) {
+  if (resolved.length === 0) {
+    return;
+  }
+  // The keys of the references the text makes, as composing seeks them.
+  const keys = new Set(parseStatusText(text).mentions.map(mentionKey));
+  for (const { key, actor, revision } of resolved.slice(0, MENTION_ADDRESSES_PER_POST)) {
     const confirmed = actor.confirmed;
     if (!keys.has(key) || confirmed === null || !isOwnAccount(key, actor)) {
       continue;
@@ -182,9 +178,4 @@ export function storeMentioned(
       }
     });
   }
-}
-
-// The keys of the references `text` makes, as composing seeks them.
-export function referenceKeys(text: string): Set<string> {
-  return new Set(parseStatusText(text).mentions.map(mentionKey));
 }

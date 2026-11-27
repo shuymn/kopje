@@ -18,7 +18,6 @@ import { allocateLocalId } from "./ids";
 import { instanceOrigin } from "./instance-domain";
 import { DETACHED_GRACE_MS } from "./media";
 import {
-  MENTION_ADDRESSES_PER_POST,
   mentionGateOperation,
   type MentionGateInput,
   type ResolvedAddress,
@@ -393,7 +392,7 @@ export type ScheduleInput = CreateStatusInput & {
 export type ScheduleResult = CreateStatusResult | { status: "scheduled"; value: ScheduledStatus };
 
 // The scheduled status the key reserved within its hour (`now`'s), unless its params cannot be read: a repeat of the key
-// answers it. One whose params cannot be read answers as none.
+// answers it.
 function keyedScheduled(db: Db, accountId: string, key: string, now: number): ScheduledStatus | undefined {
   const scheduled = db.first<ScheduledRow>(
     `SELECT ${COLUMNS} FROM scheduled_statuses ss WHERE ${scheduledOwnSql("ss", "?1")} AND ss.client_key = ?2
@@ -447,18 +446,16 @@ export const postStatus = userWriteOperation.atStoreTime("storeNow")<
     }
     releaseKey(db, accountId, input.idempotencyKey);
   }
-  const { resolved: sent, scheduleNow = input.now, ...sentPost } = input;
+  const { resolved = [], scheduleNow = input.now, ...sentPost } = input;
   const post = convertedPost(sentPost);
   if (post === null) {
     return { status: "invalid", error: TOO_LONG };
   }
-  const resolved = (sent ?? []).slice(0, MENTION_ADDRESSES_PER_POST);
   if (!schedules(post.scheduledAt, scheduleNow)) {
     return postNow(db, viewer, post, applicationId, input.storeNow, resolved);
   }
   const scheduledAt = post.scheduledAt;
-  // As PostStatusService#schedule_status!: allowed_mentions is kept in the params and checked at publication. The
-  // resolved accounts are stored now; publication finds them by the addresses its params keep as sent.
+  // As PostStatusService#schedule_status!: allowed_mentions is kept in the params and checked at publication.
   const prepared = preparePost(db, accountId, { ...post, allowedMentions: undefined }, null, input.storeNow, resolved);
   if (!isPrepared(prepared)) {
     return refusedPost(db, prepared, presentFor(input.present, accountId));
@@ -509,11 +506,9 @@ export const postStatus = userWriteOperation.atStoreTime("storeNow")<
   return { status: "scheduled", value };
 });
 
-// The post's step before any network work (mention-addresses.ts mentionGateOperation): the addresses its text would
-// resolve, after the checks postStatus makes before it composes, each on the gate's state and the request's time (the
-// status replied to and quoted, a scheduled_at that is no time, a repeat of the key, the raw bound and a blank text's
-// length, the media, a refused schedule), none when one refuses or repeats; then the text the post would be written
-// with (convertedPost: a blank text takes its warning).
+// The post's step before any network work (mention-addresses.ts mentionGateOperation): the addresses of the text the
+// post would be written with (convertedPost), none when a check postStatus makes before it composes refuses or the key
+// repeats. Advisory: postStatus judges every check again where it writes.
 export const postMentionGate = mentionGateOperation<
   MentionGateInput &
     Pick<
