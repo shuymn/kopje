@@ -445,13 +445,14 @@ against their own instance. TLS is assumed between all parties.
 - **ID-4: `Move` requires the alias.** A `Move` is honoured only if the freshly fetched target lists the source in
   `alsoKnownAs`. _Enforced (main):_ `prepare` in `src/federation/inbound.ts`, `move` in
   `src/domain/inbox.ts`; `test/inbox.test.ts` ("ignores a Move whose target does not list the actor"). The stored
-  move (`accounts.moved_to_account_id`, shown as `Account#moved`) is display-only, the source's own claim as in
-  Mastodon: an actor document's `movedTo` may name any stored account, and a verified `Move` sets it when first
-  processed; followers move only on a verified `Move` (`upsertRemoteActor` in `src/domain/remote-actors.ts` and `move`
-  in `src/domain/inbox.ts`; `test/inbox.test.ts` ("account moves")). Setting it issues a new revision of the source
-  (ID-1), so a document of the source fetched before the `Move` committed never clears it, a stale-author refresh
-  included; a target stored after its revision was read answers 503, having written nothing
-  (`test/inbox-actor-revision.test.ts`).
+  move (`accounts.moved_to_account_id`, shown as `Account#moved`) is the source's own claim as in Mastodon, and changes
+  only its display and whether it may be followed (R21 in `docs/visibility.md`): an actor document's `movedTo` may name
+  any stored account, and a verified `Move` sets it when first processed; followers move only on a verified `Move`,
+  each judged by R21, so none moves to a target that has itself moved (`upsertRemoteActor` in
+  `src/domain/remote-actors.ts` and `move` in `src/domain/inbox.ts`; `test/inbox.test.ts` ("account moves")). Setting
+  it issues a new revision of the source (ID-1), so a document of the source fetched before the `Move` committed never
+  clears it, a stale-author refresh included; a target stored after its revision was read answers 503, having written
+  nothing (`test/inbox-actor-revision.test.ts`).
 - **ID-5: local documents come from stored data only.** Actor ids derive from the domain fixed at setup and the stored
   username's exact spelling; public keys come from `local_accounts.pubkey`. Another spelling or host answers 404 and has
   no key pair. An actor's `webfinger` handle names the host of the actor id its document declares, on the actor endpoint

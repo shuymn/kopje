@@ -504,6 +504,22 @@ describe("the sign-in round trip (WEB-4)", () => {
     ]);
   });
 
+  // R21: the follow service refuses a moved account (followAccount's forbidden), which the page shows as refused.
+  it("refuses an account that has moved, and requests it once its move is cleared", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    const credential = { tokenHash: await sha256Hex(browser.session), scope: "write:follows" as const, now: NOW };
+    const moved = await seedAccount(t.store, { username: "moved", domain: "remote.example" });
+    const target = await seedAccount(t.store, { username: "target", domain: "remote.example" });
+    await sql(t.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", target, moved);
+    const input = { credential, target: moved, now: NOW, present: { origin: ORIGIN } };
+    const run = async () => (await plannedRun(t, /^$/, webFollow, input, true)).result;
+    expect(await run()).toMatchObject({ status: "ok", value: { outcome: "refused", account: { id: moved } } });
+    expect(await sql(t.store, "SELECT 1 FROM follows WHERE target_account_id = ?", moved)).toEqual([]);
+    await sql(t.store, "UPDATE accounts SET moved_to_account_id = NULL WHERE id = ?", moved);
+    expect(await run()).toMatchObject({ status: "ok", value: { outcome: "requested", account: { id: moved } } });
+  });
+
   it("reads the follow state by its key (follows_pair), with statistics older than the follows", async () => {
     const t = await world();
     const browser = await signIn(t);

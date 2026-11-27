@@ -41,6 +41,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- Following an account that has moved answers 403, as Mastodon does, also to change the options of an existing follow;
+  a held follow request to it is not sent, and a `Move` keeps the followers of an account whose target has itself
+  moved.
 - A local avatar is cropped to 400×400 around its centre, a smaller one enlarged, and a header is scaled down to
   Mastodon's 750,000-pixel box in its aspect ratio, whether set through the API, the settings page or rebuilt by
   `kopje-admin media-rebuild`. An animation that Cloudflare Images returns in another type or shape is set as a still.

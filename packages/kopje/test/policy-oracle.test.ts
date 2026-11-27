@@ -181,6 +181,35 @@ describe("the policy fragments agree with the model of their rules", () => {
       (m, viewer, x) => m.followableBy(x, viewer),
     ));
 
+  // A fixed world in which a remote account some viewer could otherwise follow has moved, so the moved branch of both
+  // sides runs whatever the generator drew.
+  it("followableBySql (R21) over a world whose otherwise followable account has moved", async () => {
+    const base: World = { ...fc.sample(worldArb, { seed: 1561, numRuns: 1 })[0]!, moves: [] };
+    const unmoved = new PolicyModel(base);
+    const from = base.accounts.findIndex(
+      (account, x) => !account.local && base.accounts.some((_, viewer) => unmoved.followableBy(x, viewer)),
+    );
+    expect(from).toBeGreaterThan(-1);
+    const world: World = { ...base, moves: [{ from, to: 0 }] };
+    const query = `SELECT o.id AS x, a.id AS y FROM accounts o CROSS JOIN accounts a WHERE ${followableBySql("a.id", "o.id")}`;
+    const { stored, actual } = await runInDurableObject(store, (_instance, state) => {
+      writeWorld(state.storage.sql, world);
+      const db = new Db(state.storage.sql);
+      return {
+        stored: db.all("SELECT id, moved_to_account_id FROM accounts WHERE moved_to_account_id IS NOT NULL"),
+        actual: pairs(query)(db, world),
+      };
+    });
+    expect(stored).toEqual([{ id: accountId(from), moved_to_account_id: accountId(0) }]);
+    const followable = (m: PolicyModel) =>
+      accounts(world).flatMap((viewer) =>
+        accounts(world).flatMap((x) => (m.followableBy(x, viewer) ? [`${name(world, viewer)} ${name(world, x)}`] : [])),
+      );
+    const expected = followable(new PolicyModel(world));
+    expect(actual.toSorted()).toEqual(expected.toSorted());
+    expect(followable(unmoved).filter((pair) => !expected.includes(pair)).length).toBeGreaterThan(0);
+  });
+
   it("inDomainSql", () =>
     agree(
       (db, world) => {

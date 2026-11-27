@@ -321,10 +321,10 @@ function followTarget(db: Db, viewerId: string, target: string): TargetRow | nul
 // remote target gets a pending request (a remote Accept arrives over federation). A local target is notified
 // (follow, or follow_request when locked) in the same transaction; a remote target is sent a Follow (its id kept in
 // follows.uri, which the remote Accept must match) and stays pending until that Accept arrives (VIS-8, VIS-9). As
-// in Mastodon's FollowService, a suspended target is not found, and a block either way or a domain block of the
-// viewer forbids the follow. A new follow or request past the follow limit is refused (422); changing the options of
-// an existing one is not, as the validator runs on create only. The follow API and /authorize_interaction's follow
-// (domain/interaction.ts) both run it.
+// in Mastodon's FollowService, a suspended target is not found, and R21 (a move of the target, a block either way, a
+// domain block of the viewer) forbids the follow before an existing one is read. A new follow or request past the
+// follow limit is refused (422); changing the options of an existing one is not, as the validator runs on create only.
+// The follow API and /authorize_interaction's follow (domain/interaction.ts) both run it.
 export function followAccount(db: Db, input: FollowInput, viewerId: string): FollowResult {
   const target = followTarget(db, viewerId, input.target);
   if (target === null || target.available === 0) {

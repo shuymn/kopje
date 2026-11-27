@@ -612,6 +612,12 @@ Accounts (the `Account` and credential account entities):
   `process_account_service.rb:103`); Kopje stores every fresh document it fetches, its `movedTo` included, unless a
   newer store superseded it (below). A local account never has one: Kopje sends no `Move`. Followers move only on a
   verified `Move` whose target lists the source.
+- An account that has moved cannot be followed: the follow API answers 403 `This action is not allowed`, also to change
+  the options of an existing follow, after the 404 of an unavailable account, as Mastodon's `FollowService` does
+  (`follow_service.rb:23-24,57`), and `/authorize_interaction` shows the follow refused. A move counts when it names a
+  stored account, so an imported id naming none is no move, as `moved` shows it. A `Move` whose target has itself moved
+  leaves each follower on the source with its lists, as Mastodon's `UnfollowFollowWorker` does, and a follow request
+  held for an account that has moved since is not sent while the move lasts.
 - A remote actor's document is stored only while the Store revision read before its fetch holds (ID-1 in
   `docs/threat-model.md`): a document fetched before another store of the actor committed is not stored. Mastodon
   serializes the processing of one account (`process_account_service.rb:30`) but stores whatever document it processes

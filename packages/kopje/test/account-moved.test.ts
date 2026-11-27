@@ -2,7 +2,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { selectSql } from "../src/db/columns";
+import { ACCOUNTS_ID_INDEX } from "../src/db/indexes";
 import { Db } from "../src/db/sql";
+import { follow } from "../src/domain/account-actions";
 import {
   MOVED_ACCOUNT_CAPS,
   MOVED_ACCOUNT_COLUMNS,
@@ -17,13 +19,15 @@ import { jsonBytes } from "../src/domain/answer-budget";
 import { purgeBatch, receiveActivity } from "../src/domain/inbox";
 import { actorState, type RemoteActorInput } from "../src/domain/remote-actors";
 import { DOMAIN_BYTES } from "../src/platform/identity-bounds";
-import { setSetting, sql } from "./api-helpers";
+import { sha256Hex } from "../src/security/tokens";
+import { bearer, json, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { customEmoji } from "./emoji-fixtures";
 import { actorDefaults, confirmedAs } from "./inbox-helpers";
 import {
   observedSql,
   type PlannedStatement,
+  plannedRun,
   plannedSql,
   remoteAccounts,
   scansOf,
@@ -200,6 +204,147 @@ describe("moved", () => {
     await move(toBob, remote);
     const nested = (await shown(toBob)).moved!;
     expect("roles" in nested || "noindex" in nested).toBe(false);
+  });
+});
+
+// R21 (FollowService#following_not_allowed?, Mastodon v4.7.5 follow_service.rb:24,57): a moved account cannot be
+// followed, judged before an existing follow is read (:26-30), so its options cannot be changed either; an
+// unavailable one is not found first (:23). Unfollowing is not judged.
+describe("following a moved account", () => {
+  type Edge = { state: string; show_reblogs: number; notify: number; languages: string | null };
+  const followOf = async (h: Awaited<ReturnType<typeof fixture>>["h"], target: string) =>
+    (
+      await sql<Edge>(
+        h.store,
+        "SELECT state, show_reblogs, notify, languages FROM follows WHERE account_id = ? AND target_account_id = ?",
+        h.users.bob.id,
+        target,
+      )
+    )[0];
+  const recorded = (h: Awaited<ReturnType<typeof fixture>>["h"], type: string) =>
+    sql<{ object: string }>(
+      h.store,
+      `SELECT json_extract(body, '$.activity.object') AS object FROM outbound_activities
+			WHERE json_extract(body, '$.activity.type') = ? ORDER BY id`,
+      type,
+    );
+  const post = (h: Awaited<ReturnType<typeof fixture>>["h"], path: string, body: Record<string, unknown> = {}) =>
+    h.request(path, bearer(h.users.bob.token, json(body)));
+  const OPTIONS = { reblogs: false, notify: true, languages: ["en"] };
+  const INBOX = { inbox_url: "https://remote.example/inbox" };
+
+  it("answers 403 and writes and records nothing, and follows the same account once its move is cleared", async () => {
+    const { h, account, move } = await fixture();
+    const [b, c] = [await account(INBOX), await account()];
+    await move(b, c);
+    const refused = await post(h, `/api/v1/accounts/${b}/follow`);
+    expect([refused.status, await refused.json()]).toEqual([403, { error: "This action is not allowed" }]);
+    expect(await followOf(h, b)).toBeUndefined();
+    expect(await recorded(h, "Follow")).toEqual([]);
+    await sql(h.store, "UPDATE accounts SET moved_to_account_id = NULL WHERE id = ?", b);
+    const followed = await post(h, `/api/v1/accounts/${b}/follow`);
+    expect([followed.status, await followed.json()]).toEqual([200, expect.objectContaining({ requested: true })]);
+    expect(await followOf(h, b)).toMatchObject({ state: "pending" });
+    expect((await recorded(h, "Follow")).length).toBe(1);
+  });
+
+  it("keeps the options of an accepted or pending follow as stored, and changes them once the move is cleared", async () => {
+    for (const state of ["accepted", "pending"] as const) {
+      const { h, account, move } = await fixture();
+      const [b, c] = [await account(INBOX), await account()];
+      await sql(
+        h.store,
+        `INSERT INTO follows (account_id, target_account_id, state, show_reblogs, notify, languages)
+				VALUES (?, ?, ?, 1, 0, NULL)`,
+        h.users.bob.id,
+        b,
+        state,
+      );
+      await move(b, c);
+      const refused = await post(h, `/api/v1/accounts/${b}/follow`, OPTIONS);
+      expect([state, refused.status]).toEqual([state, 403]);
+      expect(await followOf(h, b)).toEqual({ state, show_reblogs: 1, notify: 0, languages: null });
+      await sql(h.store, "UPDATE accounts SET moved_to_account_id = NULL WHERE id = ?", b);
+      expect([state, (await post(h, `/api/v1/accounts/${b}/follow`, OPTIONS)).status]).toEqual([state, 200]);
+      expect(await followOf(h, b)).toEqual({ state, show_reblogs: 0, notify: 1, languages: JSON.stringify(["en"]) });
+    }
+  });
+
+  it("unfollows a moved account and records its Undo(Follow)", async () => {
+    const { h, account, move } = await fixture();
+    const [b, c] = [await account(INBOX), await account()];
+    await post(h, `/api/v1/accounts/${b}/follow`);
+    expect(await followOf(h, b)).toMatchObject({ state: "pending" });
+    await move(b, c);
+    const unfollowed = await post(h, `/api/v1/accounts/${b}/unfollow`);
+    expect([unfollowed.status, await unfollowed.json()]).toEqual([
+      200,
+      expect.objectContaining({ following: false, requested: false }),
+    ]);
+    expect(await followOf(h, b)).toBeUndefined();
+    expect((await recorded(h, "Undo")).length).toBe(1);
+  });
+
+  it("answers 404 for an unavailable moved account, before its move is judged", async () => {
+    const { h, account, move } = await fixture();
+    const [b, c] = [await account(INBOX), await account()];
+    await move(b, c);
+    await sql(
+      h.store,
+      "UPDATE accounts SET suspended_at = '2026-01-01', suspension_source = 'account' WHERE id = ?",
+      b,
+    );
+    expect((await post(h, `/api/v1/accounts/${b}/follow`)).status).toBe(404);
+  });
+
+  it("follows an account whose imported move names no stored account", async () => {
+    const { h, account, move } = await fixture();
+    const b = await account(INBOX);
+    await move(b, "999999999999999999");
+    expect((await post(h, `/api/v1/accounts/${b}/follow`)).status).toBe(200);
+    expect(await followOf(h, b)).toMatchObject({ state: "pending" });
+  });
+
+  // RES-7: the move is two key lookups of accounts, with statistics taken while no account had moved and after half
+  // of them have.
+  it("reads the move by key with statistics older than the moves", async () => {
+    const { h, account, move } = await fixture();
+    const [b, c] = [await account(INBOX), await account()];
+    const credential = { tokenHash: await sha256Hex(h.users.bob.token), scope: "write:follows" as const, now: NOW };
+    await remoteAccounts(h, 20, 50);
+    const { after } = await staleStatistics(h, {
+      capture: async () => {
+        const { result, plans } = await plannedRun(
+          h,
+          /AS followable/,
+          follow,
+          { credential, target: b, now: NOW },
+          true,
+        );
+        await sql(h.store, "DELETE FROM follows");
+        await sql(h.store, "DELETE FROM outbound_activities");
+        return { result, plans };
+      },
+      grow: async () => {
+        await sql(
+          h.store,
+          `UPDATE accounts SET moved_to_account_id = CAST(CAST(id AS INTEGER) + 1 AS TEXT)
+					WHERE domain LIKE 'd%.example' AND CAST(id AS INTEGER) % 2 = 0`,
+        );
+        await move(b, c);
+      },
+    });
+    expect(after.result).toMatchObject({ status: "ok", value: { status: "forbidden" } });
+    expect(after.plans).toHaveLength(1);
+    const [{ plan }] = after.plans as [PlannedStatement];
+    for (const alias of ["pmv", "pmt"]) {
+      const seek = new RegExp(`^SEARCH ${alias} USING (COVERING )?INDEX ${ACCOUNTS_ID_INDEX} \\(id=\\?\\)$`);
+      expect(
+        plan.some((detail) => seek.test(detail)),
+        plan.join("\n"),
+      ).toBe(true);
+    }
+    expect(scansOf(plan, ["pmv", "pmt"])).toEqual([]);
   });
 });
 

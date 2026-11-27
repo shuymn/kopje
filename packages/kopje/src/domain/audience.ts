@@ -425,10 +425,19 @@ export function mentionableBySql(x: string, author: string): string {
   return `(${availableSql(x)} AND NOT ${blockedSql(author, x)})`;
 }
 
-// R21 (FollowService): whether `viewer` may follow the account `x`: it is available and someone else, neither blocks
-// the other, and the viewer does not block its domain.
+// Whether the account `x` has moved (Account#moved?): its moved_to_account_id names a stored account, as the presenter
+// shows one (accounts.ts presentAccount), so an imported id naming none is no move. Two key lookups.
+function movedSql(x: string): string {
+  return `EXISTS (SELECT 1 FROM main.accounts pmv INDEXED BY ${ACCOUNTS_ID_INDEX}
+		CROSS JOIN main.accounts pmt INDEXED BY ${ACCOUNTS_ID_INDEX} ON pmt.id = pmv.moved_to_account_id
+		WHERE pmv.id = ${x})`;
+}
+
+// R21 (FollowService): whether `viewer` may follow the account `x`: it is available and someone else, has not moved,
+// neither blocks the other, and the viewer does not block its domain.
 export function followableBySql(x: string, viewer: string): string {
-  return `(${availableSql(x)} AND ${x} <> ${viewer} AND NOT ${blocksSql(x, viewer)} AND NOT ${blockedSql(viewer, x)})`;
+  return `(${availableSql(x)} AND ${x} <> ${viewer} AND NOT ${movedSql(x)} AND NOT ${blocksSql(x, viewer)}
+		AND NOT ${blockedSql(viewer, x)})`;
 }
 
 // R14 (Account::Search): whether `viewer` finds the account `x` by account search or by search resolution: it is
