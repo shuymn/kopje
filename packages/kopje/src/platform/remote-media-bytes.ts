@@ -27,10 +27,10 @@ import {
 // Every walk reads lengths and tags only and visits each byte a bounded number of times, so its work is linear in its
 // input (RES-2), and no output is larger than its input.
 
-// The most pixels a remote image may hold, as its headers state them (a GIF's largest frame): 16,777,216 (4096×4096),
-// Mastodon's limit through v4.1 and Kopje's own for remote files, which a remote server chose and the media rounds
-// cache within their own budgets. Nothing advertises it, and local uploads have their own (IMAGE_MATRIX_LIMIT,
-// platform/images.ts).
+// The most pixels a remote image may hold, as its headers state them (a GIF's logical screen and each of its frames, an
+// AVIF's every ispe, and the size verifyRemoteImage reads for any type): 16,777,216 (4096×4096), Mastodon's limit
+// through v4.1 and Kopje's own for remote files, which a remote server chose and the media rounds cache within their
+// own budgets. Nothing advertises it, and local uploads have their own (IMAGE_MATRIX_LIMIT, platform/images.ts).
 export const REMOTE_IMAGE_MATRIX_LIMIT = 16_777_216;
 
 // How much of a streamed file is read before its category is decided.
