@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 
-import { DOOMED_AT, profileReleaseSql, TRANSFORMS_PER_UPLOAD } from "../src/domain/media";
+import { DOOMED_AT, PROFILE_IMAGES, profileReleaseSql, TRANSFORMS_PER_UPLOAD } from "../src/domain/media";
 import { API_BODY_LIMIT, FILE_PART_SLACK } from "../src/mastodon/params";
 import * as dataUri from "../src/platform/data-uri";
 import { isAnimated } from "../src/platform/image-bytes";
@@ -510,7 +510,7 @@ describe("update_credentials: data URIs", () => {
 });
 
 // A local avatar is cropped to 400×400 around its centre (a smaller one enlarged), and a header scaled down to
-// Mastodon's 750,000-pixel box in its aspect ratio (platform/images.ts fullBox), through the API and the settings page.
+// Mastodon's 750,000-pixel box in its aspect ratio (platform/images.ts fullEdge), through the API and the settings page.
 describe("update_credentials: the avatar's and header's shape", () => {
   const LEFT = [0, 160, 0] as const;
   const CENTRE = [255, 0, 0] as const;
@@ -870,6 +870,25 @@ describe("the settings page", () => {
     // Refused from info() alone: neither upload started an output.
     expect(h.codec.encodeCalls).toEqual([]);
     expect(await profile(h.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
+    expect(h.doorbell).not.toHaveBeenCalled();
+  });
+
+  // As update_credentials, whose write app.ts rings for: the Update(Person) is delivered at once, not at the next cron.
+  it("rings the delivery doorbell once for each avatar and header it sets", async () => {
+    const h = await setup();
+    const browser = await signIn(h);
+    for (const [i, kind] of PROFILE_IMAGES.entries()) {
+      const response = await h.request(`/settings/${kind}`, {
+        method: "POST",
+        headers: { cookie: browser.cookie, origin: ORIGIN },
+        body: formOf([
+          ["csrf", await csrfOf(h, browser)],
+          ["file", png()],
+        ]),
+      });
+      expect(response.status, kind).toBe(303);
+      expect(h.doorbell, kind).toHaveBeenCalledTimes(i + 1);
+    }
   });
 
   it("refuses an expired session without reading the body", async () => {

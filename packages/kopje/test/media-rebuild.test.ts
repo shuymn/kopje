@@ -270,7 +270,7 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
 
   it("gives a rebuilt profile row its account's statics after its files are written", async () => {
     const h = await setup({ codec: shapedFramesCodec() });
-    const [second, third] = (await localAccounts(h.store, 2)) as [string, string];
+    const [second, third, fourth] = (await localAccounts(h.store, 3)) as [string, string, string];
     const animatedAvatar = await addRow(h.store, { contentType: "image/webp", original: bytes(ANIMATED_WEBP) });
     const animatedHeader = await addRow(h.store, {
       contentType: "image/webp",
@@ -278,19 +278,26 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
       account: second,
     });
     const both = await addRow(h.store, { account: third });
+    const stillAvatar = await addRow(h.store, { account: fourth });
     const plain = await addRow(h.store);
     await nameImages(h.store, ACCOUNT, { avatar: animatedAvatar });
     await nameImages(h.store, second, { header: animatedHeader });
     await nameImages(h.store, third, { avatar: both, header: both });
-    // Old statics of a still row both images name: both are cleared.
+    await nameImages(h.store, fourth, { avatar: stillAvatar });
+    // Old statics of a still row both images name, and of a still row only the avatar names: each is cleared.
     await sql(
       h.store,
       `UPDATE accounts SET avatar_static_url = 'https://kopje.test/media/old/small.webp',
 				header_static_url = 'https://kopje.test/media/old/small.webp' WHERE id = ?`,
       third,
     );
+    await sql(
+      h.store,
+      "UPDATE accounts SET avatar_static_url = 'https://kopje.test/media/old/small.webp' WHERE id = ?",
+      fourth,
+    );
     const step = await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>();
-    expect(step.counts).toMatchObject({ built: 4 });
+    expect(step.counts).toMatchObject({ built: 5 });
     expect(await meta(h.store, animatedAvatar.id)).toEqual({
       original: { width: 400, height: 400 },
       small: { width: 400, height: 400 },
@@ -302,6 +309,7 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
       { id: ACCOUNT, avatar_static_url: preview(animatedAvatar), header_static_url: null },
       { id: second, avatar_static_url: null, header_static_url: preview(animatedHeader) },
       { id: third, avatar_static_url: null, header_static_url: null },
+      { id: fourth, avatar_static_url: null, header_static_url: null },
     ]);
     for (const row of [animatedAvatar, animatedHeader]) {
       const served = async (variant: string) =>

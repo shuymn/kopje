@@ -10,10 +10,11 @@ import { INTERACTION_PATH, interactionTarget, SESSION_LIFETIME_MS, WEB_SCOPES } 
 import { notSetUp } from "../federation/setup-gate";
 import { credentialChanges, profileFiles, storeProfileImages, UPLOAD_EXPIRED } from "../mastodon/accounts";
 import { noteActivitySoon } from "../mastodon/activity";
-import { type ApiDeps, present, requestJobsSoon, storeCall } from "../mastodon/context";
+import { afterResponse, type ApiDeps, present, requestJobsSoon, storeCall } from "../mastodon/context";
 import { fullMessage, validationBody } from "../mastodon/errors";
 import { discardProfileUploads, type ProfileUpload, sweepSoon } from "../mastodon/media";
 import { API_BODY_LIMIT, Params, readParams } from "../mastodon/params";
+import { errorFields } from "../platform/error-message";
 import { PROFILE_IMAGE_LIMIT } from "../platform/images";
 import { decidesHost, offDomain } from "../platform/instance-host";
 import type { Scope } from "../security/scopes";
@@ -46,6 +47,25 @@ import { PRIVATE_HEADERS } from "./web-headers";
 
 export type WebEnv = { Bindings: Env; Variables: { domain: string; site: Site } };
 type WebContext = Context<WebEnv>;
+
+export type WebDeps = ApiDeps & {
+  // Rings the delivery doorbell (app.ts): a saved profile or image records an Update(Person) to deliver.
+  doorbell?: (env: Env) => Promise<void>;
+};
+
+// A profile change may have recorded an Update(Person) to deliver: ring once it has committed, as app.ts does after an
+// API write. A lost ring only delays it until the cron.
+function ringSoon(c: WebContext, deps: WebDeps): void {
+  const ring = deps.doorbell?.(c.env);
+  if (ring !== undefined) {
+    afterResponse(
+      c,
+      ring.catch((error: unknown) => {
+        console.error({ event: "kopje.delivery.doorbell.failed", ...errorFields(error) });
+      }),
+    );
+  }
+}
 
 type PageStatus = 200 | 400 | 403 | 404 | 410 | 422 | 429;
 
@@ -130,7 +150,7 @@ export function siteGate(deps: ApiDeps) {
   );
 }
 
-export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
+export function webRoutes(deps: WebDeps): Hono<WebEnv> {
   const app = new Hono<WebEnv>();
   const setup = siteGate(deps);
 
@@ -381,6 +401,7 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
       if (updated.status !== "ok") {
         return toLogin(c);
       }
+      ringSoon(c, deps);
       if (updated.accepting) {
         requestJobsSoon(c, deps);
       }
@@ -455,6 +476,7 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
         }
         committed = true;
         sweepSoon(c, deps);
+        ringSoon(c, deps);
         return redirect(`/settings?notice=${kind}`);
       } catch (error) {
         // The session ended during the upload.

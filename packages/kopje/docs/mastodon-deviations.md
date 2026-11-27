@@ -236,15 +236,16 @@ settings page):
   down into a square whose side is the long edge of Mastodon's box, so an Exif-rotated image is boxed the same way;
   the result matches Mastodon's up to a pixel of rounding (896×864 is 882×851 here, 881×850 in Mastodon). Every image
   keeps within 3,840 px on its long edge, which Mastodon's box does not: 8000×50 is 3840×24 here and 8000×50 in
-  Mastodon, 8000×200 is 3840×96 here and 5477×137 in Mastodon. An animation Cloudflare Images does not resize into
-  that shape is set as a still of it.
+  Mastodon, 8000×200 is 3840×96 here and 5477×137 in Mastodon. When Cloudflare Images returns an animation's full
+  image in another type or not of that shape, it is made again as a still of that shape.
 - For an uploaded header whose served file is animated, `header_static` is a still of at most 640 px on the long edge
   (the upload's preview), where Mastodon's is the GIF's own size, and only for a GIF (a 1200×700 GIF header's is
-  640×373 here and 1200×700 in Mastodon). An animated avatar's `avatar_static` is a 400×400 still, as Mastodon's.
-  Otherwise they equal `avatar` and `header`.
-- A local animated WebP stays animated in `avatar` and `header` (unless Images does not resize it, above), where
-  Mastodon flattens it to one frame. An APNG is served as a still PNG, as Images makes animated output only as GIF or
-  WebP.
+  at most 640 px wide here, its height as Images rounds it, and 1200×700 in Mastodon). An animated avatar's
+  `avatar_static` is a 400×400 still, as Mastodon's. Otherwise they equal `avatar` and `header`.
+- A local animated WebP stays animated in `avatar` and `header` when the full image Images returns is an animated
+  WebP of its shape, where Mastodon flattens it to one frame. A still WebP of that shape is kept as a still, and
+  output of another type or shape is made again as a still (above). An APNG is served as a still PNG, as Images
+  makes animated output only as GIF or WebP.
 - A remote account's `avatar` and `header` are Kopje's cached copy on the instance's own origin (`/media/r/…`) once the
   cron has fetched it, and the remote URL until then or when no copy can be made, where Mastodon shows its own copy or
   `missing.png`; while a domain block with `reject_media` rules the account's stored domain, both are the default

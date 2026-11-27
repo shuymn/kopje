@@ -610,6 +610,8 @@ describe("settings page", () => {
     const response = await postForm(h, browser, "/settings/profile", fields);
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe("/settings?notice=saved");
+    // The save's Update(Person) is delivered at once, not at the next cron.
+    expect(h.doorbell).toHaveBeenCalledTimes(1);
 
     const { token } = await login(h, { scope: "read" });
     const me = await (
@@ -696,6 +698,7 @@ describe("settings page", () => {
     expect(page).toContain("Display name is too long (maximum is 40 characters)");
     expect(page).toContain("Fields contains values with missing labels");
     expect(await sql(h.store, "SELECT display_name FROM accounts")).toEqual([{ display_name: "Alice" }]);
+    expect(h.doorbell).not.toHaveBeenCalled();
   });
 
   // The server decides the display name's limit in code points (40, Mastodon's), after stripping it as Mastodon does
