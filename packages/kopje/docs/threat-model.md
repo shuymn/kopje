@@ -3449,7 +3449,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/platform/remote-media-bytes.ts`, the strip of remote images, its Exif dropped whatever its orientation) and
   refuses one that does not walk, a byte after its end included; it then checks every output with `retainedMetadata`
   (`src/platform/image-bytes.ts`), which refuses any EXIF, XMP, IPTC, comment, text chunk or unknown JPEG application
-  segment, and refuses the upload otherwise (500, as Mastodon answers a failed transformation). Kopje does not count
+  segment, and refuses the upload otherwise (500, as Mastodon answers a failed transformation). An avatar or header goes
+  through `processImage` with its role (`ProcessOptions.role`, from `storeProfileImage`): its full image is asked for
+  in the role's shape (a 400×400 cover for an avatar, Mastodon's 750,000-pixel box as a square for a header), and that
+  shape is checked on Images' output before anything is written; an animation whose output is not of that shape or
+  type is made again as a still of it through `encodeChecked`, and any other output that is not of its shape refuses
+  the upload (500); `test/images-codec.test.ts` ("processImage of a profile image"), `test/profile-images.test.ts`
+  ("update_credentials: the avatar's and header's shape"). Kopje does not count
   colour signalling as metadata: ICC profiles and PNG 3's `cICP`, `mDCV` and `cLLI` say how to display the pixels (a
   colour space, a display's mastering volume, light levels), not who made the image or where, and are kept only at their
   specified lengths (4, 24 and 8 bytes, `pngChunkKept`), so they carry nothing else. Production Images converts a PNG to
@@ -5137,7 +5143,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   monthly share of it (`IMAGES_ACCOUNT_MONTHLY_TRANSFORMS`, default a tenth), so one account (R4) cannot lock the
   others out; every refusal answers 429, and a used-up Images allowance answers 503 when it refuses a required output
   (the input's `info()`, the full image, the preview or their `info()`); a 9422 from the preview's RGBA output alone
-  keeps the upload, answered 200 with a null blurhash. A custom emoji charges two, and a rebuilt row what its writer was
+  keeps the upload, answered 200 with a null blurhash. An avatar or header whose animation Images leaves unshaped is
+  made again as a still (MEDIA-3) within the same three: the animated full image, the still full image, then the
+  still full image's RGBA for an avatar (whose preview it is) or the preview for a header (which keeps no blurhash);
+  `test/images-codec.test.ts` ("falls back to a still avatar …", "falls back to a still header, with no RGBA, …"),
+  `test/profile-images.test.ts` ("sets a still avatar and header when Images leaves an animation unshaped"). A custom
+  emoji charges two, and a rebuilt row what its writer was
   charged (two for an emoji's, three for any other), to the instance budget only. Card images (A11) draw on their own
   monthly counter (`IMAGES_CARD_MONTHLY_TRANSFORMS`, default 0), one transformation charged right before each Images
   output, two an image (its WebP and its RGBA, which Images may bill as one transformation, so the count is a ceiling),

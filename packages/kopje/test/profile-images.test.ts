@@ -1,21 +1,24 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { DOOMED_AT, profileReleaseSql } from "../src/domain/media";
+import { DOOMED_AT, profileReleaseSql, TRANSFORMS_PER_UPLOAD } from "../src/domain/media";
 import { API_BODY_LIMIT, FILE_PART_SLACK } from "../src/mastodon/params";
-import { PROFILE_IMAGE_LIMIT } from "../src/platform/images";
+import { isAnimated } from "../src/platform/image-bytes";
+import { imagesCodec, PROFILE_IMAGE_LIMIT } from "../src/platform/images";
 import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, sql } from "./api-helpers";
-import { ANIMATED_GIF, PNG_PLAIN } from "./fixtures/images";
-import { bytes, mediaForm, multipartForm, r2Keys, TestCodec } from "./media-helpers";
+import { ANIMATED_GIF, ANIMATED_WEBP, PNG_PLAIN } from "./fixtures/images";
+import { bytes, columnsPng, mediaForm, multipartForm, r2Keys, TestCodec } from "./media-helpers";
 import { singletonStatistics } from "./plan-audit-store";
 import { aliceWithFollower } from "./profile-fixtures";
 import { scopedToken } from "./read-helpers";
+import { animatedWebp } from "./remote-media-fixtures";
 import { storeWith } from "./setup-helpers";
 import { outbound } from "./status-helpers";
 import { csrfOf, ORIGIN, signIn } from "./web-helpers";
+import { decodeFixture, encodeWebp } from "./webp-fixtures";
 
 // PATCH /api/v1/accounts/update_credentials with avatar and header files (multipart): the body and file bounds, the
 // token checked before the body is read, Paperclip's validations, one transaction with one Update(Person), and the
@@ -317,6 +320,172 @@ describe("update_credentials: avatar and header", () => {
       { avatar_static_url: null },
     ]);
   });
+});
+
+// A local avatar is cropped to 400×400 around its centre (a smaller one enlarged), and a header scaled down to
+// Mastodon's 750,000-pixel box in its aspect ratio (platform/images.ts fullBox), through the API and the settings page.
+describe("update_credentials: the avatar's and header's shape", () => {
+  const LEFT = [0, 160, 0] as const;
+  const CENTRE = [255, 0, 0] as const;
+  const RIGHT = [0, 0, 255] as const;
+  // A 4000×1000 PNG whose centre band (the 400×400 crop's 1500 to 2500, and more) is CENTRE, with LEFT and RIGHT sides.
+  const marker = async (name = "m.png") =>
+    new File([await columnsPng(4000, 1000, (x) => (x < 1400 ? LEFT : x < 2600 ? CENTRE : RIGHT))], name, {
+      type: "image/png",
+    });
+
+  // The served file's size and its colours at the left edge, the centre and the right edge of its middle row, read
+  // back through a still WebP of it.
+  async function look(h: H, url: string) {
+    const file = new Uint8Array(await (await h.request(new URL(url).pathname)).arrayBuffer());
+    const webp = await imagesCodec(env.IMAGES).encode(file, { format: "image/webp", still: true });
+    const { data, width, height } = await decodeFixture(webp);
+    const at = (x: number) => [
+      ...data.subarray(4 * (Math.floor(height / 2) * width + x), 4 * (Math.floor(height / 2) * width + x) + 3),
+    ];
+    return { size: [width, height], colours: [at(2), at(Math.floor(width / 2)), at(width - 3)] };
+  }
+
+  const near = (colours: number[][], expected: (readonly number[])[]) =>
+    colours.every((colour, i) => colour.every((value, j) => Math.abs(value - expected[i]![j]!) < 24));
+
+  it("crops an avatar to 400×400 around its centre and names it in Update(Person)", async () => {
+    const h = await setup();
+    const response = await patch(h, h.users.alice.token, formOf([["avatar", await marker()]]));
+    expect(response.status).toBe(200);
+    const account = await response.json<{ avatar: string }>();
+    const shown = await look(h, account.avatar);
+    expect(shown.size).toEqual([400, 400]);
+    expect(near(shown.colours, [CENTRE, CENTRE, CENTRE]), JSON.stringify(shown.colours)).toBe(true);
+    expect(h.codec.outputs[0]?.transforms).toEqual([{ width: 400, height: 400, fit: "cover" }]);
+    expect((await updates(h.store)).at(-1)?.activity.object).toMatchObject({ icon: { url: account.avatar } });
+  }, 30_000);
+
+  it("crops the settings page's avatar to 400×400 around its centre", async () => {
+    const h = await setup();
+    const browser = await signIn(h);
+    const response = await h.request("/settings/avatar", {
+      method: "POST",
+      headers: { cookie: browser.cookie, origin: ORIGIN },
+      body: formOf([
+        ["csrf", await csrfOf(h, browser)],
+        ["file", await marker()],
+      ]),
+    });
+    expect(response.status).toBe(303);
+    const avatar = (await profile(h.store))?.avatar_url;
+    const shown = await look(h, avatar!);
+    expect(shown.size).toEqual([400, 400]);
+    expect(near(shown.colours, [CENTRE, CENTRE, CENTRE]), JSON.stringify(shown.colours)).toBe(true);
+  }, 30_000);
+
+  it("enlarges a small avatar to 400×400", async () => {
+    const h = await setup();
+    const small = new File([await columnsPng(200, 50)], "s.png", { type: "image/png" });
+    const response = await patch(h, h.users.alice.token, formOf([["avatar", small]]));
+    expect((await look(h, (await response.json<{ avatar: string }>()).avatar)).size).toEqual([400, 400]);
+  });
+
+  it("scales a header down to Mastodon's 750,000-pixel box", async () => {
+    const h = await setup();
+    const response = await patch(h, h.users.alice.token, formOf([["header", await marker()]]));
+    const shown = await look(h, (await response.json<{ header: string }>()).header);
+    expect(shown.size).toEqual([1732, 433]);
+    expect(near(shown.colours, [LEFT, CENTRE, RIGHT]), JSON.stringify(shown.colours)).toBe(true);
+    // At 750,000 pixels it is served at its own size, with no resize asked for.
+    const own = await setup();
+    const header = new File([await columnsPng(1000, 750)], "h.png", { type: "image/png" });
+    const kept = await patch(own, own.users.alice.token, formOf([["header", header]]));
+    expect((await look(own, (await kept.json<{ header: string }>()).header)).size).toEqual([1000, 750]);
+    expect(own.codec.outputs[0]?.transforms).toEqual([]);
+  }, 30_000);
+
+  it("answers 500 for an avatar and a header Images left unshaped, applying nothing", async () => {
+    for (const [kind, output] of [
+      ["avatar", await columnsPng(401, 400)],
+      ["header", await columnsPng(1733, 433)],
+    ] as const) {
+      const h = await setup();
+      h.codec.encodeResponder = (_options, index) => (index === 0 ? output : null);
+      const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const file = await marker();
+      const { response, added } = await keysAfter(() => patch(h, h.users.alice.token, formOf([[kind, file]])));
+      expect(errors.mock.calls).toContainEqual([
+        { event: "kopje.media.transform_failed", detail: `output is not of the ${kind}'s shape` },
+      ]);
+      errors.mockRestore();
+      expect(response.status, kind).toBe(500);
+      expect(h.codec.encodeCalls, kind).toHaveLength(1);
+      expect(await profile(h.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
+      expect(await media(h.store)).toEqual([]);
+      expect(added).toEqual([]);
+    }
+  }, 30_000);
+
+  it("sets a still avatar and header when Images leaves an animation unshaped", async () => {
+    const h = await setup();
+    // Images answers every animated output at the animation's own 8×6.
+    h.codec.encodeResponder = (options) =>
+      options.format === "image/webp" && options.still !== true ? bytes(ANIMATED_WEBP) : null;
+    const header = animatedWebp([await encodeWebp(2000, 1000), await encodeWebp(2000, 1000, { fill: "flat" })], {
+      width: 2000,
+      height: 1000,
+    });
+    const response = await patch(
+      h,
+      h.users.alice.token,
+      formOf([
+        ["avatar", new File([bytes(ANIMATED_WEBP)], "a.webp", { type: "image/webp" })],
+        ["header", new File([header], "h.webp", { type: "image/webp" })],
+      ]),
+    );
+    expect(response.status).toBe(200);
+    const account = await response.json<{
+      avatar: string;
+      avatar_static: string;
+      header: string;
+      header_static: string;
+    }>();
+    expect([account.avatar_static, account.header_static]).toEqual([account.avatar, account.header]);
+    for (const url of [account.avatar, account.header]) {
+      expect(
+        isAnimated(new Uint8Array(await (await h.request(new URL(url).pathname)).arrayBuffer()), "image/webp"),
+      ).toBe(false);
+    }
+    expect((await look(h, account.avatar)).size).toEqual([400, 400]);
+    expect(Math.max(...(await look(h, account.header)).size)).toBe(1225);
+    // One reservation each, each charged TRANSFORMS_PER_UPLOAD to the account and the instance, with both files.
+    const rows = await media(h.store);
+    expect(rows).toHaveLength(2);
+    expect(
+      (
+        await sql<{ name: string; value: string }>(
+          h.store,
+          "SELECT name, value FROM kopje_state WHERE name LIKE 'images_%transforms:%' ORDER BY name",
+        )
+      ).map((row) => [row.name.split(":")[0], row.value]),
+    ).toEqual([
+      ["images_account_transforms", String(2 * TRANSFORMS_PER_UPLOAD)],
+      ["images_transforms", String(2 * TRANSFORMS_PER_UPLOAD)],
+    ]);
+    const keys = await r2Keys();
+    for (const row of rows) {
+      expect(keys).toEqual(expect.arrayContaining([`files/${row.file_token}/full`, `files/${row.file_token}/small`]));
+    }
+  }, 30_000);
+
+  it("keeps a stored avatar's files when only text changes", async () => {
+    const h = await setup();
+    const set = await patch(h, h.users.alice.token, formOf([["avatar", await marker()]]));
+    const { avatar } = await set.json<{ avatar: string }>();
+    const before = new Uint8Array(await (await h.request(new URL(avatar).pathname)).arrayBuffer());
+    const calls = h.codec.calls;
+    const keys = await r2Keys();
+    const changed = await patch(h, h.users.alice.token, formOf([["display_name", "Alice"]]));
+    expect((await changed.json<{ avatar: string }>()).avatar).toBe(avatar);
+    expect(new Uint8Array(await (await h.request(new URL(avatar).pathname)).arrayBuffer())).toEqual(before);
+    expect([h.codec.calls, await r2Keys()]).toEqual([calls, keys]);
+  }, 30_000);
 });
 
 describe("update_credentials: upload ownership", () => {

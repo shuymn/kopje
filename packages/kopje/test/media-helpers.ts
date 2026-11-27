@@ -12,6 +12,7 @@ import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { bearer, type ApiHarness } from "./api-helpers";
 import { ANIMATED_WEBP } from "./fixtures/images";
 import { localRgba, type OutputCall, type RgbaControl } from "./images-binding";
+import { animatedWebp } from "./remote-media-fixtures";
 import type { User } from "./status-helpers";
 
 // Media fixtures: base64 fixtures as bytes, multipart uploads, R2 listings, and a codec to stand in for Images.
@@ -179,6 +180,52 @@ export function framesKeepingCodec(): TestCodec {
   const codec = new TestCodec();
   codec.encodeResponder = (options) =>
     options.format === "image/webp" && options.still !== true ? bytes(ANIMATED_WEBP) : null;
+  return codec;
+}
+
+// The colours of shapedFramesCodec's two frames.
+export const FRAME_COLOURS = [
+  [255, 0, 0],
+  [0, 0, 255],
+] as const;
+
+// A still WebP of one colour at `size`, made by the local binding.
+async function solidWebp(size: { width: number; height: number }, colour: readonly [number, number, number]) {
+  const png = await columnsPng(size.width, size.height, () => colour);
+  const output = await env.IMAGES.input(new Blob([png]).stream() as ReadableStream<Uint8Array>).output({
+    format: "image/webp",
+    anim: false,
+  });
+  return new Uint8Array(await new Response(output.image()).arrayBuffer());
+}
+
+// A TestCodec standing in for Images keeping an animated input's frames in the shape it is asked for: every WebP
+// served file (an encode without `still`) is an animation of two frames of FRAME_COLOURS at the size the local binding
+// serves for the same transformation, and previews and other formats go through the local binding. A profile image's role then passes its shape check.
+export function shapedFramesCodec(): TestCodec {
+  const codec = new TestCodec();
+  const encode = codec.encode.bind(codec);
+  codec.encode = async (input: Uint8Array, options: EncodeOptions) => {
+    if (options.format !== "image/webp" || options.still === true) {
+      return encode(input, options);
+    }
+    // The size the local binding serves for this transformation, from a still of it (not recorded in `outputs`).
+    const still = await env.IMAGES.info(
+      new Blob([
+        await imagesCodec(env.IMAGES).encode(input, { ...options, still: true }),
+      ]).stream() as ReadableStream<Uint8Array>,
+    );
+    const size = { width: "width" in still ? still.width : 1, height: "height" in still ? still.height : 1 };
+    const frames = await Promise.all(FRAME_COLOURS.map((colour) => solidWebp(size, colour)));
+    const output = animatedWebp(frames, size);
+    const previous = codec.encodeResponder;
+    codec.encodeResponder = () => output;
+    try {
+      return await encode(input, options);
+    } finally {
+      codec.encodeResponder = previous;
+    }
+  };
   return codec;
 }
 

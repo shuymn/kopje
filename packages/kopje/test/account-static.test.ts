@@ -8,11 +8,13 @@ import { isAnimated } from "../src/platform/image-bytes";
 import { STATIC_URL_LIMIT } from "../src/platform/stored-bounds";
 import { bearer, sql } from "./api-helpers";
 import { ANIMATED_WEBP, PNG_PLAIN } from "./fixtures/images";
-import { bytes, framesKeepingCodec, multipartForm } from "./media-helpers";
+import { bytes, FRAME_COLOURS, multipartForm, shapedFramesCodec } from "./media-helpers";
 import { aliceWithFollower, ESCAPED_STATIC_WITNESS, rawBytes as raw } from "./profile-fixtures";
 import { scansOf, staleStatistics } from "./read-helpers";
+import { animatedWebp } from "./remote-media-fixtures";
 import { getJson, post } from "./status-helpers";
 import { csrfOf, ORIGIN, signIn } from "./web-helpers";
+import { decodeFixture, encodeWebp } from "./webp-fixtures";
 
 // Account#avatar_static and #header_static (Mastodon v4.5.11 REST::AccountSerializer, account_serializer.rb:79-81,
 // 87-89): for an upload whose served file is animated, its still preview (domain/media.ts profileAssignSql, migration
@@ -23,9 +25,10 @@ const DEFAULT_AVATAR = `${ORIGIN}/assets/avatar.jpg`;
 const DEFAULT_HEADER = `${ORIGIN}/assets/header.jpg`;
 const utf8 = (value: string) => new TextEncoder().encode(value).length;
 
-// Alice and a remote follower over a codec whose WebP served files are animated (framesKeepingCodec).
+// Alice and a remote follower over a codec whose WebP served files are animated in their role's shape
+// (shapedFramesCodec).
 async function setup() {
-  const codec = framesKeepingCodec();
+  const codec = shapedFramesCodec();
   const h = await aliceWithFollower({ images: () => codec });
   const patch = (parts: [string, File][]) =>
     h.request("/api/v1/accounts/update_credentials", {
@@ -78,22 +81,40 @@ async function setImages(h: H, id: string, columns: Record<string, string | Arra
 }
 
 describe("avatar_static and header_static of uploads", () => {
-  it("are the still previews of animated images, served still while the images are animated", async () => {
+  it("are the still previews of animated images, made from the served files in their shape", async () => {
     const h = await setup();
+    // Animations whose own pixels are noise: the statics show the served files' first frame, not the input's.
+    const input = async (width: number, height: number, name: string) =>
+      new File(
+        [
+          animatedWebp([await encodeWebp(width, height), await encodeWebp(width, height, { fill: "flat" })], {
+            width,
+            height,
+          }),
+        ],
+        name,
+        { type: "image/webp" },
+      );
     const response = await h.patch([
-      ["avatar", animated()],
-      ["header", animated("h.webp")],
+      ["avatar", await input(600, 300, "a.webp")],
+      ["header", await input(2000, 1000, "h.webp")],
     ]);
     expect(response.status).toBe(200);
     const account = await response.json<Account>();
-    for (const [image, still] of [
-      [account.avatar, account.avatar_static],
-      [account.header, account.header_static],
+    for (const [image, still, size] of [
+      [account.avatar, account.avatar_static, [400, 400]],
+      [account.header, account.header_static, [640, 320]],
     ] as const) {
       expect(image).toMatch(/^https:\/\/kopje\.test\/media\/[A-Za-z0-9_-]+\/full\.webp$/);
       expect(still).toBe(image.replace(/\/full\.webp$/, "/small.webp"));
       expect(isAnimated(await served(h, image), "image/webp")).toBe(true);
-      expect(isAnimated(await served(h, still), "image/webp")).toBe(false);
+      const shown = await served(h, still);
+      expect(isAnimated(shown, "image/webp")).toBe(false);
+      const pixels = await decodeFixture(shown);
+      expect([pixels.width, pixels.height]).toEqual(size);
+      const centre = 4 * (Math.floor(pixels.height / 2) * pixels.width + Math.floor(pixels.width / 2));
+      const rgb = [...pixels.data.subarray(centre, centre + 3)];
+      rgb.forEach((value, i) => expect(Math.abs(value - FRAME_COLOURS[0][i]!)).toBeLessThan(16));
     }
     expect(await stored(h)).toMatchObject({ avatar: 1, header: 1 });
     expect(

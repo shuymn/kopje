@@ -345,7 +345,7 @@ export async function storeProfileImages(
     if (file === undefined) {
       continue;
     }
-    const stored = await storeProfileImage(c, deps, credential, new Uint8Array(await file.arrayBuffer()));
+    const stored = await storeProfileImage(c, deps, credential, new Uint8Array(await file.arrayBuffer()), kind);
     if (!stored.ok) {
       return profileFailure(kind, stored);
     }
