@@ -578,6 +578,50 @@ describe("processImage of a profile image", () => {
     expect(codec.encodeCalls).toHaveLength(1);
   });
 
+  it("boxes a header by its edges as info() reads them, and takes the rotated output Images serves", async () => {
+    const codec = new TestCodec();
+    // info() reads a landscape 4000×1000 (the stored size); Images applies the orientation and serves a portrait.
+    codec.infoResult = { format: "image/png", width: 4000, height: 1000 };
+    const result = await processImage(codec, await columnsPng(1000, 4000), { role: "header" });
+    expect(codec.outputs[0]?.transforms).toEqual([{ width: 1732, height: 1732, fit: "scale-down" }]);
+    expect(result.ok && [sizeOf(result.image.full), sizeOf(result.image.small)]).toEqual([
+      [433, 1732],
+      [160, 640],
+    ]);
+  });
+
+  it("requires an animated avatar's static to be 400×400", async () => {
+    const frame = await encodeWebp(400, 400);
+    const full = animatedWebp([frame, frame], { width: 400, height: 400 });
+    const wrong = await encodeWebp(401, 400);
+    const codec = new TestCodec();
+    codec.encodeResponder = (options) => (options.format === "rgba" ? null : options.still === true ? wrong : full);
+    const result = await processImage(codec, bytes(ANIMATED_WEBP), { ...hashed(), role: "avatar" });
+    expect(result).toEqual({ ok: false, reason: "failed", detail: "preview is not of the avatar's shape" });
+    // No RGBA is asked for a refused preview.
+    expect(codec.encodeCalls.map((call) => call.format)).toEqual(["image/webp", "image/webp"]);
+  });
+
+  it.each<[string, () => Promise<Uint8Array>, string]>([
+    ["of the wrong size", () => encodeWebp(1000, 250), "preview is not of the header's shape"],
+    ["of another type", () => Promise.resolve(bytes(PNG_PLAIN)), "output is not of the requested type"],
+  ])(
+    "fails a header whose fallback's preview is %s",
+    async (_name, make, detail) => {
+      const input = animatedWebp([await encodeWebp(2000, 1000), await encodeWebp(2000, 1000, { fill: "flat" })], {
+        width: 2000,
+        height: 1000,
+      });
+      const preview = await make();
+      const codec = new TestCodec();
+      codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_WEBP) : index === 2 ? preview : null);
+      const result = await processImage(codec, input, { ...hashed(), role: "header" });
+      expect(result).toEqual({ ok: false, reason: "failed", detail });
+      expect(codec.encodeCalls).toHaveLength(3);
+    },
+    30_000,
+  );
+
   it("does not fall back without a role", async () => {
     const codec = new TestCodec();
     codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_GIF) : null);
