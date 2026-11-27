@@ -465,12 +465,23 @@ describe("update_credentials: the pipeline's refusals", () => {
     expect(await profile(big.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
   });
 
-  it("takes a header of 33,177,600 pixels", async () => {
+  it("takes an avatar and a header of 33,177,600 pixels", async () => {
     const h = await setup();
-    const file = new File([await pngOf(7680, 4320)], "h.png", { type: "image/png" });
-    expect((await patch(h, h.users.alice.token, formOf([["header", file]]))).status).toBe(200);
+    const at = await pngOf(7680, 4320);
+    const response = await patch(
+      h,
+      h.users.alice.token,
+      formOf([
+        ["avatar", new File([at], "a.png", { type: "image/png" })],
+        ["header", new File([at], "h.png", { type: "image/png" })],
+      ]),
+    );
+    expect(response.status).toBe(200);
     expect(h.codec.encodeCalls.length).toBeGreaterThan(0);
-    expect((await profile(h.store))?.header_url).toMatch(/\/full\.png$/);
+    expect(await profile(h.store)).toMatchObject({
+      avatar_url: expect.stringMatching(/\/full\.png$/),
+      header_url: expect.stringMatching(/\/full\.png$/),
+    });
   }, 30_000);
 });
 
@@ -495,6 +506,8 @@ describe("the settings page", () => {
     expect(await upload("header", bytes(PNG_PLAIN), "image/png")).toContain(
       "Validation failed: Header dimensions exceed 33177600 pixels",
     );
+    // Refused from info() alone: neither upload started an output.
+    expect(h.codec.encodeCalls).toEqual([]);
     expect(await profile(h.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
   });
 

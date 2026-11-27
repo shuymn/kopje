@@ -175,6 +175,18 @@ describe("a video or audio upload with a thumbnail (T15)", () => {
     expect(await getOwn(w, id)).toEqual({ status: 200, body: showsChild(child) });
   });
 
+  it("refuses a thumbnail past 33,177,600 pixels before any output, keeping no thumbnail", async () => {
+    const w = await routeWorld();
+    w.codec.infoResult = { format: "image/png", width: 7681, height: 4320 };
+    const response = await answerOf(await postMedia(w, multipartBody([videoPart(), thumbPart()])));
+    expect(response).toMatchObject({
+      status: 422,
+      body: { error: "Validation failed: Thumbnail dimensions exceed 33177600 pixels" },
+    });
+    expect(w.codec.encodeCalls).toEqual([]);
+    expect((await children(w)).filter((child) => child.gc_at === null)).toEqual([]);
+  });
+
   it("shows on the 202 exactly the thumbnail's stored preview, geometry and blurhash, as the later GET does (C51)", async () => {
     const w = await routeWorld();
     const response = await answerOf(await postMedia(w, multipartBody([videoPart(), thumbPart()])));

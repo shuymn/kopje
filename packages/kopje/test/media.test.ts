@@ -462,6 +462,13 @@ describe("POST /api/v2/media", () => {
     expect(await response.json()).toEqual({ error: "Validation failed: File dimensions exceed 33177600 pixels" });
     expect(past.codec.infoCalls).toBe(1);
     expect(past.codec.encodeCalls).toEqual([]);
+    // One pixel past it, as info() reads it.
+    const one = await users();
+    one.codec.infoResult = { format: "image/jpeg", width: IMAGE_MATRIX_LIMIT + 1, height: 1 };
+    const over = await upload(one, one.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));
+    expect(over.status).toBe(422);
+    expect(await over.json()).toEqual({ error: "Validation failed: File dimensions exceed 33177600 pixels" });
+    expect(one.codec.encodeCalls).toEqual([]);
   }, 30_000);
 
   it("refuses a file over 16 MB without transforming it (RES-1)", async () => {
