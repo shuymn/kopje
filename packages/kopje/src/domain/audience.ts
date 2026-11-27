@@ -493,13 +493,12 @@ export function suggestionSourceSql(owner: string, viewer: string): string {
 // (a follow in either state, one seek of follows_pair), and not dismissed by them (follow_recommendation_mutes). R12
 // (listedForSql) judges each candidate after this.
 export function suggestionCandidateSql(a: string, viewer: string): string {
-  const x = `${a}.id`;
-  return `(${x} <> ${viewer} AND ${a}.discoverable = 1
+  return `(${a}.id <> ${viewer} AND ${a}.discoverable = 1
 		AND CASE WHEN ${a}.moved_to_account_id IS NULL THEN 1 ELSE NOT EXISTS (SELECT 1 FROM main.accounts pmt
 			INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE pmt.id = ${a}.moved_to_account_id AND ${movedTargetShownSql("pmt")}) END
-		AND NOT EXISTS (SELECT 1 FROM main.follows pf WHERE pf.account_id = ${viewer} AND pf.target_account_id = ${x})
+		AND NOT EXISTS (SELECT 1 FROM main.follows pf WHERE pf.account_id = ${viewer} AND pf.target_account_id = ${a}.id)
 		AND NOT EXISTS (SELECT 1 FROM main.follow_recommendation_mutes pr
-			WHERE pr.account_id = ${viewer} AND pr.target_account_id = ${x}))`;
+			WHERE pr.account_id = ${viewer} AND pr.target_account_id = ${a}.id))`;
 }
 
 // R28 (Accounts::EndorsementsController#set_endorsed_accounts): whether the accounts `owner` endorses are listed. They
