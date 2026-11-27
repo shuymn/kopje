@@ -8,6 +8,7 @@ import webpEncoderWasm from "@jsquash/webp/codec/enc/webp_enc.wasm";
 import { defaultOptions } from "@jsquash/webp/meta.js";
 
 import type { Rgba } from "../src/platform/blurhash";
+import { animatedWebp } from "./remote-media-fixtures";
 
 type Encoder = { encode(data: BufferSource, width: number, height: number, options: object): Uint8Array | null };
 type Decoder = { decode(data: BufferSource): Rgba | null };
@@ -69,4 +70,13 @@ export async function decodeFixture(bytes: Uint8Array): Promise<Rgba> {
     throw new Error("decoding failed");
   }
   return { data: new Uint8ClampedArray(result.data), width: result.width, height: result.height };
+}
+
+// An animated WebP of `width` x `height` with two frames, noise then one colour: an animation whose own pixels are
+// not those of a stand-in's frames.
+export async function twoFrameWebp(width: number, height: number): Promise<Uint8Array> {
+  return animatedWebp([await encodeWebp(width, height), await encodeWebp(width, height, { fill: "flat" })], {
+    width,
+    height,
+  });
 }

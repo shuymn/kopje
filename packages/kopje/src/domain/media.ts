@@ -1,6 +1,7 @@
 import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import type { ImageRole } from "../platform/images";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import { type Marker, restoreTime } from "../platform/restore-marker";
@@ -637,7 +638,7 @@ export const abandonMedia = userMediaDeleteOperation.atStoreTime("now")<{ id: st
   return "abandoned";
 });
 
-export type ProfileImage = "avatar" | "header";
+export type ProfileImage = ImageRole;
 
 // In the order a request applies them.
 export const PROFILE_IMAGES: readonly ProfileImage[] = ["avatar", "header"];
@@ -665,16 +666,20 @@ export function profileReleaseSql(kind: ProfileImage): string {
 			AND ${notEmojiSql("media_attachments")}`;
 }
 
+// A profile image's static (migration 0061_account_static_images) as an expression: the still preview `url` when the
+// upload of `meta` has an animated served file (meta's "animated", completeMedia, recordRebuild), else NULL (the image
+// itself). A URL 0061's trigger would refuse is not used (staticUrlPastBoundSql), so the account shows its image.
+// meta's json_valid CHECK (0000_initial) keeps json_extract from failing.
+export function profileStaticSql(meta: string, url: string): string {
+  return `CASE WHEN json_extract(${meta}, '$.animated') IS 1 AND NOT (${staticUrlPastBoundSql(url)}) THEN ${url} END`;
+}
+
 // The assignment of upload ?1 as the account ?2's `kind` image, in one UPDATE: the image is the upload's URL, and its
-// static (migration 0061_account_static_images) the upload's still preview when its served file is animated (the
-// meta's "animated", completeMedia), else NULL (the image itself). A preview URL 0061's trigger would refuse is not
-// copied (staticUrlPastBoundSql), so the account shows its image. Both are copied within SQL, byte for byte; meta's
-// json_valid CHECK (0000_initial) keeps json_extract from failing. The upload is read by its key.
+// static its preview URL (profileStaticSql), both copied within SQL, byte for byte. The upload is read by its key.
 export function profileAssignSql(kind: ProfileImage): string {
   const { own, still } = PROFILE_COLUMNS[kind];
   return `UPDATE accounts SET (${own}, ${still}) = (
-		SELECT m.url, CASE WHEN json_extract(m.meta, '$.animated') IS 1
-			AND NOT (${staticUrlPastBoundSql("m.preview_url")}) THEN m.preview_url END
+		SELECT m.url, ${profileStaticSql("m.meta", "m.preview_url")}
 		FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX} WHERE m.id = ?1)
 	WHERE id = ?2`;
 }
