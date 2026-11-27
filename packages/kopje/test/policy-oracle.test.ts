@@ -149,19 +149,24 @@ describe("the policy fragments agree with the model of their rules", () => {
         ),
     ));
 
-  // Every (owner, x) pair of accounts a two-account predicate accepts.
-  function accountPairs(
-    fragment: (owner: string, x: string) => string,
-    model: (m: PolicyModel, owner: number, x: number) => boolean,
-  ) {
-    return agree(
-      pairs(`SELECT o.id AS x, a.id AS y FROM accounts o CROSS JOIN accounts a WHERE ${fragment("o.id", "a.id")}`),
-      (m) =>
-        accounts(m.world).flatMap((owner) =>
-          accounts(m.world).flatMap((x) => (model(m, owner, x) ? [`${name(m.world, owner)} ${name(m.world, x)}`] : [])),
-        ),
+  type AccountFragment = (owner: string, x: string) => string;
+  type AccountModel = (m: PolicyModel, owner: number, x: number) => boolean;
+
+  // The (owner, x) pairs of accounts a two-account predicate accepts, in the Store and in the model.
+  const accountPairsSql = (fragment: AccountFragment) =>
+    pairs(`SELECT o.id AS x, a.id AS y FROM accounts o CROSS JOIN accounts a WHERE ${fragment("o.id", "a.id")}`);
+  const accountPairsModel = (model: AccountModel) => (m: PolicyModel) =>
+    accounts(m.world).flatMap((owner) =>
+      accounts(m.world).flatMap((x) => (model(m, owner, x) ? [`${name(m.world, owner)} ${name(m.world, x)}`] : [])),
     );
+
+  // Every (owner, x) pair of accounts a two-account predicate accepts.
+  function accountPairs(fragment: AccountFragment, model: AccountModel) {
+    return agree(accountPairsSql(fragment), accountPairsModel(model));
   }
+
+  const followable: AccountFragment = (viewer, x) => followableBySql(x, viewer);
+  const followableModel: AccountModel = (m, viewer, x) => m.followableBy(x, viewer);
 
   it("blocksSql", () => accountPairs(blocksSql, (m, owner, x) => m.blocks(owner, x)));
 
@@ -175,11 +180,32 @@ describe("the policy fragments agree with the model of their rules", () => {
       (m, author, x) => m.mentionableBy(x, author),
     ));
 
-  it("followableBySql (R21)", () =>
-    accountPairs(
-      (viewer, x) => followableBySql(x, viewer),
-      (m, viewer, x) => m.followableBy(x, viewer),
-    ));
+  it("followableBySql (R21)", () => accountPairs(followable, followableModel));
+
+  // A fixed world in which a remote account some viewer could otherwise follow has moved, so the moved branch of both
+  // sides runs whatever the generator drew.
+  it("followableBySql (R21) over a world whose otherwise followable account has moved", async () => {
+    const base: World = { ...fc.sample(worldArb, { seed: 1561, numRuns: 1 })[0]!, moves: [] };
+    const unmoved = new PolicyModel(base);
+    const from = base.accounts.findIndex(
+      (account, x) => !account.local && base.accounts.some((_, viewer) => unmoved.followableBy(x, viewer)),
+    );
+    expect(from).toBeGreaterThan(-1);
+    const world: World = { ...base, moves: [{ from, to: 0 }] };
+    const { stored, actual } = await runInDurableObject(store, (_instance, state) => {
+      writeWorld(state.storage.sql, world);
+      const db = new Db(state.storage.sql);
+      return {
+        stored: db.all("SELECT id, moved_to_account_id FROM accounts WHERE moved_to_account_id IS NOT NULL"),
+        actual: accountPairsSql(followable)(db, world),
+      };
+    });
+    expect(stored).toEqual([{ id: accountId(from), moved_to_account_id: accountId(0) }]);
+    const pairsOf = accountPairsModel(followableModel);
+    const expected = pairsOf(new PolicyModel(world));
+    expect(actual.toSorted()).toEqual(expected.toSorted());
+    expect(pairsOf(unmoved).filter((pair) => !expected.includes(pair)).length).toBeGreaterThan(0);
+  });
 
   it("inDomainSql", () =>
     agree(

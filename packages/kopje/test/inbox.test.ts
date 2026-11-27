@@ -1973,6 +1973,58 @@ describe("account moves", () => {
     }
   });
 
+  // R21 judges each follower a Move carries: a target that has itself moved is not followable, so the follower keeps
+  // the source and its lists and nothing is sent (Mastodon's UnfollowFollowWorker rescues FollowService's
+  // NotPermittedError); blocks and mutes are carried anyway (move_worker.rb:21-22).
+  it("keeps the followers of the source when the Move's target has moved, and moves them when it has not", async () => {
+    for (const targetMoved of [true, false]) {
+      const t = await setup();
+      const bob = await mastodonActor(t.web, "bob");
+      const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
+      const carol = await mastodonActor(t.web, "carol", { origin: "https://third.example", key: 3 });
+      await t.post(carol, follow(carol, DAVE_URI));
+      t.web.serve(bob2.uri, {
+        ...bob2.document,
+        alsoKnownAs: [bob.uri],
+        ...(targetMoved ? { movedTo: carol.uri } : {}),
+      });
+      await t.post(bob, follow(bob, DAVE_URI));
+      const bobId = (await accountId(t.store, bob.uri))!;
+      await sql(
+        t.store,
+        "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted')",
+        ALICE,
+        bobId,
+      );
+      await sql(t.store, "INSERT INTO lists (id, account_id, title) VALUES ('700000000000000001', ?, 'l')", ALICE);
+      await sql(t.store, "INSERT INTO list_accounts (list_id, account_id) VALUES ('700000000000000001', ?)", bobId);
+      await sql(t.store, "INSERT INTO mutes (account_id, target_account_id) VALUES (?, ?)", DAVE, bobId);
+      const before = (await outbound(t.store)).length;
+      expect(await t.post(bob, moveOf(bob, bob2, 1))).toBe(202);
+      const bob2Id = (await accountId(t.store, bob2.uri))!;
+      expect([targetMoved, await movedTo(t.store, bob2.uri)]).toEqual([targetMoved, targetMoved ? carol.uri : null]);
+      const sent = (await outbound(t.store)).slice(before).map((o) => o.activity.type);
+      const members = await sql(t.store, "SELECT account_id FROM list_accounts ORDER BY account_id");
+      if (targetMoved) {
+        expect((await follows(t.store)).filter((f) => f.account_id === ALICE)).toEqual([
+          { account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null },
+        ]);
+        expect(sent).toEqual([]);
+        expect(members).toEqual([{ account_id: bobId }]);
+      } else {
+        expect((await follows(t.store)).filter((f) => f.account_id === ALICE)).toEqual([
+          expect.objectContaining({ target_account_id: bob2Id, state: "pending" }),
+        ]);
+        expect(sent).toEqual(["Undo", "Follow"]);
+        expect(members).toEqual([{ account_id: bob2Id }]);
+      }
+      expect(await sql(t.store, "SELECT target_account_id FROM mutes WHERE account_id = ? ORDER BY id", DAVE)).toEqual([
+        { target_account_id: bobId },
+        { target_account_id: bob2Id },
+      ]);
+    }
+  });
+
   it("names no account being purged, by a document or by a Move", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");

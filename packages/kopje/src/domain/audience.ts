@@ -11,6 +11,7 @@ import {
 } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { DNS_NAME_UTF8_BYTES } from "../platform/domain-name";
+import { DOMAIN_BYTES } from "../platform/identity-bounds";
 import { isoTimeSql } from "../platform/stored-bounds";
 import type { QuoteState } from "./quotes";
 
@@ -425,10 +426,26 @@ export function mentionableBySql(x: string, author: string): string {
   return `(${availableSql(x)} AND NOT ${blockedSql(author, x)})`;
 }
 
-// R21 (FollowService): whether `viewer` may follow the account `x`: it is available and someone else, neither blocks
-// the other, and the viewer does not block its domain.
+// Whether the stored account row `m`, named by another account's move, is shown as its `moved` (accounts.ts movedOf):
+// a local account, or a remote one whose domain is within DOMAIN_BYTES. The presenter, R21 and R39 read a move by it.
+export function movedTargetShownSql(m: string): string {
+  return `(${m}.domain IS NULL OR length(CAST(${m}.domain AS BLOB)) <= ${DOMAIN_BYTES})`;
+}
+
+// Whether the account `x` has moved (Account#moved?): its moved_to_account_id names a stored account the presenter
+// shows as its `moved` (movedTargetShownSql), so an imported id naming none, or naming one it does not show, is no
+// move. Two key lookups.
+function movedSql(x: string): string {
+  return `EXISTS (SELECT 1 FROM main.accounts pmv INDEXED BY ${ACCOUNTS_ID_INDEX}
+		CROSS JOIN main.accounts pmt INDEXED BY ${ACCOUNTS_ID_INDEX} ON pmt.id = pmv.moved_to_account_id
+		WHERE pmv.id = ${x} AND ${movedTargetShownSql("pmt")})`;
+}
+
+// R21 (FollowService): whether `viewer` may follow the account `x`: it is available and someone else, has not moved,
+// neither blocks the other, and the viewer does not block its domain.
 export function followableBySql(x: string, viewer: string): string {
-  return `(${availableSql(x)} AND ${x} <> ${viewer} AND NOT ${blocksSql(x, viewer)} AND NOT ${blockedSql(viewer, x)})`;
+  return `(${availableSql(x)} AND ${x} <> ${viewer} AND NOT ${movedSql(x)} AND NOT ${blocksSql(x, viewer)}
+		AND NOT ${blockedSql(viewer, x)})`;
 }
 
 // R14 (Account::Search): whether `viewer` finds the account `x` by account search or by search resolution: it is
@@ -470,15 +487,18 @@ export function suggestionSourceSql(owner: string, viewer: string): string {
   return followListsShownSql(owner, viewer);
 }
 
-// R39: whether the account `x`, with its accounts row `a` in scope, is a candidate for the suggestions of `viewer`:
-// someone else, discoverable (accounts.discoverable = 1), neither followed nor requested by the viewer (a follow in
-// either state, one seek of follows_pair), and not dismissed by them (follow_recommendation_mutes). R12
+// R39: whether the account whose accounts row `a` is in scope is a candidate for the suggestions of `viewer`: someone
+// else, discoverable (accounts.discoverable = 1), not moved to a target the presenter shows (movedTargetShownSql: the
+// target sought by key from a.moved_to_account_id, only when it is set), neither followed nor requested by the viewer
+// (a follow in either state, one seek of follows_pair), and not dismissed by them (follow_recommendation_mutes). R12
 // (listedForSql) judges each candidate after this.
-export function suggestionCandidateSql(x: string, a: string, viewer: string): string {
-  return `(${x} <> ${viewer} AND ${a}.discoverable = 1
-		AND NOT EXISTS (SELECT 1 FROM main.follows pf WHERE pf.account_id = ${viewer} AND pf.target_account_id = ${x})
+export function suggestionCandidateSql(a: string, viewer: string): string {
+  return `(${a}.id <> ${viewer} AND ${a}.discoverable = 1
+		AND CASE WHEN ${a}.moved_to_account_id IS NULL THEN 1 ELSE NOT EXISTS (SELECT 1 FROM main.accounts pmt
+			INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE pmt.id = ${a}.moved_to_account_id AND ${movedTargetShownSql("pmt")}) END
+		AND NOT EXISTS (SELECT 1 FROM main.follows pf WHERE pf.account_id = ${viewer} AND pf.target_account_id = ${a}.id)
 		AND NOT EXISTS (SELECT 1 FROM main.follow_recommendation_mutes pr
-			WHERE pr.account_id = ${viewer} AND pr.target_account_id = ${x}))`;
+			WHERE pr.account_id = ${viewer} AND pr.target_account_id = ${a}.id))`;
 }
 
 // R28 (Accounts::EndorsementsController#set_endorsed_accounts): whether the accounts `owner` endorses are listed. They

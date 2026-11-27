@@ -137,6 +137,12 @@ export class PolicyModel {
     return !account.suspended && !(!account.local && (account.deleting || this.domainCovered(x)));
   }
 
+  // Whether x has moved (Account#moved?): its move names a stored account the presenter shows. A world's move always
+  // names one, on a domain within DOMAIN_BYTES.
+  moved(x: number): boolean {
+    return this.world.moves.some((m) => m.from === x);
+  }
+
   // R1's account reads: an account is found by id or address unless it is a remote account whose deletion has started;
   // a suspended or covered account is found (and shown redacted).
   accountFound(x: number): boolean {
@@ -259,10 +265,10 @@ export class PolicyModel {
   // "Suggestions"). A follow's id follows its place in world.follows. The sources are the viewer's `sources` newest
   // accepted follows, those whose following R13 shows the viewer (followListsShown) bringing each its
   // `edgesPerSource` newest accepted follows, source after source, newest first, of which the first `edges` count.
-  // A candidate is someone else, discoverable (`discoverable`, accounts.discoverable by index), neither followed nor
-  // requested by the viewer, not dismissed by them, and listed to them (R12). The candidates are ranked by how many
-  // counted edges reach them, then by follower count (none is stored in a world: 0 each), then newest first; the
-  // first `kept` are the answer.
+  // A candidate is someone else, discoverable (`discoverable`, accounts.discoverable by index), not moved, neither
+  // followed nor requested by the viewer, not dismissed by them, and listed to them (R12). The candidates are ranked by
+  // how many counted edges reach them, then by follower count (none is stored in a world: 0 each), then newest first;
+  // the first `kept` are the answer.
   suggestions(
     viewer: number,
     discoverable: (x: number) => boolean,
@@ -281,6 +287,7 @@ export class PolicyModel {
     const candidate = (x: number) =>
       x !== viewer &&
       discoverable(x) &&
+      !this.moved(x) &&
       !this.world.follows.some((f) => f.from === viewer && f.to === x) &&
       !this.world.dismissals.some((d) => d.owner === viewer && d.target === x) &&
       this.listedFor(x, viewer);
@@ -315,9 +322,10 @@ export class PolicyModel {
     return this.available(x) && !this.blocked(author, x);
   }
 
-  // R21: the viewer may follow x: available, someone else, no block either way, no domain block by the viewer.
+  // R21: the viewer may follow x: available, someone else, not moved, no block either way, no domain block by the
+  // viewer.
   followableBy(x: number, viewer: number): boolean {
-    return this.available(x) && x !== viewer && !this.blocks(x, viewer) && !this.blocked(viewer, x);
+    return this.available(x) && x !== viewer && !this.moved(x) && !this.blocks(x, viewer) && !this.blocked(viewer, x);
   }
 
   private follows(from: Viewer, to: number): boolean {
@@ -628,8 +636,8 @@ export class PolicyModel {
   }
 
   // R8 on the link timeline (linkTimeline, Mastodon's LinkFeed): the statuses holding a public copy of `url` that are
-  // public originals by a discoverable author (`discoverable`; none of the world's accounts has moved), listable by
-  // the viewer, newest first. Only a link the list could show has a timeline (trendingLinks' rows and reviews).
+  // public originals by a discoverable author (`discoverable`) who has not moved, listable by the viewer, newest
+  // first. Only a link the list could show has a timeline (trendingLinks' rows and reviews).
   linkTimeline(
     url: string,
     copies: ReadonlyMap<number, string>,
@@ -638,7 +646,13 @@ export class PolicyModel {
   ): number[] {
     return this.publicCopies(url, copies).filter((s) => {
       const { visibility, reblogOf, author } = this.status(s);
-      return visibility === "public" && reblogOf === null && discoverable(author) && this.listable(s, viewer);
+      return (
+        visibility === "public" &&
+        reblogOf === null &&
+        discoverable(author) &&
+        !this.moved(author) &&
+        this.listable(s, viewer)
+      );
     });
   }
 

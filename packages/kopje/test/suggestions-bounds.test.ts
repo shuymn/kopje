@@ -1,6 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { ACCOUNTS_ID_INDEX } from "../src/db/indexes";
 import { ANSWER_BYTES } from "../src/domain/answer-budget";
 import {
   SUGGESTION_EDGES,
@@ -9,6 +10,7 @@ import {
   suggestions,
   SUGGESTIONS_KEPT,
 } from "../src/domain/suggestions";
+import { DOMAIN_BYTES } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -29,7 +31,7 @@ const credential = { tokenHash: TOKEN, scope: "read", now: NOW } as const;
 const INPUT = { credential, version: 1 as const, offset: 0, limit: 80, present: { origin: "https://kopje.test" } };
 // How many rows a read may add where the work is meant to be flat: a few for a planner's choice.
 const ALLOWANCE = 10;
-// The rows a request reads at most: the maximum case below measures 315,844 (docs/visibility.md, "Read bounds").
+// The rows a request reads at most: the maximum case below measures 326,768 (docs/visibility.md, "Read bounds").
 const SUGGESTION_ROWS = 330_000;
 // The statement that ranks the candidates.
 const RANKING = /edges\(x\) AS/;
@@ -125,10 +127,10 @@ async function measure(stub: StoreStub): Promise<{ rows: number; shown: string[]
 
 const rowsOf = async (build: (run: Sql) => void) => measure(await store(build));
 
-// The ranking statement's plan, as its rows (id, parent, detail), and the rows it reads.
+// The ranking statement's plan, as its rows (id, parent, detail), the rows it reads, and the ids suggested.
 async function plan(
   stub: StoreStub,
-): Promise<{ plan: { id: number; parent: number; detail: string }[]; rows: number }> {
+): Promise<{ plan: { id: number; parent: number; detail: string }[]; rows: number; shown: string[] }> {
   return runInDurableObject(stub, (_instance, state) => {
     const real = state.storage.sql;
     const found: { plan: { id: number; parent: number; detail: string }[]; rows: number }[] = [];
@@ -148,9 +150,9 @@ async function plan(
         return watchedCursor(cursor, () => (entry.rows += cursor.rowsRead));
       },
     } as unknown as SqlStorage;
-    suggestions.run(capturing, INPUT);
+    const shown = suggested(suggestions.run(capturing, INPUT));
     expect(found).toHaveLength(1);
-    return found[0] ?? { plan: [], rows: 0 };
+    return { ...(found[0] ?? { plan: [], rows: 0 }), shown };
   });
 }
 
@@ -191,6 +193,64 @@ describe("suggestions read their windows as ranges (RES-7)", () => {
     expectRanges(grown.plan);
     expect(grown.rows).toBeLessThanOrEqual((await plan(fresh)).rows + 2 * SUGGESTION_EDGES_PER_SOURCE + ALLOWANCE);
   }, 120_000);
+});
+
+describe("a candidate's move (RES-7)", () => {
+  // R39's moved term: in the ranking's grouped stage the candidate row is read once by key and nothing else of accounts
+  // but the move's target, by key, and only for a candidate whose move is set, with statistics taken before any
+  // candidate moved; a moved candidate is left out.
+  it("is one key lookup of its target, with statistics older than the moves", async () => {
+    // Ten accounts the presenter does not show as a move's target (a domain past DOMAIN_BYTES), followed by nobody.
+    const unshown = `${"d".repeat(DOMAIN_BYTES - 4)}.test`;
+    const stub = await store((run) => {
+      graph(0, 1, 50)(run);
+      run(remoteAccountsSql(1_000, 10, { domain: unshown }));
+    });
+    await sql(stub, "ANALYZE");
+    const plain = await plan(stub);
+    const listed = plain.shown;
+    expect(listed).toHaveLength(Math.min(50, SUGGESTIONS_KEPT));
+    // Ten listed candidates move to them, so they stay listed, each having read its target's row once more.
+    await sql(
+      stub,
+      `${n(10)} UPDATE accounts SET moved_to_account_id = CAST(${BASE} + 1000 + i AS TEXT)
+			FROM n WHERE accounts.id = CAST(${BASE} + 50 - i AS TEXT)`,
+    );
+    const towardUnshown = await plan(stub);
+    expect(towardUnshown.shown).toEqual(listed);
+    expect(towardUnshown.rows).toBe(plain.rows + 10);
+    // Every other candidate below them moves to the next one, which is shown: each is left out.
+    await sql(
+      stub,
+      `UPDATE accounts SET moved_to_account_id = CAST(CAST(id AS INTEGER) + 1 AS TEXT)
+			WHERE moved_to_account_id IS NULL AND CAST(id AS INTEGER) % 2 = 0 AND CAST(id AS INTEGER) BETWEEN ? + 1 AND ? + 39`,
+      String(BASE),
+      String(BASE),
+    );
+    const moved = await sql<{ id: string }>(
+      stub,
+      `SELECT a.id FROM accounts a JOIN accounts t ON t.id = a.moved_to_account_id WHERE t.domain <> ?`,
+      unshown,
+    );
+    expect(moved.length).toBeGreaterThan(15);
+    const after = await plan(stub);
+    for (const { plan: rows } of [plain, towardUnshown, after]) {
+      const details = rows.map((row) => row.detail);
+      const reads = details.filter((detail) => /^(SEARCH|SCAN) /.test(detail)).map((detail) => detail.split(" ")[1]);
+      // The grouped stage, from its edges to its own result: the edge, the candidate, its target, the follow and the
+      // dismissal.
+      expect(reads.slice(reads.indexOf("g"), reads.indexOf("grouped"))).toEqual(["g", "a", "pmt", "pf", "pr"]);
+      // By its key, through the primary key or the discoverable accounts' partial index (accounts_directory_new).
+      expect(details.filter((detail) => /^(SEARCH|SCAN) a\b/.test(detail))).toEqual([
+        expect.stringMatching(/^SEARCH a USING INDEX \S+ \(id=\?\)$/),
+      ]);
+      expect(details.filter((detail) => /^(SEARCH|SCAN) pmt\b/.test(detail))).toEqual([
+        `SEARCH pmt USING INDEX ${ACCOUNTS_ID_INDEX} (id=?)`,
+      ]);
+    }
+    expect(after.shown.length).toBeGreaterThan(0);
+    expect(after.shown.some((id) => moved.some((row) => row.id === id))).toBe(false);
+  });
 });
 
 describe("suggestions read rows within their windows (RES-7)", () => {
@@ -274,7 +334,8 @@ describe("suggestions read rows within their windows (RES-7)", () => {
     // another such host (two keys to walk), and a suspend block on the instance that names neither, so each source
     // and each candidate walks every suffix of both keys; each account keeps a stale domain mark (R38: read by the
     // availability seek, then its row), the viewer's mute of each candidate has expired (read, then passed), and
-    // the viewer blocks other domains.
+    // the viewer blocks other domains. Each candidate has moved to an account the presenter does not show (a domain
+    // past DOMAIN_BYTES), so R39's moved term reads that target's row and passes it.
     const sources = SUGGESTION_SOURCES;
     const where = { domain: "a.b.c.d.e.f.g.example", host: "h.b.c.d.e.f.g.example" };
     const { rows, shown } = await rowsOf((run) => {
@@ -292,6 +353,11 @@ describe("suggestions read rows within their windows (RES-7)", () => {
         `${n(SUGGESTION_EDGES)} INSERT INTO mutes (account_id, target_account_id, expires_at)
 				SELECT ?1, CAST(${BASE} + ${sources} + i AS TEXT), '2026-01-01T00:00:00.000Z' FROM n`,
         VIEWER,
+      );
+      run(remoteAccountsSql(sources + SUGGESTION_EDGES, 1, { domain: `${"d".repeat(DOMAIN_BYTES - 4)}.test` }));
+      run(
+        `UPDATE accounts SET moved_to_account_id = CAST(${BASE} + ${sources + SUGGESTION_EDGES} AS TEXT)
+				WHERE CAST(id AS INTEGER) >= ${BASE} + ${sources} AND CAST(id AS INTEGER) < ${BASE} + ${sources + SUGGESTION_EDGES}`,
       );
     });
     console.log(JSON.stringify({ maximum: rows }));

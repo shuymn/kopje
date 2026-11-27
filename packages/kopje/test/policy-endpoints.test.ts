@@ -406,7 +406,81 @@ describe("the status read endpoints agree with the model of their rules", () => 
     const problems = await runInDurableObject(store, (_instance, state) => check(state.storage.sql, c));
     expect(problems).toEqual([]);
   });
+
+  // A fixed case in which an account some viewer would be suggested and the author of a post some link timeline would
+  // list have moved, so the moved branch of the suggestions and of the link timeline runs whatever the generator drew:
+  // the first case of a fixed seed that has both.
+  it("leaves out a moved account's suggestion and link post, as the model does", async () => {
+    const found = (() => {
+      for (const sample of fc.sample(caseArb, { seed: 1561, numRuns: 400 })) {
+        const c = { ...sample, world: { ...sample.world, moves: [] } };
+        const m = new PolicyModel(c.world);
+        const remote = (x: number) => c.world.accounts[x]?.local === false;
+        const discoverable = (x: number) => c.discoverable[x] === 1;
+        const suggested = c.world.accounts
+          .flatMap((account, viewer) => (account.local ? m.suggestions(viewer, discoverable, SUGGESTION_WINDOWS) : []))
+          .find(remote);
+        const copies = publicCopies(c.world);
+        const linked = c.world.statuses.findIndex(
+          (status, st) =>
+            APPROVED_LINKS.has(linkOf(st)) &&
+            remote(status.author) &&
+            m.linkTimeline(linkOf(st), copies, discoverable, null).includes(st),
+        );
+        if (suggested !== undefined && linked >= 0) {
+          return { c, suggested, linked, copies, discoverable };
+        }
+      }
+      return undefined;
+    })();
+    expect(found).toBeDefined();
+    const { c, suggested, linked, copies, discoverable } = found!;
+    const author = c.world.statuses[linked]!.author;
+    const moves = [...new Set([suggested, author])].map((from) => ({ from, to: 0 }));
+    const moved: Case = { ...c, world: { ...c.world, moves } };
+    const m = new PolicyModel(moved.world);
+    expect(
+      c.world.accounts.some(
+        (account, viewer) =>
+          account.local && m.suggestions(viewer, discoverable, SUGGESTION_WINDOWS).includes(suggested),
+      ),
+    ).toBe(false);
+    expect(m.linkTimeline(linkOf(linked), copies, discoverable, null)).not.toContain(linked);
+    const { problems, stored } = await runInDurableObject(store, (_instance, state) => ({
+      problems: check(state.storage.sql, moved),
+      stored: state.storage.sql
+        .exec("SELECT id, moved_to_account_id FROM accounts WHERE moved_to_account_id IS NOT NULL ORDER BY id")
+        .toArray(),
+    }));
+    expect(stored).toEqual(
+      moves
+        .map((move) => ({ id: accountId(move.from), moved_to_account_id: accountId(move.to) }))
+        .toSorted((a, b) => (a.id < b.id ? -1 : 1)),
+    );
+    expect(problems).toEqual([]);
+  }, 120_000);
 });
+
+// The Store's suggestion windows (suggestions.ts), as the model takes them.
+const SUGGESTION_WINDOWS = {
+  sources: SUGGESTION_SOURCES,
+  edgesPerSource: SUGGESTION_EDGES_PER_SOURCE,
+  edges: SUGGESTION_EDGES,
+  kept: SUGGESTIONS_KEPT,
+};
+
+// The link check() records a card of on each status, the three links with their trend scores, and those approved,
+// which have a timeline.
+const linkOf = (s: number) => `https://link${s % 3}.example/`;
+const LINKS = [0, 1, 2].map((i) => ({ url: linkOf(i), score: 3 - i }));
+const APPROVED_LINKS = new Set(LINKS.filter((_l, i) => i !== 1).map((l) => l.url));
+
+// The public copies of the links check() records: each public status's.
+function publicCopies(world: World): Map<number, string> {
+  return new Map(
+    world.statuses.flatMap((status, s) => (status.visibility === "public" ? [[s, linkOf(s)] as const] : [])),
+  );
+}
 
 // Runs every endpoint for every viewer of the case and returns what disagrees with the model.
 function check(sql: SqlStorage, c: Case): string[] {
@@ -1204,12 +1278,7 @@ function check(sql: SqlStorage, c: Case): string[] {
     }
 
     // Suggestions (R39), both versions, from each offset: exactly the model's, in order, over the Store's windows.
-    const suggested = m.suggestions(viewer, (x) => c.discoverable[x] === 1, {
-      sources: SUGGESTION_SOURCES,
-      edgesPerSource: SUGGESTION_EDGES_PER_SOURCE,
-      edges: SUGGESTION_EDGES,
-      kept: SUGGESTIONS_KEPT,
-    });
+    const suggested = m.suggestions(viewer, (x) => c.discoverable[x] === 1, SUGGESTION_WINDOWS);
     for (const version of [1, 2] as const) {
       for (const offset of [0, 1, 39, 40]) {
         for (const limit of [1, 40, 80]) {
@@ -1503,9 +1572,9 @@ function check(sql: SqlStorage, c: Case): string[] {
   // unavailable, an imported card on a boost; public only for a public status, as the triggers hold it), its title
   // naming its status; the list against the model's, with each link's copy (the fallback past a copy the live checks
   // refuse) and history, page by page, for every viewer alike.
-  const copies = new Map<number, string>();
+  const copies = publicCopies(world);
   for (const s of all) {
-    const url = `https://link${s % 3}.example/`;
+    const url = linkOf(s);
     const image = `8${statusId(s).slice(1)}`;
     sql.exec(
       `INSERT INTO card_images (id, source_url, enqueued_at, token, width, height, stored_at)
@@ -1523,12 +1592,9 @@ function check(sql: SqlStorage, c: Case): string[] {
       image,
       m.status(s).visibility === "public" ? 1 : 0,
     );
-    if (m.status(s).visibility === "public") {
-      copies.set(s, url);
-    }
   }
-  const links = [0, 1, 2].map((i) => ({ url: `https://link${i}.example/`, score: 3 - i }));
-  const approved = new Set(links.filter((_l, i) => i !== 1).map((l) => l.url));
+  const links = LINKS;
+  const approved = APPROVED_LINKS;
   for (const link of links) {
     sql.exec(
       `INSERT INTO trend_links (url, domain, language, score, max_score, max_score_at)
