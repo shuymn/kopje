@@ -373,11 +373,12 @@ paths are built only from validated ids. Work in a new, empty directory so nothi
    original as an upload is (metadata removed, long edge capped, a preview made), writes both files and records their
    real sizes and its preview's blurhash. Rows whose files exist are skipped, so it can be run again at any time, also
    after an interrupted run: a call the command stopped waiting for (the CLI was stopped, or Node's fetch gave up after
-   300 seconds) goes on under its lease for up to 10 minutes, which the next run waits for or reports another run holds,
-   and the rows still lacking a file are built, and charged, again. Each rebuilt row counts three transformations
-   against `IMAGES_MONTHLY_TRANSFORMS` (a custom emoji's two), and none against the account shares. A call looks at no
-   new row after two minutes once it has handled one, and the command goes on with the next call. It exits 0 when every
-   row is served, and 3 with the rows that need a decision: `original-missing` (the backup did not hold it: `pending` or
+   300 seconds) goes on under its lease, which lasts 10 minutes from its last renewal (a call renews it while a write
+   settles); the next run waits for it or reports that another run holds it, and the rows still lacking a file are
+   built, and charged, again. Each rebuilt row counts three transformations against `IMAGES_MONTHLY_TRANSFORMS` (a
+   custom emoji's two), and none against the account shares. A call that writes (not `--dry-run`) looks at no new row
+   after two minutes once it has handled one, and the command goes on with the next call. It exits 0 when every row is
+   served, and 3 with the rows that need a decision: `original-missing` (the backup did not hold it: `pending` or
    `absent` in the index), `type-mismatch` (the original is not of the type the row's URLs name), `failed` (Images could
    not re-encode it), or a stop on the Images quota (9422) or the monthly budget: run it again once the allowance is
    back. It also exits 3 (`no-progress`) when three calls in a row return the cursor they were sent: it prints that
