@@ -26,6 +26,18 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/media-processor.md](docs/media-processor.md), "Estimated admission limits"). The time limits, the job budget
   and the cost bound are unchanged.
 
+### Fixed
+
+- A profile link to a page with inline SVG icons or a `<noscript>` before its `rel="me"` links, such as a GitHub
+  profile, is verified, as Mastodon verifies it. Collection of rel=me links now resumes after an `<svg>` of plain
+  shapes (with an optional `<title>` or `<desc>`) and after a `<noscript>` of plain images, iframes, links and text;
+  any other `<svg>` or `<noscript>`, a `<select>` and a `<math>` still stop it, and a rel=me link inside a
+  `<template>` is not collected (the field verification entries of
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md)). When a rel=me link comes after a `<table>`, the first
+  rel=me link is no longer followed for a redirect to the profile, since Mastodon may follow another; such a page
+  verifies by a direct link back only. A check left unverified because links were skipped logs
+  `kopje.field_links.rel_me_skipped` with the page's host ([docs/observability.md](docs/observability.md)).
+
 ## [0.8.0] - 2026-11-27
 
 A minor release, published under the npm dist-tag `latest`. An instance can now take video and audio uploads and show

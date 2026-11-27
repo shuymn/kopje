@@ -63,6 +63,19 @@ const page =
     new Response(body, { headers });
 const relMe = (href: string, tag: "a" | "link" = "a", rel = "me") =>
   page(tag === "a" ? `<a rel="${rel}" href="${href}">me</a>` : `<head><link rel="${rel}" href="${href}"></head>`);
+// The shape of a GitHub profile page read signed out (2026-11-14, #1559): inline SVG icons of <path> elements, one with
+// a <title>, before the two rel="nofollow me" anchors of the profile's links.
+function githubProfile(hrefs: readonly string[]): string {
+  const icon = (i: number) =>
+    `<svg aria-hidden="true" height="16" viewBox="0 0 16 16" version="1.1" width="16" data-view-component="true" ` +
+    `class="octicon octicon-${i}">${i === 0 ? "<title>GitHub</title>" : ""}<path d="M8 0c4.42 0 8 3.58 8 8${i}z">` +
+    `</path>${i % 3 === 0 ? '<path fill-rule="evenodd" d="M0 0h16v16H0z"></path>' : ""}</svg>`;
+  const icons = Array.from({ length: 49 }, (_, i) => `<span>${icon(i)}</span>`).join("\n");
+  const links = hrefs
+    .map((href) => `<li><a class="Link--primary" rel="nofollow me" href="${href}">${href}</a></li>`)
+    .join("");
+  return `<!DOCTYPE html><html lang="en"><head><title>u (U)</title></head><body><header>${icons}</header><ul>${links}</ul></body></html>`;
+}
 const moved =
   (location: string | null, status = 301) =>
   () =>
@@ -222,8 +235,44 @@ describe("field verification witnesses", () => {
     ["the rel token Me among others", relMe(LINK_BACK, "a", "nofollow Me"), true],
     ["a trailing slash", relMe(`${LINK_BACK}/`), false],
     ["no rel=me", page(`<a href="${LINK_BACK}">me</a>`), false],
-    ["a rel=me after a noscript", page(`<noscript></noscript><a rel=me href="${LINK_BACK}">`), false],
+    [
+      "a rel=me after a noscript holding a comment",
+      page(`<noscript><!-- --></noscript><a rel=me href="${LINK_BACK}">`),
+      false,
+    ],
     ["a rel=me after a select", page(`<select></select><a rel=me href="${LINK_BACK}">`), false],
+    [
+      "a rel=me after a plain inline svg",
+      page(`<svg viewBox="0 0 16 16"><path d="M0 0"></path></svg><a rel="me" href="${LINK_BACK}">`),
+      true,
+    ],
+    [
+      "a rel=me after a plain noscript",
+      page(`<noscript><iframe src="https://tags.example/ns.html"></iframe></noscript><a rel="me" href="${LINK_BACK}">`),
+      true,
+    ],
+    ["a GitHub profile page", page(githubProfile(["https://blog.example/", LINK_BACK])), true],
+    [
+      "a rel=me after a template that ended",
+      page(`<template><div>x</div></template><a rel=me href="${LINK_BACK}">`),
+      true,
+    ],
+    // The spec parser ignores the anchor in a template's column-group context: Mastodon does not verify.
+    [
+      "a rel=me inside a template after a <col>",
+      page(`<svg><path/></svg><template><col><a rel=me href="${LINK_BACK}"></template><a rel=me href=x>`),
+      false,
+    ],
+    [
+      "a rel=me after an svg holding a foreignObject",
+      page(`<svg><foreignObject></foreignObject></svg><a rel=me href="${LINK_BACK}">`),
+      false,
+    ],
+    [
+      "a rel=me after a direct match in a table",
+      page(`<table><tr><td><a rel=me href="${LINK_BACK}"></td></tr></table>`),
+      true,
+    ],
     ["a rel=me inside svg", page(`<svg><a rel=me href="${LINK_BACK}"></a></svg>`), false],
     ["a rel=me after math", page(`<math></math><a rel=me href="${LINK_BACK}">`), false],
     ["a frameset page", page(`<a rel=me href="${LINK_BACK}"><frameset></frameset>`), false],
@@ -252,6 +301,23 @@ describe("field verification witnesses", () => {
     expect(w.requests).toEqual([`GET ${SITE}`, `HEAD ${short}`]);
   });
 
+  it("sends no HEAD when a rel=me came after a table, whose first rel=me may not be Mastodon's", async () => {
+    const w = await world();
+    const a = "https://short.example/a";
+    // Foster parenting moves B before the table in the tree, so Mastodon HEADs B; the scan streams A first.
+    const body = `<svg><path/></svg><table><tr><td><a rel=me href="${a}"></td></tr><a rel=me href="https://b.example/"></table>`;
+    expect(await verifiedBy(w, { [SITE]: page(body), [a]: moved(LINK_BACK) })).toBe(false);
+    expect(w.requests).toEqual([`GET ${SITE}`]);
+    // A rel=me before the table only is HEADed.
+    const before = await world();
+    const routes = {
+      [SITE]: page(`<a rel=me href="${a}"></a><table><tr><td>x</td></tr></table>`),
+      [a]: moved(LINK_BACK),
+    };
+    expect(await verifiedBy(before, routes)).toBe(true);
+    expect(before.requests).toEqual([`GET ${SITE}`, `HEAD ${a}`]);
+  });
+
   it.each([
     ["missing", "<a rel=me>x</a>"],
     ["relative", '<a rel=me href="/elsewhere">x</a>'],
@@ -263,6 +329,59 @@ describe("field verification witnesses", () => {
     const w = await world();
     expect(await verifiedBy(w, { [SITE]: page(`${body}<a rel=me href="https://short.example/b">`) })).toBe(false);
     expect(w.requests).toEqual([`GET ${SITE}`]);
+  });
+
+  it.each([
+    [
+      "a rel=me refused after a noscript",
+      { [SITE]: page(`<noscript><!-- --></noscript><a rel=me href="${LINK_BACK}">`) },
+      [{ host: "site.example", contexts: ["noscript"], dropped: 1 }],
+    ],
+    [
+      "the HEAD skipped after a table",
+      { [SITE]: page(`<table><tr><td><a rel=me href="https://short.example/a"></td></tr></table>`) },
+      [{ host: "site.example", contexts: ["table"], dropped: 0 }],
+    ],
+    [
+      "a HEAD that did not lead back, after a candidate refused for a select",
+      {
+        [SITE]: page(`<a rel=me href="https://short.example/a"></a><select></select><a rel=me href="${LINK_BACK}">`),
+        "https://short.example/a": moved(NOWHERE),
+      },
+      [{ host: "site.example", contexts: ["select"], dropped: 1 }],
+    ],
+    [
+      "a refusal on the page a redirect reached",
+      {
+        [SITE]: moved("https://final.example/p?x=1"),
+        "https://final.example/p?x=1": page(`<svg/><math></math><a rel=me href="${LINK_BACK}">`),
+      },
+      [{ host: "final.example", contexts: ["foreign"], dropped: 1 }],
+    ],
+    [
+      "a rel=me refused inside a template",
+      { [SITE]: page(`<noscript><img></noscript><template><tr><a rel=me href="${LINK_BACK}"><td>`) },
+      [{ host: "site.example", contexts: ["template"], dropped: 1 }],
+    ],
+    ["no refusal", { [SITE]: page(`<a rel=me href="https://short.example/a"></a>`) }, []],
+    [
+      "a verified link despite a refusal",
+      { [SITE]: page(`<a rel=me href="${LINK_BACK}"></a><noscript><!-- --></noscript><a rel=me href=x>`) },
+      [],
+    ],
+  ])("logs the rel=me candidates skipped for their context on %s, with no URL", async (_label, routes, expected) => {
+    const w = await world();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await verifiedBy(w, routes);
+      const events = log.mock.calls
+        .map(([entry]) => entry as Record<string, unknown>)
+        .filter((entry) => entry.event === "kopje.field_links.rel_me_skipped");
+      expect(events).toEqual(expected.map((fields) => ({ event: "kopje.field_links.rel_me_skipped", ...fields })));
+      expect(JSON.stringify(events)).not.toMatch(/https?:|\/@|short\.example|\?x=/);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("never arms or fetches a value that is not a verifiable link", async () => {

@@ -3,6 +3,7 @@ import { type DefaultTreeAdapterMap, html as parse5Html, parse } from "parse5";
 import { describe, expect, it } from "vitest";
 
 import {
+  NOSCRIPT_CHARS,
   OUTPUT_MAX_UNITS,
   outputMaxUnits,
   type PageScan,
@@ -14,6 +15,7 @@ import {
   scanHtml,
 } from "../src/platform/html-scan";
 import { runs } from "./policy-world";
+import { fill, MiB, REGION_FLOODS } from "./region-floods";
 
 const UTF8 = { label: "utf-8", bomLength: 0 };
 const encode = (text: string) => new TextEncoder().encode(text);
@@ -34,9 +36,10 @@ type Node = DefaultTreeAdapterMap["node"];
 
 // The oracle: the rel=me hrefs a spec parser with scripting off (as Mastodon's Nokogiri HTML5 parse) finds, in
 // document order, template contents included; HTML namespace only; the token "me" among all tokens, ASCII
-// case-insensitively, as Mastodon's NokogiriHandler.link_rel_include downcases the token list and the token.
-function parse5RelMe(page: string): string[] {
-  const found: string[] = [];
+// case-insensitively, as Mastodon's NokogiriHandler.link_rel_include downcases the token list and the token; null for
+// a missing href, as the scan keeps it.
+function parse5RelMe(page: string): (string | null)[] {
+  const found: (string | null)[] = [];
   const walk = (node: Node) => {
     if ("tagName" in node) {
       const attribute = (name: string) => node.attrs.find((a) => a.name === name)?.value;
@@ -50,7 +53,7 @@ function parse5RelMe(page: string): string[] {
           .map((token) => token.replace(/[A-Z]+/g, (upper) => upper.toLowerCase()))
           .includes("me")
       ) {
-        found.push(attribute("href") ?? "");
+        found.push(attribute("href") ?? null);
       }
       if (node.tagName === "template" && "content" in node) {
         walk(node.content);
@@ -170,8 +173,10 @@ describe("scanHtml collection", () => {
   it("takes the first HTML title whose end tag was seen, untrimmed", async () => {
     expect((await scan("<title> Page </title><title>Second</title>")).title).toBe(" Page ");
     // lol-html can report a foreign title as HTML where its foreign-content model differs from the spec's: no title
-    // after an svg or math start tag is taken.
+    // after an svg or math start tag is taken, after an svg that rel=me collection resumes after too.
     expect((await scan("<svg><title>icon</title></svg><title>Page</title>")).title).toBeNull();
+    const resumed = await scan("<svg><path/></svg><title>x</title><a rel=me href=h>");
+    expect(resumed).toMatchObject({ title: null, relMe: ["h"], resumed: { svg: 1 } });
     expect((await scan("<math></math><title>Page</title>")).title).toBeNull();
     expect((await scan("<title>never closed")).title).toBeNull();
   });
@@ -263,18 +268,17 @@ describe("scanHtml against a scripting-off parser", () => {
     expect(await scan(page)).toMatchObject({ relMe: [], [flag]: true });
   });
 
-  it("collects no rel=me after a noscript start tag, which it reads as raw text", async () => {
+  it("collects no rel=me after a noscript holding a comment, which it reads as raw text", async () => {
     const counterexample = '<body><noscript><!--</noscript><a rel=me href="https://actor.example/u/a">--></noscript>';
     expect(parse5RelMe(counterexample)).toEqual([]);
     const result = await scan(counterexample);
-    expect(result.relMe).toEqual([]);
-    expect(result.relMeAfterNoscript).toBe(true);
+    expect(result).toMatchObject({ relMe: [], relMeAfterNoscript: true, resumed: { noscript: 0 } });
     expect(result.dropped.relMe).toBe(1);
   });
 
-  it("keeps a rel=me before the first noscript and the card metadata after it", async () => {
+  it("keeps a rel=me before a refused noscript and the card metadata after it", async () => {
     const result = await scan(
-      "<a rel=me href=before></a><noscript></noscript><a rel=me href=after></a><link rel=me href=after2>" +
+      "<a rel=me href=before></a><noscript><!-- --></noscript><a rel=me href=after></a><link rel=me href=after2>" +
         '<meta property="og:title" content="t"><link rel=canonical href=c><title>T</title>',
     );
     expect(result.relMe).toEqual(["before"]);
@@ -283,6 +287,209 @@ describe("scanHtml against a scripting-off parser", () => {
     expect(result.metas).toHaveLength(1);
     expect(result.links.map((link) => link.href)).toEqual(["after2", "c"]);
     expect(result.title).toBe("T");
+  });
+
+  it.each([
+    ["an iframe", '<noscript><iframe src="https://tags.example/ns.html"></iframe></noscript>'],
+    ["an img", '<noscript><img src="https://px.example/p?a=1&amp;b=2" width=1 height=1 alt=""/></noscript>'],
+    ["an empty noscript", "<noscript></noscript>"],
+    ["text", "<noscript>Enable JavaScript &amp; reload > here</noscript>"],
+    ["an uppercase end tag", "<noscript><IMG SRC=x></NOSCRIPT>"],
+    [
+      "listed elements",
+      "<noscript><div class=a><p><span>t</span><b>b</b><i>i</i><em>e</em><strong>s</strong></p></div></noscript>",
+    ],
+    ["a picture", "<noscript><picture><source srcset=a.webp type=image/webp><img src=a.png></picture></noscript>"],
+    [
+      "a meta, a link and a style",
+      '<noscript><meta http-equiv=refresh content="0"><link rel=stylesheet href=s.css><style>a{b:c}</style></noscript>',
+    ],
+    ["an anchor with no rel=me", "<noscript><A HREF=https://a.example/x rel=nofollow>x</A><br></noscript>"],
+    ["attributes with - and :", "<noscript><img data-x=1 xlink:href=y aria-hidden=true></noscript>"],
+    ["whitespace with a raw CR", "<noscript><img\rsrc=x\t/>\r\n<br /></noscript>"],
+    ["an unquoted value with a /", "<noscript><img src=https://a.example/x.png/></noscript>"],
+    ["an element left open", "<body><noscript><div></noscript>"],
+    ["end tags", "<noscript></p></br></div></a></noscript>"],
+    ["text at the cap", `<noscript>${"x".repeat(NOSCRIPT_CHARS)}</noscript>`],
+    // The cap counts UTF-16 code units: an astral character is two.
+    ["astral text at the cap", `<noscript>${"😀".repeat(NOSCRIPT_CHARS / 2)}</noscript>`],
+  ])("collects rel=me again after a noscript holding %s", async (_label, region) => {
+    const page = `<a rel=me href=before></a>${region}<a rel=me href=x>`;
+    expect(parse5RelMe(page)).toEqual(["before", "x"]);
+    expect(await scan(page)).toMatchObject({
+      relMe: ["before", "x"],
+      relMeAfterNoscript: false,
+      resumed: { noscript: 1 },
+    });
+  });
+
+  it.each([
+    ["a comment", "<noscript><!-- c --></noscript>"],
+    ["a doctype", "<noscript><!DOCTYPE html></noscript>"],
+    ["a tag outside the list", "<noscript><script></script></noscript>"],
+    ["a textarea", "<noscript><textarea></textarea></noscript>"],
+    ["a nested noscript", "<noscript><noscript></noscript>"],
+    ["an unfinished tag", "<noscript><img src=x</noscript>"],
+    ["a quoted </noscript>", '<noscript><img alt="</noscript>"></noscript>'],
+    ["a bare <", "<noscript>a < b</noscript>"],
+    ["an a rel=me", '<noscript><a rel="me" href=in></a></noscript>'],
+    ["an uppercase A REL=ME", '<noscript><A REL="ME" HREF=in></A></noscript>'],
+    ["a rel=me split by a raw CR", '<noscript><a rel="nofollow\rme" href=in></a></noscript>'],
+    ["a rel with a reference", "<noscript><a rel=&#109;e href=in></a></noscript>"],
+    ["a second rel attribute", "<noscript><a rel=nofollow rel=me href=in></a></noscript>"],
+    ["a link rel=me", "<noscript><link rel=me href=in></noscript>"],
+    ["a NUL", "<noscript>a\0b</noscript>"],
+    ["text past the cap", `<noscript>${"x".repeat(NOSCRIPT_CHARS + 1)}</noscript>`],
+    ["astral text past the cap", `<noscript>${"😀".repeat(NOSCRIPT_CHARS / 2)}x</noscript>`],
+    ["a tag inside an iframe", "<noscript><iframe><a rel=me href=in></iframe></noscript>"],
+    ["an iframe end tag alone", "<noscript></iframe></noscript>"],
+    ["an iframe never closed", "<noscript><iframe>x</noscript>"],
+    ["an end tag with attributes", "<noscript></div class=a></noscript>"],
+    ["attributes with no whitespace between", '<noscript><img src="a"alt=b></noscript>'],
+    ["a space before =", "<noscript><img src =a></noscript>"],
+    ["a / not before >", "<noscript><img / src=a></noscript>"],
+    ["a backtick in an unquoted value", "<noscript><img src=a`b></noscript>"],
+    ["a noscript in svg", "<svg><noscript></noscript></svg>"],
+    ["a non-ASCII attribute name", "<noscript><img é=x></noscript>"],
+    ["a template", "<noscript><template></template></noscript>"],
+    ["a </template>", "<noscript></template></noscript>"],
+  ])("collects no rel=me after a noscript holding %s", async (_label, region) => {
+    const page = `<a rel=me href=before></a>${region}<a rel=me href=x>`;
+    const result = await scan(page);
+    expect(result).toMatchObject({ relMe: ["before"], resumed: { noscript: 0 } });
+    expect(result.relMeAfterNoscript || result.relMeAfterForeign).toBe(true);
+    expect(result.dropped.relMe).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([
+    ["", "<template><col><a rel=me href=A></template><a rel=me href=B>"],
+    ["", "<template><tr><a rel=me href=A><td><link rel=me href=B>"],
+    ["<svg><path/></svg>", "<template><col><a rel=me href=A></template><a rel=me href=B>"],
+    ["<svg><path/></svg>", "<template><tr><a rel=me href=A><td><link rel=me href=B>"],
+    ["<noscript><img></noscript>", "<template><col><a rel=me href=A></template><a rel=me href=B>"],
+    ["<noscript><img></noscript>", "<template><tr><a rel=me href=A><td><link rel=me href=B>"],
+    ["", "<template><template></template><a rel=me href=A></template><a rel=me href=B>"],
+    ["", "<svg><template><path/></template></svg><a rel=me href=B>"],
+  ])("collects no rel=me inside a template, after %s, nor after it: %s", async (prefix, rest) => {
+    const page = `<a rel=me href=first></a>${prefix}${rest}`;
+    const result = await scan(page);
+    expect(result.relMe).toEqual(["first"]);
+    expect(result.relMeInTemplate || result.relMeAfterForeign).toBe(true);
+    expect(result.dropped.relMe).toBeGreaterThanOrEqual(1);
+    expect(result.relMe[0]).toBe(parse5RelMe(page)[0]);
+  });
+
+  it("refuses a rel=me inside a template whatever its context: A is dropped or moved by the spec parser", async () => {
+    expect(parse5RelMe("<svg><path/></svg><template><col><a rel=me href=A></template><a rel=me href=B>")).toEqual([
+      "B",
+    ]);
+    expect(parse5RelMe("<svg><path/></svg><template><tr><a rel=me href=A><td><link rel=me href=B>")).toEqual([
+      "B",
+      "A",
+    ]);
+    // A template that another element's end tag ends in the stream stays open in the tree, B inside it, where a
+    // template's insertion modes may later drop or move it: refused.
+    const page = "<div><template></div><a rel=me href=B>";
+    expect(parse5RelMe(page)).toEqual(["B"]);
+    expect(await scan(page)).toMatchObject({ relMe: [], relMeInTemplate: true, resumed: { template: 0 } });
+    expect(await scan("<template><a rel=me href=A></a></template>")).toMatchObject({
+      relMe: [],
+      relMeInTemplate: true,
+    });
+  });
+
+  it.each([
+    ["<template><col><style></template><textarea></style></template><a rel=me href=x>", []],
+    ["<template><col><style></template><a rel=me href=A></style></template><a rel=me href=B>", ["A", "B"]],
+  ])("refuses rel=me after a raw-text element after a table-structure tag in a template: %s", async (page, oracle) => {
+    // The template's column-group mode ignores the <style>, which lol-html reads as raw text up to </style>.
+    expect(parse5RelMe(page)).toEqual(oracle);
+    expect(await scan(page)).toMatchObject({ relMe: [], relMeInTemplate: true });
+  });
+
+  it.each([
+    ["<template><col><svg><![CDATA[></template><textarea>]]></svg></template><a rel=me href=x>", []],
+    ["<template><col><svg><![CDATA[><template><col>]]></svg></template><a rel=me href=x>", []],
+    ["<template><col><svg><![CDATA[></template><a rel=me href=A>]]></svg></template><a rel=me href=B>", ["A", "B"]],
+  ])("refuses rel=me after a table-structure tag in a template, an svg CDATA after it: %s", async (page, oracle) => {
+    // The column-group mode ignores the <svg>, so <![CDATA[ is a bogus comment to the spec parser and a CDATA section
+    // to lol-html.
+    expect(parse5RelMe(page)).toEqual(oracle);
+    expect(await scan(page)).toMatchObject({ relMe: [], relMeInTemplate: true });
+  });
+
+  const TABLE_IN_TEMPLATE = ["col", "colgroup", "caption", "table", "tbody", "thead", "tfoot", "tr", "td", "th"];
+  it.each(
+    [
+      "<template><col><svg><![CDATA[></template><textarea>]]></svg></template><a rel=me href=x>",
+      "<template><col><svg><![CDATA[><template><col>]]></svg></template><a rel=me href=x>",
+      "<template><col><svg><![CDATA[></template><a rel=me href=A>]]></svg></template><a rel=me href=B>",
+    ].flatMap((page) => [
+      `<head>${page}`,
+      `<table>${page}`,
+      `<svg><g>${page}`,
+      page.replace("<template><col>", "<template>&#32;<col>"),
+      ...TABLE_IN_TEMPLATE.map((tag) => page.replace("<col>", `<${tag}>`)),
+    ]),
+  )("finds no rel=me the parser does not, first first, after a table-structure tag in a template: %s", async (page) => {
+    const result = await scan(page);
+    const oracle = parse5RelMe(page);
+    for (const href of result.relMe) {
+      expect(oracle).toContain(href);
+    }
+    if (result.relMe.length > 0 && !result.relMeOrderAfterTable) {
+      expect(result.relMe[0]).toBe(oracle[0]);
+    }
+    // The refusal ran wherever a candidate was reported (inside <svg><g> none is: every anchor there is SVG).
+    if (result.dropped.relMe > 0 || oracle.length > 0) {
+      expect(result.relMeInTemplate || result.relMeAfterForeign).toBe(true);
+    }
+  });
+
+  it.each(TABLE_IN_TEMPLATE)("latches rel=me after a <%s> in a template, closed or not", async (tag) => {
+    for (const page of [
+      `<template><${tag}></template><a rel=me href=x>`,
+      `<template><div><${tag}>t</div></template><a rel=me href=x></a><link rel=me href=y>`,
+      `<template><svg><${tag}/></svg></template><a rel=me href=x>`,
+    ]) {
+      const result = await scan(page);
+      expect(result.relMe, page).toEqual([]);
+      expect(result.relMeInTemplate, page).toBe(true);
+    }
+    // Outside a template, the tag does not latch.
+    expect((await scan(`<${tag}></${tag}><a rel=me href=x>`)).relMeInTemplate).toBe(false);
+  });
+
+  it("keeps an svg icon in a template resuming", async () => {
+    const page =
+      '<template><div><svg viewBox="0 0 16 16"><path d="M0 0"></path></svg></div></template><a rel=me href=x>';
+    expect(parse5RelMe(page)).toEqual(["x"]);
+    expect(await scan(page)).toMatchObject({ relMe: ["x"], relMeInTemplate: false, resumed: { svg: 1, template: 1 } });
+  });
+
+  it("keeps collecting rel=me after a template that ended with its own end tag", async () => {
+    for (const page of [
+      "<template><div>x</div></template><a rel=me href=x>",
+      "<svg><path/></svg><template><template></template></template><a rel=me href=x>",
+      "<TEMPLATE><div><span>t</span></div></TEMPLATE><a rel=me href=x>",
+      // Raw text in a template outside the table-structure modes is read alike.
+      "<template><style>a{}</style><script>b</script><title>t</title><textarea>u</textarea></template><a rel=me href=x>",
+    ]) {
+      expect(parse5RelMe(page)).toEqual(["x"]);
+      expect(await scan(page)).toMatchObject({ relMe: ["x"], relMeInTemplate: false });
+    }
+  });
+
+  it("notes a rel=me collected after a table, whose order the scan does not model", async () => {
+    const page = "<svg><path/></svg><table><tr><td><a rel=me href=A></td></tr><a rel=me href=B></table>";
+    // Foster parenting moves B before the table in the tree's document order.
+    expect(parse5RelMe(page)).toEqual(["B", "A"]);
+    expect(await scan(page)).toMatchObject({ relMe: ["A", "B"], relMeOrderAfterTable: true });
+    // A rel=me before the table only keeps its order.
+    expect(await scan("<a rel=me href=A></a><table></table>")).toMatchObject({
+      relMe: ["A"],
+      relMeOrderAfterTable: false,
+    });
   });
 
   it("collects no rel=me after a select start tag", async () => {
@@ -310,15 +517,91 @@ describe("scanHtml against a scripting-off parser", () => {
     expect((await scan("<a rel=me href=x></a><frame>")).relMe).toEqual(["x"]);
   });
 
-  it("collects no rel=me after an svg or math start tag", async () => {
+  it("collects rel=me again after a plain svg ends with its own end tag", async () => {
+    for (const page of [
+      '<svg viewBox="0 0 16 16"><path d="M0 0"></path></svg><a rel=me href=x>',
+      '<SVG class=i><g><path d="M0 0"/><rect/><circle/><ellipse/><line/><polyline/><polygon/></g></SVG><a rel=me href=x>',
+      "<svg><defs><linearGradient><stop/></linearGradient><radialGradient></radialGradient><clipPath><use/></clipPath>" +
+        "<mask></mask><symbol></symbol></defs>text</svg><a rel=me href=x>",
+      "<svg><path></svg><a rel=me href=x>",
+      // An SVG title or desc holding text (and comments) only, closed by its own end tag.
+      '<svg><title>GitHub</title><path d="M0 0"/></svg><a rel=me href=x>',
+      "<svg><desc>d<!-- c --></desc><path/></svg><a rel=me href=x>",
+      "<svg><g><title>a &amp; b</title></g><desc></desc></svg><a rel=me href=x>",
+    ]) {
+      expect(parse5RelMe(page)).toEqual(["x"]);
+      expect(await scan(page)).toMatchObject({ relMe: ["x"], relMeAfterForeign: false, resumed: { svg: 1 } });
+    }
+    // Every region before the anchor, in order, and a rel=me before them kept first.
+    const page = `<a rel=me href=first></a>${"<svg><path/></svg>".repeat(49)}<a rel="nofollow me" href=x>`;
+    expect(await scan(page)).toMatchObject({ relMe: ["first", "x"], resumed: { svg: 49 } });
+  });
+
+  it.each([
+    ["a foreignObject", "<svg><foreignObject></foreignObject></svg>"],
+    ["a template", "<svg><template></template></svg>"],
+    ["an svg a", "<svg><a></a></svg>"],
+    ["an svg a holding a rel=me", "<svg><a rel=me href=in></a></svg>"],
+    ["a nested svg", "<svg><svg></svg></svg>"],
+    ["a math", "<svg><math></math></svg>"],
+    ["an svg style", "<svg><style></style></svg>"],
+    ["an svg image", "<svg><image/></svg>"],
+    ["a self-closing svg", "<svg/>"],
+    ["an svg closed by another element's end tag", "<p><svg><path></p>"],
+    ["an element after </p> breaks out of svg", "<svg></p><g></g></svg>"],
+    ["an element after </br> breaks out of svg", "<svg></br><path></path></svg>"],
+    ["an HTML start tag breaking out of svg", "<svg><g><p></p></g></svg>"],
+    ["an XHTML title after </p>", "<svg></p><title>t</title></svg>"],
+    ["a start tag inside an SVG title", "<svg><title><g/></title></svg>"],
+    ["a title inside an SVG title", "<svg><title><title></title></title></svg>"],
+    ["a start tag inside an SVG desc", "<svg><desc><path></path></desc></svg>"],
+    ["an SVG title closed by </svg>", "<svg><title>t</svg>"],
+    ["<![CDATA[ in an SVG title", "<svg><title><![CDATA[></title></svg>"],
+    ["<![CDATA[ in an SVG desc", "<svg><desc><![CDATA[></desc></svg>"],
+    ["a math", "<math></math>"],
+  ])("collects no rel=me after %s", async (_label, region) => {
+    const page = `<a rel=me href=before></a>${region}<a rel=me href=x>`;
+    const result = await scan(page);
+    expect(result).toMatchObject({ relMe: ["before"], relMeAfterForeign: true, resumed: { svg: 0 } });
+    expect(result.dropped.relMe).toBeGreaterThanOrEqual(1);
+  });
+
+  it("collects no rel=me after an svg or math start tag the region rules refuse", async () => {
     for (const page of [
       "<math><svg><desc><a rel=me href=x>",
       "<svg><math><mtext><a rel=me href=x>",
-      "<svg></svg><a rel=me href=x>",
+      "<svg><template><foreignObject></template><a rel=me href=x>",
     ]) {
       expect(await scan(page)).toMatchObject({ relMe: [], relMeAfterForeign: true });
     }
-    expect((await scan("<a rel=me href=x></a><svg></svg>")).relMe).toEqual(["x"]);
+    // Latched for good: a plain svg after a refused one does not resume.
+    expect(await scan("<svg/><svg><path/></svg><a rel=me href=x>")).toMatchObject({
+      relMe: [],
+      relMeAfterForeign: true,
+      resumed: { svg: 0 },
+    });
+    expect((await scan("<a rel=me href=x></a><svg/>")).relMe).toEqual(["x"]);
+  });
+
+  it("keeps the card metadata after a self-closing SVG title or desc, which has no end tag", async () => {
+    for (const region of ["<svg><title/></svg>", "<svg><desc/></svg>"]) {
+      const result = await scan(`${region}<a rel=me href=x></a><meta property="og:title" content="t">`);
+      expect(result).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
+      expect(result.metas).toEqual([{ property: "og:title", name: null, content: "t" }]);
+    }
+  });
+
+  it("collects no rel=me hidden in a CDATA section Nokogiri reads in an SVG title", async () => {
+    // Nokogiri's HTML5 parser reads the CDATA section up to "]]>" and finds no rel=me; lol-html and parse5 end it at
+    // the first ">", so the differential run cannot see this.
+    const page = "<svg><title><![CDATA[></title></svg><a rel=me href=x>]]>";
+    expect(await scan(page)).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
+  });
+
+  it("refuses a rel=me that a </p> took out of svg, as svg * refuses it, and stays latched after it", async () => {
+    const page = "<svg><path></p><a rel=me href=in></a></svg><a rel=me href=x>";
+    expect(parse5RelMe(page)).toEqual(["in", "x"]);
+    expect(await scan(page)).toMatchObject({ relMe: [], relMeAfterForeign: true, dropped: { relMe: 2 } });
   });
 
   // A token soup of the constructs above; Kopje may miss a rel=me the oracle finds, never find one it does not.
@@ -384,6 +667,7 @@ describe("scanHtml against a scripting-off parser", () => {
     "</table>",
     "<caption>",
     "<colgroup>",
+    "<col>",
     "<head>",
     "</head>",
     "<body>",
@@ -427,6 +711,261 @@ describe("scanHtml against a scripting-off parser", () => {
       runs(5000),
     );
   });
+  // The structured run: a soup, one to three regions with hostile fragments injected, a rel=me and a soup. A uniform
+  // soup almost never builds a region that ends and then a rel=me, so the run counts the regions that resumed.
+  const SVG_ELEMENTS = [
+    "g",
+    "path",
+    "rect",
+    "circle",
+    "ellipse",
+    "line",
+    "polyline",
+    "polygon",
+    "defs",
+    "use",
+    "symbol",
+    "linearGradient",
+    "radialGradient",
+    "stop",
+    "clipPath",
+    "mask",
+  ];
+  const SVG_BODY = [
+    ...SVG_ELEMENTS.flatMap((name) => [`<${name} d="M0 0">`, `</${name}>`, `<${name}/>`]),
+    "<title>GitHub</title>",
+    "<desc>d</desc>",
+    "<title>",
+    "</title>",
+    "text",
+    " ",
+  ];
+  const SVG_BREAKERS = [
+    "<svg/>",
+    "<svg>",
+    "<title/>",
+    "<desc/>",
+    "</SVG>",
+    "</svg>",
+    "</p>",
+    "</br>",
+    "<p>",
+    "<foreignObject>",
+    "<a rel=me href=ID>",
+    "<a>",
+    "<![CDATA[",
+    "]]>",
+    "<!--",
+    "-->",
+    "<math>",
+    "<template>",
+    "<style>",
+    "<script>",
+    "<image>",
+    "<font color=red>",
+    "<title><g/>",
+    "</template>",
+  ];
+  const NOSCRIPT_BODY = [
+    ...["img", "br", "meta", "link", "a", "div", "p", "span", "b", "i", "em", "strong", "picture", "source"].flatMap(
+      (name) => [`<${name}>`, `</${name}>`, `<${name.toUpperCase()} data-x=1 xlink:href=https://a.example/p?q=1>`],
+    ),
+    "<img src=\"https://px.example/p.gif\" alt='' />",
+    "<a href=https://a.example/x/ rel=nofollow>",
+    "<link rel=stylesheet href=s.css>",
+    '<iframe src="https://tags.example/ns.html"></iframe>',
+    "<style>a{b:c}</style>",
+    "text &amp; more",
+    "\n",
+  ];
+  const NOSCRIPT_BREAKERS = [
+    "<!--",
+    "-->",
+    "<!-- c -->",
+    "<A REL=ME HREF=ID>",
+    "<a rel=&#109;e href=ID>",
+    '<a rel="nofollow\rme" href=ID>',
+    "<link rel=me href=ID>",
+    "\r",
+    "\0",
+    '<img alt="</noscript>">',
+    "</NOSCRIPT>",
+    "</noscript>",
+    "<noscript>",
+    "<script>",
+    "</script>",
+    "<textarea>",
+    "<select>",
+    "<template>",
+    "<svg>",
+    "<math>",
+    "<table>",
+    "<frameset>",
+    "<iframe>",
+    "</iframe>",
+    "<style>",
+    "<title>",
+    "<plaintext>",
+    "<",
+    "<img",
+    '"',
+    "'",
+    "/",
+    "<head>",
+    "<body>",
+    "</template>",
+  ];
+  // Template contents follow their own insertion modes: a <col> or <colgroup> context drops an <a> or <link>, a <tr>
+  // or <tbody> one moves it.
+  const TEMPLATE_BODY = [
+    "<div>x</div>",
+    "<p>",
+    "text",
+    "<col>",
+    "<colgroup>",
+    "<tr>",
+    "<td>",
+    "<th>",
+    "<tbody>",
+    "<thead>",
+    "<tfoot>",
+    "<table>",
+    "<caption>",
+    "<svg><path/></svg>",
+    "<span><svg><g><path/></g></svg></span>",
+    "<button>",
+    "<a rel=me href=ID>",
+    "<link rel=me href=ID>",
+    "<a href=ID>",
+  ];
+  const TEMPLATE_BREAKERS = [
+    ...["style", "script", "title", "textarea", "iframe", "xmp", "noembed", "noframes", "noscript"].flatMap((name) => [
+      `<${name}>`,
+      `</${name}>`,
+      `<${name}></template>`,
+      `<${name}>x</${name}>`,
+    ]),
+    "<plaintext>",
+    "<![CDATA[",
+    "]]>",
+    "<svg><![CDATA[",
+    "<template>",
+    "</template>",
+    "</TEMPLATE>",
+    "</div>",
+    "</td>",
+    "</tr>",
+    "</table>",
+    "<svg>",
+    "</svg>",
+    "<svg><path/></svg>",
+    "<noscript><img></noscript>",
+    "<select>",
+    "<!--",
+    "-->",
+  ];
+  const SVG_OPEN = ["<svg>", '<svg viewBox="0 0 16 16" class="octicon">', "<SVG>"];
+  const SVG_CLOSE = ["</svg>", "</SVG>"];
+  // Soup without the table fragments: a rel=me foster-parented out of a table precedes earlier ones in the spec
+  // parser's document order, which the scan does not model (checked apart, by relMeOrderAfterTable).
+  const SOUP = FRAGMENTS.filter((part) => !/^<\/?(table|tr|td|caption|colgroup|col)>$/.test(part));
+  const body = (valid: string[], breakers: string[]) =>
+    fc
+      .array(fc.oneof({ arbitrary: fc.constantFrom(...valid), weight: 6 }, fc.constantFrom(...breakers)), {
+        maxLength: 8,
+      })
+      .map((parts) => parts.join(""));
+  const noscriptRegion = fc
+    .tuple(
+      fc.constantFrom("<noscript>", "<NOSCRIPT>", "<head><noscript>"),
+      body(NOSCRIPT_BODY, NOSCRIPT_BREAKERS),
+      fc.constantFrom("</noscript>", "</NOSCRIPT>"),
+    )
+    .map((parts) => parts.join(""));
+  const templateRegion = fc
+    .tuple(
+      fc.constantFrom("<template>", "<TEMPLATE>", "<head><template>", "<svg><path/></svg><template>"),
+      body(TEMPLATE_BODY, TEMPLATE_BREAKERS),
+      // Closed, closed upper-case, nested and closed twice, by another element's end tag, or never.
+      fc.constantFrom("</template>", "</TEMPLATE>", "<template></template></template>", "</div>", ""),
+    )
+    .map((parts) => parts.join(""));
+  const svgRegion = fc
+    .tuple(fc.constantFrom(...SVG_OPEN), body(SVG_BODY, SVG_BREAKERS), fc.constantFrom(...SVG_CLOSE))
+    .map((parts) => parts.join(""));
+  const soup = fc.array(fc.constantFrom(...SOUP), { maxLength: 4 }).map((parts) => parts.join(""));
+  const relMeAnchor = fc.constantFrom(
+    "<a rel=me href=ID>",
+    '<a rel="nofollow me" href=ID></a>',
+    "<link rel=me href=ID>",
+  );
+  const structured = fc
+    .tuple(
+      soup,
+      fc.array(fc.tuple(fc.option(relMeAnchor), fc.oneof(svgRegion, noscriptRegion, templateRegion)), {
+        minLength: 1,
+        maxLength: 3,
+      }),
+      relMeAnchor,
+      soup,
+    )
+    .map(([before, regions, anchor, after]) => {
+      const middle = regions.map(([rel, region]) => (rel ?? "") + region).join("");
+      let id = 0;
+      return (before + middle + anchor + after).replace(/ID/g, () => `h${id++}`);
+    });
+
+  it(
+    "never finds a rel=me the scripting-off parser does not, and returns its first first, after regions",
+    { timeout: 300_000 },
+    async () => {
+      const counts = {
+        pages: 0,
+        failed: 0,
+        svgResumed: 0,
+        noscriptResumed: 0,
+        templatesClosed: 0,
+        relMeInTemplate: 0,
+        pagesClosedTemplateWithRelMe: 0,
+        pagesResumedWithRelMe: 0,
+      };
+      await fc.assert(
+        fc.asyncProperty(structured, async (page) => {
+          counts.pages++;
+          const result = await scanOrFailure(page);
+          if ("failed" in result) {
+            counts.failed++;
+            return;
+          }
+          const oracle = parse5RelMe(page);
+          for (const href of result.relMe) {
+            expect(href === null || oracle.includes(href), `${href} in ${JSON.stringify(page)}`).toBe(true);
+          }
+          if (result.relMe.length > 0 && !result.relMeOrderAfterTable) {
+            expect(result.relMe[0], `first in ${JSON.stringify(page)}`).toBe(oracle[0]);
+          }
+          counts.svgResumed += result.resumed.svg;
+          counts.noscriptResumed += result.resumed.noscript;
+          counts.templatesClosed += result.resumed.template;
+          counts.relMeInTemplate += result.relMeInTemplate ? 1 : 0;
+          if (result.resumed.template > 0 && !result.relMeInTemplate && result.relMe.length > 0) {
+            counts.pagesClosedTemplateWithRelMe++;
+          }
+          if (result.resumed.svg + result.resumed.noscript > 0 && result.relMe.length > 0) {
+            counts.pagesResumedWithRelMe++;
+          }
+        }),
+        runs(5000),
+      );
+      console.log(JSON.stringify({ structuredRun: counts }));
+      expect(counts.svgResumed).toBeGreaterThan(0);
+      expect(counts.noscriptResumed).toBeGreaterThan(0);
+      expect(counts.templatesClosed).toBeGreaterThan(0);
+      expect(counts.relMeInTemplate).toBeGreaterThan(0);
+      expect(counts.pagesClosedTemplateWithRelMe).toBeGreaterThan(0);
+      expect(counts.pagesResumedWithRelMe).toBeGreaterThan(0);
+    },
+  );
 });
 
 describe("scanHtml failures", () => {
@@ -575,7 +1114,10 @@ describe("scanHtml bounds", () => {
       relMeAfterSelect: false,
       relMeAfterForeign: false,
       relMeAfterLongRel: false,
+      relMeInTemplate: false,
       relMeWithFrameset: false,
+      relMeOrderAfterTable: false,
+      resumed: { svg: big, noscript: big, template: big },
       links: Array.from({ length: l.links }, () => ({
         rel: Array.from({ length: l.relTokens }, () => ""),
         href: null,
@@ -593,13 +1135,9 @@ describe("scanHtml bounds", () => {
 });
 
 describe("scanHtml on hostile 1 MiB pages", () => {
-  const MiB = 1024 * 1024;
-  const fill = (unit: string, prefix = "", suffix = "") =>
-    prefix + unit.repeat(Math.floor((MiB - prefix.length - suffix.length) / unit.length)) + suffix;
-
   // Unclosed elements stay on lol-html's stack of open elements, and a start tag's attributes are charged to the same
   // memory budget (test/html-rewriter-facts.test.ts): past it the scan fails, whole.
-  it.each([
+  it.each<readonly [string, string, "memory" | "scanned" | ((scan: PageScan) => void)]>([
     ["deep nesting", fill("<div>", "", "<a rel=me href=deep>"), "memory"],
     ["150k unclosed rel=me anchors", fill("<a rel=me>"), "memory"],
     ["70k closed rel=me anchors", fill("<a rel=me></a>"), "scanned"],
@@ -615,6 +1153,7 @@ describe("scanHtml on hostile 1 MiB pages", () => {
     ["80k metas", fill("<meta name=a>"), "scanned"],
     ["many JSON-LD scripts", fill('<script type="application/ld+json">{}</script>'), "scanned"],
     ["many titles", fill("<title>t</title>"), "scanned"],
+    ...Object.entries(REGION_FLOODS).map(([label, { page, check }]) => [label, page, check] as const),
   ])("stays within the caps on %s", { timeout: 60_000 }, async (_label, page, outcome) => {
     const bytes = encode(page);
     expect(bytes.byteLength).toBeLessThanOrEqual(MiB);
@@ -623,16 +1162,29 @@ describe("scanHtml on hostile 1 MiB pages", () => {
       expect(result.failed).toBe(outcome);
       return;
     }
-    expect(outcome).toBe("scanned");
+    expect(outcome).not.toBe("memory");
+    // A region flood also checks the path it ran.
+    if (typeof outcome === "function") {
+      outcome(result);
+    }
     expect(result.relMe.length).toBeLessThanOrEqual(SCAN_LIMITS.relMe);
     expect(result.links.length).toBeLessThanOrEqual(SCAN_LIMITS.links);
     expect(result.metas.length).toBeLessThanOrEqual(SCAN_LIMITS.metas);
     expect(result.jsonLd.length).toBeLessThanOrEqual(SCAN_LIMITS.jsonLd);
     expect(result.outputUnits).toBe(unitsOf(result));
     expect(result.outputUnits).toBeLessThanOrEqual(OUTPUT_MAX_UNITS);
-    // A matched start tag is at least 6 bytes ("<link>"), and a text chunk at least one.
-    expect(result.work.elements).toBeLessThanOrEqual(bytes.byteLength / 6);
+    // The cheapest handler calls: a nested <svg> (5 bytes) runs both "svg, math" and "svg *"; a <g> 3 bytes, one. A text
+    // chunk or a comment is at least one byte.
+    expect(result.work.elements).toBeLessThanOrEqual(bytes.byteLength / 2.5);
     expect(result.work.textChunks).toBeLessThanOrEqual(bytes.byteLength);
+  });
+
+  it("counts both handlers of a nested svg start tag, at bytes / 2.5", async () => {
+    const page = "<svg>".repeat(10_000);
+    const result = await scan(page);
+    expect(result.work.elements).toBe(2 * 10_000 - 1);
+    expect(result.work.elements).toBeGreaterThan(page.length / 3);
+    expect(result).toMatchObject({ resumed: { svg: 0 } });
   });
 
   // A tag within the attribute budget observed on this runtime: 32,766 extra attributes plus rel and href (32,768 in

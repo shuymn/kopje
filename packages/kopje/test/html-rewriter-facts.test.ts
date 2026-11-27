@@ -44,6 +44,7 @@ async function rewrite(
 
 const HTML = "text/html; charset=utf-8";
 const XHTML = "http://www.w3.org/1999/xhtml";
+const SVG = "http://www.w3.org/2000/svg";
 
 function elements(events: Event[]) {
   return events.filter((event) => event.kind === "element");
@@ -164,11 +165,69 @@ describe("HTMLRewriter facts", () => {
     await expect(rewrite(tag(32_769), HTML, ["a"], ["href"])).rejects.toThrow(/memory/i);
   });
 
-  it("calls the end tag handler only for an explicit end tag", async () => {
+  it("calls no end tag handler for an element the end of the input closes", async () => {
     const closed = await rewrite("<title>a</title>", HTML, ["title"]);
     expect(closed.some((event) => event.kind === "end")).toBe(true);
     const open = await rewrite("<title>a", HTML, ["title"]);
     expect(open.some((event) => event.kind === "end")).toBe(false);
+  });
+
+  it("calls an end tag handler with the name of the end tag that closes the element, an ancestor's included", async () => {
+    expect(await rewrite("<p><svg><path></path></p>", HTML, ["svg"])).toEqual([
+      { kind: "element", tag: "svg", ns: SVG, attrs: {} },
+      { kind: "end", tag: "p" },
+    ]);
+    expect((await rewrite("<svg><title>t</svg>", HTML, ["title"])).filter((event) => event.kind === "end")).toEqual([
+      { kind: "end", tag: "svg" },
+    ]);
+    // The name is lowercased.
+    expect((await rewrite("<svg></SVG>", HTML, ["svg"])).filter((event) => event.kind === "end")).toEqual([
+      { kind: "end", tag: "svg" },
+    ]);
+  });
+
+  it.each([
+    ["<svg/>", "svg"],
+    ["<svg><title/></svg>", "title"],
+    ["<svg><desc/></svg>", "desc"],
+    ["<svg><path/></svg>", "path"],
+  ])("throws from onEndTag on the self-closing foreign element in %s", async (page, selector) => {
+    const thrown: string[] = [];
+    await new HTMLRewriter()
+      .on(selector, {
+        element(element) {
+          try {
+            element.onEndTag(() => {});
+          } catch (error) {
+            thrown.push(`${element.tagName}: ${String(error)}`);
+          }
+        },
+      })
+      .transform(new Response(page, { headers: { "content-type": HTML } }))
+      .body?.pipeTo(new WritableStream());
+    expect(thrown).toEqual([`${selector}: TypeError: Parser error: No end tag.`]);
+  });
+
+  it.each(["</p>", "</br>"])("leaves svg at %s: the next element is XHTML, and still matches svg *", async (end) => {
+    const events = await rewrite(`<svg><path>${end}<g></g><title>t</title></svg>`, HTML, ["svg *"]);
+    expect(elements(events).map((event) => (event.kind === "element" ? `${event.tag} ${event.ns}` : ""))).toEqual([
+      `path ${SVG}`,
+      `g ${XHTML}`,
+      `title ${XHTML}`,
+    ]);
+  });
+
+  it("reads <![CDATA[ inside an SVG title as a comment that ends at the first >", async () => {
+    // Nokogiri reads a CDATA section up to "]]>" there, which hides the anchor.
+    const page = "<svg><title><![CDATA[></title></svg><a rel=me href=x>]]>";
+    const comments: string[] = [];
+    await new HTMLRewriter()
+      .on("svg", { comments: (comment) => void comments.push(comment.text) })
+      .transform(new Response(page, { headers: { "content-type": HTML } }))
+      .body?.pipeTo(new WritableStream());
+    const events = await rewrite(page, HTML, ["a"]);
+    expect(comments).toEqual(["[CDATA["]);
+    expect(elements(events)).toEqual([{ kind: "element", tag: "a", ns: XHTML, attrs: {} }]);
   });
 
   it("does not re-sniff a meta charset that disagrees with the given label", async () => {

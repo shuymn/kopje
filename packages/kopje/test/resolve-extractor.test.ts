@@ -76,6 +76,13 @@ describe("scanAlternate contexts (T10.18)", () => {
     ["in a head <noscript>", "<head><noscript>LINK</noscript></head>", "noscript"],
     ["after <template>", "<body><template>LINK</template>", "template"],
     ["after <svg>", "<body><svg></svg>LINK", "svg"],
+    // Regions rel=me collection resumes after (html-scan.ts) still refuse here.
+    ["after a plain <svg>", '<body><svg viewBox="0 0 16 16"><path d="M0 0"></path></svg>LINK', "svg"],
+    [
+      "after a plain <noscript>",
+      '<body><noscript><iframe src="https://tags.example/ns.html"></iframe></noscript>LINK',
+      "noscript",
+    ],
     ["after <math>", "<body><math></math>LINK", "math"],
     ["after <table>", "<body><table></table>LINK", "table"],
     ["on a page with <frameset> bytes", "<!-- <frameset> -->LINK", "frameset"],

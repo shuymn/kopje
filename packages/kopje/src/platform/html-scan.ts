@@ -7,26 +7,48 @@ import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 // It runs on workerd's HTMLRewriter (lol-html): a spec tokenizer with a tree-builder simulator that tracks namespaces,
 // foreign content and integration points, streaming natively. Facts it rests on are pinned by
 // test/html-rewriter-facts.test.ts: attribute values and text chunks come raw (references undecoded, CR kept), the
-// first of duplicate attributes wins, an end tag handler runs only for an explicit end tag, a meta charset is not
-// re-sniffed, an unsupported label fails construction, and a parsing ambiguity or the 3 MiB buffer limit fails the
-// stream. Any failure is a failure of the whole scan: nothing partial is returned.
+// first of duplicate attributes wins, an end tag handler runs for the end tag that closes the element, an ancestor's
+// included, with that tag's name lowercased (never for an element the end of the input closes), onEndTag throws on a
+// self-closing foreign element, a meta charset is not re-sniffed, an unsupported label fails construction, and a
+// parsing ambiguity or the 3 MiB buffer limit fails the stream. Any failure is a failure of the whole scan: nothing
+// partial is returned.
 //
 // Kopje follows lol-html where it differs from Mastodon's parser (Nokogiri's HTML5 parser, scripting off):
 //   - lol-html parses <noscript> as raw text (scripting on), so markup a scripting-off parser puts in a comment can
-//     surface as elements. No rel=me after the first <noscript> start tag is collected (relMeAfterNoscript); card
-//     metadata after one may differ from Mastodon's.
+//     surface as elements. An HTML <noscript> outside an SVG region opens a region whose raw text is kept up to
+//     NOSCRIPT_CHARS; rel=me collection resumes at its </noscript> when plainNoscript accepts the text, where every
+//     later <a> or <link> is an element for both parsers, in the same order (the scripting-off parser ends the
+//     noscript at the same end tag, or ignores it with an ordinary element still open). Any other noscript latches:
+//     no rel=me after it is collected (relMeAfterNoscript). Card metadata after a noscript may differ from Mastodon's.
 //   - lol-html does not model the "in select" insertion mode, where a scripting-off parser ignores <a> and <link>
 //     start tags, nor how <template> and end tags inside a select change it: no rel=me after the first <select> start
 //     tag is collected (relMeAfterSelect).
 //   - nor does it model <frameset>, which replaces the body (or makes later markup ignored), and it does not see one
 //     inside a <noscript>: a page with "<frameset" anywhere in its bytes returns no rel=me (relMeWithFrameset).
 //   - its foreign-content model differs from the spec's in places (an <svg> inside <math> enters SVG, where the spec
-//     keeps MathML; a <template> or a stray end tag can leave it in HTML where the spec stays foreign): no rel=me after
-//     the first <svg> or <math> start tag is collected (relMeAfterForeign).
+//     keeps MathML; a <template> or a stray end tag can leave it in HTML where the spec stays foreign). An SVG <svg>
+//     outside a region opens one, and rel=me collection resumes when its end tag handler runs for "svg" and every
+//     element started in it was an SVG element of PLAIN_SVG, or an SVG <title> or <desc> with no start tag in it closed
+//     by its own end tag, and no comment in it began "[CDATA[" (inside an SVG <title> or <desc>, lol-html reads
+//     <![CDATA[ as a comment ending at the first ">", where Nokogiri reads a CDATA section to "]]>"). PLAIN_SVG are
+//     ordinary elements to the HTML tree builder too, should a </p> or </br> have left foreign content. Anything
+//     else, a <math>, a self-closing <svg> or an <svg> closed by another element's end tag latches: no rel=me after it
+//     is collected (relMeAfterForeign). A rel=me candidate inside an open region latches too.
+//   - nor does it model table foster parenting, which moves a rel=me misplaced in a <table> before the table in the
+//     tree's document order, so relMe's order can differ from Mastodon's after a <table> start tag
+//     (relMeOrderAfterTable; its caller does not HEAD the first rel=me then).
+//   - nor the insertion modes of <template> contents, where a scripting-off parser can drop an <a> or <link> (after
+//     a <col>) or move it (after a <tr>): a <template> start tag, in any namespace, opens a region that ends when its
+//     end tag handler runs for "template" (nested ones counted). A rel=me candidate inside one, or after a template
+//     that ended otherwise, is refused and latches (relMeInTemplate), and so is any after a table-structure start tag
+//     inside one (TABLE_IN_TEMPLATE, in any namespace), which switches the template's insertion mode to one where the
+//     spec parser ignores or moves tags lol-html honors (<template><col><style></template>…, or an <svg> whose CDATA
+//     section lol-html reads). A rel=me after a template that ended without one is kept.
 //   - only elements in the HTML namespace count; SVG and MathML elements are skipped, and HTML elements inside an
 //     integration point are HTML; an integration point element itself (an SVG <title>, <desc> or <foreignObject>, a
 //     MathML <mi>) is foreign, as in the spec. Where the foreign-content model differs (above), a foreign <title> can
-//     be reported as HTML, so no <title> after the first <svg> or <math> start tag is taken.
+//     be reported as HTML, so no <title> after the first <svg> or <math> start tag is taken, after a region that
+//     resumed rel=me too.
 //   - lol-html keeps a stack of open elements, and each start tag's attributes, within one shared 3 MiB budget: some
 //     50,000 unclosed elements, or a start tag of tens of thousands of attributes, fail the scan (memory). The budget is
 //     shared, so no attribute count is guaranteed to pass.
@@ -67,6 +89,8 @@ export const SCAN_LIMITS: Readonly<ScanLimits> = Object.freeze({
 // Raw UTF-16 code units of an attribute value or the title text read before decoding; past it the value is dropped
 // whole. A character reference never decodes to more code units than it spans, so this bounds decoding work only.
 export const RAW_VALUE_CHARS = 8192;
+// Raw UTF-16 code units of a <noscript>'s text kept for its region check (plainNoscript); past it the region latches.
+export const NOSCRIPT_CHARS = 4096;
 // Decoded UTF-16 code units of a rel attribute tokenized whole for the token "me"; links[].rel keeps the first
 // relTokens tokens of at most relTokenChars each.
 export const REL_CHARS = 2048;
@@ -92,21 +116,29 @@ export type PageMeta = { property: string | null; name: string | null; content: 
 export type PageScan = {
   // The first <html lang>, decoded.
   lang: string | null;
-  // The first HTML <title> whose end tag was seen, before any <svg> or <math>, decoded and untrimmed.
+  // The first HTML <title> whose end tag was seen, before any <svg> or <math> start tag, decoded and untrimmed.
   title: string | null;
   // The href of each <a> or <link> whose rel has the token "me" among all its tokens, ASCII case-insensitively (as
   // Mastodon's NokogiriHandler.link_rel_include downcases both), in document order; null when it is missing or past its
   // cap, the slot kept.
   relMe: (string | null)[];
-  // Whether a rel=me candidate was skipped for following a <noscript>, a <select>, or an <svg> or <math> start tag,
-  // or for being or following an <a> or <link> whose rel is past REL_CHARS.
+  // Whether a rel=me candidate was skipped for following (or standing in) a <noscript> or an <svg> outside the region
+  // rules (header), a <select> or <math> start tag, or for being or following an <a> or <link> whose rel is past
+  // REL_CHARS. A region that resumed and refused nothing leaves them false. relMeInTemplate: whether one stood inside
+  // an open <template>, or followed a template that did not end with its own end tag.
   relMeAfterNoscript: boolean;
   relMeAfterSelect: boolean;
   relMeAfterForeign: boolean;
   relMeAfterLongRel: boolean;
+  relMeInTemplate: boolean;
   // Whether the page has the bytes of a <frameset> start tag anywhere (a <noscript> included), which can replace the
   // body: then no rel=me is returned.
   relMeWithFrameset: boolean;
+  // Whether a rel=me was collected after a <table> start tag (in any namespace): foster parenting can move a rel=me
+  // misplaced in a table before the table in the tree's document order, so relMe's order may not be Mastodon's.
+  relMeOrderAfterTable: boolean;
+  // The regions that ended and let rel=me collection resume after them (templates: each ended by its own end tag).
+  resumed: { svg: number; noscript: number; template: number };
   // Every <link>, rel tokens lowercased.
   links: PageLink[];
   // Every <meta> with a property or a name, both lowercased; first wins is the caller's rule.
@@ -117,18 +149,178 @@ export type PageScan = {
   dropped: { relMe: number; links: number; metas: number; jsonLd: number; values: number };
   // UTF-16 code units in the returned strings, at most OUTPUT_MAX_UNITS.
   outputUnits: number;
-  // Element handler calls and text chunks seen, for the work bounds.
+  // Element handler calls, and text chunks and comments seen, for the work bounds.
   work: { elements: number; textChunks: number };
 };
 
 export type ScanFailure = { failed: "ambiguity" | "memory" | "parser" };
 
 const XHTML = "http://www.w3.org/1999/xhtml";
+// The table-structure elements (in any namespace) that latch rel=me inside an open <template> (header).
+const TABLE_IN_TEMPLATE = "col, colgroup, caption, table, tbody, thead, tfoot, tr, td, th";
+const SVG = "http://www.w3.org/2000/svg";
+// The elements an SVG region may hold, as lol-html reports tagName (lowercased): ordinary elements to the HTML tree
+// builder too, should a </p> or </br> have taken the region out of foreign content.
+const PLAIN_SVG: ReadonlySet<string> = new Set([
+  "g",
+  "path",
+  "rect",
+  "circle",
+  "ellipse",
+  "line",
+  "polyline",
+  "polygon",
+  "defs",
+  "use",
+  "symbol",
+  "lineargradient",
+  "radialgradient",
+  "stop",
+  "clippath",
+  "mask",
+]);
 const REL_SEPARATOR = /[\t\n\f\r ]+/;
 // Labels lol-html does not decode natively (not ASCII-compatible): transcoded to UTF-8 first.
 const TRANSCODED = new Set(["utf-16le", "utf-16be", "iso-2022-jp"]);
 
 const asciiLower = (value: string) => value.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
+
+// The tags a <noscript> region may hold (plainNoscript), as start or end tags, and those it may hold only as a start
+// tag followed by text with no "<" and their own end tag.
+const NOSCRIPT_TAGS: ReadonlySet<string> = new Set([
+  "img",
+  "br",
+  "meta",
+  "link",
+  "a",
+  "div",
+  "p",
+  "span",
+  "b",
+  "i",
+  "em",
+  "strong",
+  "picture",
+  "source",
+]);
+const NOSCRIPT_RAW_TAGS: ReadonlySet<string> = new Set(["iframe", "style"]);
+
+// HTML whitespace, ASCII alphanumerics, the attribute name characters [A-Za-z0-9_:.-], and what an unquoted value
+// may hold (anything but whitespace, quotes, "=", "<", ">" and "`"), by UTF-16 code unit; NaN past the end is none.
+const isSpace = (c: number) => c === 0x09 || c === 0x0a || c === 0x0c || c === 0x0d || c === 0x20;
+const isAlphanumeric = (c: number) => (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a);
+const isAttributeName = (c: number) => isAlphanumeric(c) || c === 0x5f || c === 0x3a || c === 0x2e || c === 0x2d;
+const isUnquoted = (c: number) =>
+  !Number.isNaN(c) && !isSpace(c) && c !== 0x22 && c !== 0x27 && c !== 0x3d && c !== 0x3c && c !== 0x3e && c !== 0x60;
+
+// Whether a <noscript>'s raw text (as lol-html reads it, scripting on) holds only what a scripting-off parser reads as
+// ordinary elements and text, so every later <a> or <link> is an element for both, in the same order (header): text
+// with no "<"; start and end tags of NOSCRIPT_TAGS written plainly (an ASCII alphanumeric name; attributes as name,
+// name=value, name="…" or name='…' after whitespace; an optional "/" before ">"; end tags as </name> with optional
+// whitespace before ">"); a NOSCRIPT_RAW_TAGS start tag, text with no "<" and its own end tag; no NUL; and no <a> or
+// <link> with a rel attribute holding "&" or the token "me" (Mastodon finds a rel=me inside a <noscript>, so resuming
+// after one would put a later link first). Names and rel tokens compare ASCII case-insensitively. One linear pass.
+function plainNoscript(text: string): boolean {
+  if (text.includes("\0")) {
+    return false;
+  }
+  const at = (i: number) => text.charCodeAt(i);
+  const name = (from: number): number => {
+    let i = from;
+    while (isAlphanumeric(at(i))) {
+      i++;
+    }
+    return i;
+  };
+  // The index past "</name" + whitespace + ">" at `from`, or -1.
+  const endTag = (from: number, expected: ReadonlySet<string> | string): number => {
+    if (at(from) !== 0x3c || at(from + 1) !== 0x2f) {
+      return -1;
+    }
+    const end = name(from + 2);
+    const tag = asciiLower(text.slice(from + 2, end));
+    if (end === from + 2 || (typeof expected === "string" ? tag !== expected : !expected.has(tag))) {
+      return -1;
+    }
+    let i = end;
+    while (isSpace(at(i))) {
+      i++;
+    }
+    return at(i) === 0x3e ? i + 1 : -1;
+  };
+  let i = 0;
+  for (let lt = text.indexOf("<"); lt >= 0; lt = text.indexOf("<", i)) {
+    if (at(lt + 1) === 0x2f) {
+      i = endTag(lt, NOSCRIPT_TAGS);
+      if (i < 0) {
+        return false;
+      }
+      continue;
+    }
+    const nameEnd = name(lt + 1);
+    const tag = asciiLower(text.slice(lt + 1, nameEnd));
+    const raw = NOSCRIPT_RAW_TAGS.has(tag);
+    if (nameEnd === lt + 1 || !(raw || NOSCRIPT_TAGS.has(tag))) {
+      return false;
+    }
+    i = nameEnd;
+    for (;;) {
+      const spaced = isSpace(at(i));
+      while (isSpace(at(i))) {
+        i++;
+      }
+      if (at(i) === 0x3e || (at(i) === 0x2f && at(i + 1) === 0x3e)) {
+        i += at(i) === 0x3e ? 1 : 2;
+        break;
+      }
+      if (!spaced || !isAttributeName(at(i))) {
+        return false;
+      }
+      const attributeStart = i;
+      while (isAttributeName(at(i))) {
+        i++;
+      }
+      const attribute = asciiLower(text.slice(attributeStart, i));
+      let value = "";
+      if (at(i) === 0x3d) {
+        const quote = at(i + 1);
+        if (quote === 0x22 || quote === 0x27) {
+          const close = text.indexOf(text[i + 1] ?? "", i + 2);
+          if (close < 0) {
+            return false;
+          }
+          value = text.slice(i + 2, close);
+          i = close + 1;
+        } else {
+          const valueStart = i + 1;
+          i = valueStart;
+          while (isUnquoted(at(i))) {
+            i++;
+          }
+          if (i === valueStart) {
+            return false;
+          }
+          value = text.slice(valueStart, i);
+        }
+      }
+      if (
+        (tag === "a" || tag === "link") &&
+        attribute === "rel" &&
+        (value.includes("&") || value.split(REL_SEPARATOR).some((token) => asciiLower(token) === "me"))
+      ) {
+        return false;
+      }
+    }
+    if (raw) {
+      const close = text.indexOf("<", i);
+      i = close < 0 ? -1 : endTag(close, tag);
+      if (i < 0) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
 
 // A raw attribute value or title text, normalized as the tokenizer would (CR and CRLF to LF, NUL to U+FFFD) and then
 // decoded once. An encoded &#13; stays a CR.
@@ -246,7 +438,10 @@ async function scanPaced(
     relMeAfterSelect: false,
     relMeAfterForeign: false,
     relMeAfterLongRel: false,
+    relMeInTemplate: false,
     relMeWithFrameset: false,
+    relMeOrderAfterTable: false,
+    resumed: { svg: 0, noscript: 0, template: 0 },
     links: [],
     metas: [],
     jsonLd: [],
@@ -256,8 +451,20 @@ async function scanPaced(
   };
   let afterNoscript = false;
   let afterSelect = false;
+  // Latched for good by an <svg> outside the region rules, or a <math>.
   let afterForeign = false;
+  // The open SVG region (header), and the SVG <title> or <desc> open in it: rel=me is collected again once its </svg>
+  // ends it.
+  let svgRegion: { inside: "title" | "desc" | null } | null = null;
+  let titleAfterForeign = false;
+  // The open <noscript> region (header): its raw text, kept up to NOSCRIPT_CHARS.
+  let noscriptRegion: { raw: string } | null = null;
   let afterLongRel = false;
+  let afterTable = false;
+  // The <template> elements open (header), and whether a candidate inside one, or a template ended otherwise than by
+  // its own end tag, refused rel=me for good.
+  let templateDepth = 0;
+  let afterTemplate = false;
   let langSeen = false;
   // The first HTML title: its raw text while open, then done.
   let title: { raw: string; overflow: boolean } | null = null;
@@ -303,20 +510,33 @@ async function scanPaced(
     return { me, tokens };
   };
   // Whether a rel=me candidate here is refused for its context, noted when it is.
+  // No candidate reaches here inside an open SVG or noscript region: "svg *" refuses every element in an SVG region
+  // first, and a noscript's content is raw text.
   const refusedContext = (): boolean => {
+    afterTemplate ||= templateDepth > 0;
     scan.relMeAfterNoscript ||= afterNoscript;
     scan.relMeAfterSelect ||= afterSelect;
     scan.relMeAfterForeign ||= afterForeign;
     scan.relMeAfterLongRel ||= afterLongRel;
-    return afterNoscript || afterSelect || afterForeign || afterLongRel;
+    scan.relMeInTemplate ||= afterTemplate;
+    return afterNoscript || afterSelect || afterForeign || afterLongRel || afterTemplate;
   };
   const addRelMe = (href: string | null) => {
     if (refusedContext() || scan.relMe.length >= caps.relMe) {
       scan.dropped.relMe++;
     } else {
+      scan.relMeOrderAfterTable ||= afterTable;
       scan.relMe.push(href !== null && fits(href.length) ? href : null);
     }
   };
+  function latchForeign() {
+    afterForeign = true;
+    svgRegion = null;
+  }
+  function latchNoscript() {
+    afterNoscript = true;
+    noscriptRegion = null;
+  }
   // Every handler is wrapped: a throw would fail the stream with no reason given, so it marks the scan broken.
   const guarded = <T>(handler: (node: T) => void) => {
     return (node: T) => {
@@ -340,15 +560,166 @@ async function scanPaced(
 
   const rewriter = new HTMLRewriter()
     .on("svg, math", {
-      element: guarded<Element>(() => {
+      element: guarded<Element>((element) => {
         scan.work.elements++;
-        afterForeign = true;
+        titleAfterForeign = true;
+        if (afterForeign) {
+          return;
+        }
+        if (svgRegion !== null || element.tagName !== "svg" || element.namespaceURI !== SVG) {
+          latchForeign();
+          return;
+        }
+        const region: { inside: "title" | "desc" | null } = { inside: null };
+        svgRegion = region;
+        try {
+          // Throws on <svg/>, which has no end tag.
+          element.onEndTag(
+            guarded((end) => {
+              if (svgRegion !== region) {
+                return;
+              }
+              if (end.name === "svg" && region.inside === null) {
+                svgRegion = null;
+                scan.resumed.svg++;
+              } else {
+                latchForeign();
+              }
+            }),
+          );
+        } catch {
+          latchForeign();
+        }
+      }),
+      // Inside an SVG <title> or <desc>, lol-html reads <![CDATA[ as a comment ending at the first ">", where Nokogiri
+      // reads a CDATA section up to "]]>".
+      comments: guarded<Comment>((comment) => {
+        scan.work.textChunks++;
+        if (svgRegion !== null && comment.text.startsWith("[CDATA[")) {
+          latchForeign();
+        }
+      }),
+    })
+    .on("svg *", {
+      element: guarded<Element>((element) => {
+        scan.work.elements++;
+        if (afterForeign) {
+          return;
+        }
+        const region = svgRegion;
+        // A start tag inside a <title> or <desc> is refused before the element list. Redundant on this runtime (one
+        // there is XHTML, or an <svg> or <math> the region opener refuses), kept as the rule's own statement (A3).
+        if (region === null || region.inside !== null || element.namespaceURI !== SVG) {
+          latchForeign();
+          return;
+        }
+        const name = element.tagName;
+        if (name !== "title" && name !== "desc") {
+          if (!PLAIN_SVG.has(name)) {
+            latchForeign();
+          }
+          return;
+        }
+        region.inside = name;
+        try {
+          // Throws on <title/> or <desc/>.
+          element.onEndTag(
+            guarded((end) => {
+              if (svgRegion !== region) {
+                return;
+              }
+              if (end.name === name) {
+                region.inside = null;
+              } else {
+                latchForeign();
+              }
+            }),
+          );
+        } catch {
+          latchForeign();
+        }
       }),
     })
     .on("noscript", {
-      element: guarded<Element>(() => {
+      element: guarded<Element>((element) => {
         scan.work.elements++;
-        afterNoscript = true;
+        if (afterNoscript) {
+          return;
+        }
+        if (noscriptRegion !== null || svgRegion !== null || element.namespaceURI !== XHTML) {
+          latchNoscript();
+          return;
+        }
+        const region = { raw: "" };
+        noscriptRegion = region;
+        try {
+          element.onEndTag(
+            guarded((end) => {
+              if (noscriptRegion !== region) {
+                return;
+              }
+              if (end.name === "noscript" && plainNoscript(region.raw)) {
+                noscriptRegion = null;
+                scan.resumed.noscript++;
+              } else {
+                latchNoscript();
+              }
+            }),
+          );
+        } catch {
+          latchNoscript();
+        }
+      }),
+      text: guarded<Text>((chunk) => {
+        scan.work.textChunks++;
+        const region = noscriptRegion;
+        if (region === null) {
+          return;
+        }
+        if (region.raw.length + chunk.text.length > NOSCRIPT_CHARS) {
+          latchNoscript();
+        } else {
+          region.raw += chunk.text;
+        }
+      }),
+    })
+    .on("template", {
+      // In any namespace. Template contents follow their own insertion modes (a <col> or <tr> context drops or moves
+      // an <a> or <link>), which lol-html does not model.
+      element: guarded<Element>((element) => {
+        scan.work.elements++;
+        if (afterTemplate) {
+          return;
+        }
+        templateDepth++;
+        try {
+          element.onEndTag(
+            guarded((end) => {
+              if (end.name === "template" && !afterTemplate) {
+                templateDepth--;
+                scan.resumed.template++;
+              } else {
+                afterTemplate = true;
+              }
+            }),
+          );
+        } catch {
+          afterTemplate = true;
+        }
+      }),
+    })
+    .on(TABLE_IN_TEMPLATE, {
+      // In any namespace. In an open template, a table-structure start tag switches the template's insertion mode
+      // (column group, table, table body, row, cell), which lol-html does not model: later tags are ignored or honored
+      // differently. A <table> anywhere also gives up relMe's order (a refusal or the flag only misses).
+      element: guarded<Element>((element) => {
+        scan.work.elements++;
+        if (templateDepth > 0) {
+          afterTemplate = true;
+        }
+        if (element.tagName === "table") {
+          afterTable = true;
+        }
       }),
     })
     .on("select", {
@@ -437,7 +808,7 @@ async function scanPaced(
     })
     .on("title", {
       element: counted((element) => {
-        if (titleDone || title !== null || afterForeign) {
+        if (titleDone || title !== null || titleAfterForeign) {
           return;
         }
         const open = { raw: "", overflow: false };
