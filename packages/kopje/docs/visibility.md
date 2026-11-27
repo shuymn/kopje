@@ -726,25 +726,28 @@ accepts (ID-6). A local account a remote owner asks for with a `FeatureRequest` 
 holds no row in that collection: it accepts, and is notified, only while it consents; once accepted, the row is its
 consent, and every later request of that owner for that collection is accepted while the row stands, whatever the rule
 answers then (ID-6, ID-9). Every account answer presents that answer to its viewer as `feature_approval.current_user`
-(`denied` with no viewer), the viewer taken from the Store's judgment of the token, never from the Worker.
+(`denied` with no viewer), read for each chunk of accounts presented in one statement (`featureApprovalReads`), the
+viewer taken from the Store's judgment of the token, never from the Worker.
 
-`in_collections` lists the collections holding an item of the viewer, who must be the account asked about, in any
-state, while the collection is found: the items are the viewer's own, so the owner's availability only hides a
-candidate of the window ("Read bounds"). A block by a local account revokes its items in the target's collections and
-deletes the target's items in its own, in the block's transaction; a revoked item in a remote target's collection sends
-the account's `Delete` of its authorization to that owner alone. An inbound `Block` changes no item, and R45 hides the
-blocked side's view. A member added is notified `added_to_collection`, and each accepted member of a collection whose
-name, description, sensitivity or tag changes `collection_update`, which replaces its earlier one (R15: local
-recipients only, never the owner itself). Each is presented with its collection and items as R45 shows them to the
+`in_collections` lists the collections holding an item of the viewer, who must be the account asked about, in any state,
+while the collection is found: the items are the viewer's own, so the owner's availability only hides a candidate of the
+window ("Read bounds"), whose cursor is the item's id. A block by a local account revokes its items in the target's
+collections and deletes the target's items in its own, in the block's transaction; a revoked item in a remote target's
+collection sends the account's `Delete` of its authorization to that owner alone. An inbound `Block` changes no item,
+and R45 hides the blocked side's view. A member added is notified `added_to_collection`, and each accepted member of a
+collection whose name, description, sensitivity or tag changes `collection_update`, which replaces its earlier one (R15:
+local recipients only, never the owner itself). Each is presented with its collection and items as R45 shows them to the
 recipient, and is left out when R45 does not show the collection.
 
 A local collection's public page (`/collections/:id`) reads it with no viewer, after answering for its owner as the
 owner's profile does (a suspended owner's page is gone), so a non-discoverable collection is served and only its
 accepted, available members are shown; a remote collection's id is not found there.
 
-A status's `tagged_collections` are the collections it tags that R45 shows the viewer, each with the items R45 shows
-the viewer, on an original and a quoted status: a boost presents `[]` and its `reblog` the original's. A collection is
-shown, and named by a status, only while a status can tag it, whatever the viewer (`taggableCollections`):
+A status's `tagged_collections` are the collections it tags that R45 shows the viewer, each with the items R45 shows the
+viewer, on an original and a quoted status: a boost presents `[]` and its `reblog` the original's. They are read once a
+chunk of statuses presented (`taggedCollectionsOf` in `collection-presenter.ts`, from the status presenter's `hydrate`),
+a collection several statuses tag once. A collection is shown, and named by a status, only while a status can tag it,
+whatever the viewer (`taggableCollections`):
 
 - its owner is available, and its name, description and tag are well-formed UTF-8 as stored;
 - a local one is stored as local, its owner is a local account, and its id has the path the collection route takes;

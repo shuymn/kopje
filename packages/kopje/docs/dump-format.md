@@ -121,11 +121,12 @@ executing the text, so a row of any size stays under the platform's 100 KB state
 The paragraphs below give the stored bounds of tables and columns and what a restored Store does with the values. Most
 name a migration whose CHECK or trigger holds the bound, and a chunk past it is refused as `chunk-failed` with the
 failure they give; a paragraph that says otherwise states its own outcome (an `outbound_activities.body` is checked as
-JSON only, and an `addressing` that staging does not accept is not refused but sends personal copies; a thumbnail link
-whose parent is missing or unsuitable passes the chunk and fails verification with `thumbnail-link-invalid`). Column
-affinity applies before every check: a column declared INTEGER stores numeric text and an integral REAL as the integer,
-and one declared TEXT stores a number as its decimal text. A dump taken before a migration restores only into a Store at
-its own migrations, as the header's `migrations` rule requires, which then upgrades; a paragraph says what the upgrade
+JSON only, and an `addressing` that staging does not accept is not refused but sends personal copies; a current
+thumbnail child whose parent is missing or unsuitable passes the chunk and fails verification with
+`thumbnail-link-invalid`). Column affinity applies before every check: a column declared INTEGER stores numeric text and
+an integral REAL as the integer only when a SQLite 64-bit integer can represent it, and as REAL or TEXT otherwise, and
+one declared TEXT stores a number as its decimal text. A dump taken before a migration restores only into a Store at its
+own migrations, as the header's `migrations` rule requires, which then upgrades; a paragraph says what the upgrade
 writes where it writes anything.
 
 A job's retry state is its row's `attempts` and `due_at`, in `inbound_jobs` (migration `0080_inbound_job_attempts`) and
