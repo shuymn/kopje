@@ -431,51 +431,39 @@ describe("suggestion windows at their bounds", () => {
     expect(await suggested(h, alice)).toEqual([z, x]);
   }, 60_000);
 
-  it(`keeps the first ${SUGGESTION_EDGES} edges, sources newest first`, async () => {
-    const h = await community(["alice"]);
-    const { alice } = h.users;
-    const saturated = SUGGESTION_EDGES / SUGGESTION_EDGES_PER_SOURCE;
-    const sources = await remotes(h.store, 0, saturated + 1);
-    const hidden = await remotes(h.store, sources.length, SUGGESTION_EDGES_PER_SOURCE, { discoverable: 0 });
-    const [y = "", x = ""] = await remotes(h.store, sources.length + hidden.length, 2);
-    const [oldest = "", ...newer] = sources;
-    await fan(h.store, alice.id, sources);
-    // The oldest source's newest edges are x, then y; each newer source's 100 edges fill the cutoff.
-    await fan(h.store, oldest, [...hidden.slice(2), y, x]);
-    for (const source of newer) {
-      await fan(h.store, source, hidden);
-    }
-    expect(await suggested(h, alice)).toEqual([]);
-    // One edge less in the newest source: exactly the oldest source's newest edge comes in.
-    await unfollow(h.store, newer.at(-1) ?? "", hidden[0] ?? "");
-    expect(await suggested(h, alice)).toEqual([x]);
-  }, 60_000);
-
-  // The raw-edge cutoff counts an edge before its target is judged, so an edge to a moved account takes its slot as an
-  // edge to an undiscoverable one does (above).
-  it(`counts an edge to a moved account among the first ${SUGGESTION_EDGES}`, async () => {
-    const h = await community(["alice"]);
-    const { alice } = h.users;
-    const saturated = SUGGESTION_EDGES / SUGGESTION_EDGES_PER_SOURCE;
-    const sources = await remotes(h.store, 0, saturated + 1);
-    const moved = await remotes(h.store, sources.length, SUGGESTION_EDGES_PER_SOURCE);
-    const [y = "", x = "", target = ""] = await remotes(h.store, sources.length + moved.length, 3);
-    await sql(
-      h.store,
-      "UPDATE accounts SET moved_to_account_id = ? WHERE id IN (SELECT value FROM json_each(?))",
-      target,
-      JSON.stringify(moved),
-    );
-    const [oldest = "", ...newer] = sources;
-    await fan(h.store, alice.id, sources);
-    await fan(h.store, oldest, [...moved.slice(2), y, x]);
-    for (const source of newer) {
-      await fan(h.store, source, moved);
-    }
-    expect(await suggested(h, alice)).toEqual([]);
-    await unfollow(h.store, newer.at(-1) ?? "", moved[0] ?? "");
-    expect(await suggested(h, alice)).toEqual([x]);
-  }, 60_000);
+  // The raw-edge cutoff counts an edge before its target is judged, so an edge to an undiscoverable account, or to one
+  // that has moved to a target the presenter shows, takes its slot.
+  for (const crowd of ["undiscoverable", "moved"] as const) {
+    it(`keeps the first ${SUGGESTION_EDGES} edges, sources newest first, ${crowd} targets counted`, async () => {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      const saturated = SUGGESTION_EDGES / SUGGESTION_EDGES_PER_SOURCE;
+      const sources = await remotes(h.store, 0, saturated + 1);
+      const hidden = await remotes(h.store, sources.length, SUGGESTION_EDGES_PER_SOURCE, {
+        discoverable: crowd === "undiscoverable" ? 0 : 1,
+      });
+      const [y = "", x = "", target = ""] = await remotes(h.store, sources.length + hidden.length, 3);
+      if (crowd === "moved") {
+        await sql(
+          h.store,
+          "UPDATE accounts SET moved_to_account_id = ? WHERE id IN (SELECT value FROM json_each(?))",
+          target,
+          JSON.stringify(hidden),
+        );
+      }
+      const [oldest = "", ...newer] = sources;
+      await fan(h.store, alice.id, sources);
+      // The oldest source's newest edges are x, then y; each newer source's 100 edges fill the cutoff.
+      await fan(h.store, oldest, [...hidden.slice(2), y, x]);
+      for (const source of newer) {
+        await fan(h.store, source, hidden);
+      }
+      expect(await suggested(h, alice)).toEqual([]);
+      // One edge less in the newest source: exactly the oldest source's newest edge comes in.
+      await unfollow(h.store, newer.at(-1) ?? "", hidden[0] ?? "");
+      expect(await suggested(h, alice)).toEqual([x]);
+    }, 60_000);
+  }
 
   it("judges every candidate before the ranking: a hidden account takes no place in it", async () => {
     const h = await community(["alice"]);

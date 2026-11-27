@@ -127,10 +127,10 @@ async function measure(stub: StoreStub): Promise<{ rows: number; shown: string[]
 
 const rowsOf = async (build: (run: Sql) => void) => measure(await store(build));
 
-// The ranking statement's plan, as its rows (id, parent, detail), and the rows it reads.
+// The ranking statement's plan, as its rows (id, parent, detail), the rows it reads, and the ids suggested.
 async function plan(
   stub: StoreStub,
-): Promise<{ plan: { id: number; parent: number; detail: string }[]; rows: number }> {
+): Promise<{ plan: { id: number; parent: number; detail: string }[]; rows: number; shown: string[] }> {
   return runInDurableObject(stub, (_instance, state) => {
     const real = state.storage.sql;
     const found: { plan: { id: number; parent: number; detail: string }[]; rows: number }[] = [];
@@ -150,9 +150,9 @@ async function plan(
         return watchedCursor(cursor, () => (entry.rows += cursor.rowsRead));
       },
     } as unknown as SqlStorage;
-    suggestions.run(capturing, INPUT);
+    const shown = suggested(suggestions.run(capturing, INPUT));
     expect(found).toHaveLength(1);
-    return found[0] ?? { plan: [], rows: 0 };
+    return { ...(found[0] ?? { plan: [], rows: 0 }), shown };
   });
 }
 
@@ -208,7 +208,7 @@ describe("a candidate's move (RES-7)", () => {
     });
     await sql(stub, "ANALYZE");
     const plain = await plan(stub);
-    const listed = (await measure(stub)).shown;
+    const listed = plain.shown;
     expect(listed).toHaveLength(Math.min(50, SUGGESTIONS_KEPT));
     // Ten listed candidates move to them, so they stay listed, each having read its target's row once more.
     await sql(
@@ -217,7 +217,7 @@ describe("a candidate's move (RES-7)", () => {
 			FROM n WHERE accounts.id = CAST(${BASE} + 50 - i AS TEXT)`,
     );
     const towardUnshown = await plan(stub);
-    expect((await measure(stub)).shown).toEqual(listed);
+    expect(towardUnshown.shown).toEqual(listed);
     expect(towardUnshown.rows).toBe(plain.rows + 10);
     // Every other candidate below them moves to the next one, which is shown: each is left out.
     await sql(
@@ -233,7 +233,8 @@ describe("a candidate's move (RES-7)", () => {
       unshown,
     );
     expect(moved.length).toBeGreaterThan(15);
-    for (const { plan: rows } of [plain, towardUnshown, await plan(stub)]) {
+    const after = await plan(stub);
+    for (const { plan: rows } of [plain, towardUnshown, after]) {
       const details = rows.map((row) => row.detail);
       const reads = details.filter((detail) => /^(SEARCH|SCAN) /.test(detail)).map((detail) => detail.split(" ")[1]);
       // The grouped stage, from its edges to its own result: the edge, the candidate, its target, the follow and the
@@ -247,7 +248,6 @@ describe("a candidate's move (RES-7)", () => {
         `SEARCH pmt USING INDEX ${ACCOUNTS_ID_INDEX} (id=?)`,
       ]);
     }
-    const after = await measure(stub);
     expect(after.shown.length).toBeGreaterThan(0);
     expect(after.shown.some((id) => moved.some((row) => row.id === id))).toBe(false);
   });

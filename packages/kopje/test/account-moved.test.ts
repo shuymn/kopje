@@ -341,28 +341,14 @@ describe("following a moved account", () => {
     const [b, c] = [await account(INBOX), await account()];
     const credential = { tokenHash: await sha256Hex(h.users.bob.token), scope: "write:follows" as const, now: NOW };
     await remoteAccounts(h, 20, 50);
-    const { after } = await staleStatistics(h, {
-      capture: async () => {
-        const { result, plans } = await plannedRun(
-          h,
-          /AS followable/,
-          follow,
-          { credential, target: b, now: NOW },
-          true,
-        );
-        await sql(h.store, "DELETE FROM follows");
-        await sql(h.store, "DELETE FROM outbound_activities");
-        return { result, plans };
-      },
-      grow: async () => {
-        await sql(
-          h.store,
-          `UPDATE accounts SET moved_to_account_id = CAST(CAST(id AS INTEGER) + 1 AS TEXT)
-					WHERE domain LIKE 'd%.example' AND CAST(id AS INTEGER) % 2 = 0`,
-        );
-        await move(b, c);
-      },
-    });
+    await sql(h.store, "ANALYZE");
+    await sql(
+      h.store,
+      `UPDATE accounts SET moved_to_account_id = CAST(CAST(id AS INTEGER) + 1 AS TEXT)
+			WHERE domain LIKE 'd%.example' AND CAST(id AS INTEGER) % 2 = 0`,
+    );
+    await move(b, c);
+    const after = await plannedRun(h, /AS followable/, follow, { credential, target: b, now: NOW }, true);
     expect(after.result).toMatchObject({ status: "ok", value: { status: "forbidden" } });
     expect(after.plans).toHaveLength(1);
     const [{ plan }] = after.plans as [PlannedStatement];

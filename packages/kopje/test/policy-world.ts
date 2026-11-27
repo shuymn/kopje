@@ -474,10 +474,10 @@ export const worldArb: fc.Arbitrary<World> = fc
       ),
       // A remote account's move to another account, drawn from bits already drawn (a new field would change the worlds
       // the fixed seeds of the other properties give): with an odd number of blocks, from the first block's draw.
-      moves: (raw.blocks.length % 2 === 1 ? raw.blocks.slice(0, 1) : []).flatMap((m) => {
+      moves: (raw.blocks.length % 2 === 1 ? raw.blocks.slice(0, 1) : []).map((m) => {
         const from = LOCALS + (m.from % raw.remotes.length);
         const others = accounts.flatMap((_, x) => (x === from ? [] : [x]));
-        return [{ from, to: others[m.to % others.length] ?? 0 }];
+        return { from, to: others[m.to % others.length]! };
       }),
       now: raw.now,
     };
