@@ -87,7 +87,8 @@ describe("reject_media on the pages (#1560)", () => {
       expect(fetched(html).filter((url) => url.includes(REJECTED)).length, path).toBeGreaterThan(0);
     }
     await blockDomain(h.store, REJECTED, "noop", { rejectMedia: true });
-    for (const [path, html] of await render()) {
+    const after = await render();
+    for (const [path, html] of after) {
       expect(
         fetched(html).filter((url) => url.includes(REJECTED) || url.includes("/media_proxy/")),
         path,
@@ -95,7 +96,7 @@ describe("reject_media on the pages (#1560)", () => {
       expect(links(html), path).toContain(file);
       expect(html, path).not.toContain("/media_proxy/");
     }
-    const profile = (await render()).find(([path]) => path === "/@alice")![1];
+    const profile = after.find(([path]) => path === "/@alice")![1];
     // Its image shown by its icon, its avatar and its emoji.
     expect(fetched(profile)).toEqual(
       expect.arrayContaining([`${control}s`, `https://${CONTROL}/a.png`, `https://${CONTROL}/e.png`]),

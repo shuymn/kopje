@@ -234,6 +234,23 @@ describe("plan audit", () => {
   // The suspend blocks' allowance (PLAN_AUDIT_ALLOWANCES) on the planner's own plans: each occurrence of
   // SUSPEND_BLOCKS_SQL plans as one line of its scan, and a walk of the same index by other SQL stays in the plan of
   // the statement without the fragment.
+  // A statement of 50 rows, each `x`; and, in `sql`, a query's distinct values and rows read, the rows of `perRow` (such
+  // a statement) less those of the same 50 rows with a constant, so what remains is the fragment's own reads.
+  const fiftyRows = (x: string) => `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 50)
+				SELECT ${x} AS x FROM n`;
+  function fragmentReads(sql: SqlStorage, perRow: string) {
+    const run = (query: string) => {
+      const cursor = sql.exec<{ x: number }>(query);
+      const values = cursor.toArray().map((row) => row.x);
+      return { values: [...new Set(values)], rows: cursor.rowsRead };
+    };
+    const constant = run(fiftyRows("1")).rows;
+    return (query: string) => {
+      const { values, rows } = run(query);
+      return { values, rows: query === perRow ? rows - constant : rows };
+    };
+  }
+
   describe("the suspend blocks' allowance", () => {
     const SUSPEND_SCAN = "SCAN main.instance_domain_blocks USING COVERING INDEX instance_domain_blocks_suspend";
     const walk = `(SELECT count(*) FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend
@@ -311,10 +328,8 @@ describe("plan audit", () => {
     // Store of one suspend block, as singleton statistics or by ANALYZE, before 4,000 suspend blocks and as many noop
     // ones are added. A statement of 50 rows reads one row more with the fragment than with a constant in its place.
     it.each(STATISTICS)("reads one suspend block however many there are, with %s statistics", async (statistics) => {
-      const rowsOf = (x: string) => `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 50)
-				SELECT ${x} AS x FROM n`;
       const probe = `SELECT ${SUSPEND_BLOCKS_SQL} AS x`;
-      const perRow = rowsOf(SUSPEND_BLOCKS_SQL);
+      const perRow = fiftyRows(SUSPEND_BLOCKS_SQL);
       const store = await migratedStore();
       const measured = await runInDurableObject(store, (_instance, state) => {
         const sql = state.storage.sql;
@@ -329,16 +344,7 @@ describe("plan audit", () => {
         const suspends = () =>
           sql.exec<{ n: number }>("SELECT count(*) AS n FROM instance_domain_blocks WHERE severity = 'suspend'").one()
             .n;
-        const run = (query: string) => {
-          const cursor = sql.exec<{ x: number }>(query);
-          const values = cursor.toArray().map((row) => row.x);
-          return { values: [...new Set(values)], rows: cursor.rowsRead };
-        };
-        const constant = run(rowsOf("1")).rows;
-        const read = (query: string) => {
-          const { values, rows } = run(query);
-          return { values, rows: query === perRow ? rows - constant : rows };
-        };
+        const read = fragmentReads(sql, perRow);
         grow(1, 2);
         if (statistics === "singleton") {
           singletonStatistics(sql);
@@ -381,10 +387,8 @@ describe("plan audit", () => {
     it.each(STATISTICS)(
       "reads one reject_media block however many there are, with %s statistics",
       async (statistics) => {
-        const rowsOf = (x: string) => `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 50)
-				SELECT ${x} AS x FROM n`;
         const probe = `SELECT ${REJECT_MEDIA_BLOCKS_SQL} AS x`;
-        const perRow = rowsOf(`CASE WHEN ${REJECT_MEDIA_BLOCKS_SQL} THEN 1 ELSE 0 END`);
+        const perRow = fiftyRows(`CASE WHEN ${REJECT_MEDIA_BLOCKS_SQL} THEN 1 ELSE 0 END`);
         const store = await migratedStore();
         const measured = await runInDurableObject(store, (_instance, state) => {
           const sql = state.storage.sql;
@@ -399,16 +403,7 @@ describe("plan audit", () => {
             );
           const flagged = () =>
             sql.exec<{ n: number }>("SELECT count(*) AS n FROM instance_domain_blocks WHERE reject_media = 1").one().n;
-          const run = (query: string) => {
-            const cursor = sql.exec<{ x: number }>(query);
-            const values = cursor.toArray().map((row) => row.x);
-            return { values: [...new Set(values)], rows: cursor.rowsRead };
-          };
-          const constant = run(rowsOf("1")).rows;
-          const read = (query: string) => {
-            const { values, rows } = run(query);
-            return { values, rows: query === perRow ? rows - constant : rows };
-          };
+          const read = fragmentReads(sql, perRow);
           const plans = () =>
             [probe, perRow].map((query) => details(sql, query).filter((detail) => detail === REJECT_SCAN).length);
           grow(1, 1, 0);
