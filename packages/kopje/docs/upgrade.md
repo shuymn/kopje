@@ -25,10 +25,9 @@ up to 60 seconds of CPU, where the platform's default is 30. The Store applies a
 one invocation (below), and they can need more than 30 seconds; a release's are held to 40 seconds on a large benchmark
 Store ([RELEASING.md](../RELEASING.md)). Without the line, such an upgrade is stopped part way, and until a later
 attempt finishes the Store refuses every request, reads and sign-ins included, while migrations remain unapplied
-(`schema-pending`), and stays readonly once they are applied but not yet verified. Each attempt resumes after the
-migrations already recorded and checks foreign keys over the whole Store, which on a large Store is most of an upgrade's
-time, so the attempts can keep failing. Add the line and deploy; the upgrade then resumes. Setting the limit costs
-nothing by itself; the CPU time used is billed as before.
+(`schema-pending`), and stays readonly once they are applied but not yet verified. Each attempt checks foreign keys
+over the whole Store (below), so the attempts can keep failing. Add the line and deploy; the upgrade then resumes.
+Setting the limit costs nothing by itself; the CPU time used is billed as before.
 
 ## How an update arrives
 
@@ -52,9 +51,8 @@ it with its own (both are the same script, so after the deploy both run the new 
   refuses the call as `version-mismatch`: the Mastodon API and the web answer 503 for that moment, and activities that
   other servers deliver to the inbox are spooled and replayed later, so none is lost.
 - **On the first call to the new code**, the Store checks its schema against the migrations the new version ships. If
-  some are not applied, it schedules the upgrade at once. Until its migrations are applied, the Store refuses every
-  request, reads and sign-ins included (`schema-pending`): the Mastodon API and the web answer 503, the inbox spools,
-  and the actor documents, WebFinger and NodeInfo answer from the last snapshot.
+  some are not applied, it schedules the upgrade at once, and refuses every request, reads and sign-ins included, until
+  they are (`schema-pending`).
 - **The upgrade** runs inside the Store, in three phases:
   1. it records the Store's current point-in-time-recovery bookmark (`lastBookmark` in `kopje-admin health`), before
      it changes anything;
@@ -71,11 +69,9 @@ it with its own (both are the same script, so after the deploy both run the new 
 
 - **If a phase fails**, the Store holds (`bookmark-failed`, `upgrade-failed` or `verify-failed`) and logs the reason
   (`kopje.store.upgrade.failed`; [observability.md](observability.md) says where to find it). A held Store refuses
-  every request while `schema.status` in `kopje-admin health` is not `current` (usually because a migration remains
-  unapplied), and is readonly once it is: reads and sign-ins work, and writes answer 503. The hold stays until the
-  next deployment, or until you run
-  `kopje-admin upgrade retry`. Nothing is lost while it holds: the inbox keeps spooling. Fix the cause (or roll back,
-  below), then retry or deploy.
+  every request while `schema.status` is not `current`, and is readonly once it is. The hold stays until the next
+  deployment, or until you run `kopje-admin upgrade retry`. Nothing is lost while it holds: the inbox keeps spooling.
+  Fix the cause (or roll back, below), then retry or deploy.
 - **If the Store's schema has migrations the code does not know** (`schema-diverged`), for example after a rollback
   across a schema change, the Store refuses every request until the code and the schema match again.
 
@@ -120,8 +116,8 @@ What the instance answers follows from three values that `kopje-admin health` re
   and 503 where none was saved.
 - **`readonly: true`** means that the Store refuses writes. While `schema.status` is not `current`, it refuses reads
   and sign-ins too.
-- While the Store applies and verifies, which it does in one invocation, a request waits for it to end,
-  `kopje-admin health` included, and is then answered by the row of the state the Store ends in.
+- While the Store applies and verifies, a request waits for it to end, `kopje-admin health` included, and is then
+  answered by the row of the state the Store ends in.
 
 The table is the Store's own state. Maintenance the operator turns on (`MAINTENANCE`), a backup dump and an import
 refuse more on top of it ([backup.md](backup.md)).
@@ -148,13 +144,12 @@ Examples, not a complete list: the table above says what the Store serves in wha
 | Schema diverged, an upgrade left unfinished                                     | `diverged`      | `null`            | `true`      |
 | Upgraded                                                                        | `current`       | `null`            | `false`     |
 
-The upgrade records itself, with its bookmark, before it applies the first migration, and removes the record in the
-transaction that verifies the result; `upgrading` is `true` while the record is kept. A storage error can be reported
-after the transaction it ends has committed (a timeout), so a hold comes with or without the record. Two attempts can
-overlap (the alarm and `kopje-admin upgrade retry`), and a hold the later one records lands on the schema the earlier
-one left. A rollback of the code across an upgrade that did not finish leaves the record, and `upgrading` stays
-`true` until the code and the schema match again. If the state cannot be read back after a hold is recorded, the
-isolate that failed takes every migration as pending until it ends; a new isolate reports the stored state.
+`upgrading` is `true` from before the first migration is applied until the transaction that verifies the result. A
+storage error can be reported after its transaction committed (a timeout), so a hold comes with either value. Two
+attempts can overlap (the alarm and `kopje-admin upgrade retry`), and a hold the later one records lands on the schema
+the earlier one left. A rollback of the code across an upgrade that did not finish leaves `upgrading` `true` until the
+code and the schema match again. If the state cannot be read back after a hold is recorded, the isolate that failed
+takes every migration as pending until it ends; a new isolate reports the stored state.
 
 ## Rolling back
 
@@ -179,11 +174,10 @@ would: a release without the signed `Delete` of a public or unlisted status (VIS
 server's shared one. The body goes unchanged to each (it is immutable, which those releases honor), names nobody, and
 reaches no inbox the audience does not hold: more POSTs, never a wider reach.
 
-A page a browser loaded from one version and submits to the other is read by the other's rules. Since the release that
-reads a repeated parameter's last value, as Rails does (#1729), the settings page writes each checkbox's hidden
-`false` before the box; a settings page loaded before that upgrade, or loaded after it and saved after a rollback across
-it, saves its ticked boxes as unticked. Reload any open settings page after an upgrade or a rollback across that
-release.
+A page a browser loaded from one version and submits to the other is read by the other's rules. From 0.6.0, which
+reads a repeated parameter's last value as Rails does, the settings page writes each checkbox's hidden `false` before
+the box; a settings page loaded before that upgrade, or loaded after it and saved after a rollback across it, saves its
+ticked boxes as unticked. Reload any open settings page after an upgrade or a rollback across 0.6.0.
 
 ### A version that changed the schema
 

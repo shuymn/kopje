@@ -11,7 +11,7 @@ The account needs the Workers Paid plan. The Free plan allows 10 ms of CPU time 
 signature checks on federated requests, the daily backup and media processing exceed. `wrangler.jsonc` also raises
 the CPU time a request or a Store invocation may use to 60 seconds (`limits.cpu_ms`), which only Workers Paid allows.
 Keep that line: the Store upgrades its schema in one invocation, and without it an upgrade that needs more than 30
-seconds of CPU stops part way: until an attempt finishes, the Store refuses every request while migrations remain
+seconds of CPU stops part way, and until an attempt finishes the Store refuses every request while migrations remain
 unapplied, and stays readonly once they are applied but not yet verified ([upgrade.md](upgrade.md)).
 
 Some things cannot be done from the wizard. Do these in the Cloudflare dashboard first. The wizard lists them too, at

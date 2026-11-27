@@ -22,8 +22,7 @@ Mechanisms:
   of accounts keep `ANSWER_BYTES`, and the public pages their page budget. The heap model holds each admitted byte
   three times, so this lower budget keeps a timeline's peak within half of the Store isolate with a status's
   `tagged_collections` at their maxima ("Heap at 8 MiB per answer" in `threat-model.md`). Every atomic status item
-  fits it, and a page it cuts continues as the operation's continuation below says, so a byte-heavy page ends sooner
-  and the next one shows the rest.
+  fits it, and a page it cuts continues as its operation's continuation says.
 - **Unit**: one presented unit, at most its maximum ("Maxima of presented units" in `threat-model.md`).
 - **Count**: a fixed number of units whose maxima together stay within `ANSWER_BYTES`.
 

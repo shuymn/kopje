@@ -44,10 +44,9 @@ states the rules every page follows.
 
 ## Robots
 
-A page, and its 404 or 410, carries the robots meta that Mastodon 4.7.5's answer at the same URL carries. `Robots`
-(`src/web/components/layout.tsx`) writes it; `mastodonShell` (`src/app/public-pages.tsx`) matches the path as
-Mastodon's router matches it (`config/routes.rb:160-179`); `test/web-robots.test.ts` holds each row below, error answers
-included.
+A page, and its 404 or 410, carries the robots meta that Mastodon 4.7.5's answer at the same URL carries, the path
+matched as Mastodon's router matches it (`config/routes.rb:160-179`); `test/web-robots.test.ts` holds each row below,
+error answers included.
 
 - **`noindex` where Mastodon serves its web app's shell** (`home#index`, which marks every path but `/`): any `/@…`
   path that none of its account routes takes. Those take a name of `[^@/.]+` only, so a post's Boosts, Favourites and
@@ -238,15 +237,13 @@ exception for frame, landmarks and chrome, and still uses the tokens. Where a ru
   pages, the code page) shows the value alone, with no button, status element or kept space, since nothing would run
   them (browser job).
 - Settings shows one profile-field row for each field an account may store (`MAX_FIELDS`), so a save from settings
-  never drops a stored field. Its text controls take twice the server's limit in code points as their `maxlength`,
-  which counts UTF-16 code units (`codeUnitsFor`), so every value the server accepts can be typed or pasted; the server
-  refuses a longer one with its message, or cuts a field to its limit (browser job). The bio's limit counts
-  a link as 23 characters, so its `maxlength` is the raw bound the server refuses past (`MAX_RAW_LENGTH` code units),
-  and the profile form is read with the API's body limit, which such a bio needs once form-encoded. Each image card
-  holds, after its upload form, a form for the image's description, which posts the description alone to the
-  profile's route, so it changes nothing else. A textarea (`TextArea`) shows its value whole, a leading newline
-  included, and the route reads a description as its textarea holds it, the CRLF line breaks a browser submits as LF
-  (`textareaText`), before counting it.
+  never drops a stored field. A text control's `maxlength`, which counts UTF-16 code units, admits every value the
+  server accepts (twice its limit in code points; for the bio, whose limit counts a link as 23 characters, the raw
+  bound the server refuses past); the server refuses a longer one with its message, or cuts a field to its limit
+  (browser job). The profile form is read with the API's body limit, which a bio of that length needs once form-encoded.
+  Each image card holds, after its upload form, a form that posts the image's description alone, so it changes nothing
+  else. A textarea shows its value whole, a leading newline included, and the route counts a description with the CRLF
+  line breaks a browser submits read as LF.
 - An app's consent page names its website by host (the whole URL in hidden text), the account in full and the
   permissions in plain language by group, the scopes' own names behind a "Technical scopes" disclosure, and admin
   ones in a fail (danger) alert: amber reads as "go" on this site. Settings' authorized apps name the same groups

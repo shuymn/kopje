@@ -85,8 +85,8 @@ A pull request adds its notes under `## [Unreleased]` in `CHANGELOG.md`; a relea
    Replace `0049_instance_bounds` with the first migration absent from the previous release.
 
    If the version changes the compatibility date (`wrangler.jsonc`, `deploy/wrangler.jsonc`) or the workerd versions
-   in `pnpm-lock.yaml` since the previous `kopje-v*` tag, run the held-output bench (`bench/held-output/run.mjs`,
-   #1610). It takes about five hours and uses your wrangler login (`CLOUDFLARE_ACCOUNT_ID` picks the account when it
+   in `pnpm-lock.yaml` since the previous `kopje-v*` tag, run the held-output bench (`bench/held-output/run.mjs`).
+   It takes about five hours and uses your wrangler login (`CLOUDFLARE_ACCOUNT_ID` picks the account when it
    has several): it deploys temporary Workers named `kopje-bench-held-<random>` and deletes them when it ends. A record
    of each stays in `~/.local/state/kopje/bench-held-output` until its Worker is confirmed gone; if the bench was
    killed or prints that it could not confirm one, `cleanup` deletes what the records name. A deploy that failed or was
@@ -104,8 +104,8 @@ A pull request adds its notes under `## [Unreleased]` in `CHANGELOG.md`; a relea
    rests on, or a new signal of unsent output (`bufferedAmount`, `ping`, or a promise from `send`), changes
    `STREAM_LIMITS` or the policy before the release.
 
-   In the same case, measure the idle Store isolate on the pinned workerd (`bench/store-baseline/run.mjs`, #1610). It
-   runs locally, packs the package into a temporary directory, and writes its runs (`runs.jsonl`, with the workerd
+   In the same case, measure the idle Store isolate on the pinned workerd (`bench/store-baseline/run.mjs`). It runs
+   locally, packs the package into a temporary directory, and writes its runs (`runs.jsonl`, with the workerd
    version) and the largest sum (`summary.json`) to the directory it prints:
 
    ```sh

@@ -2,9 +2,9 @@
 
 Who may see a status or an account, what a viewer filters out, who is notified and whom an author may address are
 decided in one module: `src/domain/audience.ts`. It is plain SQL fragments, spliced into the queries that read and
-write. No read path, notification path or delivery path keeps its own copy of a rule.
-The threat model states the invariants (VIS-1 to VIS-20, VIS-22, VIS-23, VIS-25 to VIS-32, NET-2, PUSH-3); this page
-describes how the code applies them.
+write. No read path, notification path or delivery path keeps its own copy of a rule. The threat model states the
+invariants (VIS-1 to VIS-20, VIS-22, VIS-23, VIS-25 to VIS-32, NET-2, PUSH-3); this page describes how the code applies
+them.
 
 ## The viewer context
 
@@ -121,11 +121,11 @@ viewer's own follows: a new follow or request is refused (422) once the viewer h
 authorizing a request or a Move's follower transfer is not limited, and the ratio grows with followers, so the rule
 keeps the windows near 7,500 only for an account that follows through the API and has few followers.
 
-A list (`src/domain/lists.ts`) belongs to a local account and holds the owner or accounts the owner follows or has
-asked to follow (Mastodon's `ListAccount#validate_relationship`). A member leaves the owner's lists when that follow
-ends, whatever ends it: the trigger `list_members_follow_ended` of migration `0007_list_members` deletes the rows with
-the follow, as Mastodon's foreign keys from `list_accounts` to `follows` and `follow_requests` do. A request accepted
-later keeps its row. A list's timeline (`listTimeline` in `src/domain/timelines.ts`, Mastodon's `ListFeed` as
+A list (`src/domain/lists.ts`) belongs to a local account and holds the owner or accounts the owner follows or has asked
+to follow (Mastodon's `ListAccount#validate_relationship`). A member leaves the owner's lists when that follow ends,
+whatever ends it: the trigger `list_members_follow_ended` of migration `0007_list_members` deletes the rows with the
+follow, as Mastodon's foreign keys from `list_accounts` to `follows` and `follow_requests` do. A request accepted later
+keeps its row. A list's timeline (`listTimeline` in `src/domain/timelines.ts`, Mastodon's `ListFeed` as
 `FanOutOnWriteService#deliver_to_lists` and `FeedManager#filter` with `timeline_type` `:list` fill it) has the public,
 unlisted and private statuses and boosts of its active members: the owner, when a member, and the members the owner
 follows (accepted). A member with a pending request contributes nothing until the request is accepted. Of these, a
@@ -153,20 +153,19 @@ others, and a conversation is also keyed by its participants, the sender among t
 changes no other status's thread, so a later reply joins the thread its parent was stored in. Migration
 `0009_conversations` gives the statuses already stored theirs by the same rule, from the start of each reply chain down
 (a status in a cycle of replies, or below one, takes what a start would), reading the conversation a received status
-named from the object it keeps (`raw`), with the same checks as the receive path. A status leaves its
-conversations however it is deleted (a delete, an inbound `Delete`, a purge): its `conversation_statuses` rows cascade,
-and the trigger `conversation_statuses_removed` of migration `0009_conversations` moves the last status back to the
-newest left, or deletes the conversation when none is left (`AccountConversation.remove_status`). A block ends the
-blocker's conversations with the blocked account (`AfterBlockService#clear_conversations!`). The list reads only the
-owner's rows, newest last status first, through the `(account_id, last_status_id)` index; anyone else's conversation
-is not found, read, marked or deleted. Mastodon renders a conversation's last status with no read rule; Kopje shows it
-only when the owner may still see it (`statusReads` under `visible`, R2) and it is not a boost, and otherwise shows
-`last_status: null`, as Mastodon does for a last status it can no longer load: so a last status whose author is
-suspended or blocks the owner is not shown, while the conversation and its participants stay. Mastodon never puts a
-boost in a conversation, and no writer of Kopje's links one (`addToConversation`), so only a restored row names one,
-as its last status or as a link the trigger moves the last status back to; the read shows it as null (RES-3). The
-participants are presented as accounts are elsewhere (an unavailable one redacted); with nobody else in it, the owner's
-own account.
+named from the object it keeps (`raw`), with the same checks as the receive path. A status leaves its conversations
+however it is deleted (a delete, an inbound `Delete`, a purge): its `conversation_statuses` rows cascade, and the
+trigger `conversation_statuses_removed` of migration `0009_conversations` moves the last status back to the newest left,
+or deletes the conversation when none is left (`AccountConversation.remove_status`). A block ends the blocker's
+conversations with the blocked account (`AfterBlockService#clear_conversations!`). The list reads only the owner's rows,
+newest last status first, through the `(account_id, last_status_id)` index; anyone else's conversation is not found,
+read, marked or deleted. Mastodon renders a conversation's last status with no read rule; Kopje shows it only when the
+owner may still see it (`statusReads` under `visible`, R2) and it is not a boost, and otherwise shows `last_status:
+null`, as Mastodon does for a last status it can no longer load: so a last status whose author is suspended or blocks
+the owner is not shown, while the conversation and its participants stay. Mastodon never puts a boost in a conversation,
+and no writer of Kopje's links one (`addToConversation`), so only a restored row names one, as its last status or as a
+link the trigger moves the last status back to; the read shows it as null (RES-3). The participants are presented as
+accounts are elsewhere (an unavailable one redacted); with nobody else in it, the owner's own account.
 
 Notifications: `shownSql(r, type, from, status, now, admin, warning, item, collection)` is R15, one rule for writing
 (`notify`), listing and reading notifications, and for sending their pushes (`domain/push.ts`, judged again at the time
@@ -226,28 +225,27 @@ accepted quote it approved, not the other quotes its batches reject or revoke; t
 the revoke API; an `Accept` of a local quote's request, not its `Reject` nor an accepted `QuoteRequest`; a
 verification round's decision that moves the quote's state when the work's first verification is a same-version
 `Update`'s that reset nothing or a relayed `Delete`'s recheck, or follows a failure that may pass, not a `Create`'s or
-a newer `Update`'s), and on every accepted local edit, one that
-changes only the quote policy through `PUT /api/v1/statuses/:id` included (not through `/interaction_policy`). So a
-quote or mention notification the policy dropped or this rule refused at the time, or one its recipient dismissed or
-cleared, is notified then.
+a newer `Update`'s), and on every accepted local edit, one that changes only the quote policy through
+`PUT /api/v1/statuses/:id` included (not through `/interaction_policy`). So a quote or mention notification the policy
+dropped or this rule refused at the time, or one its recipient dismissed or cleared, is notified then.
 
 R15 also hides what its recipient cleared or dismissed (migration `0023_notification_clears`). Clearing
-(`POST /api/v1/notifications/clear` and its v2 form, Mastodon's `delete_all`) records the highest id of the
-recipient's notifications at the time (`notification_clears`), and dismissing a group
+(`POST /api/v1/notifications/clear` and its v2 form, Mastodon's `delete_all`) records the highest id of the recipient's
+notifications at the time (`notification_clears`), and dismissing a group
 (`POST /api/v2/notifications/:group_key/dismiss`, `destroy_all` of `by_group_key`) the highest id of that group's
 (`notification_dismissals`); a later one raises it. From then on, no reader shows a notification of the recipient at or
-below the clear, or of the group at or below its dismissal: `statusReads(...).notifications` (the lists, a
-notification by id, the grouped reads, both unread counts) takes the higher of the cursor and the clear (and, for a
-read of one group, its dismissal) as the lower bound on the id (`keptFloorSql`), a constant over key lookups, so the
-index walk starts above what is hidden and never reads it; a read of every group checks each notification's group
-dismissal by its key. The push target and an accepted request's job check both by key (`keptSql`), so a cleared
-notification is not pushed, unfiltered or added to a conversation. A notification written later has a higher id
-(notification ids are never reused) and shows as usual; `notify` does not join a group with no notification above them
-(a dismissed group is not remembered, as when its rows were deleted). A notification whose natural key a hidden row
-still holds replaces that row (`notify` deletes it first), so it is not lost to the conflict. The hidden rows are then
-deleted in bounded batches, newest first (`removeNotifications` in `src/domain/notifications.ts`), the first in the
-request and the rest with the inbound jobs; the record goes with the last of them. An `ungrouped-<id>` key and a single
-dismissal (`POST /api/v1/notifications/:id/dismiss`) delete their one notification at once.
+below the clear, or of the group at or below its dismissal: `statusReads(...).notifications` (the lists, a notification
+by id, the grouped reads, both unread counts) takes the higher of the cursor and the clear (and, for a read of one
+group, its dismissal) as the lower bound on the id (`keptFloorSql`), a constant over key lookups, so the index walk
+starts above what is hidden and never reads it; a read of every group checks each notification's group dismissal by its
+key. The push target and an accepted request's job check both by key (`keptSql`), so a cleared notification is not
+pushed, unfiltered or added to a conversation. A notification written later has a higher id (notification ids are never
+reused) and shows as usual; `notify` does not join a group with no notification above them (a dismissed group is not
+remembered, as when its rows were deleted). A notification whose natural key a hidden row still holds replaces that row
+(`notify` deletes it first), so it is not lost to the conflict. The hidden rows are then deleted in bounded batches,
+newest first (`removeNotifications` in `src/domain/notifications.ts`), the first in the request and the rest with the
+inbound jobs; the record goes with the last of them. An `ungrouped-<id>` key and a single dismissal
+(`POST /api/v1/notifications/:id/dismiss`) delete their one notification at once.
 
 An account becomes unavailable when its deletion starts: a remote actor's `Delete` writes `accounts.deleted_at` in the
 transaction that writes its purge job (`deleteActor` in `src/domain/inbox.ts`), before the purge's batches remove its
@@ -259,15 +257,14 @@ again, and no boost of its statuses is accepted nor any status of it fetched (it
 for any other account the rule reads its `local_accounts` row alone. A local account is never marked (the schema refuses
 it), so `availableLocalSql` needs only that row.
 
-A remote account is a viewer when it acts on a local status: an inbound `Like` (a favourite, a Misskey reaction or
-an `EmojiReact`) or `Announce` is stored only if the actor may see the status by itself (`canView`, through
-`mayInteract` in `src/domain/inbox.ts`; an `Announce` must also wrap a public or unlisted status or the actor's own,
-VIS-6). So an author who blocks the actor, or blocks its domain, refuses both, and so does a private, direct or limited
-status the actor is not in the audience of. Mastodon 4.5's `ActivityPub::Activity::Like` checks no read rule, and its
-`Announce` only `announceable?`, leaving it to `NotifyService` to filter the author's notification. Kopje refuses the
-interaction itself (VIS-13, VIS-15). A reply is a status of the actor's own: it is stored
-whatever the author of its parent blocks, as Mastodon stores it, and that author's blocks keep it out of their lists
-and notifications (R7, R15).
+A remote account is a viewer when it acts on a local status: an inbound `Like` (a favourite, a Misskey reaction or an
+`EmojiReact`) or `Announce` is stored only if the actor may see the status by itself (`canView`, through `mayInteract`
+in `src/domain/inbox.ts`; an `Announce` must also wrap a public or unlisted status or the actor's own, VIS-6). So an
+author who blocks the actor, or blocks its domain, refuses both, and so does a private, direct or limited status the
+actor is not in the audience of. Mastodon 4.5's `ActivityPub::Activity::Like` checks no read rule, and its `Announce`
+only `announceable?`, leaving it to `NotifyService` to filter the author's notification. Kopje refuses the interaction
+itself (VIS-13, VIS-15). A reply is a status of the actor's own: it is stored whatever the author of its parent blocks,
+as Mastodon stores it, and that author's blocks keep it out of their lists and notifications (R7, R15).
 
 A received status's visibility is read from its addressing as Mastodon's `StatusParser#visibility` and
 `Announce#visibility_from_audience` read it (`interpretAddressing` in `src/domain/audience.ts`, `boostVisibility` in
@@ -325,18 +322,17 @@ Store round (`answerQuoteRequest` in `src/domain/quotes.ts`): an object that is 
 or unlisted original gets no answer at all, so no answer confirms that a private status exists; a refusal is a
 `Reject`; an acceptance is the approval (Kopje stores no manual policy of its own), and adds the quoted author as a
 silent mention of the quoting status, so the author may always see the quote (Mastodon's `Quote#ensure_quoted_access`).
-A local status gets its policy when it is
-posted, scheduled, edited or given one through `interaction_policy`: its author's choice, or their
-`default_quote_policy`, and nobody (0) for a status that is not public or unlisted (`storedQuotePolicy`, Mastodon's
-`Status#downgrade_quote_policy`); statuses stored before quote policies existed keep 0. A remote status gets the
-policy its Note states (`interactionPolicy.canQuote`, `remoteQuotePolicy` in `src/domain/remote-statuses.ts`, 0 when
-it states none) when it is first stored and on every `Update` of it, never from a `Create` of a status already stored;
-remote statuses stored before Kopje read policies keep 0 until such an `Update`. Every status shows its policy as
-`quote_approval` (a boost its original's), with `current_user` R36 for the viewer (`quoteApprovalReads`): `denied`
-whenever R36 refuses, `automatic` for the viewer's own status, and otherwise what the policy answers them. This is
-stricter than Mastodon, which answers by the policy alone, so a client never offers a quote that the post would refuse.
-Notes advertise the automatic half (`interactionPolicy.canQuote`); that is advisory to receivers (FEP-044f), and only
-the quoted author's answer approves a quote (VIS-28).
+A local status gets its policy when it is posted, scheduled, edited or given one through `interaction_policy`: its
+author's choice, or their `default_quote_policy`, and nobody (0) for a status that is not public or unlisted
+(`storedQuotePolicy`, Mastodon's `Status#downgrade_quote_policy`); statuses stored before quote policies existed
+keep 0. A remote status gets the policy its Note states (`interactionPolicy.canQuote`, `remoteQuotePolicy` in
+`src/domain/remote-statuses.ts`, 0 when it states none) when it is first stored and on every `Update` of it, never from
+a `Create` of a status already stored; remote statuses stored before Kopje read policies keep 0 until such an `Update`.
+Every status shows its policy as `quote_approval` (a boost its original's), with `current_user` R36 for the viewer
+(`quoteApprovalReads`): `denied` whenever R36 refuses, `automatic` for the viewer's own status, and otherwise what the
+policy answers them. This is stricter than Mastodon, which answers by the policy alone, so a client never offers a quote
+that the post would refuse. Notes advertise the automatic half (`interactionPolicy.canQuote`); that is advisory to
+receivers (FEP-044f), and only the quoted author's answer approves a quote (VIS-28).
 
 A local quote (`quoted_status_id` on `POST /api/v1/statuses`, rechecked at scheduled publication) is authorized by
 R36 in the writing transaction (`preparePost` in `src/domain/statuses.ts`). Refusal returns Mastodon's 404 without
@@ -401,7 +397,7 @@ ${DISTRIBUTABLE_SQL}`, never the literals.
 | R42 account warnings         | `account_warnings` read and written only in `account-warnings.ts` (and read by R15's `shownSql`): written by the OAuth admin's account action (`actOnAccount` in `admin-accounts.ts`, R37) for a local target, read only through that target's own `moderation_warning` notification (`warningOf` in `notifications.ts`, v1, v2 and streaming alike), and presented only when the warning's target and the notification's sender are its recipient, so a restored row linked to another account shows nothing. No other read exposes a warning. Its `status_ids` are ids copied from the report the admin named, which may name statuses the target cannot see (as in Mastodon); no content is shown.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | R43 status cards             | `cardEligibleSql` and `cardPublicSql` (`audience.ts`), in `link-cards.ts` alone (the only module that writes `status_cards`, but for `card-images.ts`'s image link): a status's link is enqueued, claimed and its card recorded only while it is an original, public or unlisted, by an available author (R1), with no shown attachment and no quote; the hide step of a remote delete (`deleteStatusBatch` in `inbox.ts`) deletes its row. Private, direct and limited statuses are never fetched (Mastodon fetches every visibility). `public` is set from the status at record and copy (never from the donor) and cleared at enqueue, and the triggers of `0071_link_trends` refuse it under a status that is not public, so `status_cards_public_link` holds public statuses' cards only; `trends.ts` reads it and writes nothing. The presenter (`status-presenter.ts`) shows a card on a public or unlisted status only, never on a boost's row or a quoted status, and its `missing_attribution` to a signed-in viewer only, `true` only for the viewer the card's unverified author is (a trend link's card alike). A local status's Note lists its card as a FEP-8967 `Link` only where the presenter shows it (`shownCardUrl`, which `activities.ts` reads the attached row with).                                                                                                                                                                                                                                                                   |
 | R44 annual reports           | `annualReportOwnSql` and `annualReportCountedSql` (`audience.ts`), in `annual-reports.ts` alone (the only module that reads or writes `annual_reports`): a report is listed, shown and marked read by its owner only, and another account's year answers as one without a report; a report counts the owner's statuses of the year that are not withdrawn, of every visibility, boosts included; its top status is presented only when the owner may view it (R3, VIS-12); see "Annual reports" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| R45 collections              | `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`, `featureApprovalSql`, `mayFeatureSql` and `inCollectionsSql` (`audience.ts`), in `collections.ts`, its presenter `collection-presenter.ts` and `collection-documents.ts` alone (the only modules that read or write `collections` and `collection_items`, but for the block step `collections.ts` exports, the purge in `inbox.ts`, the report's target check in `reports.ts`, R15's collection arms in `audience.ts`, and the writes of remote accounts' collections and their checks in `remote-featured-collections.ts` and `collection-checks.ts`, which present nothing): an account's collections (`accountCollections`), one by its id (`showCollection`) or by a search's resolution (`shownCollection`) and a local one's public page with no viewer (`localCollectionOf`), the viewer's memberships (`inCollections`), each write answer as its owner sees it, a collection notification's collection for its recipient (`notifiedCollection`), and the ActivityPub documents with the signing fetcher as the viewer and their members with none (`collection-documents.ts`); and every account answer's `feature_approval.current_user` (`featureApprovalReads`, one statement per chunk of accounts presented, for the viewer the Store judged the token to be); see "Collections" below.                                                                                                                                                              |
+| R45 collections              | `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`, `featureApprovalSql`, `mayFeatureSql` and `inCollectionsSql` (`audience.ts`), in `collections.ts`, its presenter `collection-presenter.ts` and `collection-documents.ts` alone (the only modules that read or write `collections` and `collection_items`, but for the block step `collections.ts` exports, the purge in `inbox.ts`, the report's target check in `reports.ts`, R15's collection arms in `audience.ts`, and the writes of remote accounts' collections and their checks in `remote-featured-collections.ts` and `collection-checks.ts`, which present nothing), and every account answer's `feature_approval.current_user` (`featureApprovalReads`); see "Collections" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 The streaming API (`src/domain/streaming.ts`, `src/stream-hub.ts`) judges each message when it is made, never when the
 write is journaled (R33), and a `delete` by what was captured before the status's audience changed (R32). "Positioned at
@@ -414,47 +410,47 @@ from its cursor: a post of a followed hashtag behind 40 or more newer posts the 
 first page of home leaves it out. That is what `max_id` paging returns, and the post passes R9; the difference is
 accepted. R32 differs from Mastodon in two accepted ways: at most 40 boosts of a deleted status are deleted on each
 viewer's stream (those by the viewer and the accounts it follows), and an account's purge sends no `delete`. A list's
-read positioned at x (`listStatus`) cuts the list's members to x's author, read by the list's key; the list must be
-the viewer's. A conversation is not a status position: `conversation` is sent for the viewer's own row, by the owner's
-change sequence (`conversations.stream_seq`, from a mark that is never lowered), journaled as one event per owner
-until it is sent, at most the 20 newest changes each.
-The `public*` and `hashtag*` streams are the public timeline (local, remote or both, media only or not) and a
-hashtag's timeline (`hashtag:local`: local statuses only) positioned at x: public statuses, not boosts, the public
-timeline's not replies to others (a hashtag's keeps them, as Mastodon's `TagFeed` and hashtag streams do), of authors
-the viewer neither blocks, mutes nor domain-blocks and who do not block the viewer (R8). Positioned at x, the read is
-the status's own row: the public timeline's by its key, a hashtag's by the status's row of the hashtag. Mastodon's
-streaming server also drops, per connection, a status that mentions an account the viewer blocks or mutes; Kopje does
-the same (`mentionsFilteredFor`), which only narrows R33. A status on them is presented as REST presents it to the
-viewer, as on every stream (its flags, poll votes, quote approval and quote state, R35, its accounts'
-`feature_approval.current_user`, R45, and `filtered` are the viewer's), unlike Mastodon's rendering of these streams for
-no viewer ([mastodon-deviations.md](mastodon-deviations.md), feed streams). Mastodon sends nothing on these streams for
-a silenced account; Kopje has no silencing. A `delete` on them is the status's alone: Mastodon's `RemoveStatusService`
-publishes a public status's delete on `public`, its local or remote stream, their media streams when it had media, and
-the hashtag streams of its hashtags (`:local` for a local status), and none for a boost; Kopje's tombstone holds those
-facts from before the delete, and the hashtags only some account subscribed to then. Unlike Mastodon, the viewer must
-have been able to view the status at capture (R3): an author who blocks the viewer sends them no `delete`.
+read positioned at x (`listStatus`) cuts the list's members to x's author, read by the list's key; the list must be the
+viewer's. A conversation is not a status position: `conversation` is sent for the viewer's own row, by the owner's
+change sequence (`conversations.stream_seq`, from a mark that is never lowered), journaled as one event per owner until
+it is sent, at most the 20 newest changes each. The `public*` and `hashtag*` streams are the public timeline (local,
+remote or both, media only or not) and a hashtag's timeline (`hashtag:local`: local statuses only) positioned at x:
+public statuses, not boosts, the public timeline's not replies to others (a hashtag's keeps them, as Mastodon's
+`TagFeed` and hashtag streams do), of authors the viewer neither blocks, mutes nor domain-blocks and who do not block
+the viewer (R8). Positioned at x, the read is the status's own row: the public timeline's by its key, a hashtag's by the
+status's row of the hashtag. Mastodon's streaming server also drops, per connection, a status that mentions an account
+the viewer blocks or mutes; Kopje does the same (`mentionsFilteredFor`), which only narrows R33. A status on them is
+presented as REST presents it to the viewer, as on every stream (its flags, poll votes, quote approval and quote state,
+R35, its accounts' `feature_approval.current_user`, R45, and `filtered` are the viewer's), unlike Mastodon's rendering
+of these streams for no viewer ([mastodon-deviations.md](mastodon-deviations.md), feed streams). Mastodon sends nothing
+on these streams for a silenced account; Kopje has no silencing. A `delete` on them is the status's alone: Mastodon's
+`RemoveStatusService` publishes a public status's delete on `public`, its local or remote stream, their media streams
+when it had media, and the hashtag streams of its hashtags (`:local` for a local status), and none for a boost; Kopje's
+tombstone holds those facts from before the delete, and the hashtags only some account subscribed to then. Unlike
+Mastodon, the viewer must have been able to view the status at capture (R3): an author who blocks the viewer sends them
+no `delete`.
 
 Pins and conversation mutes (`src/domain/status-actions.ts`, Mastodon's `StatusPin` and `ConversationMute`, migration
 `0018_status_pins_and_conversation_mutes`) act on a status the viewer may see by itself (R3; anything else is not
-found). A pin is of the viewer's own status, not a boost, direct or limited, at most five (`StatusPinValidator`;
-storage holds five for a local account and 20 for a remote one, imports included: RES-4 in
-[threat-model.md](threat-model.md)); pins are public (R31): `GET /api/v1/accounts/:id/statuses?pinned=true` reads at
-most the account's limit of pins through their primary key and applies the account statuses rule (R11), newest pin
-first; the actor's `featured` collection serves them as the object endpoint serves statuses (R4), the uri alone of a
-private one, as Mastodon's `CollectionsController` does; and pinning or unpinning records an `Add` or `Remove` for the
-followers (R23, kind `other`), after an `Update` of the actor before the account's first one, pin or featured hashtag
-(`announceFeatured` in `actor-update.ts`). A conversation mute is its owner's and names a thread (`statuses.thread`);
-only the policy module reads it (`conversationMutedSql`): the presenter shows it in the viewer's `muted` of each status
-(a boost's own thread, as Mastodon gives a boost its own conversation), and `notify` writes through `notifiedSql`, R15
-less a notification about a status of a conversation the recipient mutes (`NotifyService#conversation_muted?`; a reblog
-notification names the original). Listing and pushes keep `shownSql`: a notification written before the mute stays, as
-Mastodon drops only new ones.
+found). A pin is of the viewer's own status, not a boost, direct or limited, at most five (`StatusPinValidator`; storage
+holds five for a local account and 20 for a remote one, imports included: RES-4 in [threat-model.md](threat-model.md));
+pins are public (R31): `GET /api/v1/accounts/:id/statuses?pinned=true` reads at most the account's limit of pins through
+their primary key and applies the account statuses rule (R11), newest pin first; the actor's `featured` collection
+serves them as the object endpoint serves statuses (R4), the uri alone of a private one, as Mastodon's
+`CollectionsController` does; and pinning or unpinning records an `Add` or `Remove` for the followers (R23, kind
+`other`), after an `Update` of the actor before the account's first one, pin or featured hashtag (`announceFeatured` in
+`actor-update.ts`). A conversation mute is its owner's and names a thread (`statuses.thread`); only the policy module
+reads it (`conversationMutedSql`): the presenter shows it in the viewer's `muted` of each status (a boost's own thread,
+as Mastodon gives a boost its own conversation), and `notify` writes through `notifiedSql`, R15 less a notification
+about a status of a conversation the recipient mutes (`NotifyService#conversation_muted?`; a reblog notification names
+the original). Listing and pushes keep `shownSql`: a notification written before the mute stays, as Mastodon drops only
+new ones.
 
-Endorsements (`src/domain/endorsements.ts`, Mastodon's `AccountPin`, migration `0014_account_notes_and_pins`) are
-the accounts a local user features. An account is endorsed only while its endorser follows it (an accepted follow,
+Endorsements (`src/domain/endorsements.ts`, Mastodon's `AccountPin`, migration `0014_account_notes_and_pins`) are the
+accounts a local user features. An account is endorsed only while its endorser follows it (an accepted follow,
 `AccountPin#validate_follow_relationship`): the trigger `account_pins_follow_ended` deletes the endorsement with the
-follow, whatever ends it, as `Follow#remove_endorsements` does. They are public (R28): `GET
-/api/v1/accounts/:id/endorsements` lists an account's to anyone, viewer or not, and `GET /api/v1/endorsements` the
+follow, whatever ends it, as `Follow#remove_endorsements` does. They are public (R28):
+`GET /api/v1/accounts/:id/endorsements` lists an account's to anyone, viewer or not, and `GET /api/v1/endorsements` the
 viewer's own, by the same rule: nothing while the owner is unavailable, and of the endorsed accounts only the available
 ones (`Account.without_suspended`). No block, mute or hidden network changes the list, as in Mastodon 4.5, whose
 `Accounts::EndorsementsController` checks none. They are not federated: Mastodon 4.5's actor has no endorsements
@@ -533,13 +529,12 @@ the current admin alone (R37): it leaves every read, stream and push when `admin
 the match. The admin's own report notifies nobody (R15: not from oneself). Each report has its own notification
 (migrations `0040_report_notifications` and `0041_report_notifications_key`), also several of one reporter.
 
-The same admin, once Kopje grants it manage_users (with local suspension, PR A3b; until then the routes refuse it as
-everyone), lists every account, local and remote, through `GET /api/v1/admin/accounts` and `/api/v2/admin/accounts`
-(R37, `src/domain/admin-accounts.ts`), and shows one: a local account with its email and role, a remote one with the
-fields of a missing user null, and an unavailable account (R1: a suspended local account, or a remote one whose
-deletion has started) as suspended, its nested account redacted as everywhere. The filters are Mastodon's
-(`AccountFilter`), read as each version's controller reads them, and Fedilab's v1 names sent to v2 are read as v1's.
-`enable`, `unsilence` and `unsensitive` change nothing and are logged; `approve` and `reject` are refused.
+The same admin, with manage_users, lists every account, local and remote, through `GET /api/v1/admin/accounts` and
+`/api/v2/admin/accounts` (R37, `src/domain/admin-accounts.ts`), and shows one: a local account with its email and role,
+a remote one with the fields of a missing user null, and an unavailable account (R1: a suspended local account, or a
+remote one whose deletion has started) as suspended, its nested account redacted as everywhere. The filters are
+Mastodon's (`AccountFilter`), read as each version's controller reads them, and Fedilab's v1 names sent to v2 are read
+as v1's. `enable`, `unsilence` and `unsensitive` change nothing and are logged; `approve` and `reject` are refused.
 
 The admin suspends a local account other than its own (`POST .../action` with `suspend`, `src/domain/suspension.ts`),
 which makes it unavailable (R1) at once, and unsuspends it. The suspension refuses every token and code issued before
@@ -714,106 +709,94 @@ statuses, presented through the hashtag bound (`listedTagName`).
 
 Collections (`src/domain/collections.ts`, `/api/v1/collections` and `/api/v1_alpha/collections`, Mastodon's
 `Collection` and `CollectionItem`) are a local account's lists of accounts it features. A collection is found while its
-owner is available (`collectionFoundSql`); otherwise it is not found by its id and is listed nowhere, where Mastodon
-shows a suspended owner's. It is shown to an anonymous viewer, and to any account its owner neither blocks nor
-domain-blocks (`collectionShownSql`): one the owner blocks gets 403 by its id and `{"collections": []}` for the owner's
-list. The owner's list shows only discoverable collections, but to the owner (`collectionListedSql`); a
-non-discoverable collection is still shown by its id. Its items, and the accounts `GET /api/v1/collections/:id`
-presents with it, are those `collectionItemShownSql` admits for the viewer: an item whose account is available, accepted
-(pending too, to the owner), and not blocked by the viewer; an unavailable member is left out where Mastodon shows it.
-An item of a remote owner's collection is shown only while the owner lists it (its `uri` set: the owner's item that
-last listed it) or to its own member signed in, so a local member sees its own row at once and everyone else once the
-owner lists it, where Mastodon shows an accepted item to everyone at once (`threat-model.md` ID-6, ID-9).
+owner is available; otherwise it is not found by its id and is listed nowhere, where Mastodon shows a suspended owner's.
+It is shown to an anonymous viewer and to any account its owner neither blocks nor domain-blocks: one the owner blocks
+gets 403 by its id and `{"collections": []}` for the owner's list. The owner's list shows only discoverable
+collections, but to the owner; a non-discoverable collection is still shown by its id. Its items, and the accounts
+`GET /api/v1/collections/:id` presents with it, are those `collectionItemShownSql` admits for the viewer: an
+unavailable member is left out where Mastodon shows it. An item of a remote owner's collection is shown only while the
+owner lists it (its `uri` set) or to its own member signed in, so a local member sees its own row at once and everyone
+else once the owner lists it, where Mastodon shows an accepted item to everyone at once (ID-6, ID-9 in
+[threat-model.md](threat-model.md)).
+
 An account may be featured only with its consent (`mayFeatureSql`): its answer to the owner (`featureApprovalSql`) is
-`automatic` or `manual`, so it is discoverable, and unlocked, followed by the owner (accepted) or the owner itself, and
-neither blocks the other; a remote account answers by the `canFeature` its actor document states (`missing` while it
-states none), and one that consents is added `pending` and asked with a `FeatureRequest`, then shown only once its
-server accepts (`threat-model.md` ID-6). A local account a remote owner asks for with a `FeatureRequest` is decided by
-the same rule, its answer to that owner (`featureApprovalSql`), while it holds no row in that collection: it accepts,
-and is notified, only while it consents; once accepted, the row is its consent, and every later request of that owner
-for that collection is accepted while the row stands, whatever the rule answers then (`threat-model.md` ID-6, ID-9,
-#1589's D24). Every account answer presents that answer to its viewer as
-`feature_approval.current_user` (`denied` with no viewer), read for
-each chunk of accounts presented in one statement (`featureApprovalReads`), and the policy's halves from the row; the
-presenter takes the viewer from the Store's judgment of the token (`Present.viewerId`), never from the Worker.
+`automatic` or `manual`. A remote account answers by the `canFeature` its actor document states (`missing` while it
+states none), and one that consents is added `pending`, asked with a `FeatureRequest`, and shown only once its server
+accepts (ID-6). A local account a remote owner asks for with a `FeatureRequest` is decided by the same rule while it
+holds no row in that collection: it accepts, and is notified, only while it consents; once accepted, the row is its
+consent, and every later request of that owner for that collection is accepted while the row stands, whatever the rule
+answers then (ID-6, ID-9). Every account answer presents that answer to its viewer as `feature_approval.current_user`
+(`denied` with no viewer), read for each chunk of accounts presented in one statement (`featureApprovalReads`), the
+viewer taken from the Store's judgment of the token, never from the Worker.
+
 `in_collections` lists the collections holding an item of the viewer, who must be the account asked about, in any state,
-while the collection is found (`inCollectionsSql`): the items are the viewer's own, so the owner's availability only
-hides a candidate of the window ("Read bounds"), whose cursor is the item's id. A block by a local account revokes its
-items in the target's collections and deletes the target's items in its own (`severCollections`, in the block's
-transaction), and a revoked item in a remote target's collection sends the account's `Delete` of its authorization to
-that owner alone; an inbound `Block` changes no item, and R45 hides the blocked side's view. A member added is notified
-`added_to_collection`, and each accepted member of a collection whose name, description, sensitivity or tag changes
-`collection_update`, which replaces its earlier one (R15 above: local recipients only, never the owner itself, while R45
-shows the collection to the recipient). Each is presented with its collection as R45 shows it to the recipient, its
-items those R45 shows the recipient (`notifiedCollection` in `collection-presenter.ts`, by the notification's key), and
-is left out when R45 does not show it.
-A local collection's public page (`/collections/:id`, `src/domain/web-pages/collection.ts`) reads it with no viewer,
-after answering for its owner as the owner's profile does (a suspended owner's page is gone): `collectionShownSql` and
-`collectionItemShownSql` with a NULL viewer, so a non-discoverable collection is served and only its accepted, available
-members are shown; a remote collection's id is not found there.
-A status's `tagged_collections` (#1589's D26) are the collections it tags (`status_collections`, written by
-`collections.ts`) that `collectionShownSql` admits for the viewer, each with the items `collectionItemShownSql` admits
-for the viewer, on an original and a quoted status: a boost presents `[]` and its `reblog` the original's. They are read
-once a chunk of statuses presented (`taggedCollectionsOf` in `collection-presenter.ts`, from the status presenter's
-`hydrate`), a collection several statuses tag once. A collection is shown only while a status can tag it, whatever the
-viewer (`taggableCollections`: its owner available, `collectionFoundSql`, and `taggable`; `collectionViewerSql`, the
-rest of `collectionShownSql`, is per viewer): its name, description and tag well-formed UTF-8 as stored, read with no
-more U+FFFD than their stored bytes hold as EF BF BD, since decoding adds one for each malformed sequence
-(`wellFormed`); a local one only while it is stored as local, its owner is a local account, and its id has the path
-the collection route takes, on any host (`collectionDocumentAddress`, the route's own parser); a remote one
-only while it is stored as remote, its id is a valid id on its owner's origin (`validRemoteCollection`, against the
-owner's id as `actorUriSql` reads it: '' past `ACTOR_URI_LIMIT`) and not on the instance's domain (`onDomain` in
-`platform/instance-host.ts`, the routes' own test of the configured domain, by host, read by `instanceDomainOf`), and
-its name and description are within its writer's bounds (`withinRemoteText`). One function builds a local collection's
-id from its owner's stored actor id, `<actor id>/collections/<id>` (`localCollectionUri`, read through
-`collectionOwnerSql`): the API's `uri` and `tagged_collections`, the Note's tag, the collection's documents (its items'
-and its local members' authorizations' included), the owner's `featured_collections`, the activities and the page's
-alternate; it is none where the account presenter shows no actor id either (past `ACTOR_URI_LIMIT` as JSON,
-`withinIdentityBound`). None compares it with the request's host or the configured one, so a collection's id resolves
-exactly when its owner's actor id does: an account whose actor id does not (restored inconsistently, or kept from an
-earlier domain) has collections no more and no less reachable than itself, and the API creates and updates its
-collections as any owner's. The owner's `featured_collections` lists its local collections alone, under its stored actor
-id, wherever the actor route serves the owner. So a restored dump's malformed UTF-8 is presented nowhere, and a restored
-row no writer would store (a remote row under a local id included) is neither shown, listed nor authorized. The writer
-(`collections.ts`) applies the same `taggableCollections` to a post's links and a Note's tags before it takes the first
-four, so a collection no surface shows takes no slot. A link, a Note's tag, a Flag's object and a search with
-`resolve=true` name a collection through one resolver (`namedCollection`): a local collection by its id exactly as the
-surfaces emit it, or, over http or https on the instance's domain, by an address whose GET serves it, as the routes
-read it (`servedCollectionAddress` in `platform/collection-address.ts`, their one parser: the page's id as the router
-decodes the path, whatever the query; the `FeaturedCollection`'s raw path under its owner's username, with a format the
-route answers with), never by the author's actor id or the request's host, and any other URL on that domain names none.
-It decides before any caller's filter, so a URL that names a local collection names no remote one, and tags nothing when
-no status can tag that collection. No function that decides or looks up a local collection takes a request's origin:
-the instance's domain is a value only `configuredDomain` makes (`ConfiguredDomain`, whose name only
-`onConfiguredDomain` reads). A collection that stops being available after the post is written is left out as the
-readers read it. No page presents
-them or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact
-handoff, oEmbed and the `/authorize_interaction` result present `[]` (`Present.page`, set by `pagePresent`, which
-`anonymous()` spreads, and by oEmbed and `/authorize_interaction`; the chunk planner's term is 0 under it). A local
-status's ActivityPub forms name each collection it tags that a status can tag (`taggableCollections`, as the API decides
-it before R45) by its id alone (`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all they send,
-so no collection's name, description or members travel in the post's activities. That bounds the wire's content, not who
-learns of the collection: a local collection's id is under its owner's actor id, which names the owner, and a fetch of
-it is judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does not store
-names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with another key, its
-instance actor's included unless the owner blocks that account or its domain, or show a copy it holds to that user. A
-local account's collections are served over ActivityPub (FEP-7aa9, `src/domain/collection-documents.ts`): the
+while the collection is found: the items are the viewer's own, so the owner's availability only hides a candidate of the
+window ("Read bounds"), whose cursor is the item's id. A block by a local account revokes its items in the target's
+collections and deletes the target's items in its own, in the block's transaction; a revoked item in a remote target's
+collection sends the account's `Delete` of its authorization to that owner alone. An inbound `Block` changes no item,
+and R45 hides the blocked side's view. A member added is notified `added_to_collection`, and each accepted member of a
+collection whose name, description, sensitivity or tag changes `collection_update`, which replaces its earlier one (R15:
+local recipients only, never the owner itself). Each is presented with its collection and items as R45 shows them to the
+recipient, and is left out when R45 does not show the collection.
+
+A local collection's public page (`/collections/:id`) reads it with no viewer, after answering for its owner as the
+owner's profile does (a suspended owner's page is gone), so a non-discoverable collection is served and only its
+accepted, available members are shown; a remote collection's id is not found there.
+
+A status's `tagged_collections` are the collections it tags that R45 shows the viewer, each with the items R45 shows the
+viewer, on an original and a quoted status: a boost presents `[]` and its `reblog` the original's. They are read once a
+chunk of statuses presented (`taggedCollectionsOf` in `collection-presenter.ts`, from the status presenter's `hydrate`),
+a collection several statuses tag once. A collection is shown, and named by a status, only while a status can tag it,
+whatever the viewer (`taggableCollections`):
+
+- its owner is available, and its name, description and tag are well-formed UTF-8 as stored;
+- a local one is stored as local, its owner is a local account, and its id has the path the collection route takes;
+- a remote one is stored as remote, its id is on its owner's origin and not on the instance's domain, and its name and
+  description are within its writer's bounds.
+
+So a restored dump's malformed UTF-8 is presented nowhere, and a restored row no writer would store (a remote row
+under a local id included) is neither shown, listed nor authorized. The writer applies the same rule to a post's links
+and a Note's tags before it takes the first four, so a collection no surface shows takes no slot; one that stops being
+available after the post is written is left out when read. No public page presents them: the status page and its
+thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the `/authorize_interaction`
+result present `[]`.
+
+A local collection's id is built from its owner's stored actor id, `<actor id>/collections/<id>`, by one function
+(`localCollectionUri`) for every surface that names it (the API's `uri` and `tagged_collections`, the Note's tag, the
+collection's documents, the owner's `featured_collections`, the activities and the page's alternate); it is none where
+the account presenter shows no actor id either. None compares it with the request's host or the configured one, so a
+collection's id resolves exactly when its owner's actor id does: an account whose actor id does not (restored
+inconsistently, or kept from an earlier domain) has collections no more and no less reachable than itself, and the API
+creates and updates its collections as any owner's. The owner's `featured_collections` lists its local collections
+alone, under its stored actor id, wherever the actor route serves the owner. A link, a Note's tag, a Flag's object and a
+search with `resolve=true` name a collection through one resolver (`namedCollection`): a local collection by its id
+exactly as the surfaces emit it, or, over http or https on the instance's domain, by an address whose GET serves it as
+the routes read it (`servedCollectionAddress`), never by the author's actor id or the request's host; any other URL on
+that domain names none. It decides before any caller's filter, so a URL that names a local collection names no remote
+one, and tags nothing when no status can tag that collection. No function that decides or looks up a local collection
+takes a request's origin: the instance's domain is a value only `configuredDomain` makes.
+
+A local status's ActivityPub forms name each collection it tags that a status can tag (`taggableCollections`, as the API
+decides it before R45) by its id alone, so no collection's name, description or members travel in the post's activities.
+That bounds the wire's content, not who learns of the collection: its id names the owner, and a fetch of it is judged by
+R45 for the fetcher, so a server whose user the owner blocks may still read it with another key (its instance actor's,
+unless the owner blocks that account or its domain), or show a copy it holds to that user.
+
+A local account's collections are served over ActivityPub (FEP-7aa9, `src/domain/collection-documents.ts`): the
 `featured_collections` collection and its pages, a `FeaturedCollection`, a `FeaturedItem` and a member's
 `FeatureAuthorization`. Each reads R45 with the fetcher as its viewer: the remote account whose stored key the
 request's signature names by its `keyId` (unverified, since every document is also served unsigned and naming a key
-only narrows the answer), else none. A document is not found while its owner is unavailable, and to a fetcher the
-owner blocks or domain-blocks (`collectionShownSql`; the owner's check alone for `featured_collections`); an
-authorization is not found to a fetcher its member blocks or domain-blocks, and exists only while its item is
-accepted, its member local and available. Every member list and count the documents give, embedded copies included,
-is `collectionItemShownSql` with no viewer: accepted items whose member is available, so a suspended member is in
-none of them and its `FeaturedItem` is not found. A non-discoverable collection is served: `discoverable` governs
-listings only. Each change of a local collection is sent, signed by its owner, to the owner's followers and the
-collection's pending and accepted remote members (R23: an `Update` is content, an `Add` or `Remove` other): its `Add`,
-`Update` and `Remove`, and the `Add` and `Remove` of an item, the `Remove` also to the item's member and recorded too
-when a member revokes its item or a block takes it out. A block's `Remove` goes to the members from the block on and
-to the owner's followers as a collection job reads them after it (`src/domain/collection-jobs.ts`, as Mastodon's
-`CollectionRawDistributionWorker`), after the item's `Add` in every lane. Its `Add` and `Update` embed the same
-projection; a suspension sends nothing.
+only narrows the answer), else none. A document is not found while its owner is unavailable, or to a fetcher the owner
+blocks or domain-blocks; an authorization is not found to a fetcher its member blocks or domain-blocks, and exists only
+while its item is accepted and its member local and available. Every member list and count the documents give,
+embedded copies included, holds the accepted items whose member is available, so a suspended member is in none of
+them and its `FeaturedItem` is not found. A non-discoverable collection is served: `discoverable` governs listings
+only. Each change of a local collection is sent, signed by its owner, to the owner's followers and the collection's
+pending and accepted remote members (R23: an `Update` is content, an `Add` or `Remove` other): its `Add`, `Update`
+and `Remove`, and the `Add` and `Remove` of an item, the `Remove` also to the item's member, and recorded too when a
+member revokes its item or a block takes it out. A block's `Remove` goes to the members from the block on and to the
+owner's followers as a collection job reads them after it (as Mastodon's `CollectionRawDistributionWorker`), after the
+item's `Add` in every lane. Its `Add` and `Update` embed the same projection; a suspension sends nothing.
 
 ## Filters
 
@@ -828,9 +811,8 @@ choices or media descriptions (of the original, for a boost), with `whole_word` 
 status it names (the status or, for a boost, its original). A filter status can be added only for a status the viewer
 may view (`canView`); one they may not view is refused as a missing one is, and a filter status is listed by its ids
 alone, whatever the viewer may see of it later. `test/policy-filters.test.ts` checks the endpoints on generated worlds
-against a model of the matching. Matching is bounded: each status is matched on at most 10,000 code units of its text,
-and the statuses of one response on 400,000 together, by water-filling (short texts whole, long ones up to one level),
-so a keyword deep in a long status of a very large response may be missed; filter statuses always match.
+against a model of the matching. Matching is bounded per status and per response (VIS-18 in
+[threat-model.md](threat-model.md); [mastodon-deviations.md](mastodon-deviations.md), "Filters").
 
 ## Outbound recipients
 
@@ -900,9 +882,8 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   raw domain longer than `MAX_DOMAIN_INPUT` is refused before it is normalized, a normalized one beyond Mastodon's 255
   characters or 63 per label is invalid, and one deeper than `MAX_BLOCK_LABELS` is refused before any ruling block is
   looked up. `reject_reports` refuses inbound Flags whose reporter's stored domain is ruled by that block (R34; the
-  actor host is not read, as for `reject_media`). `reject_media` keeps the media of the domains ruled by that block
-  out of the remote media cache (below). `obfuscate` changes only how the
-  public block list shows the domain.
+  actor host is not read, as for `reject_media`). `reject_media` keeps the media of the domains ruled by that block out
+  of the remote media cache (below). `obfuscate` changes only how the public block list shows the domain.
 - **reject_media** (Mastodon's `DomainBlock.reject_media?`): the rule of a domain, its longest matching block as for
   coverage, has `reject_media` (`mediaRejectedSql` in `src/domain/audience.ts`: `hostMediaRejectedSql`,
   `domainMediaRejectedSql`, `accountMediaRejectedSql`), so a nearer block without it exempts its subdomains from a
@@ -914,16 +895,15 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   the presenters show until then, as for coverage; without a cached file they show the remote URL. A block with only
   `reject_media` is not in the public block list, which Mastodon limits to silence and suspend blocks.
 - **The public block list** (`GET /api/v1/instance/domain_blocks`, `publicDomainBlocks` in
-  `src/domain/instance-domain-blocks.ts`; Mastodon's `Api::V1::Instances::DomainBlocksController`). A suspended
-  user's token is answered 403 (`Your login is currently disabled`) first, whatever the settings. Then the setting
-  `show_domain_blocks` decides: `all` lists to anyone, `users` to a user's valid token, `disabled` (also when unset)
-  to no one, with Mastodon's empty 404. An unknown token, an expired or stale one of an available user and an app
-  token read as anonymous. The
-  list holds the suspend blocks only, never a noop, in domain order (SQLite's binary order), each as
-  `{domain, digest, severity, comment}`: `domain` obfuscated as Mastodon's `DomainBlock#public_domain` when the block
+  `src/domain/instance-domain-blocks.ts`; Mastodon's `Api::V1::Instances::DomainBlocksController`). A suspended user's
+  token is answered 403 (`Your login is currently disabled`) first, whatever the settings. Then the setting
+  `show_domain_blocks` decides: `all` lists to anyone, `users` to a user's valid token, `disabled` (also when unset) to
+  no one, with Mastodon's empty 404. An unknown token, an expired or stale one of an available user and an app token
+  read as anonymous. The list holds the suspend blocks only, never a noop, in domain order (SQLite's binary order), each
+  as `{domain, digest, severity, comment}`: `domain` obfuscated as Mastodon's `DomainBlock#public_domain` when the block
   has `obfuscate`, `digest` the SHA-256 of the stored domain, and `comment` the public comment when
-  `show_domain_blocks_rationale` shows it to the viewer by the same rule, else null. The private comment is never
-  shown. The digest lets anyone test a guessed domain, as on Mastodon: obfuscation is not secrecy.
+  `show_domain_blocks_rationale` shows it to the viewer by the same rule, else null. The private comment is never shown.
+  The digest lets anyone test a guessed domain, as on Mastodon: obfuscation is not secrecy.
 - **The admin measures** (`src/domain/admin-measures.ts`), of which Fediblockhole reads `instance_follows` before a
   block stricter than silence, count rows by a walk that takes at most `MEASURE_ROWS` (20,000) raw candidates by one
   index (pending requests and accounts being deleted included), judged outside the walk (state, deletion, domain,
@@ -943,8 +923,8 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   and may set any severity whatever its parents' and children's blocks are.
 - **Host keys.** A URL's host is ruled as one key everywhere: lowercase, punycode, without the port and without every
   trailing dot, as `hostDomain` (`src/platform/domain-name.ts`) gives it in the Worker (the fetch policy and its
-  tickets, the inbox gate's actor host, the send-time check's inbox host) and `uriHostSql` (`src/domain/audience.ts`)
-  in SQL (an account's actor host, a recipient's host); a stored domain is compared without its trailing dots too. So
+  tickets, the inbox gate's actor host, the send-time check's inbox host) and `uriHostSql` (`src/domain/audience.ts`) in
+  SQL (an account's actor host, a recipient's host); a stored domain is compared without its trailing dots too. So
   `blocked.example..` is ruled as `blocked.example` on every path, and the URL keeps its spelling
   (`test/host-trailing-dots.test.ts`). Mastodon drops a single trailing dot
   ([mastodon-deviations.md](mastodon-deviations.md)).
@@ -964,9 +944,10 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   presentation reads the same rule with the row (`availableJoinedSql`). The notification rule (`shownSql`) reads
   coverage of the sender, of the status's author and its original's, and of the quoted status's author and its
   original's; the boost a reblog names is the sender's, and the status arm's status is the one the status term reads,
-  so neither walks again. The positioned home read (`homeStatus`) defines the coverage of the status's author and its
-  original's once, as columns of a derived table over the status's row (`statusReads`' `hoisted`), which SQLite copies
-  to each place the rule uses them and evaluates there, where it evaluated them before (the cursor rule below).
+  so neither walks again.
+  The positioned home read (`homeStatus`) defines the coverage of the status's author and its original's once, as
+  columns of a derived table over the status's row (`statusReads`' `hoisted`), which SQLite copies to each place the
+  rule uses them and evaluates there, where it evaluated them before (the cursor rule below).
 - **The domain job and its marks.** A write that moves the hosts a block's domain rules into or out of `suspend`
   coverage resets one `remote_moderation_jobs` row (kind `domain`) in its transaction, freezing the newest follow as its
   bound. Rounds reconcile the domain marks (`suspension_source = 'domain'`) with the live blocks; marks serve the
@@ -975,22 +956,22 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
     domain is now); a mark no block covers any more is cleared. A permitted refresh of a marked account
     (`upsertRemoteActor`, which stores only an uncovered account) clears its stale mark in its own transaction.
   - **mark** (only while a `suspend` block exists): every account by id, `MARK_WINDOW` (2,000) a round, the predicate
-    evaluated for each remote one. A covered account that is not individually suspended is marked if it is not yet,
-    and severed both ways up to the bound, marked or not: its follows of local accounts (an accepted one with a
-    withdrawing `Reject` to its personal inbox, a request deleted without one, as Mastodon's `DeleteAccountService`
-    purges `FollowRequest`s) and local accounts' follows and requests of it (each with its `Undo`), through
-    `severFollow` with the account job's preparation. Before a local follower's follow ends, the preparation removes
-    the account from that follower's lists, writing at most the round's room (257 rows,
-    `src/domain/remote-suspension.ts`) a round, so the follow's final delete writes no list row. Its reads are not
-    bounded the same way: each preparatory step, and the final delete's trigger (`list_members_follow_ended`), scans all
-    of the follower's lists, O(L) for L lists. That is the follower's own data, at most 50 lists through the API (always
-    removed in one round), and unbounded only for legacy lists a converted instance imported. At most `MARK_ACCOUNTS`
-    (100) accounts are reconciled a round, one resumed from the round before included. An individually suspended account
-    is skipped, so its local follows are kept (`account` wins; for Mastodon's rule, see
-    [mastodon-deviations.md](mastodon-deviations.md), remote suspension). **Limit (imported lists):** the memberships
-    are removed before the follow ends, and nothing restores them. A follower imported with more than 257 lists that
-    include a covered account needs several rounds for them; if the block is lifted meanwhile (an unblock, or a
-    conversion back to an individual suspension), the follow can survive with some of those list memberships removed.
+    evaluated for each remote one. A covered account that is not individually suspended is marked if it is not yet, and
+    severed both ways up to the bound, marked or not: its follows of local accounts (an accepted one with a withdrawing
+    `Reject` to its personal inbox, a request deleted without one, as Mastodon's `DeleteAccountService` purges
+    `FollowRequest`s) and local accounts' follows and requests of it (each with its `Undo`), through `severFollow` with
+    the account job's preparation. Before a local follower's follow ends, the preparation removes the account from that
+    follower's lists, writing at most the round's room (257 rows, `src/domain/remote-suspension.ts`) a round, so the
+    follow's final delete writes no list row. Its reads are not bounded the same way: each preparatory step, and the
+    final delete's trigger (`list_members_follow_ended`), scans all of the follower's lists, O(L) for L lists. That is
+    the follower's own data, at most 50 lists through the API (always removed in one round), and unbounded only for
+    legacy lists a converted instance imported. At most `MARK_ACCOUNTS` (100) accounts are reconciled a round, one
+    resumed from the round before included. An individually suspended account is skipped, so its local follows are kept
+    (`account` wins; for Mastodon's rule, see [mastodon-deviations.md](mastodon-deviations.md), remote suspension).
+    **Limit (imported lists):** the memberships are removed before the follow ends, and nothing restores them. A
+    follower imported with more than 257 lists that include a covered account needs several rounds for them; if the
+    block is lifted meanwhile (an unblock, or a conversion back to an individual suspension), the follow can survive
+    with some of those list memberships removed.
 
   No account is stored or moves into a covered domain, so the last walk after the last reset finds every covered
   account. Once the job ends, the domain marks (`suspension_source = 'domain'`; not their exact `suspended_at`) and
@@ -1034,16 +1015,15 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
 
 ### The send-time check (VIS-30)
 
-Each target also records the recipients behind it, so the check below can tell whose inbox it is: an inbox says
-nothing about the accounts it serves, and may be on another host than theirs. `recipientsFor` returns recipients (each
-one's id and the host of its actor id) rather than distinct inboxes, at most 34 per inbox: the first 17 by id and the
-first of each of the first 17 hosts, enough to tell either overflow. A follower or voter whose inbox is outside
-`reachInboxSql`'s rule comes with none, in a partition of its own that `targetsOf` drops, so it takes no place among an
-inbox's 34 and becomes no target. `targetsOf` merges them per inbox across
-followers, addressed accounts, silent recipients, poll voters and `reachOf` before deduplicating, keeping at most 17
-accounts and 17 hosts per target. A target lists up to 16 accounts and their hosts; above 16 accounts it is marked
-`many` ("not all unavailable"), and above 16 hosts it lists none. A target that also serves an inbox with unknown
-recipients (a retraction's earlier receivers) has none.
+Each target also records the recipients behind it, so the check below can tell whose inbox it is: an inbox says nothing
+about the accounts it serves, and may be on another host than theirs. `recipientsFor` returns recipients (each one's id
+and the host of its actor id) rather than distinct inboxes, at most 34 per inbox: the first 17 by id and the first of
+each of the first 17 hosts, enough to tell either overflow. A follower or voter whose inbox is outside `reachInboxSql`'s
+rule comes with none, in a partition of its own that `targetsOf` drops, so it takes no place among an inbox's 34 and
+becomes no target. `targetsOf` merges them per inbox across followers, addressed accounts, silent recipients, poll
+voters and `reachOf` before deduplicating, keeping at most 17 accounts and 17 hosts per target. A target lists up to 16
+accounts and their hosts; above 16 accounts it is marked `many` ("not all unavailable"), and above 16 hosts it lists
+none. A target that also serves an inbox with unknown recipients (a retraction's earlier receivers) has none.
 
 At the claim, and again at confirmation right before each POST (`confirmDelivery`; the RFC 9421 retry of a POST answered
 400 or 401 is confirmed again), a row that is not a retraction is dropped when:
@@ -1062,10 +1042,9 @@ serving only suspended recipients, is dropped; a shared inbox that also serves a
 suspended one is left out of the content's audience already). A row without provenance, or whose stored accounts
 `rowProvenanceSql` does not admit (TEXT of at most 337 bytes holding an array of at most 16 values; only an import
 stores another), gets the sender and inbox rules only. Retractions are never dropped. A recipient covered only through a
-stored domain that differs from the host
-its provenance lists counts as not covered at a shared inbox, as a mixed inbox does; a row without provenance to a
-gateway inbox for a blocked domain is judged by the gateway's host. The oracle's `sends` in `test/policy-model.ts`
-states the rule.
+stored domain that differs from the host its provenance lists counts as not covered at a shared inbox, as a mixed inbox
+does; a row without provenance to a gateway inbox for a blocked domain is judged by the gateway's host. The oracle's
+`sends` in `test/policy-model.ts` states the rule.
 
 #### Held handshakes
 
@@ -1095,13 +1074,13 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   (`kopje.delivery.reject_hold_capped`), the owner's own included while the account is saturated, and a slot a replay
   frees may go to any pair. The replay (`replayReject` in `handshake-replays.ts`) records the `Reject` again with its
   original id once, read live, both accounts are available and the follower's inbox is deliverable and uncovered; no
-  block rule applies, as a `Reject` goes to its whole audience. A stored identity that is not valid UTF-8 is never
-  sent: the item fails and parks (RES-5), and replays after a repair and the admin's retry. A hold ends with nothing
-  recorded when a follow of the pair is stored (`reject_replays_follow_stored`: the new generation gets its own
-  answer, which an older `Reject` would reach through the pair fallback), when the follower's `Undo` of a `Follow`
-  names its `Follow` id, is a Misskey pair id within its pair, or ends the pair's follow whose stored id the hold
-  names, compared in SQL (an import, whose triggers do not run, may keep the two together) (`cancelUndoneAnswers` in
-  `inbox.ts`), and when the follower is purged.
+  block rule applies, as a `Reject` goes to its whole audience. A stored identity that is not valid UTF-8 is never sent:
+  the item fails and parks (RES-5), and replays after a repair and the admin's retry. A hold ends with nothing recorded
+  when a follow of the pair is stored (`reject_replays_follow_stored`: the new generation gets its own answer, which an
+  older `Reject` would reach through the pair fallback), when the follower's `Undo` of a `Follow` names its `Follow` id,
+  is a Misskey pair id within its pair, or ends the pair's follow whose stored id the hold names, compared in SQL (an
+  import, whose triggers do not run, may keep the two together) (`cancelUndoneAnswers` in `inbox.ts`), and when the
+  follower is purged.
 - **Replayed.** A job family (`src/domain/handshake-replays.ts`, RES-5) takes a due hold at a time from either table, a
   due retry first (the earlier `due_at`), else the fresh hold with the earlier `check_at` (a held handshake before a
   held `Reject` on equal times, then the integer key), and reads a held handshake's follow as it is now: a local
@@ -1203,8 +1182,9 @@ with `reblog: null`, as the response to deleting a boost of an original the view
 A domain block is stored normalized (lowercase, punycode, no trailing dot: `blockedDomain` in
 `src/platform/domain-name.ts`, used by the API and by the cutover converter) and compared as it is with the account's
 normalized domain and actor host, so each check is two seeks of the `(account_id, domain)` index, however many domains
-the viewer blocks. A Store converted by an earlier release may hold a block with a trailing dot; migration
-`0003_domain_block_form` removes it, merging a row that then repeats a block of the same account.
+the viewer blocks.
+A Store converted by an earlier release may hold a block with a trailing dot; migration `0003_domain_block_form` removes
+it, merging a row that then repeats a block of the same account.
 
 ## The architecture test
 
