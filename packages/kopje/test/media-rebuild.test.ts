@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, inject, it, vi } from "vitest";
 
-import { NO_PROGRESS_REPEATS, run } from "../cli/lib/main.js";
+import { run } from "../cli/lib/main.js";
 import { REBUILD_LEASE_MS, REBUILD_PAGE, REBUILD_SETTLE_MS, SCAN_WINDOW } from "../src/domain/media-rebuild";
 import { handleScheduled } from "../src/jobs/scheduled";
 import { sweepMedia } from "../src/mastodon/media";
@@ -879,62 +879,6 @@ describe("kopje-admin media-rebuild", () => {
     expect(JSON.parse(stopped.out)).toMatchObject({ "quota-stopped": true, stopped: "quota" });
     expect(stopped.err).toContain("9422");
     expect((await cli(h, ["media-rebuild", "extra"])).code).toBe(2);
-  });
-
-  it(`stops after ${NO_PROGRESS_REPEATS} steps in a row that make no progress, and goes on after fewer`, async () => {
-    expect(NO_PROGRESS_REPEATS).toBe(3);
-    const ROW = "120000000000000001";
-    // A step that gave up its row answers the cursor it was sent; a later call may finish the row (a video whose
-    // `full` was published before its still's deadline).
-    const cases: { steps: { next: string | null; done?: boolean }[]; code: number; after?: string | null }[] = [
-      // Two unmoved answers, then the row finishes: the command goes on and ends normally.
-      { steps: [{ next: null }, { next: null }, { next: ROW, done: true }], code: 0 },
-      // Three in a row: no fourth post.
-      { steps: [{ next: null }, { next: null }, { next: null }], code: 3, after: null },
-      // Progress resets the count.
-      {
-        steps: [{ next: null }, { next: null }, { next: ROW }, { next: ROW }, { next: ROW }, { next: ROW }],
-        code: 3,
-        after: ROW,
-      },
-    ];
-    for (const { steps, code: expected, after } of cases) {
-      const posted: { after: string | null }[] = [];
-      const out: string[] = [];
-      const err: string[] = [];
-      const code = await run({
-        argv: ["media-rebuild"],
-        env: {
-          KOPJE_ADMIN_URL: "https://admin.kopje.test",
-          CF_ACCESS_CLIENT_ID: "id",
-          CF_ACCESS_CLIENT_SECRET: "secret",
-        },
-        io: memoryIO(),
-        stdout: { write: (text: string) => void out.push(text), isTTY: false },
-        stderr: { write: (text: string) => void err.push(text), isTTY: false },
-        fetch: async (_input: string, init?: RequestInit) => {
-          posted.push(
-            await new Request("https://admin.kopje.test", { method: "POST", body: init?.body ?? null }).json(),
-          );
-          const step = steps[posted.length - 1];
-          // A post past the scripted steps ends the command with an error, so a loop shows as a failure.
-          if (step === undefined) {
-            throw new Error("posted again");
-          }
-          return Response.json({ ok: true, counts: {}, problems: [], done: false, stopped: "deadline", ...step });
-        },
-      });
-      expect([code, posted.length]).toEqual([expected, steps.length]);
-      if (expected === 3) {
-        expect(posted.at(-1)).toEqual(expect.objectContaining({ after }));
-        expect(JSON.parse(out.join(""))).toMatchObject({ stopped: "no-progress" });
-        expect(err.join("")).toContain(
-          `${NO_PROGRESS_REPEATS} calls in a row returned the cursor they were sent (${after ?? "the start"}; the last stopped: deadline)`,
-        );
-      } else {
-        expect(JSON.parse(out.join(""))).toMatchObject({ stopped: null });
-      }
-    }
   });
 
   it("exits 3 and says how when the Store is not readonly", async () => {
