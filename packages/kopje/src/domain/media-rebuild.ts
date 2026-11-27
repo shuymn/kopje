@@ -69,8 +69,8 @@ export type RebuildAv = {
   small: { width: StoredScalar; height: StoredScalar } | null;
   blurhash: string | null;
 };
-// role: the row's own account names it as its header (`header`, also when it names it as its avatar too, so nothing
-// is cropped from the header) or as its avatar (`avatar`), which gives its files that image's shape
+// role: the row's own account, when local, names it as its header (`header`, also when it names it as its avatar too,
+// so nothing is cropped from the header) or as its avatar (`avatar`), which gives its files that image's shape
 // (platform/images.ts processImage); null for any other row.
 export type RebuildRow = {
   id: string;
@@ -137,7 +137,8 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
 				blurhash,
 				(SELECT CASE WHEN pa.header_url = media_attachments.url THEN 'header'
 						WHEN pa.avatar_url = media_attachments.url THEN 'avatar' END
-					FROM accounts pa INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE pa.id = media_attachments.account_id) AS role
+					FROM accounts pa INDEXED BY ${ACCOUNTS_ID_INDEX}
+					WHERE pa.id = media_attachments.account_id AND pa.domain IS NULL) AS role
 			FROM media_attachments WHERE ${ELIGIBLE} AND id > ? AND id <= ? ORDER BY id LIMIT ?`,
       SMALLEST_SMALL,
       iso(now),
@@ -404,18 +405,21 @@ export const recordRebuild = mediaRebuildOperation.atStoreTime("now")<
   return changed === 0 ? { status: "gone" } : { status: "ok" };
 });
 
-// The statics of the row ?1 (with token ?2) for its own account, probed by key: each of avatar_static_url and
-// header_static_url whose image is the row's URL becomes the row's still preview when its served file is animated (meta's
-// "animated", as recordRebuild wrote it), else NULL (the image itself), as profileAssignSql sets an upload's; the other
-// keeps its value. A preview URL 0061's trigger would refuse is not copied. Every URL is compared and copied within
-// SQL, byte for byte (RES-2, DATA-6).
+// The statics of the row ?1 (with token ?2) for its own account, probed by key, when that account is local
+// (`domain IS NULL`) and the row is not a custom emoji's: each of avatar_static_url and header_static_url whose image
+// is the row's URL becomes the row's still preview when its served file is animated (meta's "animated", as
+// recordRebuild wrote it) and its stored preview_url is the row's own (?3, the URL an upload of this token is given,
+// mediaUrl), else NULL (the image itself), as profileAssignSql sets an upload's; the other keeps its value. A preview
+// URL 0061's trigger would refuse is not copied. Every stored URL is compared and copied within SQL, byte for byte
+// (RES-2, DATA-6).
 const FINISH_REBUILD_SQL = `UPDATE accounts SET (avatar_static_url, header_static_url) = (
 		SELECT CASE WHEN accounts.avatar_url = m.url THEN still ELSE accounts.avatar_static_url END,
 			CASE WHEN accounts.header_url = m.url THEN still ELSE accounts.header_static_url END
-		FROM (SELECT url, CASE WHEN json_extract(meta, '$.animated') IS 1
+		FROM (SELECT url, CASE WHEN json_extract(meta, '$.animated') IS 1 AND preview_url = ?3
 				AND NOT (${staticUrlPastBoundSql("preview_url")}) THEN preview_url END AS still
 			FROM media_attachments INDEXED BY ${MEDIA_ID_INDEX} WHERE id = ?1) m)
-	WHERE id = (SELECT account_id FROM media_attachments INDEXED BY ${MEDIA_ID_INDEX} WHERE id = ?1 AND file_token = ?2)`;
+	WHERE id = (SELECT account_id FROM media_attachments INDEXED BY ${MEDIA_ID_INDEX} WHERE id = ?1 AND file_token = ?2)
+		AND domain IS NULL AND NOT EXISTS (SELECT 1 FROM custom_emojis e WHERE e.id = ?1)`;
 
 export type RebuildFinish =
   | { status: "ok" }
@@ -426,7 +430,8 @@ export type RebuildFinish =
 // Finishes an image row once both its files are written: the row must still be a candidate with this token, else
 // `gone` and nothing changes (the caller deletes the files again); then its own account's statics are set for the
 // images that name it (FINISH_REBUILD_SQL), so a rebuilt animated avatar or header shows its still preview as an
-// upload does, and never before its `small` is stored. It reads no restore marker: the lease it checks was taken under
+// upload does, and never before its `small` is stored. A custom emoji's row, and a row of a remote account (only an
+// import makes one), touch no account. It reads no restore marker: the lease it checks was taken under
 // the restore's fences (rebuildLease).
 export const finishRebuild = mediaRebuildOperation.atStoreTime("now")<
   { authority: ImportAuthority; holder: string; id: string; token: string; now: number },
@@ -439,17 +444,19 @@ export const finishRebuild = mediaRebuildOperation.atStoreTime("now")<
   if (!holds(db, holder, now)) {
     return { status: "lease-lost" };
   }
-  const live =
-    db.first(
-      `SELECT 1 AS found FROM media_attachments WHERE id = ? AND file_token = ? AND ${ELIGIBLE}`,
-      id,
-      token,
-      iso(now),
-    ) !== undefined;
-  if (!live) {
+  const live = db.first<{ contentType: string | null }>(
+    `SELECT content_type AS contentType FROM media_attachments WHERE id = ? AND file_token = ? AND ${ELIGIBLE}`,
+    id,
+    token,
+    iso(now),
+  );
+  if (live === undefined) {
     return { status: "gone" };
   }
-  db.run(FINISH_REBUILD_SQL, id, token);
+  const origin = URL.parse(ownerUri(db, id) ?? "")?.origin;
+  const preview =
+    origin === undefined || live.contentType === null ? null : mediaUrl(origin, token, "small", live.contentType);
+  db.run(FINISH_REBUILD_SQL, id, token, preview);
   return { status: "ok" };
 });
 

@@ -298,6 +298,57 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     }
   });
 
+  it.each(["emoji", "remote owner"])(
+    "rebuilds a row named as an avatar without touching the account for %s",
+    async (kind) => {
+      const h = await setup({ codec: shapedFramesCodec() });
+      if (kind === "remote owner") {
+        await sql(h.store, "UPDATE accounts SET domain = 'remote.test' WHERE id = ?", ACCOUNT);
+      }
+      const row = await addRow(h.store, { contentType: "image/webp", original: bytes(ANIMATED_WEBP) });
+      if (kind === "emoji") {
+        await sql(
+          h.store,
+          "INSERT INTO custom_emojis (id, shortcode, created_at) VALUES (?, 'avatar_emoji', '2026-10-12T00:00:00.000Z')",
+          row.id,
+        );
+      }
+      await nameImages(h.store, ACCOUNT, { avatar: row });
+      const response = await h.post(adminClaims(), "/admin/media/rebuild");
+      expect(response.status).toBe(200);
+      expect((await response.json<Step>()).counts).toMatchObject({ built: 1 });
+      expect(await files(row)).toEqual([true, true]);
+      // Built with no role (the animation's own 8×6), and its account's static left as it was.
+      expect(await meta(h.store, row.id)).toMatchObject({ original: { width: 8, height: 6 }, animated: true });
+      expect((await statics(h.store))[0]?.avatar_static_url).toBeNull();
+    },
+  );
+
+  it("writes both statics of an animated row both images name, and none for a preview URL not the row's own", async () => {
+    const h = await setup({ codec: shapedFramesCodec() });
+    const [second] = await localAccounts(h.store);
+    const both = await addRow(h.store, { contentType: "image/webp", original: bytes(ANIMATED_WEBP) });
+    const elsewhere = await addRow(h.store, {
+      contentType: "image/webp",
+      original: bytes(ANIMATED_WEBP),
+      account: second,
+    });
+    await sql(
+      h.store,
+      "UPDATE media_attachments SET preview_url = 'https://other.test/old.webp' WHERE id = ?",
+      elsewhere.id,
+    );
+    await nameImages(h.store, ACCOUNT, { avatar: both, header: both });
+    await nameImages(h.store, second, { avatar: elsewhere });
+    const step = await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>();
+    expect(step.counts).toMatchObject({ built: 2 });
+    const preview = `https://kopje.test/media/${both.token}/small.webp`;
+    expect((await statics(h.store)).slice(0, 2)).toEqual([
+      { id: ACCOUNT, avatar_static_url: preview, header_static_url: preview },
+      { id: second, avatar_static_url: null, header_static_url: null },
+    ]);
+  });
+
   it("leaves a profile row's account statics as they were when its preview's write fails", async () => {
     const bucket = {
       head: (key: string) => env.MEDIA.head(key),
@@ -420,20 +471,25 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     const h = await setup();
     const existing = await addRow(h.store, { files: true });
     const missing = await addRow(h.store);
-    // An avatar stored before profile images were shaped keeps its files and URL.
-    await nameImages(h.store, ACCOUNT, { avatar: existing });
+    // An avatar and a header stored before profile images were shaped keep their files and URLs.
+    const header = await addRow(h.store, { files: true });
+    await nameImages(h.store, ACCOUNT, { avatar: existing, header });
+    const named = await sql(h.store, "SELECT avatar_url, header_url FROM accounts WHERE id = ?", ACCOUNT);
     const first = await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>();
-    expect(first.counts).toMatchObject({ built: 1, "skipped-existing": 1 });
+    expect(first.counts).toMatchObject({ built: 1, "skipped-existing": 2 });
     expect(await meta(h.store, existing.id)).toMatchObject({ original: { width: 1, height: 1 } });
     const calls = h.codec.calls;
     const second = await (await h.post(adminClaims(), "/admin/media/rebuild")).json<Step>();
-    expect(second.counts).toMatchObject({ built: 0, "skipped-existing": 2 });
+    expect(second.counts).toMatchObject({ built: 0, "skipped-existing": 3 });
     expect(h.codec.calls).toBe(calls);
     expect(await files(missing)).toEqual([true, true]);
-    for (const variant of ["full", "small"]) {
-      const kept = await env.MEDIA.get(`files/${existing.token}/${variant}`);
-      expect(new Uint8Array(await kept!.arrayBuffer())).toEqual(bytes(PNG_PLAIN));
+    for (const row of [existing, header]) {
+      for (const variant of ["full", "small"]) {
+        const kept = await env.MEDIA.get(`files/${row.token}/${variant}`);
+        expect(new Uint8Array(await kept!.arrayBuffer())).toEqual(bytes(PNG_PLAIN));
+      }
     }
+    expect(await sql(h.store, "SELECT avatar_url, header_url FROM accounts WHERE id = ?", ACCOUNT)).toEqual(named);
   });
 
   it("leaves out remote, doomed and unfinished rows", async () => {
