@@ -1711,13 +1711,16 @@ describe("dump", () => {
       }
     }
 
-    // A dump of 0122 carries no thumbnail_of: a Store at 0123 refuses it, and one at its own migrations takes it and
-    // then upgrades with every row as it was and the column NULL.
+    // A dump of 0122 carries no thumbnail_of: a Store at 0123 or later refuses it, and one at its own migrations takes
+    // it and then upgrades through 0123 with every row as it was and the column NULL. 0123 is found by name, so later
+    // migrations leave the case as it is.
     it("refuses a dump of 0122 at 0123, and upgrades one restored at 0122 with every row kept", async () => {
       const { text } = await dumpViaRpc(await seeded(0));
       const header = splitDump(text).header as { migrations: { name: string }[] };
-      expect(header.migrations.at(-1)?.name).toBe("0123_media_thumbnails");
-      const at0122 = { ...header, migrations: header.migrations.slice(0, -1) };
+      const thumbnails = MIGRATION_NAMES.indexOf("0123_media_thumbnails");
+      expect(header.migrations[thumbnails]?.name).toBe("0123_media_thumbnails");
+      const at0122 = { ...header, migrations: header.migrations.slice(0, thumbnails) };
+      expect(at0122.migrations.at(-1)?.name).toMatch(/^0122_/);
       const target = await migratedStore();
       await ensureAdmin(target);
       expect(await target.importBegin(BUILD, ACCESS, at0122)).toMatchObject({ code: "migrations-differ" });
