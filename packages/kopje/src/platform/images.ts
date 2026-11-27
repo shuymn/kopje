@@ -285,7 +285,7 @@ export type ProcessResult =
 // caller's clock (an upload's thumbnail, whose waits are the route's); without it, inTime's. `guard`: runs the
 // inspection's info() and every call and read of both encodes (EncodeOptions guard), so an image made by a deadline
 // gives up each Images call at it (an upload's thumbnail, mastodon/media.ts); without it they run as they are. `role`:
-// the image is an avatar or a header, whose full image takes its role's shape (fullBox, checked by shapeProblem);
+// the image is an avatar or a header, whose full image takes its role's shape (fullEdge, checked by shapeProblem);
 // without it (an attachment, a thumbnail, a custom emoji) the full image only keeps within FULL_EDGE.
 type BlurhashOptions = { end: number; now: () => number; guard?: (until: number) => CallGuard };
 export type ImageRole = "avatar" | "header";
@@ -442,33 +442,26 @@ async function previewBlurhash(
   }
 }
 
-// The full image's transformation for an input of `size` (as info() reads it, before Images applies its orientation)
-// and `role`, and the long edge it is scaled down to (`edge`, null when it is not resized). Every box is a square, so
-// it bounds the long edge whichever way the image turns, and scale-down keeps the aspect:
-//   - an avatar: AVATAR_EDGE square, cover (cropped around the centre, a smaller image enlarged);
-//   - a header past HEADER_PIXELS: the square whose side is the long edge of Mastodon's box (PixelGeometryParser,
-//     vips_lazy_thumbnail.rb:13-19, sqrt(pixels × long / short) rounded), at most FULL_EDGE;
-//   - otherwise: FULL_EDGE square when the long edge passes it, else no resize.
-function fullBox(
-  size: Size,
-  role: ImageRole | undefined,
-): { resize: Pick<EncodeOptions, "width" | "height" | "fit">; edge: number | null } {
+// The long edge the full image of an input of `size` (as info() reads it, before Images applies its orientation) and
+// `role` is scaled to, asked for as a square box (null: not resized). Images applies the orientation before it
+// resizes, so a square bounds the long edge whichever way the image turns, and scale-down keeps the aspect:
+//   - an avatar: AVATAR_EDGE, with cover (cropped around the centre, a smaller image enlarged);
+//   - a header past HEADER_PIXELS: the long edge of Mastodon's box (PixelGeometryParser, vips_lazy_thumbnail.rb:13-19,
+//     sqrt(pixels × long / short) rounded), at most FULL_EDGE;
+//   - otherwise: FULL_EDGE when the long edge passes it, else none.
+function fullEdge(size: Size, role: ImageRole | undefined): number | null {
   if (role === "avatar") {
-    return { resize: { width: AVATAR_EDGE, height: AVATAR_EDGE, fit: "cover" }, edge: AVATAR_EDGE };
+    return AVATAR_EDGE;
   }
   const long = Math.max(size.width, size.height);
-  const short = Math.min(size.width, size.height);
   if (role === "header" && size.width * size.height > HEADER_PIXELS) {
-    const edge = Math.min(FULL_EDGE, Math.round(Math.sqrt((HEADER_PIXELS * long) / short)));
-    return { resize: { width: edge, height: edge }, edge };
+    return Math.min(FULL_EDGE, Math.round(Math.sqrt((HEADER_PIXELS * long) / Math.min(size.width, size.height))));
   }
-  return long > FULL_EDGE
-    ? { resize: { width: FULL_EDGE, height: FULL_EDGE }, edge: FULL_EDGE }
-    : { resize: {}, edge: null };
+  return long > FULL_EDGE ? FULL_EDGE : null;
 }
 
 // Whether a profile image's full output of `full` is not of its role's shape for an input of `size` and the box's
-// `edge` (fullBox), over the edges sorted long and short so a rotation does not matter: an avatar exactly AVATAR_EDGE
+// `edge` (fullEdge), over the edges sorted long and short so a rotation does not matter: an avatar exactly AVATAR_EDGE
 // square; a header scaled down with its long edge E - 1 to E and its short edge within one pixel of the input's ratio
 // (Images and Mastodon round the short side differently); a header not resized at the input's own size.
 function shapeProblem(role: ImageRole, size: Size, edge: number | null, full: Size): boolean {
@@ -523,17 +516,18 @@ export async function processImage(
   const format = OUTPUT[type];
   const { role } = options;
   try {
-    // Images applies the input's Exif orientation before it resizes, so every box is a square (fullBox); `full` has
-    // the size Images served, which a profile image's role checks (shapeProblem).
-    const box = fullBox(original, role);
+    // `full` has the size Images served, which a profile image's role checks (shapeProblem).
+    const edge = fullEdge(original, role);
+    const resize: Pick<EncodeOptions, "width" | "height" | "fit"> =
+      edge === null ? {} : { width: edge, height: edge, ...(role === "avatar" ? { fit: "cover" as const } : {}) };
     const made = async (still: boolean): Promise<EncodedImage> => {
       const encoded = await encodeChecked(codec, bytes, {
-        ...box.resize,
+        ...resize,
         format,
         ...(still ? { still: true as const } : {}),
         ...guard,
       });
-      if (role !== undefined && shapeProblem(role, original, box.edge, encoded)) {
+      if (role !== undefined && shapeProblem(role, original, edge, encoded)) {
         throw new ImageOutputError(`output is not of the ${role}'s shape`, true);
       }
       return encoded;
@@ -570,11 +564,10 @@ export async function processImage(
         : await encodeChecked(codec, full.bytes, { ...preview, format, still: true, ...guard });
     // A profile image's preview is its static (avatar_static, header_static), held to its shape too: an avatar's
     // AVATAR_EDGE square, a header's full image scaled down within SMALL_EDGE (not resized when the full image is
-    // within it), checked as the full image is. A preview not of it fails the image, the fallback's included.
-    if (role !== undefined) {
-      if (shapeProblem(role, full, previewEdge, small)) {
-        throw new ImageOutputError(`preview is not of the ${role}'s shape`);
-      }
+    // within it), checked as the full image is. A preview not of it fails the image, the fallback's included; an
+    // avatar's fallback reuses its full image, already checked.
+    if (role !== undefined && small !== full && shapeProblem(role, full, previewEdge, small)) {
+      throw new ImageOutputError(`preview is not of the ${role}'s shape`);
     }
     const hashed =
       options.blurhash === undefined || (fellBack && role === "header")

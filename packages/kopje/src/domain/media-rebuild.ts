@@ -1,16 +1,18 @@
 import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import type { ImageRole } from "../platform/images";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import { type Marker, restoreTime } from "../platform/restore-marker";
 import type { ImportAuthority } from "../platform/store-admin";
 import { PITR_RESTORING, PITR_RESTORING_MS, REBUILD_LEASE } from "../platform/store-flags";
-import { MEDIA_META_BYTES, staticUrlPastBoundSql, storedBlurhash } from "../platform/stored-bounds";
+import { MEDIA_META_BYTES, storedBlurhash } from "../platform/stored-bounds";
 import { accessAdminRefusal } from "./admin-authority";
 import {
   chargeInstanceTransforms,
   chargeUploadJob,
   ownerUri,
+  profileStaticSql,
   uploadJobFits,
   TRANSFORMS_PER_EMOJI,
   TRANSFORMS_PER_UPLOAD,
@@ -77,7 +79,7 @@ export type RebuildRow = {
   token: string;
   contentType: string | null;
   emoji: boolean;
-  role: "avatar" | "header" | null;
+  role: ImageRole | null;
   av: RebuildAv | null;
 };
 
@@ -114,8 +116,7 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
   if (last === undefined) {
     return { rows: [], next: after, done: true };
   }
-  type Listed = Omit<RebuildRow, "emoji" | "av" | "role"> & {
-    role: string | null;
+  type Listed = Omit<RebuildRow, "emoji" | "av"> & {
     emoji: number;
     kind: "video" | "audio" | null;
     preview: number;
@@ -150,8 +151,7 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
       ...row,
       emoji: emoji === 1,
       // An emoji's row has no role, whatever names it (it is built under the emoji limits).
-      role:
-        emoji === 1 ? null : role === "header" ? ("header" as const) : role === "avatar" ? ("avatar" as const) : null,
+      role: emoji === 1 ? null : role,
       av:
         kind === null
           ? null
@@ -409,16 +409,14 @@ export const recordRebuild = mediaRebuildOperation.atStoreTime("now")<
 
 // The statics of the row ?1 (with token ?2) for its own account, probed by key, when that account is local
 // (`domain IS NULL`) and the row is not a custom emoji's: each of avatar_static_url and header_static_url whose image
-// is the row's URL becomes ?3 when the row's served file is animated (meta's "animated", as recordRebuild wrote it),
-// else NULL (the image itself); the other keeps its value. ?3 is the URL of the still the rebuild just wrote, as an
-// upload of this token is given it (finishRebuild), never the stored preview_url, which a conversion may have spelled
-// with another origin. A static 0061's trigger would refuse is not written. The images' URLs are compared within SQL,
-// byte for byte (RES-2, DATA-6).
+// is the row's URL becomes its static (profileStaticSql of ?3); the other keeps its value. ?3 is the URL of the still
+// the rebuild just wrote, as an upload of this token is given it (finishRebuild), never the stored preview_url, which a
+// conversion may have spelled with another origin. The images' URLs are compared within SQL, byte for byte (RES-2,
+// DATA-6).
 const FINISH_REBUILD_SQL = `UPDATE accounts SET (avatar_static_url, header_static_url) = (
 		SELECT CASE WHEN accounts.avatar_url = m.url THEN still ELSE accounts.avatar_static_url END,
 			CASE WHEN accounts.header_url = m.url THEN still ELSE accounts.header_static_url END
-		FROM (SELECT url, CASE WHEN json_extract(meta, '$.animated') IS 1
-				AND NOT (${staticUrlPastBoundSql("?3")}) THEN ?3 END AS still
+		FROM (SELECT url, ${profileStaticSql("meta", "?3")} AS still
 			FROM media_attachments INDEXED BY ${MEDIA_ID_INDEX} WHERE id = ?1) m)
 	WHERE id = (SELECT account_id FROM media_attachments INDEXED BY ${MEDIA_ID_INDEX} WHERE id = ?1 AND file_token = ?2)
 		AND domain IS NULL AND NOT EXISTS (SELECT 1 FROM custom_emojis e WHERE e.id = ?1)`;
