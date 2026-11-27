@@ -170,6 +170,8 @@ describe("verifyRemoteImage: the pixel gates of the GIF and AVIF walks (REMOTE_I
     };
     expect(refusal(frame(4096, 4096))).toBe("accepted");
     expect(refusal(frame(4096, 4097))).toBe("pixels");
+    // The largest frame a GIF can state, whose area overflows a signed 32-bit product.
+    expect(refusal(frame(0xffff, 0xffff))).toBe("pixels");
   });
 
   it("refuses an AVIF whose later ispe is past the limit, its first one small, and keeps one at it", async () => {

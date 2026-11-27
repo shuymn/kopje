@@ -393,10 +393,10 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
       },
     }) as unknown as R2Bucket;
 
-  it("builds two rows, stops past the call's time budget, and the next call builds the rest", async () => {
+  it("builds two rows a call, stopping past each call's time budget, until the rows are built", async () => {
     const h = await setup();
     const rows: Row[] = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 5; i++) {
       rows.push(await addRow(h.store));
     }
     let clock = NOW;
@@ -412,13 +412,16 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     });
     const call = budgetCall(h, () => clock, { bucket });
     expect(REBUILD_CALL_BUDGET_MS).toBe(120_000);
-    // 70 seconds after the first row the budget is not spent; 140 seconds after the second it is. The second call's
-    // budget starts again: it builds two rows too.
+    // 70 seconds after the first row the budget is not spent; 140 seconds after the second it is. Each call's budget
+    // starts again, a resumed one's too: the second call also stops after two rows, and a third builds the last.
     const first = await call(null);
     expect(first).toMatchObject({ ok: true, done: false, stopped: null, next: rows[1]?.id, counts: { built: 2 } });
     expect(await files(rows[2]!)).toEqual([false, false]);
     const second = await call(first.ok ? first.next : null);
-    expect(second).toMatchObject({ ok: true, done: true, stopped: null, counts: { built: 2 } });
+    expect(second).toMatchObject({ ok: true, done: false, stopped: null, next: rows[3]?.id, counts: { built: 2 } });
+    expect(await files(rows[4]!)).toEqual([false, false]);
+    const third = await call(second.ok ? second.next : null);
+    expect(third).toMatchObject({ ok: true, done: true, stopped: null, counts: { built: 1 } });
     for (const row of rows) {
       expect(await files(row)).toEqual([true, true]);
       expect(puts.get(`files/${row.token}/small`)).toBe(1);

@@ -439,14 +439,25 @@ describe("POST /api/v2/media", () => {
     expect((await upload(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS)))).status).toBe(422);
   });
 
-  // Mastodon's MAX_MATRIX_LIMIT (attachmentable.rb:8): a real PNG at it, read by the local binding, and one pixel past
-  // it as info() reads it (RES-1).
+  // Mastodon's MAX_MATRIX_LIMIT (attachmentable.rb:8): real PNGs at it and one column past it, read by the local
+  // binding, and one pixel past it as info() reads it (RES-1).
   it("takes an image of 33,177,600 pixels and refuses one more", async () => {
     expect(IMAGE_MATRIX_LIMIT).toBe(7680 * 4320);
     const h = await users();
     const at = await uploaded(h, h.users.alice, mediaForm(await pngOf(7680, 4320), {}, "at.png", "image/png"));
     expect(at.meta).toMatchObject({ original: { width: 3840, height: 2160 }, small: { width: 640, height: 360 } });
     expect(h.codec.encodeCalls[0]).toEqual({ width: 3840, height: 3840, format: "image/png" });
+    // A real PNG one column past it: refused from the one info(), with no output.
+    const past = await users();
+    const response = await upload(
+      past,
+      past.users.alice,
+      mediaForm(await pngOf(7681, 4320), {}, "past.png", "image/png"),
+    );
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: "Validation failed: File dimensions exceed 33177600 pixels" });
+    expect(past.codec.infoCalls).toBe(1);
+    expect(past.codec.encodeCalls).toEqual([]);
     const one = await users();
     one.codec.infoResult = { format: "image/jpeg", width: IMAGE_MATRIX_LIMIT + 1, height: 1 };
     const over = await upload(one, one.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));
