@@ -293,24 +293,22 @@ function contentTypeProblems(kind: ProfileImage): Problem[] {
   ];
 }
 
-// The avatar and header of a credentials form, checked as Paperclip validates them before anything is reserved, each
-// problem as Paperclip adds it (the content type's, then the size's: attachment_size_validator.rb adds less_than to the
-// image and then to its file size). Each is a file part, or a text value that is a base64 data URI, decoded as
-// Paperclip's adapter decodes it (platform/data-uri.ts) within the request's text bound (RES-1); any other non-empty
-// text value is 'string' (Paperclip has no handler for it: 400). An empty value reads as absent. Only a file part's
-// first bytes are read.
+// The avatar and header of a credentials form, each a file part or a base64 data URI (platform/data-uri.ts), checked
+// as Paperclip validates them before anything is reserved, each problem as Paperclip adds it (the content type's, then
+// the size's: attachment_size_validator.rb adds less_than to the image and then to its file size); or 'string' for any
+// other non-empty text value (Paperclip has no handler for it: 400). An empty value reads as absent.
 export async function profileFiles(
   p: Params,
-): Promise<{ images: Partial<Record<ProfileImage, File>>; problems: ImageProblems } | "string"> {
-  const images: Partial<Record<ProfileImage, File>> = {};
+): Promise<{ images: Partial<Record<ProfileImage, Blob>>; problems: ImageProblems } | "string"> {
+  const images: Partial<Record<ProfileImage, Blob>> = {};
   const problems: Record<ProfileImage, Problem[]> = { avatar: [], header: [] };
   for (const kind of PROFILE_IMAGES) {
     const text = p.get(kind) ?? "";
-    const payload = text === "" ? undefined : base64DataUriPayload(text);
+    const payload = base64DataUriPayload(text);
     if (text !== "" && payload === undefined) {
       return "string";
     }
-    const file = payload === undefined ? p.file(kind) : new File([decodeRubyBase64(text, payload)], kind);
+    const file = payload === undefined ? p.file(kind) : new Blob([decodeRubyBase64(text, payload)]);
     if (file === undefined) {
       continue;
     }
@@ -341,7 +339,7 @@ export async function storeProfileImages(
   c: UploadContext,
   deps: ApiDeps,
   credential: () => UserCredential,
-  images: Partial<Record<ProfileImage, File>>,
+  images: Partial<Record<ProfileImage, Blob>>,
   owned: ProfileUpload[],
 ): Promise<ProfileImages | Failure | Problem[]> {
   const ids: ProfileImages = {};
