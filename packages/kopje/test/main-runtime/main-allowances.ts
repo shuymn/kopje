@@ -11,6 +11,17 @@ export const ROW_ALLOWANCES: Readonly<Record<string, { readonly rows: number; re
     rows: 2,
     reason: "#1582 D4: the for_bots key lookup; D5: the for_limited_accounts key lookup of a limited notification",
   },
+  // The status presenter's rows (status-rows.ts STATUS_COLUMN_MAP), by id and by key.
+  "8b44729707a6c0d5": {
+    rows: 1,
+    reason:
+      "#1560: author_media_rejected's and media_rejected's guard (REJECT_MEDIA_BLOCKS_SQL, src/domain/audience.ts), one read of its partial index per statement",
+  },
+  b07f16bdb57732ff: {
+    rows: 1,
+    reason:
+      "#1560: author_media_rejected's and media_rejected's guard (REJECT_MEDIA_BLOCKS_SQL, src/domain/audience.ts), one read of its partial index per statement",
+  },
   // accountRowsOf (src/domain/accounts.ts).
   "1ac3d537002ad41f": {
     rows: 1,

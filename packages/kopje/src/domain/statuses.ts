@@ -1,6 +1,7 @@
 import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { hostDomain } from "../platform/domain-name";
 import { ACTOR_URI_LIMIT, STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { iso } from "../platform/iso-time";
 import { railsBlank } from "../platform/rails-blank";
@@ -91,6 +92,7 @@ import {
   type VisibleStatusId,
   viewableStatusId,
   removalBegunSql,
+  presentedMediaRejectedSql,
 } from "./audience";
 import {
   optionalUserReadOperation,
@@ -151,8 +153,9 @@ import {
   presentStatusesWithin,
   type Status,
   statusStream,
+  withheldMedia,
 } from "./status-presenter";
-import { MEDIA_COLUMN_MAP, shownMediaSql } from "./status-rows";
+import { MEDIA_COLUMN_MAP, ownerMediaRejectedSql, shownMediaSql } from "./status-rows";
 import {
   blankText,
   exceedsRawLength,
@@ -1048,13 +1051,26 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
 // blurhash judged again as decoded, as live media are (presentedMediaUrl, presentedMediaDescription, storedBlurhash):
 // an imported snapshot may hold any text. A playable one's preview_url is judged again too (playablePreview, with
 // VIDEO_POSTER on `origin`): a snapshot recorded by an earlier release gave a video or audio file without a preview
-// image the file itself as its preview.
-function snapshotMedia(json: string, origin: string | null): MediaAttachment[] {
-  return (JSON.parse(json) as MediaAttachment[]).map((media) => {
+// image the file itself as its preview. #1560: an entry is withheld (withheldMedia) while a domain block's reject_media
+// rules its owner: the owner of the current attachment of the status its id names (`owners`, that row's verdict, null
+// for the author's own), else the author (`authorRejected`). A withheld entry without a remote_url (a converted
+// version's, cli/lib/cutover/convert.js) takes its stored http(s) url for it, with a known origin, unless that url is on
+// the instance's own domain (hostDomain, whatever its spelling). editMediaSql's proxy_id is never presented.
+function snapshotMedia(
+  json: string,
+  origin: string | null,
+  verdicts: { authorRejected: boolean; owners: ReadonlyMap<string, number | null> } = {
+    authorRejected: false,
+    owners: new Map(),
+  },
+): MediaAttachment[] {
+  const instanceDomain = origin === null ? null : hostDomain(origin);
+  return (JSON.parse(json) as (MediaAttachment & { proxy_id?: number })[]).map((entry) => {
+    const { proxy_id: proxyId, ...media } = entry;
     const url = presentedMediaUrl(media.url);
     const remoteUrl = presentedMediaUrl(media.remote_url);
     const preview = presentedMediaUrl(media.preview_url);
-    return {
+    const shown = {
       ...media,
       url,
       preview_url: isPlayable(media.type) ? playablePreview(media.type, url, preview, remoteUrl, origin) : preview,
@@ -1063,6 +1079,18 @@ function snapshotMedia(json: string, origin: string | null): MediaAttachment[] {
       description: presentedMediaDescription(media.description),
       blurhash: storedBlurhash(media.blurhash),
     };
+    const live = typeof media.id === "string" && verdicts.owners.has(media.id);
+    const owner = live ? (verdicts.owners.get(media.id) ?? null) : null;
+    if (!(owner === 1 || (owner === null && verdicts.authorRejected))) {
+      return shown;
+    }
+    const fallback =
+      remoteUrl === null && url !== null && instanceDomain !== null && hostDomain(url) !== instanceDomain ? url : null;
+    return withheldMedia(
+      { ...shown, remote_url: remoteUrl ?? fallback, ...(proxyId === undefined ? {} : { proxy_id: proxyId }) },
+      origin,
+      { live, page: false },
+    );
   });
 }
 
@@ -1866,12 +1894,20 @@ const NEWEST_EDIT_IDS_SQL = `SELECT CAST(e.id AS TEXT) AS id FROM status_edits e
 const OLDER_EDIT_IDS_SQL = `SELECT CAST(e.id AS TEXT) AS id FROM status_edits e INDEXED BY status_edits_status
 	WHERE e.status_id = ?1 AND e.id < CAST(?3 AS INTEGER) ORDER BY e.id DESC LIMIT ?2`;
 
+// #1560: the status author's reject_media verdict (presentedMediaRejectedSql), read once per history.
+const AUTHOR_MEDIA_REJECTED_SQL = `SELECT ${presentedMediaRejectedSql("au")} AS rejected
+	FROM statuses s INDEXED BY ${STATUSES_ID_INDEX} CROSS JOIN accounts au INDEXED BY ${ACCOUNTS_ID_INDEX}
+		ON au.id = s.account_id
+	WHERE s.id = ?1`;
+
 export function editVersions(
   db: Db,
   statusId: string,
   origin: string | null,
 ): { count: number; newestFirst: Iterable<EditVersion | undefined> } {
   const count = db.first<{ n: number }>(EDIT_COUNT_SQL, statusId)?.n ?? 0;
+  const authorRejected =
+    count > 0 && db.first<{ rejected: number }>(AUTHOR_MEDIA_REJECTED_SQL, statusId)?.rejected === 1;
   function* ids(): Generator<string> {
     let last: string | null = null;
     for (;;) {
@@ -1898,11 +1934,21 @@ export function editVersions(
         poll_options: string | null;
         created_at: string;
         emojis: string | null;
+        owners: string | null;
       }>(
-        `SELECT content, ${spoilerReadSql("spoiler_text")} AS spoiler_text, sensitive,
+        // owners: of each entry whose id names a current attachment of the status (sought by its key, at most
+        // MAX_STATUS_MEDIA), that row's owner verdict (ownerMediaRejectedSql: null for the author's own row).
+        `WITH x AS MATERIALIZED (SELECT content, ${spoilerReadSql("spoiler_text")} AS spoiler_text, sensitive,
 					${editMediaSql("media_json")} AS media_json, poll_options, created_at, emojis
-				FROM status_edits WHERE id = CAST(? AS INTEGER)`,
+				FROM status_edits WHERE id = CAST(?1 AS INTEGER))
+				SELECT x.content, x.spoiler_text, x.sensitive, x.media_json, x.poll_options, x.created_at, x.emojis,
+					(SELECT json_group_array(json_array(m.id, ${ownerMediaRejectedSql("m")}))
+						FROM json_each(x.media_json) e
+						CROSS JOIN media_attachments m INDEXED BY ${MEDIA_ID_INDEX} ON m.id = e.value ->> '$.id'
+						WHERE m.status_id = ?2) AS owners
+				FROM x`,
         editId,
+        statusId,
       );
       yield edit === undefined
         ? undefined
@@ -1912,8 +1958,11 @@ export function editVersions(
             sensitive: edit.sensitive === 1,
             created_at: edit.created_at,
             poll: editPollOf(edit.poll_options),
-            media_attachments: snapshotMedia(edit.media_json, origin),
-            emojis: presentEmojis(edit.emojis, STATUS_EMOJIS_BYTES),
+            media_attachments: snapshotMedia(edit.media_json, origin, {
+              authorRejected,
+              owners: new Map(JSON.parse(edit.owners ?? "[]") as [string, number | null][]),
+            }),
+            emojis: authorRejected ? [] : presentEmojis(edit.emojis, STATUS_EMOJIS_BYTES),
           };
     }
   }

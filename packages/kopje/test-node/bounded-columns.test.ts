@@ -381,6 +381,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "guardedAccountCoveredSql",
   "hostMediaRejectedSql",
   "presentedMediaRejectedSql",
+  // An attachment's owner's reject_media verdict, or NULL for its status's author's own: a number (domain/status-rows.ts).
+  "ownerMediaRejectedSql",
   // A status's filter text figure: whether an input is not text (a predicate) and an upper bound of its length from
   // stored bytes, a number (domain/status-presenter.ts).
   "filterOddInputsSql",
@@ -558,6 +560,8 @@ const COLLECTION =
 
 const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/trends.ts interpolation TREND_OBSERVED_MAX": { count: 2, reason: NUMBER },
+  // editMediaSql's proxy_id: whether a snapshot entry's raw id is within SNAPSHOT_KEY_LIMIT bytes (#1560), a number.
+  "src/domain/status-bounds.ts interpolation SNAPSHOT_KEY_LIMIT": { count: 1, reason: NUMBER },
   "src/domain/status-presenter.ts interpolation MAX_FILTER_TEXT": {
     count: 1,
     reason: "a number constant (the filter text cap of a status), naming no column",

@@ -1,4 +1,4 @@
-import { balancedSum, type ColumnMap, fixedColumns, type FixedColumns, rowHeapSql } from "../db/columns";
+import { balancedSum, type ColumnMap, fixedColumns, type FixedColumns, fixedNumeric, rowHeapSql } from "../db/columns";
 import {
   ACCOUNTS_ID_INDEX,
   COLLECTIONS_ID_INDEX,
@@ -36,7 +36,13 @@ import {
 } from "../platform/stored-bounds";
 import { ACCOUNT_COLUMN_MAP, LOCAL_ROW_JOIN, MOVED_ACCOUNT_COLUMNS } from "./account-columns";
 import { ADMIN_EMAIL_COLUMNS, LOCAL_EMAIL_COLUMNS, OAUTH_ADMIN_HEAP_SQL } from "./admin-authority";
-import { FEATURE_APPROVAL_COLUMNS, QUOTE_APPROVAL_COLUMNS, QUOTE_READ_COLUMNS, quotedStatusIdSql } from "./audience";
+import {
+  FEATURE_APPROVAL_COLUMNS,
+  presentedMediaRejectedSql,
+  QUOTE_APPROVAL_COLUMNS,
+  QUOTE_READ_COLUMNS,
+  quotedStatusIdSql,
+} from "./audience";
 import { ITEM_COLUMNS, TAG_REFERENCE_COLUMNS, TAGGED_COLLECTION_COLUMNS } from "./collection-presenter";
 import { INSTANCE_DOMAIN_COLUMNS, INSTANCE_DOMAIN_FROM } from "./instance-domain";
 import { thumbnailOfSql } from "./media-thumbnails";
@@ -102,6 +108,9 @@ export const STATUS_COLUMN_MAP = {
   // its raw bounds (stored-bounds.ts appNameSql, appWebsiteSql); none for a remote author's, whose key is absent.
   application_name: `CASE WHEN au.domain IS NULL THEN ${appNameSql("ap.name")} END`,
   application_website: `CASE WHEN au.domain IS NULL THEN ${appWebsiteSql("ap.website")} END`,
+  // #1560: whether a domain block's reject_media withholds the author's media (audience.ts presentedMediaRejectedSql):
+  // the status's emoji and the attachments it owns.
+  author_media_rejected: fixedNumeric(presentedMediaRejectedSql("au")),
 } as const satisfies ColumnMap;
 
 // Each status's app, by key: a status whose id names no app (none, or one removed) reads none.
@@ -154,6 +163,18 @@ export const MEDIA_COLUMN_MAP = {
   thumbnail_blurhash: thumbnailOfSql("m", "blurhash"),
 } as const satisfies ColumnMap;
 
+// #1560: the reject_media verdict of the attachment `m`'s owner (presentedMediaRejectedSql), or NULL when the owner is
+// its status's author, whose verdict the status row already holds (author_media_rejected): ownership is compared by key
+// before any owner is read, so a row Kopje wrote (each remote attachment is its author's,
+// remote-statuses.ts writeMedia) costs one seek and no walk, and an imported row of another owner one walk.
+export function ownerMediaRejectedSql(m: string): string {
+  return `CASE WHEN ${m}.account_id = (SELECT os.account_id FROM statuses os INDEXED BY ${STATUSES_ID_INDEX}
+			WHERE os.id = ${m}.status_id)
+		THEN NULL
+		ELSE (SELECT ${presentedMediaRejectedSql("md")} FROM accounts md INDEXED BY ${ACCOUNTS_ID_INDEX}
+			WHERE md.id = ${m}.account_id) END`;
+}
+
 // The presenter's media: each attachment with its status and position, which order a status's at most
 // MAX_STATUS_MEDIA attachments in JavaScript (no sort over the chunk's payload in SQLite), and the cached copies of a
 // remote attachment's file and icon (stored-bounds.ts mediaCacheSql), packed, or NULL.
@@ -163,6 +184,7 @@ export const STATUS_MEDIA_COLUMN_MAP = {
   cached_preview: mediaCacheSql("m", "thumbnail"),
   status_id: "m.status_id",
   position: "m.position",
+  owner_media_rejected: fixedNumeric(ownerMediaRejectedSql("m")),
 } as const satisfies ColumnMap;
 
 // The shown attachments of the status `id`, at most MAX_STATUS_MEDIA, through media_attachments_status.

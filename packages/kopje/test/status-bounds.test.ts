@@ -140,6 +140,7 @@ import { setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { acceptQuote } from "./budget-helpers";
 import { maximalCollections } from "./collection-maxima";
+import { blockDomain } from "./domain-block-helpers";
 import {
   ACCOUNT_EMOJIS_FULL,
   accountAtCap,
@@ -3498,6 +3499,47 @@ describe("the table of maxima (RES-3)", () => {
         expect(size).toBeLessThanOrEqual(ANSWER_BYTES);
       }
       console.info(`Store RPC, ${fill}: the boost of a quote ${sizes[0]}, the lookup ${sizes[1]} JSON bytes`);
+    },
+    120_000,
+  );
+
+  // #1560, VIS-30: the maximal fixture's authors sit on a domain past the DNS bound, which no block rules, so they are
+  // moved to one a reject_media block rules. Each withheld attachment's media_proxy URLs are built from its id alone,
+  // so every media string stays within its JSON bound and the answer within the one presented before the block.
+  it.each<[string, Fill]>([
+    ["escaped", "escaped"],
+    ["raw", "raw"],
+  ])(
+    "keeps a withheld status within the media maxima, %s",
+    async (_name, fill) => {
+      const { t, boost } = await maximalStatuses(fill);
+      const input = {
+        credential: { ...(await credential(t)), scope: "read" as const },
+        now: NOW,
+        present: { origin: ORIGIN },
+        id: boost,
+      };
+      const answer = async () => {
+        const one = await t.store.getStatus(BUILD, input);
+        expect(one.status === "ok" && one.value.status === "ok").toBe(true);
+        return one;
+      };
+      const before = jsonBytes(await answer());
+      await sql(t.store, "UPDATE accounts SET domain = 'rejected.example' WHERE domain = ?", HOST);
+      await blockDomain(t.store, "rejected.example", "noop", { rejectMedia: true });
+      const after = await answer();
+      const shown = presentedMedia(after);
+      expect(shown).toHaveLength(2 * MAX_STATUS_MEDIA);
+      for (const media of shown) {
+        expect(media.type).toBe("unknown");
+        expect(media.url).toBe(`${ORIGIN}/media_proxy/${String(media.id)}/original`);
+        for (const key of MEDIA_STRINGS) {
+          expect(jsonBytes(media[key])).toBeLessThanOrEqual(
+            key === "blurhash" ? BLURHASH_JSON_MAX : MEDIA_URL_JSON_BYTES,
+          );
+        }
+      }
+      expect(jsonBytes(after)).toBeLessThanOrEqual(before);
     },
     120_000,
   );

@@ -897,7 +897,14 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   account whose stored domain it rules, from the block's commit and whatever is cached (`presentedMediaRejectedSql`,
   read in each presented account row's own query, #1560): the Account entity, its `moved` (judged by the target's own
   domain) and a grouped notification's partial account show the default avatar and header and no emoji, the display
-  name's shortcodes as text, as Mastodon shows an account whose images it never downloaded; a stored domain past
+  name's shortcodes as text, as Mastodon shows an account whose images it never downloaded. Its statuses, in every
+  presented shape (a boost's original, a quote either way, a poll, the edit history), show no emoji and each attachment
+  it owns as Mastodon shows one it never downloaded: `type` `unknown`, `url` and `preview_url` on the instance's
+  `/media_proxy/<id>/original` and `/small` (which answer 404), `remote_url` and `preview_remote_url` as stored, the
+  texts, meta and stored blurhash kept and nothing derived from the cache (`author_media_rejected` and
+  `owner_media_rejected` in `src/domain/status-rows.ts`, `withheldMedia` in `src/domain/status-presenter.ts`). An
+  attachment is judged by its owner's domain, which is its status's author's except in an imported row, and a history
+  entry by the owner of the current attachment its id names, else the author. A stored domain past
   `DNS_NAME_UTF8_BYTES` bytes, which no server's name has, is shown as unruled. A block with only `reject_media` is not
   in the public block list, which Mastodon limits to silence and suspend blocks.
 - **The public block list** (`GET /api/v1/instance/domain_blocks`, `publicDomainBlocks` in

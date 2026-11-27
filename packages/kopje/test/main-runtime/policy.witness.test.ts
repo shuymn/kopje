@@ -68,9 +68,16 @@ const ADDED_COLUMNS = Object.keys(ADDED_DEFAULTS);
 // block's reject_media rule): fixedNumeric (src/db/columns.ts), so R counts each as one digit without reading it, and
 // each reads 0, no world holding a block with reject_media.
 const ADDED_VERDICTS = ["media_rejected"] as const;
+// The verdicts added to the status and attachment reads (#1560 author_media_rejected and owner_media_rejected,
+// src/domain/status-rows.ts), fixedNumeric too: R counts the first for each status row of its x, as VALUE_BYTES + 2
+// (STATUS_VERDICT_BYTES); no world holds an attachment.
+const STATUS_VERDICTS = ["author_media_rejected", "owner_media_rejected"] as const;
+const STATUS_VERDICT_BYTES = VALUE_BYTES + 2;
 const reads = (text: string, column: string) => new RegExp(`\\bAS ${column}(?![A-Za-z0-9_])`).test(text);
 const addedSinceBase = (main: string, mine: string) =>
-  [...ADDED_COLUMNS, ...ADDED_VERDICTS].filter((column) => reads(mine, column) && !reads(main, column));
+  [...ADDED_COLUMNS, ...ADDED_VERDICTS, ...STATUS_VERDICTS].filter(
+    (column) => reads(mine, column) && !reads(main, column),
+  );
 function withoutAdded(columns: readonly string[]): NonNullable<Baseline["result"]> {
   return {
     main: (rows: SqlRow[]) => rows,
@@ -82,7 +89,7 @@ function withoutAdded(columns: readonly string[]): NonNullable<Baseline["result"
 // R (statusRowBoundSql) counts the author account row of each status row an item reads by
 // rowHeapSql(ACCOUNT_COLUMN_MAP), and so the added columns, which main's text does not count: VALUE_BYTES and twice
 // its value's UTF-8 bytes for each, and VALUE_BYTES + 2 for each added verdict, ADDED_ROW_BYTES for an account that
-// holds their defaults. For a viewer it also
+// holds their defaults, and STATUS_VERDICT_BYTES for each status row of its x. For a viewer it also
 // counts, for each status row of its x, the viewer's feature_approval answers for the author and its moved-to account
 // (#1589 D16, FEATURE_APPROVAL_COLUMNS twice), FEATURE_ROW_BYTES. R's rows as main's statement counts them: each
 // item's bytes less ADDED_ROW_BYTES for each of those account rows and, for a viewer, FEATURE_ROW_BYTES for each of
@@ -110,7 +117,11 @@ function rWithoutAdded(itemRows: (ids: readonly string[]) => readonly ItemRows[]
         }
         return {
           ...row,
-          bytes: row.bytes - n.authors * ADDED_ROW_BYTES - (viewer ? n.statuses * FEATURE_ROW_BYTES : 0),
+          bytes:
+            row.bytes -
+            n.authors * ADDED_ROW_BYTES -
+            n.statuses * STATUS_VERDICT_BYTES -
+            (viewer ? n.statuses * FEATURE_ROW_BYTES : 0),
         };
       });
     },
@@ -258,7 +269,7 @@ describe("the rewritten statements beside main's", () => {
     expect(shown([{ id: "1", show_media: 0, show_media_replies: 1 }], [])).toEqual([{ id: "1", show_media: 0 }]);
   });
 
-  it("compare R's items with exactly ADDED_ROW_BYTES more for each author account row of each", () => {
+  it("compare R's items with exactly ADDED_ROW_BYTES more for each author account row of each, and STATUS_VERDICT_BYTES for each status row", () => {
     const { main: of, mine: shown } = rWithoutAdded(() => [
       { authors: 2, statuses: 3 },
       { authors: 1, statuses: 1 },
@@ -268,12 +279,13 @@ describe("the rewritten statements beside main's", () => {
       { k: 0, bytes: 7_442 },
       { k: 1, bytes: 3_696 },
     ];
-    const plus = (perRow: number, rows: readonly number[]) =>
-      main.map(({ k, bytes }) => ({ k, bytes: bytes + perRow * rows[k]! }));
+    const plus = (perRow: number, rows: readonly number[], perStatus = STATUS_VERDICT_BYTES) =>
+      main.map(({ k, bytes }) => ({ k, bytes: bytes + perRow * rows[k]! + perStatus * [3, 1][k]! }));
     expect(shown(plus(ADDED_ROW_BYTES, [2, 1]), params)).toEqual(of(main, params));
     expect(shown(plus(ADDED_ROW_BYTES - 1, [2, 1]), params)).not.toEqual(of(main, params));
     expect(shown(plus(ADDED_ROW_BYTES, [3, 1]), params)).not.toEqual(of(main, params));
     expect(shown(plus(ADDED_ROW_BYTES, [2, 1]).toReversed(), params)).not.toEqual(of(main, params));
+    expect(shown(plus(ADDED_ROW_BYTES, [2, 1], STATUS_VERDICT_BYTES - 1), params)).not.toEqual(of(main, params));
     expect(() => shown([{ k: 2, bytes: 0 }], params)).toThrow("no item at 2");
   });
 
@@ -288,7 +300,10 @@ describe("the rewritten statements beside main's", () => {
       { k: 1, bytes: 3_696 },
     ];
     const plus = (statusRow: number, rows: readonly number[]) =>
-      main.map(({ k, bytes }) => ({ k, bytes: bytes + [2, 1][k]! * ADDED_ROW_BYTES + statusRow * rows[k]! }));
+      main.map(({ k, bytes }) => ({
+        k,
+        bytes: bytes + [2, 1][k]! * ADDED_ROW_BYTES + [3, 1][k]! * STATUS_VERDICT_BYTES + statusRow * rows[k]!,
+      }));
     expect(shown(plus(FEATURE_ROW_BYTES, [3, 1]), params)).toEqual(of(main, params));
     expect(shown(plus(FEATURE_ROW_BYTES, [2, 1]), params)).not.toEqual(of(main, params));
     expect(shown(plus(FEATURE_ROW_BYTES - 1, [3, 1]), params)).not.toEqual(of(main, params));

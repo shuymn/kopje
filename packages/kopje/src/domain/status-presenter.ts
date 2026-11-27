@@ -122,6 +122,9 @@ export type MediaAttachment = {
   meta: MediaMeta | null;
   description: string | null;
   blurhash: string | null;
+  // #1560: set only in a page's presentation (PresentInput.page), on an attachment withheld by a domain block's
+  // reject_media (withheldMedia), which the pages link by its remote_url (web/view/media.ts); no API answer has it.
+  withheld?: true;
 };
 
 type Mention = { id: string; username: string; url: string; acct: string };
@@ -251,6 +254,9 @@ export type StatusRow = {
   author_domain: string | null;
   application_name: string | null;
   application_website: string | null;
+  // #1560, read live in the row's query (status-rows.ts STATUS_COLUMN_MAP): 1 while a domain block's reject_media rules
+  // the author's stored domain.
+  author_media_rejected: number;
 };
 
 // viewer: the viewer (accountId null: anonymous) and the request time, which a poll's expiry is judged at.
@@ -284,6 +290,9 @@ export type MediaRow = {
   // The cached copies of a remote attachment's file and icon, packed (STATUS_MEDIA_COLUMN_MAP); null for none.
   cached: string | null;
   cached_preview: string | null;
+  // #1560: the reject_media verdict of the attachment's owner when it is not its status's author
+  // (status-rows.ts ownerMediaRejectedSql); null, or absent outside STATUS_MEDIA_COLUMN_MAP, for the author's own.
+  owner_media_rejected?: number | null;
   // A local video or audio upload's current thumbnail (media-thumbnails.ts thumbnailOfSql): its preview_url, meta and
   // blurhash as stored; null or absent without one.
   thumbnail_preview?: string | null;
@@ -867,7 +876,11 @@ function hydrate(
                 : {}),
             filtered,
           };
-    const emojis = presentEmojis(row.emojis, STATUS_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, options.origin));
+    // #1560: none while a domain block's reject_media withholds the author's media, the shortcodes kept as text.
+    const emojis =
+      row.author_media_rejected === 1
+        ? []
+        : presentEmojis(row.emojis, STATUS_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, options.origin));
     const poll = polls.get(row.id);
     // The text bounded again after decoding ("Status text as presented" in stored-bounds.ts, RES-3); a plain text is
     // never longer than its HTML, but its JSON may be (an entity of a control character).
@@ -896,7 +909,11 @@ function hydrate(
       reblog,
       ...(row.author_domain === null ? { application: presentApplication(row) } : {}),
       account,
-      media_attachments: (media.get(row.id) ?? []).map((m) => presentMedia(m, options.origin)),
+      media_attachments: (media.get(row.id) ?? []).map((m) =>
+        (m.owner_media_rejected ?? row.author_media_rejected) === 1
+          ? withheldMedia(presentMedia(m, null), options.origin, { live: true, page: options.page === true })
+          : presentMedia(m, options.origin),
+      ),
       mentions: (mentions.get(row.id) ?? []).map((m) => {
         const handle = shownHandle(m);
         return { id: m.id, username: handle.username, url: accountUrl(m, options.origin), acct: handle.acct };
@@ -1143,9 +1160,36 @@ function statusUrl(row: StatusUrlRow): string {
 // of the stored value (a local upload's is its preview's, platform/images.ts processImage, or null). A local video or
 // audio upload with a current thumbnail that thumbnailShown accepts shows it (#1828 PR6, as Mastodon's serializer and
 // populate_meta): preview_url the thumbnail's preview, meta.small its geometry, blurhash its own (null stays null);
-// its own still stays stored, shown again once the thumbnail is removed.
+// its own still stays stored, shown again once the thumbnail is removed. While a domain block's reject_media rules the
+// owner's stored domain (#1560), the presenters pass presentMedia's answer without an origin to withheldMedia.
 export function presentMedia(row: MediaRow, origin: string | null = null): MediaAttachment {
   return presentMediaOf(row, origin).media;
+}
+
+// #1560, VIS-30: `media` as presented while a domain block's reject_media rules its owner's stored domain, Mastodon's
+// shape for an attachment received under the rule (MediaAttachment#needs_redownload?, REST::MediaAttachmentSerializer):
+// type unknown, so a client links remote_url and loads nothing; url and preview_url on the instance's
+// /media_proxy/<id>/original and /small, which answer 404 (web/media.ts serveMediaProxy); remote_url,
+// preview_remote_url, the description, meta and the stored blurhash as presented. The caller passes media presented
+// without an origin, so nothing derived from the cache remains (a cached still's blurhash included). The URLs are
+// built only from an id that names a path segment: a live row's (`live`, 18 digits by CHECK) or a snapshot entry's
+// that editMediaSql judged safe (`proxy_id`); otherwise, or without an origin, they are null. `page`: the
+// presentation is a page's, which links the attachment by its remote_url (`withheld`).
+export function withheldMedia(
+  media: MediaAttachment & { proxy_id?: number },
+  origin: string | null,
+  options: { live: boolean; page: boolean },
+): MediaAttachment {
+  const { proxy_id: proxyId, ...rest } = media;
+  const safe = typeof media.id === "string" && (options.live || proxyId === 1);
+  const proxy = origin === null || !safe ? null : `${origin}/media_proxy/${media.id}`;
+  return {
+    ...rest,
+    type: "unknown",
+    url: proxy === null ? null : `${proxy}/original`,
+    preview_url: proxy === null ? null : `${proxy}/small`,
+    ...(options.page ? { withheld: true } : {}),
+  };
 }
 
 // presentMedia's answer, and whether it shows a thumbnail (processingMedia keeps the thumbnail's facts only then).
