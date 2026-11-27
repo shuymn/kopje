@@ -220,7 +220,7 @@ into Kopje's own media (R2):
    any type, so Images serves the stored format rather than converting it to WebP or AVIF. The token
    is read from the environment only, sent only to the API, never with a redirect, and redacted from what is printed.
    Each file is checked as Kopje checks an upload: its type from its signature (JPEG, PNG, GIF or WebP; AVIF, SVG and
-   HEIC are refused), at most 16 MiB and 16,777,216 pixels, with dimensions read from its header. It is written to
+   HEIC are refused), at most 16 MiB and 33,177,600 pixels, with dimensions read from its header. It is written to
    `<images dir>/originals/<image id>` with mode 0600, and `<images dir>/images.json` records, per image id, its
    SHA-256, type, size and source, and a secret (32 random bytes, base64url, as Kopje makes file tokens) from which the
    converter derives the file token of every media row that shows the image. An image Cloudflare answers 404 for, or one

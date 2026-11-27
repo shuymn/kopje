@@ -9,6 +9,7 @@ import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, sql } from "./api-helpers";
 import { ANIMATED_GIF, PNG_PLAIN } from "./fixtures/images";
+import { pngOf } from "./local-emoji-helpers";
 import { bytes, mediaForm, multipartForm, r2Keys, TestCodec } from "./media-helpers";
 import { singletonStatistics } from "./plan-audit-store";
 import { aliceWithFollower } from "./profile-fixtures";
@@ -454,14 +455,23 @@ describe("update_credentials: the pipeline's refusals", () => {
       '{"error":"Validation failed: Avatar content type is invalid, Avatar is invalid","details":{"avatar_content_type":[{"error":"ERR_INVALID","description":"is invalid"}],"avatar":[{"error":"ERR_IS INVALID","description":"is invalid"}]}}',
     );
     const big = await setup();
-    big.codec.infoResult = { format: "image/png", width: 5000, height: 4000 };
+    big.codec.infoResult = { format: "image/png", width: 7681, height: 4320 };
     const response = await patch(big, big.users.alice.token, formOf([["header", png()]]));
     expect(response.status).toBe(422);
     expect(await response.text()).toBe(
-      '{"error":"Validation failed: Header dimensions exceed 16777216 pixels","details":{"header":[{"error":"ERR_INVALID","description":"dimensions exceed 16777216 pixels"}]}}',
+      '{"error":"Validation failed: Header dimensions exceed 33177600 pixels","details":{"header":[{"error":"ERR_INVALID","description":"dimensions exceed 33177600 pixels"}]}}',
     );
+    expect(big.codec.encodeCalls).toEqual([]);
     expect(await profile(big.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
   });
+
+  it("takes a header of 33,177,600 pixels", async () => {
+    const h = await setup();
+    const file = new File([await pngOf(7680, 4320)], "h.png", { type: "image/png" });
+    expect((await patch(h, h.users.alice.token, formOf([["header", file]]))).status).toBe(200);
+    expect(h.codec.encodeCalls.length).toBeGreaterThan(0);
+    expect((await profile(h.store))?.header_url).toMatch(/\/full\.png$/);
+  }, 30_000);
 });
 
 describe("the settings page", () => {
@@ -481,9 +491,9 @@ describe("the settings page", () => {
     expect(await upload("avatar", new TextEncoder().encode("not an image"), "text/plain")).toContain(
       "Validation failed: Avatar content type is invalid, Avatar is invalid",
     );
-    h.codec.infoResult = { format: "image/png", width: 5000, height: 4000 };
+    h.codec.infoResult = { format: "image/png", width: 7681, height: 4320 };
     expect(await upload("header", bytes(PNG_PLAIN), "image/png")).toContain(
-      "Validation failed: Header dimensions exceed 16777216 pixels",
+      "Validation failed: Header dimensions exceed 33177600 pixels",
     );
     expect(await profile(h.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
   });

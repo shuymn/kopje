@@ -221,8 +221,9 @@ settings page):
   has no handler for it); an empty value reads as absent. Each file must be under 8 MB (8,388,608 bytes is refused)
   and JPEG, PNG, GIF or WebP by its signature; AVIF is refused. The multipart body may be 17,858,560 bytes (1 MiB of
   text plus two files and their part headers), its text at most 1 MiB in UTF-8 bytes.
-- Images are not cropped to 400×400 or capped at 1500×500; an image past 16,777,216 pixels answers 422, an error of
-  `avatar` or `header` (Mastodon keeps the account unchanged and answers 200).
+- Images are not cropped to 400×400 or capped at 1500×500; an image past 33,177,600 pixels answers 422, an error of
+  `avatar` or `header` (Mastodon keeps the account unchanged and answers 200). A GIF has no separate limit of 921,600
+  pixels, which in Mastodon bounds its own conversion of a GIF.
 - For an uploaded image whose served file is animated, `avatar_static` and `header_static` are a still of at most
   640 px on the long edge (the upload's preview); Mastodon's is 400×400 or the header's own size, and only for a GIF.
   Otherwise they equal `avatar` and `header`.
@@ -1708,7 +1709,7 @@ Media (the `MediaAttachment` entity):
   and past it answer 422 `Validation failed: File file size must be less than 16 MB`.
 - A video's or audio file's custom `thumbnail` (on upload and on `PUT`/`PATCH /api/v1/media/:id`, as Mastodon takes it)
   is made by Images as an image upload is: JPEG, PNG, GIF, WebP or AVIF by its signature, served as PNG for a PNG and
-  WebP for the rest, its preview at most 640 pixels an edge (Mastodon's is 230,400 pixels), at most 16,777,216 pixels,
+  WebP for the rest, its preview at most 640 pixels an edge (Mastodon's is 230,400 pixels), at most 33,177,600 pixels,
   and 16,777,216 bytes accepted (Mastodon refuses that size, its limit being `less_than` 16 MB) with one byte more
   refused. It has no `meta.colors`, as no Kopje media has; Mastodon's web audio player then uses its default colours.
   A text `thumbnail` that is not empty (a data URI, which Mastodon accepts, or anything else) answers 422 `Validation
