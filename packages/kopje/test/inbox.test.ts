@@ -44,6 +44,7 @@ import {
   mastodonNote,
   setup as statusSetup,
   type Setup as StatusSetup,
+  token,
 } from "./inbox-status-helpers";
 import {
   cavageByKeyId,
@@ -1783,7 +1784,7 @@ describe("account moves", () => {
 
   // A move stored from an earlier reading of the same document is recomputed when it is stored again, as every store
   // sets or clears the move: a relative or `@id` movedTo stops naming an account, and one under a context that maps the
-  // term elsewhere starts to.
+  // term elsewhere starts to; following (R21) and suggestions (R39) follow the recomputed move.
   it("recomputes a stored move when the same document is stored again", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
@@ -1806,6 +1807,31 @@ describe("account moves", () => {
       const account = await response.json<{ moved?: { id: string } | null }>();
       return Object.hasOwn(account, "moved") ? (account.moved?.id ?? null) : undefined;
     };
+    // alice follows dave, who follows bob, so bob is suggested to alice while he has not moved.
+    const alice = await token(t.store, ALICE);
+    await sql(
+      t.store,
+      "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted'), (?, ?, 'accepted')",
+      ALICE,
+      DAVE,
+      DAVE,
+      bobId,
+    );
+    const suggested = async () => {
+      const response = await t.request("/api/v1/suggestions", bearer(alice));
+      expect(response.status).toBe(200);
+      return (await response.json<{ id: string }[]>()).some((account) => account.id === bobId);
+    };
+    // The follow's answer; a follow it writes is removed again, so the next case starts unfollowed.
+    const followAnswer = async () => {
+      const { status } = await t.request(`/api/v1/accounts/${bobId}/follow`, bearer(alice, { method: "POST" }));
+      await sql(t.store, "DELETE FROM follows WHERE account_id = ? AND target_account_id = ?", ALICE, bobId);
+      return status;
+    };
+    const live = async (moved: string | null, label: string) => {
+      expect(await suggested(), label).toBe(moved === null);
+      expect(await followAnswer(), label).toBe(moved === null ? 200 : 403);
+    };
     const elsewhere = {
       ...bob.document,
       "@context": [...(bob.document["@context"] as unknown[]), { movedTo: "https://elsewhere.example/ns#moved" }],
@@ -1822,9 +1848,11 @@ describe("account moves", () => {
       // The move an earlier reading stored for this document.
       await sql(t.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", earlier, bobId);
       expect(await shown(), label).toBe(earlier ?? undefined);
+      await live(earlier, `${label}, before`);
       await refresh(t, bob, document, ++n);
       expect(await movedTo(t.store, bob.uri), label).toBe(now === null ? null : carol.uri);
       expect(await shown(), label).toBe(now ?? undefined);
+      await live(now, label);
     }
   });
 
