@@ -143,16 +143,8 @@ async function createInstanceActorKey(
 function federationParts(deps: FederationDeps, state: FederationState) {
   const { build, domain } = deps;
   const origin = `https://${domain}`;
-  const rpc = async <T>(call: (store: StoreStub) => Promise<T>): Promise<T> => {
-    try {
-      return await callStore(() => call(deps.store()));
-    } catch (error) {
-      if (error instanceof StoreUnavailableError) {
-        state.storeError ??= error;
-      }
-      throw error;
-    }
-  };
+  const rpc = <T>(call: (store: StoreStub) => Promise<T>): Promise<T> =>
+    recordingRefusal(state, () => callStore(() => call(deps.store())));
   const kv = new DoKvStore(deps.store, build, deps.now);
   const keyring = createKeyring(deps.kek);
   const loaderDeps: LoaderDeps = {
@@ -318,8 +310,8 @@ function recordingKv(kv: KvStore, state: FederationState): KvStore {
   return {
     get: <T>(key: KvKey) => recordingRefusal(state, () => kv.get<T>(key)),
     set: (key, value, options) => recordingRefusal(state, () => kv.set(key, value, options)),
-    delete: (key) => recordingRefusal(state, () => kv.delete(key)),
-    // kvCache lists nothing.
+    // kvCache deletes and lists nothing.
+    delete: (key) => kv.delete(key),
     list: (prefix) => kv.list(prefix),
   };
 }
