@@ -27,15 +27,16 @@ export type MediaView = {
 const KINDS: readonly string[] = ["image", "video", "gifv", "audio"] satisfies MediaKind[];
 
 export function mediaView(media: MediaAttachment, domain: string): MediaView | null {
-  if (media.withheld === true) {
-    const remote = httpUrl(media.remote_url)?.href;
-    return remote === undefined
-      ? null
-      : { kind: "unknown", full: remote, link: linkTo(remote, domain), preview: null, alt: altOf(media) };
-  }
-  const full = httpUrl(media.url)?.href;
+  const withheld = media.withheld === true;
+  const full = httpUrl(withheld ? media.remote_url : media.url)?.href;
   if (full === undefined) {
     return null;
+  }
+  // A description of only white space is none.
+  const alt = (media.description ?? "").trim() === "" ? "" : (media.description ?? "");
+  const link = linkTo(full, domain);
+  if (withheld) {
+    return { kind: "unknown", full, link, preview: null, alt };
   }
   const previewUrl = httpUrl(media.preview_url);
   const preview =
@@ -56,16 +57,11 @@ export function mediaView(media: MediaAttachment, domain: string): MediaView | n
   return {
     kind: KINDS.includes(media.type) ? (media.type as MediaKind) : "unknown",
     full,
-    link: linkTo(full, domain),
+    link,
     preview: preview === undefined || preview === full ? null : preview,
-    alt: altOf(media),
+    alt,
     ...(size === undefined ? {} : { width: size.width, height: size.height }),
   };
-}
-
-// A description of only white space is none.
-function altOf(media: MediaAttachment): string {
-  return (media.description ?? "").trim() === "" ? "" : (media.description ?? "");
 }
 
 // The image a page shows for an attachment: an image's preview, or the image itself without one; a video's poster
