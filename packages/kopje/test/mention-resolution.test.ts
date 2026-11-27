@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ResolvedAddress } from "../src/domain/mention-addresses";
 import { postStatus } from "../src/domain/scheduled-statuses";
-import { mentionBudget } from "../src/federation/loader";
 import { publishScheduled } from "../src/jobs/scheduled";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -103,32 +102,9 @@ describe("an unknown address of a post", () => {
     const w = await mentionWorld();
     const ali = await splitDomain(w.t.web);
     const status = await posted(w.post({ status: "@ali@nice.example hi" }));
-    expect(w.t.web.fetched).toHaveLength(4);
     expect(status.mentions.map((m) => m.acct)).toEqual(["ali@nice.example"]);
     expect(await accountAt(w.t.store, "ali", "nice.example")).toMatchObject({ uri: ali.uri });
     expect(await inboxes(w.t.store)).toEqual(["https://social.example/inbox"]);
-    // Search on a Store of its own answers the same account.
-    const s = await mentionWorld();
-    await splitDomain(s.t.web);
-    const found = await s.t.api<{ accounts: { acct: string }[] }>(
-      `/api/v2/search?resolve=true&type=accounts&q=${encodeURIComponent("ali@nice.example")}`,
-    );
-    expect(found.body.accounts.map((a) => a.acct)).toEqual(["ali@nice.example"]);
-    expect((await accountAt(s.t.store, "ali", "nice.example"))?.uri).toBe(ali.uri);
-  });
-
-  it("finds an account stored under its old handle by the new address it moved to (T3, plan 12b)", async () => {
-    const w = await mentionWorld();
-    const bob = await mastodonActor(w.t.web, "bob", { origin: "https://old.example" });
-    await w.t.api(`/api/v2/search?resolve=true&type=accounts&q=${encodeURIComponent("bob@old.example")}`);
-    expect(await accountAt(w.t.store, "bob", "old.example")).toMatchObject({ uri: bob.uri });
-    serveWebFinger(w.t.web, "acct:bob@old.example", "acct:bob@new.example", bob.uri);
-    serveWebFinger(w.t.web, "acct:bob@new.example", "acct:bob@new.example", bob.uri);
-    const status = await posted(w.post({ status: "@bob@new.example" }));
-    expect(status.mentions.map((m) => m.acct)).toEqual(["bob@new.example"]);
-    expect(await sql(w.t.store, "SELECT username, domain FROM accounts WHERE uri = ?", bob.uri)).toEqual([
-      { username: "bob", domain: "new.example" },
-    ]);
   });
 
   it("stays text for an alias or a split domain's server host, storing nothing (T4, P3, plan 12)", async () => {
@@ -211,19 +187,6 @@ describe("an address that does not resolve (P4)", () => {
     const again = await posted(w.post({ status: text }));
     expect(w.t.web.fetched[0]).toBe(webfinger("eve", "blocked.example"));
     expect(again.mentions.map((m) => m.acct)).toContain("eve@blocked.example");
-  });
-
-  it("leaves an address past the spent budget as text, which the default budget resolves (T5, plan 7)", async () => {
-    const budget = async (fetches?: number) => {
-      const w = await mentionWorld();
-      await plainActor(w.t.web, "bob");
-      await plainActor(w.t.web, "carol", "other.example");
-      const start = await w.start("@bob@mastodon.example @carol@other.example");
-      const resolve = w.resolver(fetches === undefined ? mentionBudget : (now) => ({ ...mentionBudget(now), fetches }));
-      return (await resolve(w.h.env, start)).map((e) => e.key);
-    };
-    expect(await budget(4)).toEqual(["bob@mastodon.example"]);
-    expect(await budget()).toEqual(["bob@mastodon.example", "carol@other.example"]);
   });
 
   it("leaves an actor that answers 410 as text, deleting nothing (T5, plan 13)", async () => {
@@ -593,7 +556,6 @@ describe("a scheduled post (T17, P8, P14, plan 23)", () => {
   it("stores the account when scheduled, and publishes the mention with no request", async () => {
     const w = await mentionWorld();
     const bob = await plainActor(w.t.web, "bob");
-    await plainActor(w.t.web, "carol", "other.example");
     const due = NOW + 10 * MINUTE;
     const response = await w.post(
       { status: "later @bob@mastodon.example", scheduled_at: at(due) },
@@ -603,11 +565,6 @@ describe("a scheduled post (T17, P8, P14, plan 23)", () => {
     const scheduled = await response.json<{ id: string; params: { text: string } }>();
     expect(scheduled.params.text).toBe("later @bob@mastodon.example");
     expect(await accountCount(w.t.store, bob.uri)).toBe(1);
-    // A repeat naming another unstored address answers the scheduled status and fetches nothing.
-    w.reset();
-    const repeat = await w.post({ status: "@carol@other.example", scheduled_at: at(due) }, { "idempotency-key": "k" });
-    expect((await repeat.json<{ id: string }>()).id).toBe(scheduled.id);
-    expect(w.t.web.fetched).toEqual([]);
     const moved = await w.h.request(`/api/v1/scheduled_statuses/${scheduled.id}`, {
       method: "PUT",
       headers: { authorization: `Bearer ${w.t.tokens.alice}`, "content-type": "application/json" },

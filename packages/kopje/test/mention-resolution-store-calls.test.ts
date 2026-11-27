@@ -113,7 +113,7 @@ describe("the unit: one address (RES-6)", () => {
     });
   });
 
-  it("costs 4 for an old handle stored, the new address typed: the stored handle's claim is confirmed again", async () => {
+  it("costs 4 for an old handle stored, the new address typed: the stored handle's claim is confirmed again (T3, plan 12b)", async () => {
     const w = await mentionWorld();
     const bob = await movedHandle(w);
     expect(await unit(w, "hi @bob@new.example")).toEqual({
@@ -127,6 +127,10 @@ describe("the unit: one address (RES-6)", () => {
       dns: 4,
       mentions: 1,
     });
+    // The account found by the new address it moved to, and stored under it.
+    expect(await sql(w.t.store, "SELECT username, domain FROM accounts WHERE uri = ?", bob.uri)).toEqual([
+      { username: "bob", domain: "new.example" },
+    ]);
   });
 
   it("costs 2 for an actor that answers 410, with no policy read after actorState and no actorGone", async () => {
@@ -290,10 +294,11 @@ describe("the request's bounds (RES-6)", () => {
       const found = await w.resolver((now) => ({ ...mentionBudget(now), fetches: 3 }))(w.h.env, start);
       expect(found.map((e) => e.key)).toEqual(["bob@mastodon.example"]);
       untouched(w);
-      // Control: with one fetch more, the second address starts.
+      // Control: with one fetch more, the second address starts, and the one budget it shares stops it (T5, plan 7).
       const again = await twoHosts();
-      await again.w.resolver((now) => ({ ...mentionBudget(now), fetches: 4 }))(again.w.h.env, again.start);
+      const more = await again.w.resolver((now) => ({ ...mentionBudget(now), fetches: 4 }))(again.w.h.env, again.start);
       expect(again.w.dns).toContain("other.example");
+      expect(more.map((e) => e.key)).toEqual(["bob@mastodon.example"]);
     });
 
     it("its bytes", async () => {
@@ -318,12 +323,11 @@ describe("the request's bounds (RES-6)", () => {
     });
   });
 
-  it("makes no gate call for a text without an address on another host, or one only in a non-blank warning (U8)", async () => {
+  it("makes no gate call for a text without an address on another host (U8; a warning's address: T13)", async () => {
     const w = await mentionWorld();
     await plainActor(w.t.web, "bob");
     await posted(w.post({ status: "hello @dave https://example.com/@bob@mastodon.example" }));
-    await posted(w.post({ status: "hello", spoiler_text: "@bob@mastodon.example" }));
-    expect(w.calls()).toEqual(["instanceDomain", "postStatus", "instanceDomain", "postStatus"]);
+    expect(w.calls()).toEqual(["instanceDomain", "postStatus"]);
     expect(w.t.web.fetched).toEqual([]);
   });
 });

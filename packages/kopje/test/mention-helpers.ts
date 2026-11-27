@@ -12,7 +12,7 @@ import { countingStore, harness, NOW, seedInstanceKey } from "./app-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD } from "./helpers";
 import { mastodonActor, type RemoteWeb, serveWebFinger, type TestActor } from "./inbox-helpers";
-import { setup, type Setup } from "./inbox-status-helpers";
+import { setup } from "./inbox-status-helpers";
 
 // The world of the mention resolution tests (#1558, domain/mention-addresses.ts): alice and dave of kopje.test, an
 // in-memory web of remote servers, and the app over a Store whose calls are recorded (countingStore), each DNS check
@@ -26,8 +26,6 @@ export type MentionWorldOptions = {
   cold?: boolean;
   keygen?: KeyGen;
   timeoutMs?: number;
-  // Runs once the named Store call has answered (countingStore's `answered`).
-  answered?: (name: string) => void;
   // Wraps the counted Store (a call held or made to fail).
   wrap?: StoreWrap;
 };
@@ -38,7 +36,7 @@ export async function mentionWorld(options: MentionWorldOptions = {}) {
   if (options.cold !== true) {
     await seedInstanceKey(t.store);
   }
-  const counting = countingStore(t.store, options.answered);
+  const counting = countingStore(t.store);
   const dns: string[] = [];
   const refusedHosts = new Set<string>();
   const loader = {
@@ -203,5 +201,3 @@ export async function posted(response: Promise<Response> | Response): Promise<Po
 
 export const mentionLink = (url: string, username: string) =>
   `<span class="h-card"><a href="${url}" class="u-url mention">@<span>${username}</span></a></span>`;
-
-export type { Setup };

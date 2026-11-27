@@ -159,10 +159,6 @@ describe("Store calls of a resolving search", () => {
   });
 });
 
-// SearchService#call (Mastodon 4.7.5, search_service.rb:11-21) for a resolving search (#1706): a limit of 0 answers
-// nothing and resolves nothing; the offset counts only with a type; a URL is answered by its lookup alone, and one
-// whose answer is empty whatever it finds fetches nothing (docs/mastodon-deviations.md, Search); an address is resolved
-// only when accounts are searched.
 describe("a resolving search whose JSON-LD context cache write is refused", () => {
   // Fedify's kvCache swallows a failed cache write, and search goes on as it does: only the mention resolver records
   // such a refusal and stops (createRemoteLoaders' recordContextRefusal, OPS-8).
@@ -195,6 +191,10 @@ describe("a resolving search whose JSON-LD context cache write is refused", () =
   });
 });
 
+// SearchService#call (Mastodon 4.7.5, search_service.rb:11-21) for a resolving search (#1706): a limit of 0 answers
+// nothing and resolves nothing; the offset counts only with a type; a URL is answered by its lookup alone, and one
+// whose answer is empty whatever it finds fetches nothing (docs/mastodon-deviations.md, Search); an address is resolved
+// only when accounts are searched.
 describe("the limit, offset and type of a resolving search", () => {
   const NOTHING = { accounts: [], statuses: [], hashtags: [], collections: [] };
 
