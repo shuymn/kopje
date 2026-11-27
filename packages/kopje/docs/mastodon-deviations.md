@@ -1662,12 +1662,13 @@ Media (the `MediaAttachment` entity):
 
 - A local upload is an image, or, while the media processor accepts uploads ([media-processor.md](media-processor.md)),
   a video or audio file, which is always re-encoded (Mastodon passes an H.264 and AAC MP4 through): video to an H.264
-  and AAC MP4 of at most 1080p at 60 fps, 720p at 30 fps past 120 s and 480p at 30 fps past 300 s, audio to MP3. The
+  and AAC MP4 of at most 1080p at 60 fps, 720p at 30 fps past 120 s and 480p at 30 fps past 300 s, audio to MP3; a
+  video past the processing envelope its endpoint publishes at its duration's rendition is encoded at a lower one. The
   file is at most 90 MiB (`video_size_limit` 94,371,840; Mastodon takes 99 MiB) and refused past it with 422 `Validation
   failed: File file size must be less than 90 MB`; video over 600 s, audio over 20 minutes and a file past the
-  processing envelope its endpoint publishes are refused with 422 `Validation failed: File is too long or too large to
-  process` (v1 at once, v2 on the GET that finds it failed). v1 waits for the result up to `V1_TIME_MS` from the
-  request's arrival (a constant of the release, 8 minutes, [media-processor.md](media-processor.md)) and then
+  envelope at every rendition from its duration's down are refused with 422 `Validation failed: File is too long or too
+  large to process` (v1 at once, v2 on the GET that finds it failed). v1 waits for the result up to `V1_TIME_MS` from
+  the request's arrival (a constant of the release, 8 minutes, [media-processor.md](media-processor.md)) and then
   answers 503 `Media processing took too long. Try a shorter file.`, the upload cancelled unless it finished first or
   the cancellation was not received (the give-up, or S10's reply lost or failed): a completion after the 503 stays
   unattached and the sweep removes it after its grace; Mastodon's v1 waits as long as the processing takes. When the
