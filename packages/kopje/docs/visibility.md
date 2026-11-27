@@ -40,7 +40,7 @@ Accounts (always over an account id, never over a status or a follow row):
 | `followListedSql(x, owner, viewer, now)`                                   | R13: `x` is listed among the owner's followers or following: to an anonymous viewer and the owner, always; to anyone else, unless they block or mute `x` (while the mute applies) or `x` blocks them.                                                                                                                                                                                                  |
 | `endorsementsShownSql(owner)`, `endorsementListedSql(x)`                   | R28: the accounts the owner endorses are listed, to anyone, while the owner is available; an endorsed account is listed while it is available.                                                                                                                                                                                                                                                         |
 | `suggestionSourceSql(owner, viewer)`                                       | R39: the viewer's follow of `owner` brings the accounts the owner follows into their suggestions: R13 shows the viewer the owner's following (`followListsShownSql`).                                                                                                                                                                                                                                  |
-| `suggestionCandidateSql(x, a, viewer)`                                     | R39: `x` (its accounts row `a` in scope) is a candidate for the viewer's suggestions: someone else, discoverable, has not moved (as `followableBySql` reads it), neither followed nor requested by the viewer, and not dismissed by them (`follow_recommendation_mutes`). R12 judges each candidate after it.                                                                                          |
+| `suggestionCandidateSql(a, viewer)`                                        | R39: the account of the accounts row `a` in scope is a candidate for the viewer's suggestions: someone else, discoverable, not moved to a target the presenter shows (`movedTargetShownSql`), neither followed nor requested by the viewer, and not dismissed by them (`follow_recommendation_mutes`). R12 judges each candidate after it.                                                             |
 | `announcementShownSql(a)`                                                  | R40: the announcement row `a` is published, so every signed-in local user is shown it and may dismiss it and react to it.                                                                                                                                                                                                                                                                              |
 | `trendableStatusSql(s, now, langs)`                                        | R41: the status row `s` may trend at `now`: a public original that is not a reply, without a content warning and not sensitive, in a language Mastodon supports (`langs`), published by `now`, by an available and discoverable author anyone may see (R2 with no viewer), quoting nothing or a status its quote lets through that is present, public, plain and by an available, discoverable author. |
 | `findableBySql(x, viewer)`                                                 | R14: the viewer finds `x` by account search or search resolution: available, and not on a domain the viewer blocks.                                                                                                                                                                                                                                                                                    |
@@ -653,16 +653,15 @@ accounts the viewer's follows follow. A source is an accepted follow of the view
 (`suggestionSourceSql`: available, not hiding its network, not blocking the viewer; Mastodon asks only the second, so
 Kopje never counts an edge the viewer could not read in that following list, VIS-8). An edge is an accepted follow of a
 source; its target is a candidate when `suggestionCandidateSql` passes (someone else, `accounts.discoverable` 1, no
-follow by the viewer in either state, no dismissal, no move naming a stored account) and R12 lists it (`listedForSql`:
-available, not blocked, muted while the mute applies or domain-blocked by the viewer by stored domain or actor host, not
-blocking the viewer). Mastodon also leaves out silenced and memorial accounts, which Kopje does not record; a moved one
-is left out here too. Candidates rank by how many counted edges reach them, then by `accounts.followers_count` (lowest
-first, as `presentedCountSql` reads it), then by id (newest first); the first `SUGGESTIONS_KEPT` (40) are kept and a
-request answers `offset` and `limit` of them (`[]` from offset 40 on, where Mastodon answers 500). A remote account's
-follower count is the one its followers collection reports, learned by its collection sync (0 until then). There is no
-cache: the order is deterministic, so an offset is stable only while the follows, blocks, mutes and dismissals stay as
-they were. v2 wraps each account as `{"source": "past_interactions", "sources": ["friends_of_friends"], "account":
-...}`.
+follow by the viewer in either state, no dismissal, no move to a target the presenter shows as `moved`) and R12 lists it
+(`listedForSql`: available, not blocked, muted while the mute applies or domain-blocked by the viewer by stored domain
+or actor host, not blocking the viewer). Mastodon also leaves out silenced and memorial accounts, which Kopje does not
+record. Candidates rank by how many counted edges reach them, then by `accounts.followers_count` (lowest first, as
+`presentedCountSql` reads it), then by id (newest first); the first `SUGGESTIONS_KEPT` (40) are kept and a request
+answers `offset` and `limit` of them (`[]` from offset 40 on, where Mastodon answers 500). A remote account's follower
+count is the one its followers collection reports, learned by its collection sync (0 until then). There is no cache: the
+order is deterministic, so an offset is stable only while the follows, blocks, mutes and dismissals stay as they were.
+v2 wraps each account as `{"source": "past_interactions", "sources": ["friends_of_friends"], "account": ...}`.
 
 The ranking is over a bounded graph, by windows of follow ids that the query reads as ranges of `follows_following`
 (`account_id`, `id`), each from the id of its last entry, which a scalar lookup of that index finds, so the access

@@ -44,7 +44,7 @@ const KEPT_SQL = `WITH
 	grouped(x, frequency, followers_count) AS (
 		SELECT a.id, count(*), ${presentedCountSql("a.followers_count")}
 		FROM edges g CROSS JOIN accounts a ON a.id = g.x
-		WHERE ${suggestionCandidateSql("a.id", "a", "?1")}
+		WHERE ${suggestionCandidateSql("a", "?1")}
 		GROUP BY a.id)
 SELECT x AS id FROM grouped
 WHERE ${listedForSql("grouped.x", "?1", "?2")}

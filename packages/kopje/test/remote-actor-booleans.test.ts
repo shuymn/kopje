@@ -228,7 +228,7 @@ describe("an actor's discoverable as the lists read it (#1747)", () => {
     (db, { now, viewer }) => ({
       suggested: db
         .all<{ id: string }>(
-          `SELECT a.id FROM accounts a WHERE a.domain IS NOT NULL AND ${suggestionCandidateSql("a.id", "a", "?1")}
+          `SELECT a.id FROM accounts a WHERE a.domain IS NOT NULL AND ${suggestionCandidateSql("a", "?1")}
 						ORDER BY a.id`,
           viewer,
         )

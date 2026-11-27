@@ -137,7 +137,8 @@ export class PolicyModel {
     return !account.suspended && !(!account.local && (account.deleting || this.domainCovered(x)));
   }
 
-  // Whether x has moved (Account#moved?): its move names a stored account. A world's move always names one.
+  // Whether x has moved (Account#moved?): its move names a stored account the presenter shows. A world's move always
+  // names one, on a domain within DOMAIN_BYTES.
   moved(x: number): boolean {
     return this.world.moves.some((m) => m.from === x);
   }
