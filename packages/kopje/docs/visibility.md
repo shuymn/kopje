@@ -904,9 +904,11 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   texts, meta and stored blurhash kept and nothing derived from the cache (`author_media_rejected` and
   `owner_media_rejected` in `src/domain/status-rows.ts`, `withheldMedia` in `src/domain/status-presenter.ts`). An
   attachment is judged by its owner's domain, which is its status's author's except in an imported row, and a history
-  entry by the owner of the current attachment its id names, else the author. A stored domain past
-  `DNS_NAME_UTF8_BYTES` bytes, which no server's name has, is shown as unruled. A block with only `reject_media` is not
-  in the public block list, which Mastodon limits to silence and suspend blocks.
+  entry by the owner of the current attachment its id names, else the author. A stored domain past `DNS_NAME_UTF8_BYTES`
+  bytes, which no server's name has, is shown as unruled. The rule holds in every answer made after the block's commit
+  and ends in every answer made after the flag is turned off or the block deleted; an answer an HTTP cache holds runs
+  out its stated lifetime ([mastodon-deviations.md](mastodon-deviations.md), Media). A block with only `reject_media` is
+  not in the public block list, which Mastodon limits to silence and suspend blocks.
 - **The public block list** (`GET /api/v1/instance/domain_blocks`, `publicDomainBlocks` in
   `src/domain/instance-domain-blocks.ts`; Mastodon's `Api::V1::Instances::DomainBlocksController`). A suspended user's
   token is answered 403 (`Your login is currently disabled`) first, whatever the settings. Then the setting

@@ -8,6 +8,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Instance changes
+
+- Store schema: adds one migration (0124), an index, applied on the first request after the deploy, so the release is
+  a minor version. Until it is applied the Store refuses every request, and it stays readonly until it is verified
+  ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an earlier version needs
+  the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md).
+- `wrangler.jsonc`: no change.
+
 ### Added
 
 - A post, a scheduled post or an edit that names `@user@host` for an account the instance has not stored resolves the
@@ -28,6 +36,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- While a domain block with `reject_media` rules a remote account's domain, the API, the streaming API, push
+  notifications, the public pages and the embed no longer show that account's media from its remote URLs, as Mastodon
+  shows media it never downloaded: the default avatar and header, no custom emoji, and each attachment as `unknown`
+  with `url` and `preview_url` on the instance's `/media_proxy/` paths, which answer 404, and `remote_url` kept, which
+  the pages link to. It holds from the block's commit, cached copies included, and ends when the flag is turned off or
+  the block deleted ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Media).
 - A profile link to a page with inline SVG icons or a `<noscript>` before its `rel="me"` links, such as a GitHub
   profile, is verified, as Mastodon verifies it. Collection of rel=me links now resumes after an `<svg>` of plain
   shapes (with an optional `<title>` or `<desc>`) and after a `<noscript>` of plain images, iframes, links and text;
