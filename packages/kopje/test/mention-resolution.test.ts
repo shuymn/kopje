@@ -276,6 +276,29 @@ describe("an address that does not resolve (P4)", () => {
     expect((await response).status).toBe(503);
     expect(await sql(w.t.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 0 }]);
   });
+
+  it("stops at a Store refusal of a JSON-LD context's cache write, which Fedify swallows (T7, OPS-8)", async () => {
+    const w = await mentionWorld();
+    const context = "https://contexts.example/ns.jsonld";
+    w.t.web.serve(
+      context,
+      { "@context": { kopjeTest: "https://contexts.example/ns#kopjeTest" } },
+      "application/ld+json",
+    );
+    const eve = await plainActor(w.t.web, "eve", "first.example");
+    eve.document["@context"] = [...(eve.document["@context"] as unknown[]), context];
+    w.t.web.serve(eve.uri, eve.document);
+    await plainActor(w.t.web, "bob");
+    const held = hold(w, webfinger("eve", "first.example"));
+    const response = w.post({ status: "@eve@first.example @bob@mastodon.example" });
+    await held.reached;
+    await w.t.store.setMaintenance(BUILD, true);
+    held.release();
+    expect((await response).status).toBe(503);
+    // The guarded branch ran: the context was fetched, and its cache write refused.
+    expect(w.t.web.fetched).toContain(context);
+    expect(w.t.web.fetched).not.toContain(webfinger("bob", "mastodon.example"));
+  });
 });
 
 describe("what the write judges of the resolved accounts", () => {

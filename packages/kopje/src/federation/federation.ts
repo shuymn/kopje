@@ -2,6 +2,8 @@ import {
   createFederation,
   type DocumentLoader,
   type Federation,
+  type KvKey,
+  type KvStore,
   kvCache,
   type NodeInfo,
   type RemoteDocument,
@@ -269,14 +271,7 @@ export function createRemoteLoaders(
             parts.signerOf(
               offered ?? (await parts.rpc<FetchSigner>((s) => s.fetchSigner(deps.build, { by: recipient }))),
             ))())
-      : () =>
-          shared().catch((error: unknown) => {
-            const unavailable = toStoreUnavailable(error);
-            if (unavailable !== undefined) {
-              state.storeError ??= unavailable;
-            }
-            throw error;
-          });
+      : () => recordingRefusal(state, shared);
   // Keyed without the fragment: HTTP never sends it, so `actor#main-key` and `actor` are one fetch. Key ids are still
   // compared whole by Fedify and by receiveInbound.
   const memoized = (caps: DocumentCaps): DocumentLoader => {
@@ -288,7 +283,7 @@ export function createRemoteLoaders(
   };
   return {
     document: memoized({}),
-    context: boundedContexts(loaderDeps, parts.kv),
+    context: boundedContexts(loaderDeps, recordingKv(parts.kv, state)),
     webfinger: createWebFingerLoader(loaderDeps),
     capped: memoized,
     resolve: async (url, terminal) =>
@@ -298,6 +293,31 @@ export function createRemoteLoaders(
         offered = chosen;
       }
     },
+  };
+}
+
+// A Store refusal `call` rejects with, recorded in the state before anything that would swallow it sees it.
+async function recordingRefusal<T>(state: FederationState, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    const unavailable = toStoreUnavailable(error);
+    if (unavailable !== undefined) {
+      state.storeError ??= unavailable;
+    }
+    throw error;
+  }
+}
+
+// The context cache's KvStore, recording a Store refusal in the state: Fedify's kvCache swallows a failed write, so a
+// request that goes on (an address resolution's next address, OPS-8) would not otherwise learn the Store refused.
+function recordingKv(kv: KvStore, state: FederationState): KvStore {
+  return {
+    get: <T>(key: KvKey) => recordingRefusal(state, () => kv.get<T>(key)),
+    set: (key, value, options) => recordingRefusal(state, () => kv.set(key, value, options)),
+    delete: (key) => recordingRefusal(state, () => kv.delete(key)),
+    // kvCache lists nothing.
+    list: (prefix) => kv.list(prefix),
   };
 }
 
@@ -349,7 +369,7 @@ export function withinBounds(remote: RemoteDocument): RemoteDocument {
 
 // JSON-LD contexts, cached in the KvStore. Checked before they are cached and again on every cache hit, since an
 // entry may predate the check.
-function boundedContexts(loaderDeps: LoaderDeps, kv: DoKvStore): DocumentLoader {
+function boundedContexts(loaderDeps: LoaderDeps, kv: KvStore): DocumentLoader {
   const loader = createContextLoader(loaderDeps);
   const cached = kvCache({ loader: async (url, options) => withinBounds(await loader(url, options)), kv });
   return async (url, options) => withinBounds(await cached(url, options));
