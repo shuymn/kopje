@@ -559,16 +559,19 @@ export async function processImage(
     }
     // The preview is made from the re-encoded image, so it starts without metadata and in the served orientation. It
     // is a still, so an animated image's preview serves as its account's avatar_static or header_static (media.ts).
-    const preview = fit(full, SMALL_EDGE);
+    // A header's downscaled preview is asked for in a SMALL_EDGE square, as its full image is boxed, so its long edge
+    // is SMALL_EDGE however thin it is (a 1000×99 header's is 640×63, where the fitted 640×63 box gives 636×63).
+    const previewEdge = Math.max(full.width, full.height) > SMALL_EDGE ? SMALL_EDGE : null;
+    const preview =
+      role === "header" && previewEdge !== null ? { width: SMALL_EDGE, height: SMALL_EDGE } : fit(full, SMALL_EDGE);
     const small =
       fellBack && role === "avatar"
         ? full
         : await encodeChecked(codec, full.bytes, { ...preview, format, still: true, ...guard });
     // A profile image's preview is its static (avatar_static, header_static), held to its shape too: an avatar's
-    // AVATAR_EDGE square, a header's fit of the full image within SMALL_EDGE (not resized when the full image is
+    // AVATAR_EDGE square, a header's full image scaled down within SMALL_EDGE (not resized when the full image is
     // within it), checked as the full image is. A preview not of it fails the image, the fallback's included.
     if (role !== undefined) {
-      const previewEdge = Math.max(full.width, full.height) > SMALL_EDGE ? SMALL_EDGE : null;
       if (shapeProblem(role, full, previewEdge, small)) {
         throw new ImageOutputError(`preview is not of the ${role}'s shape`);
       }

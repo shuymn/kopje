@@ -590,6 +590,20 @@ describe("processImage of a profile image", () => {
     ]);
   });
 
+  it("asks for a thin header's preview in a 640 square, so its long edge is 640", async () => {
+    const codec = new TestCodec();
+    const result = await processImage(codec, await columnsPng(1000, 99), { ...hashed(), role: "header" });
+    const [full, preview, rgba] = codec.outputs;
+    expect(full?.transforms).toEqual([]);
+    expect(preview?.transforms).toEqual([{ width: 640, height: 640, fit: "scale-down" }]);
+    expect(rgba?.transforms).toEqual(preview?.transforms);
+    expect(result.ok && [sizeOf(result.image.full), sizeOf(result.image.small)]).toEqual([
+      [1000, 99],
+      [640, 63],
+    ]);
+    expect(result.ok && result.image.blurhash).toMatch(/^U.{35}$/);
+  });
+
   it("requires an animated avatar's static to be 400×400", async () => {
     const frame = await encodeWebp(400, 400);
     const full = animatedWebp([frame, frame], { width: 400, height: 400 });
