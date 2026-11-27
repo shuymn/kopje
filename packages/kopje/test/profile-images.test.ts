@@ -510,7 +510,7 @@ describe("update_credentials: data URIs", () => {
 });
 
 // A local avatar is cropped to 400×400 around its centre (a smaller one enlarged), and a header scaled down to
-// Mastodon's 750,000-pixel box in its aspect ratio (platform/images.ts fullBox), through the API and the settings page.
+// Mastodon's 750,000-pixel box in its aspect ratio (platform/images.ts fullEdge), through the API and the settings page.
 describe("update_credentials: the avatar's and header's shape", () => {
   const LEFT = [0, 160, 0] as const;
   const CENTRE = [255, 0, 0] as const;
