@@ -115,6 +115,7 @@ function skippedContexts(scan: PageScan): string[] {
     [scan.relMeAfterSelect, "select"],
     [scan.relMeAfterForeign, "foreign"],
     [scan.relMeAfterLongRel, "long_rel"],
+    [scan.relMeInTemplate, "template"],
     [scan.relMeWithFrameset, "frameset"],
     [scan.relMeOrderAfterTable, "table"],
   ];

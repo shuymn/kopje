@@ -253,6 +253,17 @@ describe("field verification witnesses", () => {
     ],
     ["a GitHub profile page", page(githubProfile(["https://blog.example/", LINK_BACK])), true],
     [
+      "a rel=me after a template that ended",
+      page(`<template><div>x</div></template><a rel=me href="${LINK_BACK}">`),
+      true,
+    ],
+    // The spec parser ignores the anchor in a template's column-group context: Mastodon does not verify.
+    [
+      "a rel=me inside a template after a <col>",
+      page(`<svg><path/></svg><template><col><a rel=me href="${LINK_BACK}"></template><a rel=me href=x>`),
+      false,
+    ],
+    [
       "a rel=me after an svg holding a foreignObject",
       page(`<svg><foreignObject></foreignObject></svg><a rel=me href="${LINK_BACK}">`),
       false,
@@ -346,6 +357,11 @@ describe("field verification witnesses", () => {
         "https://final.example/p?x=1": page(`<svg/><math></math><a rel=me href="${LINK_BACK}">`),
       },
       [{ host: "final.example", contexts: ["foreign"], dropped: 1 }],
+    ],
+    [
+      "a rel=me refused inside a template",
+      { [SITE]: page(`<noscript><img></noscript><template><tr><a rel=me href="${LINK_BACK}"><td>`) },
+      [{ host: "site.example", contexts: ["template"], dropped: 1 }],
     ],
     ["no refusal", { [SITE]: page(`<a rel=me href="https://short.example/a"></a>`) }, []],
     [

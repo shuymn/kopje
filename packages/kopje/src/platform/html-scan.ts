@@ -37,6 +37,10 @@ import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 //   - nor does it model table foster parenting, which moves a rel=me misplaced in a <table> before the table in the
 //     tree's document order, so relMe's order can differ from Mastodon's after a <table> start tag
 //     (relMeOrderAfterTable; its caller does not HEAD the first rel=me then).
+//   - nor the insertion modes of <template> contents, where a scripting-off parser can drop an <a> or <link> (after
+//     a <col>) or move it (after a <tr>): a <template> start tag, in any namespace, opens a region that ends when its
+//     end tag handler runs for "template" (nested ones counted). A rel=me candidate inside one, or after a template
+//     that ended otherwise, is refused and latches (relMeInTemplate); a rel=me after a template that ended is kept.
 //   - only elements in the HTML namespace count; SVG and MathML elements are skipped, and HTML elements inside an
 //     integration point are HTML; an integration point element itself (an SVG <title>, <desc> or <foreignObject>, a
 //     MathML <mi>) is foreign, as in the spec. Where the foreign-content model differs (above), a foreign <title> can
@@ -117,19 +121,21 @@ export type PageScan = {
   relMe: (string | null)[];
   // Whether a rel=me candidate was skipped for following (or standing in) a <noscript> or an <svg> outside the region
   // rules (header), a <select> or <math> start tag, or for being or following an <a> or <link> whose rel is past
-  // REL_CHARS. A region that resumed and refused nothing leaves them false.
+  // REL_CHARS. A region that resumed and refused nothing leaves them false. relMeInTemplate: whether one stood inside
+  // an open <template>, or followed a template that did not end with its own end tag.
   relMeAfterNoscript: boolean;
   relMeAfterSelect: boolean;
   relMeAfterForeign: boolean;
   relMeAfterLongRel: boolean;
+  relMeInTemplate: boolean;
   // Whether the page has the bytes of a <frameset> start tag anywhere (a <noscript> included), which can replace the
   // body: then no rel=me is returned.
   relMeWithFrameset: boolean;
   // Whether a rel=me was collected after a <table> start tag (in any namespace): foster parenting can move a rel=me
   // misplaced in a table before the table in the tree's document order, so relMe's order may not be Mastodon's.
   relMeOrderAfterTable: boolean;
-  // The regions that ended and let rel=me collection resume after them.
-  resumed: { svg: number; noscript: number };
+  // The regions that ended and let rel=me collection resume after them (templates: each ended by its own end tag).
+  resumed: { svg: number; noscript: number; template: number };
   // Every <link>, rel tokens lowercased.
   links: PageLink[];
   // Every <meta> with a property or a name, both lowercased; first wins is the caller's rule.
@@ -427,9 +433,10 @@ async function scanPaced(
     relMeAfterSelect: false,
     relMeAfterForeign: false,
     relMeAfterLongRel: false,
+    relMeInTemplate: false,
     relMeWithFrameset: false,
     relMeOrderAfterTable: false,
-    resumed: { svg: 0, noscript: 0 },
+    resumed: { svg: 0, noscript: 0, template: 0 },
     links: [],
     metas: [],
     jsonLd: [],
@@ -449,6 +456,10 @@ async function scanPaced(
   let noscriptRegion: { raw: string } | null = null;
   let afterLongRel = false;
   let afterTable = false;
+  // The <template> elements open (header), and whether a candidate inside one, or a template ended otherwise than by
+  // its own end tag, refused rel=me for good.
+  let templateDepth = 0;
+  let afterTemplate = false;
   let langSeen = false;
   // The first HTML title: its raw text while open, then done.
   let title: { raw: string; overflow: boolean } | null = null;
@@ -494,18 +505,16 @@ async function scanPaced(
     return { me, tokens };
   };
   // Whether a rel=me candidate here is refused for its context, noted when it is.
+  // No candidate reaches here inside an open SVG or noscript region: "svg *" refuses every element in an SVG region
+  // first, and a noscript's content is raw text.
   const refusedContext = (): boolean => {
-    if (svgRegion !== null) {
-      latchForeign();
-    }
-    if (noscriptRegion !== null) {
-      latchNoscript();
-    }
+    afterTemplate ||= templateDepth > 0;
     scan.relMeAfterNoscript ||= afterNoscript;
     scan.relMeAfterSelect ||= afterSelect;
     scan.relMeAfterForeign ||= afterForeign;
     scan.relMeAfterLongRel ||= afterLongRel;
-    return afterNoscript || afterSelect || afterForeign || afterLongRel;
+    scan.relMeInTemplate ||= afterTemplate;
+    return afterNoscript || afterSelect || afterForeign || afterLongRel || afterTemplate;
   };
   const addRelMe = (href: string | null) => {
     if (refusedContext() || scan.relMe.length >= caps.relMe) {
@@ -593,7 +602,8 @@ async function scanPaced(
           return;
         }
         const region = svgRegion;
-        // A start tag inside a <title> or <desc> is refused before the element list.
+        // A start tag inside a <title> or <desc> is refused before the element list. Redundant on this runtime (one
+        // there is XHTML, or an <svg> or <math> the region opener refuses), kept as the rule's own statement (A3).
         if (region === null || region.inside !== null || element.namespaceURI !== SVG) {
           latchForeign();
           return;
@@ -665,6 +675,31 @@ async function scanPaced(
           latchNoscript();
         } else {
           region.raw += chunk.text;
+        }
+      }),
+    })
+    .on("template", {
+      // In any namespace. Template contents follow their own insertion modes (a <col> or <tr> context drops or moves
+      // an <a> or <link>), which lol-html does not model.
+      element: guarded<Element>((element) => {
+        scan.work.elements++;
+        if (afterTemplate) {
+          return;
+        }
+        templateDepth++;
+        try {
+          element.onEndTag(
+            guarded((end) => {
+              if (end.name === "template" && !afterTemplate) {
+                templateDepth--;
+                scan.resumed.template++;
+              } else {
+                afterTemplate = true;
+              }
+            }),
+          );
+        } catch {
+          afterTemplate = true;
         }
       }),
     })

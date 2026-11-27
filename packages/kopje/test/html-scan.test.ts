@@ -310,6 +310,8 @@ describe("scanHtml against a scripting-off parser", () => {
     ["an element left open", "<body><noscript><div></noscript>"],
     ["end tags", "<noscript></p></br></div></a></noscript>"],
     ["text at the cap", `<noscript>${"x".repeat(NOSCRIPT_CHARS)}</noscript>`],
+    // The cap counts UTF-16 code units: an astral character is two.
+    ["astral text at the cap", `<noscript>${"😀".repeat(NOSCRIPT_CHARS / 2)}</noscript>`],
   ])("collects rel=me again after a noscript holding %s", async (_label, region) => {
     const page = `<a rel=me href=before></a>${region}<a rel=me href=x>`;
     expect(parse5RelMe(page)).toEqual(["before", "x"]);
@@ -337,6 +339,7 @@ describe("scanHtml against a scripting-off parser", () => {
     ["a link rel=me", "<noscript><link rel=me href=in></noscript>"],
     ["a NUL", "<noscript>a\0b</noscript>"],
     ["text past the cap", `<noscript>${"x".repeat(NOSCRIPT_CHARS + 1)}</noscript>`],
+    ["astral text past the cap", `<noscript>${"😀".repeat(NOSCRIPT_CHARS / 2)}x</noscript>`],
     ["a tag inside an iframe", "<noscript><iframe><a rel=me href=in></iframe></noscript>"],
     ["an iframe end tag alone", "<noscript></iframe></noscript>"],
     ["an iframe never closed", "<noscript><iframe>x</noscript>"],
@@ -346,12 +349,63 @@ describe("scanHtml against a scripting-off parser", () => {
     ["a / not before >", "<noscript><img / src=a></noscript>"],
     ["a backtick in an unquoted value", "<noscript><img src=a`b></noscript>"],
     ["a noscript in svg", "<svg><noscript></noscript></svg>"],
+    ["a non-ASCII attribute name", "<noscript><img é=x></noscript>"],
+    ["a template", "<noscript><template></template></noscript>"],
+    ["a </template>", "<noscript></template></noscript>"],
   ])("collects no rel=me after a noscript holding %s", async (_label, region) => {
     const page = `<a rel=me href=before></a>${region}<a rel=me href=x>`;
     const result = await scan(page);
     expect(result).toMatchObject({ relMe: ["before"], resumed: { noscript: 0 } });
     expect(result.relMeAfterNoscript || result.relMeAfterForeign).toBe(true);
     expect(result.dropped.relMe).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([
+    ["", "<template><col><a rel=me href=A></template><a rel=me href=B>"],
+    ["", "<template><tr><a rel=me href=A><td><link rel=me href=B>"],
+    ["<svg><path/></svg>", "<template><col><a rel=me href=A></template><a rel=me href=B>"],
+    ["<svg><path/></svg>", "<template><tr><a rel=me href=A><td><link rel=me href=B>"],
+    ["<noscript><img></noscript>", "<template><col><a rel=me href=A></template><a rel=me href=B>"],
+    ["<noscript><img></noscript>", "<template><tr><a rel=me href=A><td><link rel=me href=B>"],
+    ["", "<template><template></template><a rel=me href=A></template><a rel=me href=B>"],
+    ["", "<svg><template><path/></template></svg><a rel=me href=B>"],
+  ])("collects no rel=me inside a template, after %s, nor after it: %s", async (prefix, rest) => {
+    const page = `<a rel=me href=first></a>${prefix}${rest}`;
+    const result = await scan(page);
+    expect(result.relMe).toEqual(["first"]);
+    expect(result.relMeInTemplate || result.relMeAfterForeign).toBe(true);
+    expect(result.dropped.relMe).toBeGreaterThanOrEqual(1);
+    expect(result.relMe[0]).toBe(parse5RelMe(page)[0]);
+  });
+
+  it("refuses a rel=me inside a template whatever its context: A is dropped or moved by the spec parser", async () => {
+    expect(parse5RelMe("<svg><path/></svg><template><col><a rel=me href=A></template><a rel=me href=B>")).toEqual([
+      "B",
+    ]);
+    expect(parse5RelMe("<svg><path/></svg><template><tr><a rel=me href=A><td><link rel=me href=B>")).toEqual([
+      "B",
+      "A",
+    ]);
+    // A template that another element's end tag ends in the stream stays open in the tree: B is in its column-group
+    // context, ignored.
+    const page = "<div><template><col></div><a rel=me href=B>";
+    expect(parse5RelMe(page)).toEqual([]);
+    expect(await scan(page)).toMatchObject({ relMe: [], relMeInTemplate: true, resumed: { template: 0 } });
+    expect(await scan("<template><a rel=me href=A></a></template>")).toMatchObject({
+      relMe: [],
+      relMeInTemplate: true,
+    });
+  });
+
+  it("keeps collecting rel=me after a template that ended with its own end tag", async () => {
+    for (const page of [
+      "<template><div>x</div></template><a rel=me href=x>",
+      "<svg><path/></svg><template><template></template></template><a rel=me href=x>",
+      "<TEMPLATE><tr><td></TEMPLATE><a rel=me href=x>",
+    ]) {
+      expect(parse5RelMe(page)).toEqual(["x"]);
+      expect(await scan(page)).toMatchObject({ relMe: ["x"], relMeInTemplate: false });
+    }
   });
 
   it("notes a rel=me collected after a table, whose order the scan does not model", async () => {
@@ -472,7 +526,7 @@ describe("scanHtml against a scripting-off parser", () => {
     expect(await scan(page)).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
   });
 
-  it("refuses a rel=me inside an open svg region and stays latched after it", async () => {
+  it("refuses a rel=me that a </p> took out of svg, as svg * refuses it, and stays latched after it", async () => {
     const page = "<svg><path></p><a rel=me href=in></a></svg><a rel=me href=x>";
     expect(parse5RelMe(page)).toEqual(["in", "x"]);
     expect(await scan(page)).toMatchObject({ relMe: [], relMeAfterForeign: true, dropped: { relMe: 2 } });
@@ -637,6 +691,7 @@ describe("scanHtml against a scripting-off parser", () => {
     "<image>",
     "<font color=red>",
     "<title><g/>",
+    "</template>",
   ];
   const NOSCRIPT_BODY = [
     ...["img", "br", "meta", "link", "a", "div", "p", "span", "b", "i", "em", "strong", "picture", "source"].flatMap(
@@ -685,6 +740,39 @@ describe("scanHtml against a scripting-off parser", () => {
     "/",
     "<head>",
     "<body>",
+    "</template>",
+  ];
+  // Template contents follow their own insertion modes: a <col> or <colgroup> context drops an <a> or <link>, a <tr>
+  // or <tbody> one moves it.
+  const TEMPLATE_BODY = [
+    "<div>x</div>",
+    "<p>",
+    "text",
+    "<col>",
+    "<colgroup>",
+    "<tr>",
+    "<td>",
+    "<tbody>",
+    "<caption>",
+    "<a rel=me href=ID>",
+    "<link rel=me href=ID>",
+    "<a href=ID>",
+  ];
+  const TEMPLATE_BREAKERS = [
+    "<template>",
+    "</template>",
+    "</TEMPLATE>",
+    "</div>",
+    "</td>",
+    "</tr>",
+    "</table>",
+    "<svg>",
+    "</svg>",
+    "<svg><path/></svg>",
+    "<noscript><img></noscript>",
+    "<select>",
+    "<!--",
+    "-->",
   ];
   const SVG_OPEN = ["<svg>", '<svg viewBox="0 0 16 16" class="octicon">', "<SVG>"];
   const SVG_CLOSE = ["</svg>", "</SVG>"];
@@ -704,6 +792,14 @@ describe("scanHtml against a scripting-off parser", () => {
       fc.constantFrom("</noscript>", "</NOSCRIPT>"),
     )
     .map((parts) => parts.join(""));
+  const templateRegion = fc
+    .tuple(
+      fc.constantFrom("<template>", "<TEMPLATE>", "<head><template>", "<svg><path/></svg><template>"),
+      body(TEMPLATE_BODY, TEMPLATE_BREAKERS),
+      // Closed, closed upper-case, nested and closed twice, by another element's end tag, or never.
+      fc.constantFrom("</template>", "</TEMPLATE>", "<template></template></template>", "</div>", ""),
+    )
+    .map((parts) => parts.join(""));
   const svgRegion = fc
     .tuple(fc.constantFrom(...SVG_OPEN), body(SVG_BODY, SVG_BREAKERS), fc.constantFrom(...SVG_CLOSE))
     .map((parts) => parts.join(""));
@@ -716,7 +812,10 @@ describe("scanHtml against a scripting-off parser", () => {
   const structured = fc
     .tuple(
       soup,
-      fc.array(fc.tuple(fc.option(relMeAnchor), fc.oneof(svgRegion, noscriptRegion)), { minLength: 1, maxLength: 3 }),
+      fc.array(fc.tuple(fc.option(relMeAnchor), fc.oneof(svgRegion, noscriptRegion, templateRegion)), {
+        minLength: 1,
+        maxLength: 3,
+      }),
       relMeAnchor,
       soup,
     )
@@ -730,7 +829,16 @@ describe("scanHtml against a scripting-off parser", () => {
     "never finds a rel=me the scripting-off parser does not, and returns its first first, after regions",
     { timeout: 300_000 },
     async () => {
-      const counts = { pages: 0, failed: 0, svgResumed: 0, noscriptResumed: 0, pagesResumedWithRelMe: 0 };
+      const counts = {
+        pages: 0,
+        failed: 0,
+        svgResumed: 0,
+        noscriptResumed: 0,
+        templatesClosed: 0,
+        relMeInTemplate: 0,
+        pagesClosedTemplateWithRelMe: 0,
+        pagesResumedWithRelMe: 0,
+      };
       await fc.assert(
         fc.asyncProperty(structured, async (page) => {
           counts.pages++;
@@ -748,6 +856,11 @@ describe("scanHtml against a scripting-off parser", () => {
           }
           counts.svgResumed += result.resumed.svg;
           counts.noscriptResumed += result.resumed.noscript;
+          counts.templatesClosed += result.resumed.template;
+          counts.relMeInTemplate += result.relMeInTemplate ? 1 : 0;
+          if (result.resumed.template > 0 && !result.relMeInTemplate && result.relMe.length > 0) {
+            counts.pagesClosedTemplateWithRelMe++;
+          }
           if (result.resumed.svg + result.resumed.noscript > 0 && result.relMe.length > 0) {
             counts.pagesResumedWithRelMe++;
           }
@@ -757,6 +870,9 @@ describe("scanHtml against a scripting-off parser", () => {
       console.log(JSON.stringify({ structuredRun: counts }));
       expect(counts.svgResumed).toBeGreaterThan(0);
       expect(counts.noscriptResumed).toBeGreaterThan(0);
+      expect(counts.templatesClosed).toBeGreaterThan(0);
+      expect(counts.relMeInTemplate).toBeGreaterThan(0);
+      expect(counts.pagesClosedTemplateWithRelMe).toBeGreaterThan(0);
       expect(counts.pagesResumedWithRelMe).toBeGreaterThan(0);
     },
   );
@@ -908,9 +1024,10 @@ describe("scanHtml bounds", () => {
       relMeAfterSelect: false,
       relMeAfterForeign: false,
       relMeAfterLongRel: false,
+      relMeInTemplate: false,
       relMeWithFrameset: false,
       relMeOrderAfterTable: false,
-      resumed: { svg: big, noscript: big },
+      resumed: { svg: big, noscript: big, template: big },
       links: Array.from({ length: l.links }, () => ({
         rel: Array.from({ length: l.relTokens }, () => ""),
         href: null,

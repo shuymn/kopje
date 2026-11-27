@@ -152,8 +152,9 @@ the failure was at, or null). It carries no URL, header or error message.
 `kopje.field_links.rel_me_skipped` (level log, nothing to act on) records a profile link left unverified on a page
 where the scan skipped rel=me links for where they stood (`src/platform/html-scan.ts`; the rel=me entry of
 [mastodon-deviations.md](mastodon-deviations.md)): `host` (the hostname of the page, after redirects), `contexts`
-(`noscript`, `select`, `foreign` for an `<svg>` or `<math>`, `long_rel`, `frameset`, or `table` when a rel=me after a
-`<table>` kept the first link from being followed) and `dropped` (the rel=me links skipped). It carries no URL or href.
+(`noscript`, `select`, `foreign` for an `<svg>` or `<math>`, `long_rel`, `template`, `frameset`, or `table` when a
+rel=me after a `<table>` kept the first link from being followed) and `dropped` (the rel=me links skipped). It
+carries no URL or href.
 
 The card image round logs at level log, nothing to act on: `kopje.card_images.no_image` records a claim that stored no
 image, with `step` (the sink's failure kind, the processing step such as `type`, `info`, `pixels`, `edge`,
