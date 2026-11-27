@@ -3807,10 +3807,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `update_credentials` and the profile update, 17,842,176 for the media update), chosen from `Content-Type` before any
   byte is read, while its text, each part as sent and the query with it, stays within the limit in UTF-8 bytes, and,
   for the media update (the rule's `outside`), all but the thumbnail file's body within the limit plus one part's
-  headers; the query beside a JSON body is bounded by Rack's limits below in code and by Workers' 16 KB URL limit in
-  production; an `avatar` or `header` sent as a base64 data URI is text under these bounds (413 past them), decoded
+  headers; the query beside a JSON body, or a body of any other type, is bounded by Rack's limits below in code and by
+  Workers' 16 KB URL limit in production; an `avatar` or `header` sent as a base64 data URI is text under these bounds
+  (413 past them, once the parameters parse: a form whose shapes conflict answers 400 first), decoded
   (`profileFiles`, `src/mastodon/accounts.ts`) before anything is reserved or charged, so an input its signature
-  refuses charges nothing, and one Images then refuses is charged as the same file would be (RES-6);
+  refuses reserves and charges nothing, and one Images then refuses is charged as the same file would be (RES-6);
   `test/profile-images.test.ts` ("answers 413 for a data URI past the text bound, decoding nothing", "refuses a data
   URI whose bytes are not an image, whatever it declares, charging nothing"); a
   JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty arrays) or
