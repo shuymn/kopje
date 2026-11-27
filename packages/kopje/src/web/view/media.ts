@@ -9,7 +9,9 @@ import { type Link, linkTo } from "./link";
 // which for an unknown file need be no image, so a preview equal to the url is none, and gives a video without a
 // preview image this server's VIDEO_POSTER, which a page does not show. `alt` is its description, or '' when it has
 // none (the page shows no marker for that). Sizes come from the small variant when it has one, a video's then from its
-// original. `link` opens the file itself (through linkTo: another host's is marked).
+// original. `link` opens the file itself (through linkTo: another host's is marked). An attachment withheld by a domain
+// block's reject_media (#1560, `withheld`) is a link to its http(s) remote_url, with no preview, size or poster, so the
+// browser loads none of its files and nothing under /media_proxy/; one without such a remote_url is left out.
 type MediaKind = "image" | "video" | "gifv" | "audio" | "unknown";
 
 export type MediaView = {
@@ -25,6 +27,12 @@ export type MediaView = {
 const KINDS: readonly string[] = ["image", "video", "gifv", "audio"] satisfies MediaKind[];
 
 export function mediaView(media: MediaAttachment, domain: string): MediaView | null {
+  if (media.withheld === true) {
+    const remote = httpUrl(media.remote_url)?.href;
+    return remote === undefined
+      ? null
+      : { kind: "unknown", full: remote, link: linkTo(remote, domain), preview: null, alt: altOf(media) };
+  }
   const full = httpUrl(media.url)?.href;
   if (full === undefined) {
     return null;
@@ -50,10 +58,14 @@ export function mediaView(media: MediaAttachment, domain: string): MediaView | n
     full,
     link: linkTo(full, domain),
     preview: preview === undefined || preview === full ? null : preview,
-    // A description of only white space is none.
-    alt: (media.description ?? "").trim() === "" ? "" : (media.description ?? ""),
+    alt: altOf(media),
     ...(size === undefined ? {} : { width: size.width, height: size.height }),
   };
+}
+
+// A description of only white space is none.
+function altOf(media: MediaAttachment): string {
+  return (media.description ?? "").trim() === "" ? "" : (media.description ?? "");
 }
 
 // The image a page shows for an attachment: an image's preview, or the image itself without one; a video's poster

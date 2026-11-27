@@ -1054,8 +1054,10 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
 // image the file itself as its preview. #1560: an entry is withheld (withheldMedia) while a domain block's reject_media
 // rules its owner: the owner of the current attachment of the status its id names (`owners`, that row's verdict, null
 // for the author's own), else the author (`authorRejected`). A withheld entry without a remote_url (a converted
-// version's, cli/lib/cutover/convert.js) takes its stored http(s) url for it, with a known origin, unless that url is on
-// the instance's own domain (hostDomain, whatever its spelling). editMediaSql's proxy_id is never presented.
+// version's, cli/lib/cutover/convert.js) takes its stored http(s) url for it, with the instance's origin known, unless that url is on
+// the instance's own domain (hostDomain, whatever its spelling). editMediaSql's proxy_id is never presented. `page`: the
+// instance's origin when a page presents the history without one (web-pages/status.ts pageHistory), which marks a
+// withheld entry for the page (withheldMedia) and names the instance's domain.
 function snapshotMedia(
   json: string,
   origin: string | null,
@@ -1063,8 +1065,10 @@ function snapshotMedia(
     authorRejected: false,
     owners: new Map(),
   },
+  page: string | null = null,
 ): MediaAttachment[] {
-  const instanceDomain = origin === null ? null : hostDomain(origin);
+  const own = origin ?? page;
+  const instanceDomain = own === null ? null : hostDomain(own);
   return (JSON.parse(json) as (MediaAttachment & { proxy_id?: number })[]).map((entry) => {
     const { proxy_id: proxyId, ...media } = entry;
     const url = presentedMediaUrl(media.url);
@@ -1089,7 +1093,7 @@ function snapshotMedia(
     return withheldMedia(
       { ...shown, remote_url: remoteUrl ?? fallback, ...(proxyId === undefined ? {} : { proxy_id: proxyId }) },
       origin,
-      { live, page: false },
+      { live, page: page !== null },
     );
   });
 }
@@ -1904,6 +1908,7 @@ export function editVersions(
   db: Db,
   statusId: string,
   origin: string | null,
+  page: string | null = null,
 ): { count: number; newestFirst: Iterable<EditVersion | undefined> } {
   const count = db.first<{ n: number }>(EDIT_COUNT_SQL, statusId)?.n ?? 0;
   const authorRejected =
@@ -1958,10 +1963,15 @@ export function editVersions(
             sensitive: edit.sensitive === 1,
             created_at: edit.created_at,
             poll: editPollOf(edit.poll_options),
-            media_attachments: snapshotMedia(edit.media_json, origin, {
-              authorRejected,
-              owners: new Map(JSON.parse(edit.owners ?? "[]") as [string, number | null][]),
-            }),
+            media_attachments: snapshotMedia(
+              edit.media_json,
+              origin,
+              {
+                authorRejected,
+                owners: new Map(JSON.parse(edit.owners ?? "[]") as [string, number | null][]),
+              },
+              page,
+            ),
             emojis: authorRejected ? [] : presentEmojis(edit.emojis, STATUS_EMOJIS_BYTES),
           };
     }

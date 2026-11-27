@@ -229,6 +229,9 @@ exception for frame, landmarks and chrome, and still uses the tokens. Where a ru
   description is on the page once; an image's is its `alt` too, a second copy its page's read counts (`altCopyBytes`,
   [response-inventory.md](response-inventory.md)). The descriptions are in the post's language (`lang`). A missing
   description shows no marker; an image's link is still named, in hidden text.
+- An attachment of an account whose domain a block with `reject_media` rules is a link to its remote file, as Mastodon
+  links one it never downloaded, with no preview or player; the account shows the default avatar and header and no
+  custom emoji (`test/web-reject-media.test.ts`).
 - A copy field is named by a short noun ("Handle", "Post URL", "Embed code", "Code"), with what to do with the value
   in a hint under it. Its button shows its result in place: a check for a moment after a success, an alert after a
   failure and the failure's note in the hint's place (the space of the longer kept), the result text in a visually

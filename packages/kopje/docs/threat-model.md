@@ -3132,7 +3132,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   http(s) is left out, a poster is an attachment's own http(s) preview and never its file, and an attachment of a type
   the page does not play is a link through `linkTo`, its stored type never written: `src/web/view/media.ts`;
   `test/web-status-content.test.ts` ("shows an attachment of another type as a link, and nothing of a URL that is not
-  http(s)").
+  http(s)"). An attachment withheld by a domain block's `reject_media` (VIS-30) is a link to its http(s) `remote_url`
+  with no preview, poster or size, so the page loads none of its files and nothing under `/media_proxy/`, and one
+  without such a `remote_url` is left out: `mediaView` in `src/web/view/media.ts`; `test/web-reject-media.test.ts`
+  ("renders no media of a rejected domain, and links the attachment's remote_url").
   _Enforced (main)_ for a card's video: its `html` is never a remote markup but Kopje's fixed iframe template
   (`cardIframe` in `src/domain/status-presenter.ts`: `allowfullscreen`, `scrolling` and `frameborder` forced, a fixed
   sandbox), from its src alone, which passes `presentedEmbedSrc` (`src/platform/stored-bounds.ts`) when it is kept and

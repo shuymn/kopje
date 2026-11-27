@@ -146,7 +146,7 @@ export function statusPageWithin(db: Db, input: StatusInput, site: Site, answerB
     value: status,
     parent,
     thread: { ancestors: ancestors.toReversed(), list, paging },
-    history: pageHistory(db, row.id, budget),
+    history: pageHistory(db, row.id, budget, options.origin),
   };
 }
 
@@ -227,9 +227,10 @@ const LONGEST_HISTORY_FRAME: PageHistory = { versions: [], leftOut: Number.MAX_S
 // The history, strict: versions newest first while each fits whole within the lesser of what the
 // page budget leaves and WEB_HISTORY_BYTES; the first that does not ends them, and it and every older one are counted
 // as left out. No version is ever cut or admitted past its share.
-function pageHistory(db: Db, statusId: string, budget: PageBudget): PageHistory | null {
-  // No origin: the pages show a video without a preview image of its own with no poster (web/view/media.ts).
-  const versions = editVersions(db, statusId, null);
+function pageHistory(db: Db, statusId: string, budget: PageBudget, origin: string | null): PageHistory | null {
+  // No origin: the pages show a video without a preview image of its own with no poster (web/view/media.ts). The
+  // instance's origin marks a withheld entry for the page (#1560), which links it by its remote_url.
+  const versions = editVersions(db, statusId, null, origin);
   if (versions.count === 0) {
     return null;
   }
