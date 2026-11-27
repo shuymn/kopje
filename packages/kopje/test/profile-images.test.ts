@@ -4,13 +4,24 @@ import { describe, expect, it, vi } from "vitest";
 
 import { DOOMED_AT, profileReleaseSql, TRANSFORMS_PER_UPLOAD } from "../src/domain/media";
 import { API_BODY_LIMIT, FILE_PART_SLACK } from "../src/mastodon/params";
+import * as dataUri from "../src/platform/data-uri";
 import { isAnimated } from "../src/platform/image-bytes";
 import { imagesCodec, PROFILE_IMAGE_LIMIT } from "../src/platform/images";
 import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
-import { bearer, json, sql } from "./api-helpers";
-import { ANIMATED_GIF, ANIMATED_WEBP, PNG_PLAIN } from "./fixtures/images";
-import { bytes, columnsPng, framesKeepingCodec, mediaForm, multipartForm, r2Keys, TestCodec } from "./media-helpers";
+import { bearer, form, json, sql } from "./api-helpers";
+import { countingStore } from "./app-helpers";
+import { ANIMATED_GIF, ANIMATED_WEBP, AVIF, GIF, PNG_PLAIN } from "./fixtures/images";
+import {
+  bytes,
+  columnsPng,
+  framesKeepingCodec,
+  mediaForm,
+  multipartForm,
+  pathOf,
+  r2Keys,
+  TestCodec,
+} from "./media-helpers";
 import { singletonStatistics } from "./plan-audit-store";
 import { aliceWithFollower } from "./profile-fixtures";
 import { scopedToken } from "./read-helpers";
@@ -22,8 +33,6 @@ import { decodeFixture, twoFrameWebp } from "./webp-fixtures";
 // PATCH /api/v1/accounts/update_credentials with avatar and header files (multipart): the body and file bounds, the
 // token checked before the body is read, Paperclip's validations, one transaction with one Update(Person), and the
 // ownership of the uploads until it commits (mastodon/accounts.ts, mastodon/media.ts storeProfileImage).
-
-const AVIF = new Uint8Array([0, 0, 0, 0x1c, ...new TextEncoder().encode("ftypavif"), 0, 0, 0, 0]);
 
 async function setup(wrapStore?: (store: StoreStub) => StoreStub, codec = new TestCodec()) {
   const h = await aliceWithFollower({ images: () => codec, wrapStore });
@@ -242,7 +251,7 @@ describe("update_credentials: avatar and header", () => {
         },
       },
     });
-    const avif = new File([AVIF], "a.avif", { type: "image/avif" });
+    const avif = new File([bytes(AVIF)], "a.avif", { type: "image/avif" });
     expect(
       await answer(
         await patch(
@@ -264,12 +273,14 @@ describe("update_credentials: avatar and header", () => {
         },
       },
     });
+    // Text that is not a data URI by Paperclip's pattern (its other spellings: test/data-uri.test.ts).
     for (const parts of [
       [["avatar", "x"]],
       [
         ["avatar", png()],
         ["avatar", "x"],
       ],
+      [["avatar", `DATA:image/png;base64,${PNG_PLAIN}`]],
     ] as [string, string | File][][]) {
       expect(await answer(await patch(h, h.users.alice.token, formOf(parts)))).toEqual({
         status: 400,
@@ -318,6 +329,183 @@ describe("update_credentials: avatar and header", () => {
       { avatar_static_url: null },
     ]);
   });
+});
+
+// `avatar` and `header` as base64 data URIs (mastodon/accounts.ts profileFiles, platform/data-uri.ts): read in every
+// body type and the query, decoded as Paperclip decodes them, judged by their bytes' signature before anything is
+// reserved, and bounded by the request's text (RES-1). The decoder's own cases: test/data-uri.test.ts.
+describe("update_credentials: data URIs", () => {
+  const uri = (payload: string, type = "image/png") => `data:${type};base64,${payload}`;
+  // As Ruby's Base64.encode64 writes it, which Mastodon's own specs send: lines of 60 characters, each ending in LF.
+  const encode64 = (payload: string) => `${payload.match(/.{1,60}/g)!.join("\n")}\n`;
+  const sendJson = (h: H, body: Record<string, unknown>, query = "") =>
+    h.request(
+      `/api/v1/accounts/update_credentials${query}`,
+      bearer(h.users.alice.token, { ...json(body), method: "PATCH" }),
+    );
+  const sendForm = (h: H, body: Record<string, string>) =>
+    h.request("/api/v1/accounts/update_credentials", bearer(h.users.alice.token, form(body, { method: "PATCH" })));
+  // The served type of a set image: PNG for a PNG, WebP for the GIF fixture.
+  const served = async (h: H, url: string | null | undefined) =>
+    (await h.request(pathOf(url ?? null))).headers.get("content-type");
+  const charges = (store: StoreStub) =>
+    sql(store, "SELECT name, value FROM kopje_state WHERE name LIKE 'images_%transforms:%' ORDER BY name");
+  // A harness that counts the Store's reservations: one consumes an upload attempt even when it is discarded later.
+  const counting = async () => {
+    let calls: ReturnType<typeof countingStore> | undefined;
+    const h = await setup((store) => (calls ??= countingStore(store)).stub);
+    return { h, reservations: () => calls!.calls.filter((name) => name === "reserveMedia").length };
+  };
+
+  it("sets an avatar and a header from data URIs in JSON, urlencoded, multipart and the query", async () => {
+    const h = await setup();
+    // JSON: Base64.encode64's lines, and a URI that declares no type.
+    const fromJson = await sendJson(h, { avatar: uri(encode64(PNG_PLAIN)), header: `data:;base64,${GIF}` });
+    expect(fromJson.status).toBe(200);
+    const first = await profile(h.store);
+    expect([await served(h, first?.avatar_url), await served(h, first?.header_url)]).toEqual([
+      "image/png",
+      "image/webp",
+    ]);
+    // urlencoded, with spaces inside the payload.
+    const spaced = `${PNG_PLAIN.slice(0, 20)} ${PNG_PLAIN.slice(20, 40)}  ${PNG_PLAIN.slice(40)}`;
+    expect((await sendForm(h, { avatar: uri(spaced) })).status).toBe(200);
+    const second = await profile(h.store);
+    expect(second?.avatar_url).not.toBe(first?.avatar_url);
+    expect(await served(h, second?.avatar_url)).toBe("image/png");
+    // A multipart text part.
+    expect((await patch(h, h.users.alice.token, formOf([["header", uri(PNG_PLAIN)]]))).status).toBe(200);
+    const third = await profile(h.store);
+    expect(third?.header_url).not.toBe(first?.header_url);
+    expect(await served(h, third?.header_url)).toBe("image/png");
+    // The query, when the body has no value of the name.
+    const query = `?avatar=${encodeURIComponent(uri(GIF, "image/gif"))}`;
+    expect((await patch(h, h.users.alice.token, formOf([["note", "n"]]), {}, query)).status).toBe(200);
+    const fourth = await profile(h.store);
+    expect(fourth?.avatar_url).not.toBe(second?.avatar_url);
+    expect(await served(h, fourth?.avatar_url)).toBe("image/webp");
+    // The body's value when both carry one: its PNG, not the query's GIF.
+    expect((await sendJson(h, { avatar: uri(PNG_PLAIN) }, query)).status).toBe(200);
+    const fifth = await profile(h.store);
+    expect(fifth?.avatar_url).not.toBe(fourth?.avatar_url);
+    expect(await served(h, fifth?.avatar_url)).toBe("image/png");
+  }, 60_000);
+
+  it("takes a PNG data URI with `!` inside and without padding, and one declared as image/gif", async () => {
+    const h = await setup();
+    const unpadded = PNG_PLAIN.replace(/=+$/, "");
+    expect(unpadded).not.toBe(PNG_PLAIN);
+    const marked = `${unpadded.slice(0, 30)}!${unpadded.slice(30)}`;
+    expect((await sendJson(h, { avatar: uri(marked), header: uri(PNG_PLAIN, "image/gif") })).status).toBe(200);
+    const row = await profile(h.store);
+    expect([await served(h, row?.avatar_url), await served(h, row?.header_url)]).toEqual(["image/png", "image/png"]);
+  });
+
+  it("refuses a data URI whose bytes are not an image, whatever it declares, charging nothing", async () => {
+    const { h, reservations } = await counting();
+    const before = await charges(h.store);
+    const refusal = (kind: string) => ({
+      status: 422,
+      body: {
+        error: `Validation failed: ${kind} content type is invalid, ${kind} is invalid`,
+        details: {
+          [`${kind.toLowerCase()}_content_type`]: [{ error: "ERR_INVALID", description: "is invalid" }],
+          [kind.toLowerCase()]: [{ error: "ERR_IS INVALID", description: "is invalid" }],
+        },
+      },
+    });
+    const sent = [
+      await answer(await sendJson(h, { avatar: uri(AVIF) })),
+      await answer(await sendJson(h, { avatar: uri("@@@@") })),
+      await answer(await sendJson(h, { header: uri("") })),
+      await answer(await patch(h, h.users.alice.token, formOf([["header", uri(AVIF, "image/avif")]]))),
+    ];
+    expect(sent).toEqual([refusal("Avatar"), refusal("Avatar"), refusal("Header"), refusal("Header")]);
+    expect(reservations()).toBe(0);
+    expect(h.codec.calls).toBe(0);
+    expect(await media(h.store)).toEqual([]);
+    expect(await charges(h.store)).toEqual(before);
+    expect(await profile(h.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
+  });
+
+  it("decides by the last part when a data URI and a file are sent for the same name", async () => {
+    const h = await setup();
+    const gif = uri(GIF, "image/gif");
+    expect(
+      (
+        await patch(
+          h,
+          h.users.alice.token,
+          formOf([
+            ["avatar", gif],
+            ["avatar", png()],
+          ]),
+        )
+      ).status,
+    ).toBe(200);
+    const fileLast = await profile(h.store);
+    expect(await served(h, fileLast?.avatar_url)).toBe("image/png");
+    expect(
+      (
+        await patch(
+          h,
+          h.users.alice.token,
+          formOf([
+            ["avatar", png()],
+            ["avatar", gif],
+          ]),
+        )
+      ).status,
+    ).toBe(200);
+    const textLast = await profile(h.store);
+    expect(textLast?.avatar_url).not.toBe(fileLast?.avatar_url);
+    expect(await served(h, textLast?.avatar_url)).toBe("image/webp");
+  });
+
+  // Of an otherwise parseable form: a form whose parameter shapes conflict answers 400 Malformed request body first.
+  it("answers 413 for a data URI past the text bound, decoding nothing", async () => {
+    const { h, reservations } = await counting();
+    const decoded = vi.spyOn(dataUri, "decodeRubyBase64");
+    try {
+      // A PNG's data URI of `bytes` UTF-8 bytes, padded with spaces the decoder skips.
+      const padded = (bytes: number) => {
+        const value = uri(PNG_PLAIN);
+        return `${value}${" ".repeat(bytes - value.length)}`;
+      };
+      // `{"avatar":""}` is 13 bytes, and the name `avatar` 6.
+      const half = Math.floor(API_BODY_LIMIT / 2);
+      const over = [
+        await answer(await sendJson(h, { avatar: padded(API_BODY_LIMIT - 13 + 1) })),
+        await answer(await patch(h, h.users.alice.token, formOf([["avatar", padded(API_BODY_LIMIT - 6 + 1)]]))),
+        // Two parts, each within the bound and together past it: the replaced one counts.
+        await answer(
+          await patch(
+            h,
+            h.users.alice.token,
+            formOf([
+              ["avatar", padded(half)],
+              ["avatar", padded(half)],
+            ]),
+          ),
+        ),
+      ];
+      expect(over).toEqual(
+        Array.from({ length: 3 }, () => ({ status: 413, body: { error: "Request body is too large" } })),
+      );
+      expect(decoded).not.toHaveBeenCalled();
+      expect(reservations()).toBe(0);
+      expect(h.codec.calls).toBe(0);
+      expect(await media(h.store)).toEqual([]);
+      expect(await profile(h.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
+      // At the bound, one part is decoded once and set.
+      expect((await sendJson(h, { avatar: padded(API_BODY_LIMIT - 13) })).status).toBe(200);
+      expect(decoded).toHaveBeenCalledTimes(1);
+      expect(reservations()).toBe(1);
+      expect((await profile(h.store))?.avatar_url).toMatch(/\/full\.png$/);
+    } finally {
+      decoded.mockRestore();
+    }
+  }, 60_000);
 });
 
 // A local avatar is cropped to 400×400 around its centre (a smaller one enlarged), and a header scaled down to

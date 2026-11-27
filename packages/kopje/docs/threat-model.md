@@ -3820,8 +3820,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   update, `PATCH` and `PUT /api/v1/profile`, the settings page's image, and the thumbnail of `PUT`/`PATCH
   /api/v1/media/:id`) takes a multipart body of the limit plus each file and its part headers (17,858,560 bytes for
   `update_credentials` and the profile update, 17,842,176 for the media update), chosen from `Content-Type` before any
-  byte is read, while its text, each part as sent, stays within the limit in UTF-8 bytes, and, for the media update
-  (the rule's `outside`), all but the thumbnail file's body within the limit plus one part's headers; a
+  byte is read, while its text, each part as sent and the query with it, stays within the limit in UTF-8 bytes, and,
+  for the media update (the rule's `outside`), all but the thumbnail file's body within the limit plus one part's
+  headers; the query beside a JSON body, or a body of any other type, is bounded by Rack's limits below in code and by
+  Workers' 16 KB URL limit in production; an `avatar` or `header` sent as a base64 data URI is text under these bounds
+  (413 past them; within the raw body limit, a form whose shapes conflict answers 400 before its text is counted),
+  decoded (`profileFiles`, `src/mastodon/accounts.ts`) before anything is reserved or charged, so an input its
+  signature refuses reserves and charges nothing, and one Images then refuses is charged as the same file would be
+  (RES-6); `test/profile-images.test.ts` ("answers 413 for a data URI past the text bound, decoding nothing",
+  "refuses a data URI whose bytes are not an image, whatever it declares, charging nothing"); a
   JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty arrays) or
   2,097,152 UTF-16 code units of all its keys, charged before each key is built, and past 32 levels of nesting; the
   query, and a urlencoded body, are refused past Rack's limits (4 MiB, 4,096 fields), a multipart body at its 4,096th
@@ -3985,6 +3992,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   code units RES-1 charges (`src/platform/rails-params.ts`); `test/param-shapes.test.ts` ("reads a query at Rack's
   limits and both caps within a generous time, before any token", "reads a form body at its limit and both caps within
   a generous time").
+  A profile image's data URI: _Enforced (main):_ its prefix is scanned once from the start and its payload decoded in
+  one pass (`src/platform/data-uri.ts`), with no pattern over the payload; `test/param-shapes.test.ts` ("recognizes and
+  decodes a data URI at the text bound within its time bound").
   A URL's host key: _Enforced (main):_ `hostDomain` (`src/platform/domain-name.ts`) drops the trailing dots in one
   backward scan, where a regex retries at each dot of an interior run; `test-node/cutover-convert.test.ts` ("is read
   within a generous time at the size of an inbound activity"), `test/host-trailing-dots.test.ts` ("answers an inbound
