@@ -12,6 +12,7 @@ import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { bearer, type ApiHarness } from "./api-helpers";
 import { ANIMATED_WEBP } from "./fixtures/images";
 import { localRgba, type OutputCall, type RgbaControl } from "./images-binding";
+import { animatedWebp } from "./remote-media-fixtures";
 import type { User } from "./status-helpers";
 
 // Media fixtures: base64 fixtures as bytes, multipart uploads, R2 listings, and a codec to stand in for Images.
@@ -101,7 +102,7 @@ export function pathOf(url: string | null): string {
 // (images-binding.ts localRgba, whose output() calls are in `outputs`), that records calls and can be told to
 // misbehave: fail with an Images error code, return given bytes instead of a re-encoding (to inject EXIF), for every
 // call (encodeResult) or per call (encodeResponder, given the call's options, its 0-based index and its input; null
-// falls through to the real binding), or rewrite the real binding's output (encodeOutput, given the output, the call's
+// falls through to the real binding at once, and a promise answers with its bytes), or rewrite the real binding's output (encodeOutput, given the output, the call's
 // options and its input: Images keeping metadata, as production does); the 'rgba' output by RgbaControl. Given bytes
 // are answered as a copy, since an output is the caller's to strip in place (ImageCodec). Miniflare's binding decodes
 // only the first frame and ignores anim, so an animated output is stood in for through these.
@@ -116,7 +117,9 @@ export class TestCodec implements ImageCodec, RgbaControl {
   failInfo: number | null = null;
   failEncode: number | null = null;
   encodeResult: Uint8Array | null = null;
-  encodeResponder: ((options: EncodeOptions, index: number, input: Uint8Array) => Uint8Array | null) | null = null;
+  encodeResponder:
+    | ((options: EncodeOptions, index: number, input: Uint8Array) => Uint8Array | null | Promise<Uint8Array>)
+    | null = null;
   encodeOutput: ((output: Uint8Array, options: EncodeOptions, input: Uint8Array) => Uint8Array) | null = null;
   infoResult: ImageInfo | null = null;
 
@@ -140,6 +143,9 @@ export class TestCodec implements ImageCodec, RgbaControl {
       return Promise.resolve(this.encodeResult.slice());
     }
     const given = this.encodeResponder?.(options, this.encodeCalls.length - 1, bytes) ?? null;
+    if (given instanceof Promise) {
+      return given.then((answer) => answer.slice());
+    }
     if (given !== null) {
       return Promise.resolve(given.slice());
     }
@@ -156,6 +162,12 @@ export class TestCodec implements ImageCodec, RgbaControl {
   get outputs(): OutputCall[] {
     return this.stand.outputs;
   }
+}
+
+// Answers `codec`'s encode calls by their order: the i-th call gets answers[i], and null or a call past the list goes
+// through to the local binding (TestCodec encodeResponder).
+export function answerInOrder(codec: TestCodec, answers: readonly (Uint8Array | null)[]): void {
+  codec.encodeResponder = (_options, index) => answers[index] ?? null;
 }
 
 // The bytes of every RGBA output `codec` answered, each copied as it came.
@@ -180,6 +192,44 @@ export function framesKeepingCodec(): TestCodec {
   codec.encodeResponder = (options) =>
     options.format === "image/webp" && options.still !== true ? bytes(ANIMATED_WEBP) : null;
   return codec;
+}
+
+// The colours of shapedFramesCodec's two frames.
+export const FRAME_COLOURS = [
+  [255, 0, 0],
+  [0, 0, 255],
+] as const;
+
+// A still WebP of one colour at `size`, made by the local binding.
+async function solidWebp(size: { width: number; height: number }, colour: readonly [number, number, number]) {
+  const png = await columnsPng(size.width, size.height, () => colour);
+  const output = await env.IMAGES.input(new Blob([png]).stream() as ReadableStream<Uint8Array>).output({
+    format: "image/webp",
+    anim: false,
+  });
+  return new Uint8Array(await new Response(output.image()).arrayBuffer());
+}
+
+// A TestCodec standing in for Images keeping an animated input's frames in the shape it is asked for: every WebP
+// served file (an encode without `still`) is an animation of two frames of FRAME_COLOURS at the size the local binding
+// serves for the same transformation, and previews and other formats go through the local binding. A profile image's role then passes its shape check.
+export function shapedFramesCodec(): TestCodec {
+  const codec = new TestCodec();
+  codec.encodeResponder = (options, _index, input) =>
+    options.format !== "image/webp" || options.still === true ? null : shapedAnimation(input, options);
+  return codec;
+}
+
+// Two frames of FRAME_COLOURS at the size the local binding serves for `options` on `input`, read from a still of it
+// made through its own codec, so the call is not recorded in a TestCodec's `outputs`.
+async function shapedAnimation(input: Uint8Array, options: EncodeOptions): Promise<Uint8Array> {
+  const still = await env.IMAGES.info(
+    new Blob([
+      await imagesCodec(env.IMAGES).encode(input, { ...options, still: true }),
+    ]).stream() as ReadableStream<Uint8Array>,
+  );
+  const size = { width: "width" in still ? still.width : 1, height: "height" in still ? still.height : 1 };
+  return animatedWebp(await Promise.all(FRAME_COLOURS.map((colour) => solidWebp(size, colour))), size);
 }
 
 const ascii = (value: string) => new TextEncoder().encode(value);
@@ -225,6 +275,38 @@ export function pngChunk(type: string, data: Uint8Array): Uint8Array {
   out.set(data, 8);
   view.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
   return out;
+}
+
+// An RGB PNG of `width` x `height` whose column x is the colour `colourAt(x)` on every row: an image whose crop or
+// scale shows in its pixels, of any size (the rows are deflated with CompressionStream).
+export async function columnsPng(
+  width: number,
+  height: number,
+  colourAt: (x: number) => readonly [number, number, number] = () => [0, 0, 0],
+): Promise<Uint8Array> {
+  const row = new Uint8Array(1 + 3 * width);
+  for (let x = 0; x < width; x++) {
+    row.set(colourAt(x), 1 + 3 * x);
+  }
+  const raw = new Uint8Array(row.length * height);
+  for (let y = 0; y < height; y++) {
+    raw.set(row, y * row.length);
+  }
+  const deflated = new Uint8Array(
+    await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer(),
+  );
+  const ihdr = new Uint8Array(13);
+  const view = new DataView(ihdr.buffer);
+  view.setUint32(0, width);
+  view.setUint32(4, height);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  const signature = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  return new Uint8Array([
+    ...signature,
+    ...pngChunk("IHDR", ihdr),
+    ...pngChunk("IDAT", deflated),
+    ...pngChunk("IEND", new Uint8Array()),
+  ]);
 }
 
 // `png` with a chunk inserted right after IHDR.
