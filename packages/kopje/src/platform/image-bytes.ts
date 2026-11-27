@@ -9,10 +9,6 @@
 
 export type ImageType = "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/avif";
 
-// Mastodon's matrix limit for images (the pixels it advertises), for local uploads (platform/images.ts), card images
-// and remote media, which read it from the file's headers.
-export const IMAGE_MATRIX_LIMIT = 16_777_216;
-
 export function ascii(bytes: Uint8Array, start: number, length: number): string {
   return String.fromCharCode(...bytes.subarray(start, start + length));
 }

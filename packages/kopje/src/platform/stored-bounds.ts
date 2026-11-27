@@ -1916,8 +1916,10 @@ export const OEMBED_EXPIRY_INDEX = "card_oembed_endpoints_expiry";
 // - CARD_IMAGE_PIXELS: the stored image's target area (Mastodon's 230,400-pixel original style); CARD_DECODE_PIXELS
 //   the most an output may hold, the target's box plus one line of the longer edge that Images may round up (230,400 +
 //   31,744 for edges up to 31,744 pixels), so its RGBA output (federation/card-images.ts I15) is at most 1 MiB;
-// - CARD_GIF_MATRIX_LIMIT: a GIF's pixels (Mastodon's attachmentable.rb GIF limit); other types IMAGE_MATRIX_LIMIT
-//   (platform/images.ts); CARD_IMAGE_EDGE_MAX an edge of the source, the target and the stored image, in pixels;
+// - CARD_GIF_MATRIX_LIMIT: a GIF's pixels (Mastodon's attachmentable.rb GIF limit); CARD_IMAGE_MATRIX_LIMIT another
+//   type's, 16,777,216 (Mastodon's limit through v4.1, Kopje's own for a file a remote server chose, which the card
+//   rounds process within their own budget; local uploads have IMAGE_MATRIX_LIMIT, platform/images.ts);
+//   CARD_IMAGE_EDGE_MAX an edge of the source, the target and the stored image, in pixels;
 // - CARD_IMAGE_OUTPUT_LIMIT: the stored WebP, in bytes, refused while it is read;
 // - CARD_IMAGE_TOKEN_BYTES: a stored token (media-files.ts FILE_TOKEN), in ASCII bytes;
 // - CARD_IMAGE_URL_BYTES: the presented image URL, in UTF-8 bytes of ASCII: 'https://' + a 253-byte host + '/media/' +
@@ -1927,6 +1929,7 @@ export const CARD_IMAGE_BODY_LIMIT = 8 * 1024 * 1024;
 export const CARD_IMAGE_PIXELS = 230_400;
 export const CARD_DECODE_PIXELS = 262_144;
 export const CARD_GIF_MATRIX_LIMIT = 921_600;
+export const CARD_IMAGE_MATRIX_LIMIT = 16_777_216;
 /** @alias */
 export const CARD_IMAGE_EDGE_MAX = CARD_DIMENSION_MAX;
 export const CARD_IMAGE_OUTPUT_LIMIT = 512 * 1024;

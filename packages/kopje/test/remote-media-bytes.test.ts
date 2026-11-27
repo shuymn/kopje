@@ -2,11 +2,12 @@ import { env } from "cloudflare:workers";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { IMAGE_MATRIX_LIMIT, type ImageType, retainedMetadata, webpSize } from "../src/platform/image-bytes";
+import { type ImageType, retainedMetadata, webpSize } from "../src/platform/image-bytes";
 import { imagesCodec } from "../src/platform/images";
 import {
   RECOGNITION_PREFIX_BYTES,
   recognizeMedia,
+  REMOTE_IMAGE_MATRIX_LIMIT,
   remoteImageMetadata,
   stripImageOutput,
   verifyRemoteImage,
@@ -138,14 +139,14 @@ describe("verifyRemoteImage: recognition", () => {
   });
 
   it("refuses an image past the pixel limit, read from its header, and keeps one at it", () => {
-    // A PNG's IHDR stating 4096 × 4097 pixels, one row past the limit (16,777,216 = 4096 × 4096).
+    // A PNG's IHDR stating 4096 × 4097 pixels, one row past REMOTE_IMAGE_MATRIX_LIMIT (16,777,216 = 4096 × 4096).
     const png = bytes(PNG_PLAIN);
     const view = new DataView(png.buffer);
     view.setUint32(16, 4096);
     view.setUint32(20, 4096);
     expect(refusal(png.slice())).toBe("accepted");
     view.setUint32(20, 4097);
-    expect(IMAGE_MATRIX_LIMIT).toBe(4096 * 4096);
+    expect(REMOTE_IMAGE_MATRIX_LIMIT).toBe(4096 * 4096);
     expect(refusal(png)).toBe("pixels");
     // A GIF whose frame is past the limit inside a small screen.
     const gif = bytes(GIF);
