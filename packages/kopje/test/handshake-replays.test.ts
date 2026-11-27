@@ -207,6 +207,29 @@ describe("a Follow refused at its claim (#1422)", () => {
     expect(sent.map((s) => [s.type, s.id])).toEqual([["Follow", uri]]);
   });
 
+  // R21 (followableBySql): a target that has moved since is not followed, so its hold waits as under a block.
+  it("is deferred while its target has moved, and sent once it has not", async () => {
+    const w = await world();
+    const { r, id, uri } = await aliceFollowsR(w);
+    const c = await remoteAccount(w.h.store, "c", "remote.example");
+    await suspend(w, r);
+    expect(await drain(w.h.store)).toEqual([]);
+    await lift(w, r);
+    await sql(w.h.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", c, r);
+    expect(await replays(w.h.store, NOW + RECHECK)).toEqual({ pending: false, delivers: false });
+    expect(await holds(w.h.store)).toEqual([{ follow_id: id, check_at: NOW + 2 * RECHECK, attempts: 0 }]);
+    expect(await edge(w.h.store, w.alice.id, r)).toMatchObject({ state: "pending", uri });
+    expect(await intents(w.h.store, "Follow")).toEqual([]);
+    await sql(w.h.store, "UPDATE accounts SET moved_to_account_id = NULL WHERE id = ?", r);
+    const at = NOW + 2 * RECHECK;
+    expect(await replays(w.h.store, at)).toEqual({ pending: false, delivers: true });
+    expect(await holds(w.h.store)).toEqual([]);
+    expect(await intents(w.h.store, "Follow")).toHaveLength(1);
+    expect((await drain(w.h.store, at)).map((s) => [s.type, s.id])).toEqual([["Follow", uri]]);
+    expect(await replays(w.h.store, at + RECHECK)).toEqual({ pending: false, delivers: false });
+    expect(await drain(w.h.store, at + RECHECK)).toEqual([]);
+  });
+
   it("ends with an unfollow while the account is suspended: the Undo goes, and nothing is replayed (W5)", async () => {
     const w = await world();
     const { r, uri } = await aliceFollowsR(w);

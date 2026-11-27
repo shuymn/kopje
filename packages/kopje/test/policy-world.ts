@@ -16,8 +16,9 @@ import type { RepliesPolicy } from "../src/domain/lists";
 // local accounts that follow the hashtag tagged statuses carry; and quotes (R35) in every stored state, legacy or not,
 // self-quotes among them, of statuses of every visibility, and quotes whose quoted status is gone; some statuses
 // withdrawn (their removal under way); and each original's
-// quote policy (R36), any combination of Mastodon's flags; and local accounts' dismissed suggestions (R39). Accounts,
-// statuses and lists are referred to by index; writeWorld gives them fixed ids.
+// quote policy (R36), any combination of Mastodon's flags; and local accounts' dismissed suggestions (R39); and at most
+// one remote account's move (accounts.moved_to_account_id) to another account of the world. Accounts, statuses and
+// lists are referred to by index; writeWorld gives them fixed ids.
 
 declare module "vitest" {
   interface ProvidedContext {
@@ -156,6 +157,9 @@ export type World = {
   quotes: WorldQuote[];
   // Local accounts' dismissed follow suggestions (R39), each of an account.
   dismissals: { owner: number; target: number }[];
+  // Moves (accounts.moved_to_account_id): each of a remote account to another account, which always exists; at most
+  // one a world.
+  moves: { from: number; to: number }[];
   now: string;
 };
 
@@ -468,6 +472,13 @@ export const worldArb: fc.Arbitrary<World> = fc
         raw.dismissals.map((d) => ({ owner: d.owner % LOCALS, target: d.target % n })),
         (d) => `${d.owner}:${d.target}`,
       ),
+      // A remote account's move to another account, drawn from bits already drawn (a new field would change the worlds
+      // the fixed seeds of the other properties give): with an odd number of blocks, from the first block's draw.
+      moves: (raw.blocks.length % 2 === 1 ? raw.blocks.slice(0, 1) : []).map((m) => {
+        const from = LOCALS + (m.from % raw.remotes.length);
+        const others = accounts.flatMap((_, x) => (x === from ? [] : [x]));
+        return { from, to: others[m.to % others.length]! };
+      }),
       now: raw.now,
     };
   });
@@ -617,6 +628,10 @@ export function writeWorld(sql: SqlStorage, world: World): void {
       world.now,
       world.now,
     );
+  }
+  // Written after every account, as the 0060 triggers accept it: another account's id, on a remote row.
+  for (const m of world.moves) {
+    sql.exec("UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", accountId(m.to), accountId(m.from));
   }
   for (const d of world.dismissals) {
     sql.exec(

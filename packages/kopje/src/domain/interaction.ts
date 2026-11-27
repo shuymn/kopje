@@ -123,8 +123,8 @@ export type WebFollowResult = { outcome: FollowOutcome; account: Account | null 
 export type WebFollowInput = { target: string; now: number; present: ResolveInput["present"] };
 
 // The follow of /authorize_interaction/follow. followed: the follow is in effect (it may have been already); requested:
-// a request was sent now; already_requested: one was pending before; refused: the follow service forbade it (a block
-// or a domain block) or the follow limit refused it; not_found: no such account, or it is not available.
+// a request was sent now; already_requested: one was pending before; refused: the follow service forbade it (a move,
+// a block or a domain block) or the follow limit refused it; not_found: no such account, or it is not available.
 export const webFollow = userWriteOperation<WebFollowInput, WebFollowResult>((db, input, { accountId }) => {
   const targetId = resolveAccountId(db, input.target);
   if (targetId === null) {

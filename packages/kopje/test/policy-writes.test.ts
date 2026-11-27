@@ -227,6 +227,7 @@ function witness(
       tagFollowers: [],
       quotes: world.quotes ?? [],
       dismissals: [],
+      moves: [],
       now: "2026-10-12T00:00:00.000Z",
     },
     shared: [false],
@@ -701,6 +702,8 @@ function readWorld(sql: SqlStorage, base: World): Snapshot {
           state: q.state,
           legacy: q.legacy === 1,
         })),
+      // The actions move nobody.
+      moves: base.moves,
       now: base.now,
     },
   };
