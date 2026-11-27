@@ -235,25 +235,22 @@ describe("the boundary matrix", () => {
     };
     const s = m.stages;
     const stageTimes = s.dispatch + s.start + s.probe + s.still + s.commit;
+    // The verdicts per class and endpoint, for the straddle check below.
+    const verdicts = new Map<string, Set<string>>();
     for (const f of m.fixtures) {
       for (const [endpoint, verdict] of Object.entries(f.expect)) {
         const e = m.endpoints[endpoint];
         expect(e, endpoint).toBeDefined();
         const encodeMs = ((e?.seconds ?? 0) - (e?.ingress ?? 0) - s.input - stageTimes - (e?.reply ?? 0)) * 1000;
         expect(admitted(f, encodeMs) ? "admitted" : "refused", `${f.name} at ${endpoint}`).toBe(verdict);
+        const key = `${f.codec} ${f.size} ${f.transfer === "sdr" ? "sdr" : "hdr"} ${endpoint}`;
+        verdicts.set(key, (verdicts.get(key) ?? new Set()).add(verdict));
       }
       // Within AV_UPLOAD_LIMIT at the fixture's video bitrate and fixtures.sh's audio (160 kb/s H.264, 128 kb/s HEVC).
       const rate = Number(f.rate.replace("M", "e6")) + (f.codec === "h264" ? 160e3 : 128e3);
       expect((rate * f.seconds) / 8, f.name).toBeLessThan(94_371_840 * 0.95);
     }
     // Each edge is straddled: a fixture just below it admitted and one just above it refused, per class and endpoint.
-    const verdicts = new Map<string, Set<string>>();
-    for (const f of m.fixtures) {
-      for (const [endpoint, verdict] of Object.entries(f.expect)) {
-        const key = `${f.codec} ${f.size} ${f.transfer === "sdr" ? "sdr" : "hdr"} ${endpoint}`;
-        verdicts.set(key, (verdicts.get(key) ?? new Set()).add(verdict));
-      }
-    }
     for (const key of ["hevc 3840x2160 sdr v1-90", "hevc 3840x2160 sdr v1-300", "hevc 3840x2160 hdr v2"]) {
       expect([...(verdicts.get(key) ?? [])].toSorted(), key).toEqual(["admitted", "refused"]);
     }
