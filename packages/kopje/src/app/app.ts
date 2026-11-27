@@ -301,7 +301,7 @@ export function createApp({
   app.get(MEDIA_PROXY_ROUTE, decidesHost(serveMediaProxy));
   const authorize = authorizeRoutes({ ...apiDeps, fetch: (input, init) => fetch(input, init), keygen });
   const setup = setupRoutes({ ...apiDeps, fetch: (input, init) => fetch(input, init), keygen });
-  const web = webRoutes(apiDeps);
+  const web = webRoutes({ ...apiDeps, doorbell });
   const interaction = interactionRoutes({ ...apiDeps, doorbell });
   const publicPages = publicPageRoutes({ ...apiDeps, dispatch: (request, env, ctx) => app.fetch(request, env, ctx) });
   app.route("/", authorize);
