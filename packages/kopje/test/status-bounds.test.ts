@@ -3320,7 +3320,7 @@ describe("the table of maxima (RES-3)", () => {
     expect({
       chunk: 50 * (shapes.account!.sqlite + 2 * STATIC_URL_LIMIT + REMOTE_VERIFIED_JSON_BYTES + MOVED_ROW_SQLITE_MAX),
       page: 80 * conservative.account!,
-    }).toEqual({ chunk: 6_905_800, page: 12_034_240 });
+    }).toEqual({ chunk: 6_906_600, page: 12_034_240 });
   }, 600_000);
 
   // Within HALF: a timeline's largest item is a status, a quote or a boost of a quote; groups and reports keep the

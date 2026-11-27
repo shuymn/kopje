@@ -53,6 +53,7 @@ import {
   foundSql,
   hidesCollectionsSql,
   isBotActorType,
+  presentedMediaRejectedSql,
   type QuotePolicyName,
   type ViewerContext,
   type FeatureApproval,
@@ -275,6 +276,9 @@ export type AccountRow = {
   emoji_cache: string | null;
   // The id of the account it moved to (migration 0060_account_moves), or null.
   moved_to_account_id: string | null;
+  // #1560, read live in the row's query (audience.ts presentedMediaRejectedSql): 1 while a domain block's reject_media
+  // rules its stored domain, so it shows none of its images or emoji.
+  media_rejected: number;
 };
 
 type MovedRow = Omit<
@@ -421,7 +425,7 @@ export type PartialAccount = {
 };
 
 type PartialRow = Pick<AccountRow, "id" | "uri" | "username" | "domain" | "actor_type" | "url" | "avatar_url"> &
-  Pick<AccountRow, "avatar_static_url" | "avatar_description" | "locked" | "available">;
+  Pick<AccountRow, "avatar_static_url" | "avatar_description" | "locked" | "available" | "media_rejected">;
 
 // The partial accounts of `ids` in order (an id may repeat), as presentAccount shows those fields, reading only their
 // columns, `chunk` at a time as the stream reaches them; undefined for an id with no account.
@@ -438,7 +442,7 @@ export function* partialAccountsOf(
         .all<PartialRow>(
           `SELECT a.id, ${actorUriSql("a.uri")} AS uri, ${usernameSql("a.username")} AS username, a.domain, a.actor_type,
 						a.url, a.avatar_url, a.avatar_static_url, a.avatar_description, a.locked,
-						${availableJoinedSql("a", "l")} AS available
+						${availableJoinedSql("a", "l")} AS available, ${presentedMediaRejectedSql("a")} AS media_rejected
 					FROM json_each(?1) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.value
 					${LOCAL_ROW_JOIN}`,
           JSON.stringify([...new Set(slice)]),
@@ -455,7 +459,7 @@ export function* partialAccountsOf(
       const suspended = row.available === 0;
       const avatar = shownImage(
         ACCOUNT_BOUNDS,
-        suspended ? null : row.avatar_url,
+        suspended || row.media_rejected === 1 ? null : row.avatar_url,
         row.avatar_static_url,
         `${present.origin}${DEFAULT_AVATAR}`,
         cachedImageUrls(cached.get(row.id)?.avatar ?? null, present.origin),
@@ -540,7 +544,8 @@ const MOVED_BOUNDS: IdentityBounds = {
 };
 
 // An image as an account shows it with its static (Mastodon's avatar and avatar_static, header and header_static):
-// both `fallback` unless the image is shown (null: unavailable or unset); then a remote account's cached copy on the
+// both `fallback` unless the image is shown (null: unavailable, unset, or withheld by a domain block's reject_media,
+// #1560, whatever is cached: the caller passes null for it); then a remote account's cached copy on the
 // instance origin when there is one for its current URL (`cached`: the full file and its still, or the full file when
 // it has none), else the static when it is shown too, else the image. Each is shown within `bounds.image`.
 function shownImage<F extends string | null>(
@@ -604,7 +609,10 @@ function presentAccount(db: Db, row: AccountRow, { origin }: Present, related: R
       note: presentedNote(row.note),
       avatar_description: presentedProfileDescription(row.avatar_description),
       header_description: presentedProfileDescription(row.header_description),
-      emojis: presentEmojis(row.emojis, ACCOUNT_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, origin)),
+      emojis:
+        row.media_rejected === 1
+          ? []
+          : presentEmojis(row.emojis, ACCOUNT_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, origin)),
       fields:
         row.domain === null ? localFields(row).map(presentField) : remoteFields(row.attachment, row.remote_verified),
     })),
@@ -634,7 +642,10 @@ function presentMovedAccount(db: Db, row: MovedRow, origin: string, related: Rel
     note: "",
     avatar_description: "",
     header_description: "",
-    emojis: referencedEmojis(row.emojis, [displayName], MOVED_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, origin)),
+    emojis:
+      row.media_rejected === 1
+        ? []
+        : referencedEmojis(row.emojis, [displayName], MOVED_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, origin)),
     fields: [],
   }));
 }
@@ -655,18 +666,20 @@ function presentIdentity(
   profile: () => ProfileText,
 ): Account {
   const suspended = row.available === 0;
+  // #1560: the row's own verdict, so `moved` judges its target by the target's stored domain.
+  const withheld = suspended || row.media_rejected === 1;
   const url = accountUrl(row, origin, bounds.href);
   const own = cached.get(row.id);
   const avatar = shownImage(
     bounds,
-    suspended ? null : row.avatar_url,
+    withheld ? null : row.avatar_url,
     row.avatar_static_url,
     `${origin}${DEFAULT_AVATAR}`,
     cachedImageUrls(own?.avatar ?? null, origin),
   );
   const header = shownImage(
     bounds,
-    suspended ? null : row.header_url,
+    withheld ? null : row.header_url,
     row.header_static_url,
     `${origin}${DEFAULT_HEADER}`,
     cachedImageUrls(own?.header ?? null, origin),

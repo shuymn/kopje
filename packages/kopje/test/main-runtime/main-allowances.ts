@@ -11,6 +11,12 @@ export const ROW_ALLOWANCES: Readonly<Record<string, { readonly rows: number; re
     rows: 2,
     reason: "#1582 D4: the for_bots key lookup; D5: the for_limited_accounts key lookup of a limited notification",
   },
+  // accountRowsOf (src/domain/accounts.ts).
+  "1ac3d537002ad41f": {
+    rows: 1,
+    reason:
+      "#1560: media_rejected's guard (REJECT_MEDIA_BLOCKS_SQL, src/domain/audience.ts), one read of its partial index per statement",
+  },
 };
 
 // The statements the current flows run that main's never ran, by the current statement's id, each with its reason: no

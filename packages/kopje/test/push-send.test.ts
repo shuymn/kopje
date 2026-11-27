@@ -13,10 +13,11 @@ import { sha256Hex } from "../src/security/tokens";
 import { MAX_PUSH_PLAINTEXT, sealPushToken } from "../src/security/web-push";
 import { type ApiHarness, bearer, form, json, login, settle, sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
+import { blockDomain } from "./domain-block-helpers";
 import { mastodonActor } from "./inbox-helpers";
 import { like, localStatus, setup } from "./inbox-status-helpers";
 import { type Client, newClient, readPush, VAPID } from "./push-helpers";
-import { act, community, follow, post, type User } from "./status-helpers";
+import { act, community, follow, post, remoteAccount, type User } from "./status-helpers";
 
 // Sending Web Push (domain/push.ts, jobs/push.ts): a push per new notification and matching subscription (VIS-10),
 // re-checked before sending (PUSH-3), through the delivery sink (PUSH-2, NET-3), encrypted and signed with VAPID, and
@@ -207,6 +208,31 @@ describe("sending a push", () => {
     const { fetch, sent } = recordingFetch();
     await round(h, fetch);
     expect((await readPush(client, sent[0]?.request as Request)).icon).toBe(still);
+  });
+
+  // #1560: the icon is the sender's Account entity's avatar_static, so a domain block's reject_media gives the default.
+  // A push has no same-answer control: the same sender's push before the block shows its avatar.
+  it("uses the default avatar for an account whose domain rejects media", async () => {
+    const { h, client } = await pushing();
+    const remote = await remoteAccount(h.store, "far", "rejected.example");
+    const avatar = "https://rejected.example/a.png";
+    await sql(h.store, "UPDATE accounts SET avatar_url = ?2 WHERE id = ?1", remote, avatar);
+    const icon = async () => {
+      await post(h, h.users.bob, { status: "@alice look" });
+      // The newest notification, as if the remote account had sent it.
+      await sql(
+        h.store,
+        "UPDATE notifications SET from_account_id = ?1 WHERE id = (SELECT max(id) FROM notifications)",
+        remote,
+      );
+      const { fetch, sent } = recordingFetch();
+      await round(h, fetch);
+      expect(sent).toHaveLength(1);
+      return (await readPush(client, sent[0]?.request as Request)).icon;
+    };
+    expect(await icon()).toBe(avatar);
+    await blockDomain(h.store, "rejected.example", "noop", { rejectMedia: true });
+    expect(await icon()).toBe("https://kopje.test/assets/avatar.jpg");
   });
 
   it("uses aes128gcm and the vapid scheme for a standard subscription", async () => {

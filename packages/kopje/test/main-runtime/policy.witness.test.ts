@@ -64,9 +64,13 @@ const ADDED_DEFAULTS = {
   feature_policy: 0,
 } as const;
 const ADDED_COLUMNS = Object.keys(ADDED_DEFAULTS);
+// The verdicts added to the account read since main's base, which no table holds (#1560 media_rejected, a domain
+// block's reject_media rule): fixedNumeric (src/db/columns.ts), so R counts each as one digit without reading it, and
+// each reads 0, no world holding a block with reject_media.
+const ADDED_VERDICTS = ["media_rejected"] as const;
 const reads = (text: string, column: string) => new RegExp(`\\bAS ${column}(?![A-Za-z0-9_])`).test(text);
 const addedSinceBase = (main: string, mine: string) =>
-  ADDED_COLUMNS.filter((column) => reads(mine, column) && !reads(main, column));
+  [...ADDED_COLUMNS, ...ADDED_VERDICTS].filter((column) => reads(mine, column) && !reads(main, column));
 function withoutAdded(columns: readonly string[]): NonNullable<Baseline["result"]> {
   return {
     main: (rows: SqlRow[]) => rows,
@@ -77,15 +81,18 @@ function withoutAdded(columns: readonly string[]): NonNullable<Baseline["result"
 
 // R (statusRowBoundSql) counts the author account row of each status row an item reads by
 // rowHeapSql(ACCOUNT_COLUMN_MAP), and so the added columns, which main's text does not count: VALUE_BYTES and twice
-// its value's UTF-8 bytes for each, ADDED_ROW_BYTES for an account that holds their defaults. For a viewer it also
+// its value's UTF-8 bytes for each, and VALUE_BYTES + 2 for each added verdict, ADDED_ROW_BYTES for an account that
+// holds their defaults. For a viewer it also
 // counts, for each status row of its x, the viewer's feature_approval answers for the author and its moved-to account
 // (#1589 D16, FEATURE_APPROVAL_COLUMNS twice), FEATURE_ROW_BYTES. R's rows as main's statement counts them: each
 // item's bytes less ADDED_ROW_BYTES for each of those account rows and, for a viewer, FEATURE_ROW_BYTES for each of
 // those status rows, counted in the world (itemRows), with every other value, the items and their order still main's.
-const ADDED_ROW_BYTES = Object.values(ADDED_DEFAULTS).reduce<number>(
-  (sum, value) => sum + VALUE_BYTES + 2 * new TextEncoder().encode(String(value)).length,
-  0,
-);
+const ADDED_ROW_BYTES =
+  Object.values(ADDED_DEFAULTS).reduce<number>(
+    (sum, value) => sum + VALUE_BYTES + 2 * new TextEncoder().encode(String(value)).length,
+    0,
+  ) +
+  ADDED_VERDICTS.length * (VALUE_BYTES + 2);
 const FEATURE_ROW_BYTES = 2 * FEATURE_APPROVAL_COLUMNS.rowHeap;
 const R_TEXT = normalized(statusRowBoundSql());
 const counts = (text: string, column: string) => text.includes(`octet_length(a.${column})`);

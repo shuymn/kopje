@@ -1,4 +1,4 @@
-import { type ColumnMap, fixedColumns } from "../db/columns";
+import { type ColumnMap, fixedColumns, fixedNumeric } from "../db/columns";
 import { LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import { DOMAIN_BYTES } from "../platform/identity-bounds";
 import {
@@ -20,7 +20,7 @@ import {
   statusPublishedSql,
   textCut,
 } from "../platform/stored-bounds";
-import { availableJoinedSql, REACHES_FOLLOWERS_SQL } from "./audience";
+import { availableJoinedSql, presentedMediaRejectedSql, REACHES_FOLLOWERS_SQL } from "./audience";
 import { REMOTE_FIELD_SOURCE_BYTES } from "./field-verification";
 import { actorUriSql, cutSql, USERNAME_LIMIT, usernameSql } from "./profile-bounds";
 
@@ -138,6 +138,8 @@ export const ACCOUNT_COLUMN_MAP = {
   emojis: "a.emojis",
   emoji_cache: emojiCacheSql("a.emojis", "a.domain"),
   moved_to_account_id: "a.moved_to_account_id",
+  // #1560: whether a domain block's reject_media withholds its media (audience.ts presentedMediaRejectedSql), read live.
+  media_rejected: fixedNumeric(presentedMediaRejectedSql("a")),
 } as const satisfies ColumnMap;
 
 // The local_accounts row `l` of the account `a` that ACCOUNT_COLUMN_MAP and availableJoinedSql read, sought by its key
@@ -199,6 +201,8 @@ const MOVED_COLUMN_MAP = {
   hide_collections: movedFlag("COALESCE(ml.hide_collections, m.hide_collections)"),
   emojis: "m.emojis",
   emoji_cache: emojiCacheSql("m.emojis", "m.domain"),
+  // The target's own verdict, by its stored domain (presentedMediaRejectedSql).
+  media_rejected: fixedNumeric(presentedMediaRejectedSql("m")),
 } as const satisfies ColumnMap;
 
 // The most UTF-8 bytes each column of MOVED_COLUMN_MAP reads (0 for a number), which its row heap rests on.
@@ -230,6 +234,7 @@ export const MOVED_ACCOUNT_CAPS: { readonly [K in keyof typeof MOVED_COLUMN_MAP]
   hide_collections: 0,
   emojis: ACCOUNT_EMOJIS_BYTES,
   emoji_cache: EMOJI_CACHE_BYTES,
+  media_rejected: 0,
 };
 
 export const MOVED_ACCOUNT_COLUMNS = fixedColumns(MOVED_COLUMN_MAP, MOVED_ACCOUNT_CAPS);
