@@ -217,16 +217,16 @@ A pull request that fixes a gap removes the exceptions that cite it.
 Profile credentials (`PATCH /api/v1/accounts/update_credentials`, `GET`, `PATCH` and `PUT /api/v1/profile`, the
 settings page):
 
-- `avatar` and `header` are multipart files, or a base64 data URI (`data:<type>;base64,…`) in a JSON, urlencoded,
-  multipart text or query value, decoded as Paperclip decodes it. It is read within the request's 1 MiB of text: a
-  urlencoded or multipart form's text and the query share that 1 MiB, and a JSON body has its own 1 MiB, beside which
-  (as beside any other body type) the query is bounded by Workers' 16 KB URL limit. An otherwise parseable request past
-  its bound answers 413 (a form whose parameter shapes conflict answers 400 first), so a data URI's image is at most
-  about 786,000 bytes, where Mastodon takes one under 8 MB; a larger image is sent as a multipart file. Any other
-  non-empty text value answers 400 (Paperclip has no handler for it); an empty value reads as absent.
-  Each image must be under 8 MB (8,388,608 bytes is refused) and JPEG, PNG, GIF or WebP by its signature, whatever
-  type a data URI declares; AVIF is refused. The multipart body may be 17,858,560 bytes (1 MiB of text plus two files
-  and their part headers), its text at most 1 MiB in UTF-8 bytes.
+- `avatar` and `header` are multipart files; on the API routes they may also be a base64 data URI
+  (`data:<type>;base64,…`) in a JSON, urlencoded, multipart text or query value, decoded as Paperclip decodes it. Any
+  other non-empty text value answers 400 (Paperclip has no handler for it); an empty value reads as absent. Each image
+  must be under 8 MB (8,388,608 bytes is refused) and JPEG, PNG, GIF or WebP by its signature, whatever type a data URI
+  declares; AVIF is refused. The multipart body may be 17,858,560 bytes (two files and their part headers beside the
+  text). A urlencoded or multipart form's text and the query share 1 MiB in UTF-8 bytes; a JSON body has its own 1 MiB,
+  beside which (as beside any other body type) the query is bounded by Workers' 16 KB URL limit. An otherwise
+  parseable request past its bound answers 413 (a form whose parameter shapes conflict answers 400 first), so a data
+  URI's image is at most about 786,000 bytes, where Mastodon takes one under 8 MB; a larger image is sent as a
+  multipart file.
 - Images are not cropped to 400×400 or capped at 1500×500; an image past 16,777,216 pixels answers 422, an error of
   `avatar` or `header` (Mastodon keeps the account unchanged and answers 200).
 - For an uploaded image whose served file is animated, `avatar_static` and `header_static` are a still of at most
