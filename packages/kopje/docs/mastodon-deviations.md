@@ -1778,8 +1778,9 @@ Media (the `MediaAttachment` entity):
 - Edit history shows each version's attachments as recorded then, its URLs and `blurhash` included, never a cached copy,
   and withheld as above under a block with `reject_media`; Mastodon shows the current attachment's for every version. A
   version recorded by an earlier release, or converted from an earlier installation, shows `remote_url`,
-  `preview_remote_url` and `blurhash` null; the current attachments of a converted remote status derive their remote
-  URLs.
+  `preview_remote_url` and `blurhash` null, except that a withheld converted entry names its stored file as its
+  `remote_url` unless that file is on the instance (`snapshotMedia` in `src/domain/statuses.ts`); the current
+  attachments of a converted remote status derive their remote URLs.
 - A `focus` that is not blank is read as two numbers, each by JavaScript's `parseFloat` and clamped to −1 to 1, one
   missing or unreadable as 0 (`parseFocus` in `src/domain/media-focus.ts`), so a value that is no number (U+FEFF, an
   emoji) is `{x: 0, y: 0}`. Mastodon reads each by Ruby's `to_f`, unclamped, and a missing second as nil

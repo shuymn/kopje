@@ -911,7 +911,7 @@ function hydrate(
       account,
       media_attachments: (media.get(row.id) ?? []).map((m) =>
         (m.owner_media_rejected ?? row.author_media_rejected) === 1
-          ? withheldMedia(presentMedia(m, null), options.origin, { live: true, page: options.page === true })
+          ? withheldMedia(presentMedia(m, null), options.origin, { id: m.id, page: options.page === true })
           : presentMedia(m, options.origin),
       ),
       mentions: (mentions.get(row.id) ?? []).map((m) => {
@@ -1172,19 +1172,17 @@ export function presentMedia(row: MediaRow, origin: string | null = null): Media
 // /media_proxy/<id>/original and /small, which answer 404 (web/media.ts serveMediaProxy); remote_url,
 // preview_remote_url, the description, meta and the stored blurhash as presented. The caller passes media presented
 // without an origin, so nothing derived from the cache remains (a cached still's blurhash included). The URLs are
-// built only from an id that names a path segment: a live row's (`live`, 18 digits by CHECK) or a snapshot entry's
-// that editMediaSql judged safe (`proxy_id`); otherwise, or without an origin, they are null. `page`: the
+// built only from `id`, an id that names a path segment: a live row's (18 digits by CHECK) or a snapshot entry's that
+// editMediaSql judged safe (proxy_id); null for none, and without an origin they are null too. `page`: the
 // presentation is a page's, which links the attachment by its remote_url (`withheld`).
 export function withheldMedia(
-  media: MediaAttachment & { proxy_id?: number },
+  media: MediaAttachment,
   origin: string | null,
-  options: { live: boolean; page: boolean },
+  options: { id: string | null; page: boolean },
 ): MediaAttachment {
-  const { proxy_id: proxyId, ...rest } = media;
-  const safe = typeof media.id === "string" && (options.live || proxyId === 1);
-  const proxy = origin === null || !safe ? null : `${origin}/media_proxy/${media.id}`;
+  const proxy = origin === null || options.id === null ? null : `${origin}/media_proxy/${options.id}`;
   return {
-    ...rest,
+    ...media,
     type: "unknown",
     url: proxy === null ? null : `${proxy}/original`,
     preview_url: proxy === null ? null : `${proxy}/small`,

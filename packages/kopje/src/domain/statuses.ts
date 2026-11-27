@@ -1052,20 +1052,18 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
 // an imported snapshot may hold any text. A playable one's preview_url is judged again too (playablePreview, with
 // VIDEO_POSTER on `origin`): a snapshot recorded by an earlier release gave a video or audio file without a preview
 // image the file itself as its preview. #1560: an entry is withheld (withheldMedia) while a domain block's reject_media
-// rules its owner: the owner of the current attachment of the status its id names, when editMediaSql kept that id whole
-// (`owners`, that row's verdict, null for the author's own), else the author (`authorRejected`). A withheld entry without a remote_url (a converted
-// version's, cli/lib/cutover/convert.js) takes its stored http(s) url for it, with the instance's origin known, unless that url is on
-// the instance's own domain (hostDomain, whatever its spelling). editMediaSql's proxy_id is never presented. `page`: the
+// rules its owner. Only an id editMediaSql kept whole (proxy_id 1) names its owner, the current attachment's of that id
+// (`owners`: its verdict, null for the author's own); a cut id may name one it is not, and any other entry is the
+// author's (`authorRejected`). A withheld entry without a remote_url (a converted version's,
+// cli/lib/cutover/convert.js) takes its stored http(s) url for it, with the instance's origin known, unless that url is
+// on the instance's own domain (hostDomain, whatever its spelling). proxy_id is never presented. `page`: the
 // instance's origin when a page presents the history without one (web-pages/status.ts pageHistory), which marks a
-// withheld entry for the page (withheldMedia) and names the instance's domain.
+// withheld entry for the page and names the instance's domain.
 function snapshotMedia(
   json: string,
   origin: string | null,
-  verdicts: { authorRejected: boolean; owners: ReadonlyMap<string, number | null> } = {
-    authorRejected: false,
-    owners: new Map(),
-  },
-  page: string | null = null,
+  verdicts: { authorRejected: boolean; owners: ReadonlyMap<string, number | null> },
+  page: string | null,
 ): MediaAttachment[] {
   const own = origin ?? page;
   const instanceDomain = own === null ? null : hostDomain(own);
@@ -1083,20 +1081,14 @@ function snapshotMedia(
       description: presentedMediaDescription(media.description),
       blurhash: storedBlurhash(media.blurhash),
     };
-    // Only an entry whose raw id editMediaSql kept whole (proxy_id 1) can name a current attachment: a cut id may name
-    // one it is not.
-    const live = proxyId === 1 && typeof media.id === "string" && verdicts.owners.has(media.id);
-    const owner = live ? (verdicts.owners.get(media.id) ?? null) : null;
+    const id = proxyId === 1 && typeof media.id === "string" ? media.id : null;
+    const owner = id === null ? null : (verdicts.owners.get(id) ?? null);
     if (!(owner === 1 || (owner === null && verdicts.authorRejected))) {
       return shown;
     }
     const fallback =
       remoteUrl === null && url !== null && instanceDomain !== null && hostDomain(url) !== instanceDomain ? url : null;
-    return withheldMedia(
-      { ...shown, remote_url: remoteUrl ?? fallback, ...(proxyId === undefined ? {} : { proxy_id: proxyId }) },
-      origin,
-      { live, page: page !== null },
-    );
+    return withheldMedia({ ...shown, remote_url: remoteUrl ?? fallback }, origin, { id, page: page !== null });
   });
 }
 
@@ -1941,7 +1933,7 @@ export function editVersions(
         poll_options: string | null;
         created_at: string;
         emojis: string | null;
-        owners: string | null;
+        owners: string;
       }>(
         // owners: of each entry whose id names a current attachment of the status (sought by its key, at most
         // MAX_STATUS_MEDIA), that row's owner verdict (ownerMediaRejectedSql: null for the author's own row).
@@ -1970,7 +1962,7 @@ export function editVersions(
               origin,
               {
                 authorRejected,
-                owners: new Map(JSON.parse(edit.owners ?? "[]") as [string, number | null][]),
+                owners: new Map(JSON.parse(edit.owners) as [string, number | null][]),
               },
               page,
             ),
