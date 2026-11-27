@@ -42,6 +42,11 @@ export const ACCOUNT_STALE_MS = 24 * 60 * 60 * 1000;
 // An account's address: a username and a normalized domain (platform/domain-name.ts normalizeDomain).
 export type Handle = { username: string; domain: string };
 
+// The WebFinger request (RFC 7033) for acct:<username>@<host>.
+export function webfingerUrl(username: string, host: string): string {
+  return `https://${host}/.well-known/webfinger?resource=${encodeURIComponent(`acct:${username}@${host}`)}`;
+}
+
 // A remote actor as the Worker extracted it from a fetched, origin-checked document (ID-2). Text is bounded,
 // display_name is plain text, note is sanitized HTML (HTML-1) and URLs are http(s) or null (HTML-3). keys are the
 // public keys the document lists whose owner is this actor and whose id has its origin.

@@ -1836,12 +1836,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `rtrim`), so the block of `blocked.example` covers `blocked.example..` at every one of them; the URL keeps its
   spelling (`test/host-trailing-dots.test.ts`). The verdict for
   the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
-  resolution's `resolutionGate` and its `actorState` before the actor's fetch, a poll refresh's `reservePollRefresh`)
+  resolution's `resolutionGate` and its `actorState` before the actor's fetch, a post's or an edit's mention gate,
+  `postMentionGate` or `editMentionGate`, for its first address only, a poll refresh's `reservePollRefresh`)
   comes with that answer and is spent on that request alone; every other request, redirect hops and RFC 9421 retries
   included, reads it anew (`fetchPreparation` in `src/domain/fetch-preparation.ts`, `refusesHost` in
   `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", "asks the domain
   policy again before the retry", `test/inbox.test.ts` "Store calls on the inbox cold path",
-  `test/search-resolution-store-calls.test.ts`, `test/poll-refresh-store-calls.test.ts`). Its inbound
+  `test/search-resolution-store-calls.test.ts`, `test/poll-refresh-store-calls.test.ts`;
+  `test/mention-resolution-races.test.ts` ("spends the gate's verdict on the first request only")). Its inbound
   activity is ignored before any fetch but `Delete`, `DeleteActor`, `Undo` and `Reject` verified with a key already
   stored. A block's `reject_media`, whatever its severity, keeps media out of the remote media cache (MEDIA-7;
   [visibility.md](visibility.md), "Instance domain blocks"). It is judged by the account's stored domain only, as
@@ -2939,7 +2941,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   owner's key or the instance actor's, never from the signed-document cache; search with `resolve=true`
   (`GET /api/v2/search`, and `GET /api/v1/accounts/search` for addresses) fetches as the instance actor only, for a
   request whose token is valid, has the scope and names a user (401, 403 or 422 otherwise, before anything is fetched),
-  with WebFinger unsigned; the search after the fetch judges the token again at its own time. A signed-in poll read's
+  with WebFinger unsigned; the search after the fetch judges the token again at its own time. Posting, scheduling and
+  editing (`POST /api/v1/statuses`, `PUT /api/v1/statuses/:id`) fetch their text's unknown mention addresses the same
+  way, as the instance actor only, after the Store's mention gate (`postMentionGate` in
+  `src/domain/scheduled-statuses.ts`, `editMentionGate` in `src/domain/statuses.ts`) has answered the token in the order
+  OPS-8 gives (401, 403 or 422 before anything is fetched), with WebFinger unsigned; the write judges
+  the token again with a credential taken after the fetches (`createAddressResolver` in `src/federation/resolve.ts`;
+  `test/mention-resolution-store-calls.test.ts`). A signed-in poll read's
   refresh fetches the post's document by its signer's key (DATA-7) through the request's own memo, never from the
   signed-document cache (`createPollFetcher` in `src/federation/poll-refresh.ts`;
   `test/poll-refresh-store-calls.test.ts` ("Store calls of a poll read")). A URL that answers 200
@@ -4835,7 +4843,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   answer for the stored account of the URL and keeps the earlier answer, and an answer whose body the request's bytes
   cut counts as its status (`test/search-fallback.test.ts`, "a budget refusal is no answer, a cut read its answer's
   status"); a cut confirmation stores no new actor and leaves a stored one its handle; `test/resolve-alternate.test.ts`
-  ("stops at the request's budget when the alternates and the confirmation need more"). A signed-in read of a remote
+  ("stops at the request's budget when the alternates and the confirmation need more"). Posting (immediate or
+  scheduled) and editing resolve the unknown `@user@host` addresses of the text they compose before the write
+  (`src/domain/mention-addresses.ts`, `createAddressResolver` in `src/federation/resolve.ts`): at most 4 a request, the
+  first in text order, with one signer and one budget of 16 fetches and 2 MiB of kept bodies; each load is cut at the
+  15 s deadline. One address costs at most 4 requests on its plain path (the
+  split-domain confirmation); hops, retries and contexts draw on the same budget, and an address is not started once
+  the fetches, the bytes or the deadline are spent (`test/mention-resolution-store-calls.test.ts`). Addresses past the
+  cap or the budget stay text. Store calls that are no load (`actorState`, the policy reads, the signer and the key's
+  creation) are not cut by the deadline, so the resolution as a whole has no wall-clock bound of its own. Publication of
+  scheduled statuses fetches nothing. A signed-in read of a remote
   poll (`GET /api/v1/polls/:id`) refreshes it at most once a minute, however many users read it: the attempt is reserved
   in a Store write before its fetch (`reservePollRefresh` in
   `src/domain/polls.ts`), and the next is due once more than a minute has passed, whatever its outcome. The refresh
@@ -6633,7 +6650,8 @@ so the Store isolate's 128 MB holds them together.
   again then; otherwise the instance actor signs (`localFollower` in `src/domain/follower-signer.ts`,
   `fetchSignerOf` in `src/domain/actors.ts`, the one home of this rule, read by `fetchSigner` and by the fetch
   preparation of `inboxGate`, of a `receiveActivity` need, of `resolutionGate` (a search resolution, the instance
-  actor) and of `reservePollRefresh`; `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
+  actor), of `postMentionGate` and `editMentionGate` (a post's or an edit's mention resolution, the instance actor) and
+  of `reservePollRefresh`; `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
   `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch"). A replies walk's fetches (its
   statuses, their collections and pages, and their authors) have no recipient: the instance actor signs them, as
   Mastodon's representative signs them, but for the WebFinger lookup that confirms an author's handle, unsigned as every
@@ -6906,8 +6924,15 @@ so the Store isolate's 128 MB holds them together.
   write admission before any loader is made or anything fetched, so nothing is signed with an imported key, and it is
   held as in maintenance (spooled, or requeued without counting a retry); the gate hands over no signing key while
   writes are refused (`Store.inboxGate`; a search resolution's `Store.resolutionGate` likewise, and nothing is fetched,
-  NET-4); the write's own transaction checks again. The scheduled backup's runner lease is refused in its
-  transaction, so cron makes no S3 call and takes no dump freeze (an operator's rescue dump still works). Reads and
+  NET-4; a post's or an edit's `Store.postMentionGate` and `Store.editMentionGate` answer the refusal before anything
+  else, read nothing more, and the post or edit is answered 503 by its write); the write's own transaction checks again.
+  A refusal that begins while a post's addresses resolve does not by itself stop them: `actorState` and `fetchRefused`
+  are reads, admitted in readonly, so the remaining addresses go on within the request's budget and the write answers
+  503; when a Store call is refused (the instance key's creation, a JSON-LD context's cache write, or `full`
+  maintenance) the address being resolved may finish its requests, and no later address starts
+  (`test/mention-resolution-races.test.ts`; `test/mention-resolution.test.ts` ("stops at a Store
+  refusal of a JSON-LD context's cache write")). The scheduled backup's runner lease is refused in
+  its transaction, so cron makes no S3 call and takes no dump freeze (an operator's rescue dump still works). Reads and
   sessions pass, so imported data can be read and the owner can sign in for the checks before publication. `publish` (an
   Access admin, or `IMPORT_TOKEN` while the Store has no
   usable admin access, so a restore without Access completes) clears that state and sets the published mark in one

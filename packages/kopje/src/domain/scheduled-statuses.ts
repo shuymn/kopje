@@ -17,6 +17,12 @@ import { userReadOperation, userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
 import { instanceOrigin } from "./instance-domain";
 import { DETACHED_GRACE_MS } from "./media";
+import {
+  mentionGateOperation,
+  type MentionGateInput,
+  type ResolvedAddress,
+  selectAddresses,
+} from "./mention-addresses";
 import { writeOperation } from "./operation";
 import { checkPoll, isPollInput, type PollInput } from "./polls";
 import { MAX_STATUS_MEDIA } from "./status-bounds";
@@ -28,11 +34,14 @@ import {
   type CreateStatusResult,
   isPrepared,
   keyCutoff,
+  keyedStatusId,
   keyFreshSql,
+  mediaToAttach,
   ownStatusByKey,
   type PostInput,
   postNow,
   postTargetsOf,
+  preparedText,
   preparePost,
   refusedPost,
   TOO_LONG,
@@ -370,9 +379,35 @@ function isTime(at: string): boolean {
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(at) && !Number.isNaN(Date.parse(at));
 }
 
-export type ScheduleInput = CreateStatusInput & { scheduledAt?: string | undefined };
+// resolved: the accounts the request resolved for the text's unknown addresses (postMentionGate), the first
+// MENTION_ADDRESSES_PER_POST stored before the post is checked, whether it is posted now or scheduled. scheduleNow: the
+// time the request arrived (the gate's), at which whether scheduled_at is in the future and its MINIMUM_OFFSET are
+// judged, so the resolution's duration never turns a scheduled post immediate or refuses it; absent, `now`.
+export type ScheduleInput = CreateStatusInput & {
+  scheduledAt?: string | undefined;
+  resolved?: ResolvedAddress[] | undefined;
+  scheduleNow?: number | undefined;
+};
 
 export type ScheduleResult = CreateStatusResult | { status: "scheduled"; value: ScheduledStatus };
+
+// The scheduled status the key reserved within its hour (`now`'s), unless its params cannot be read: a repeat of the key
+// answers it.
+function keyedScheduled(db: Db, accountId: string, key: string, now: number): ScheduledStatus | undefined {
+  const scheduled = db.first<ScheduledRow>(
+    `SELECT ${COLUMNS} FROM scheduled_statuses ss WHERE ${scheduledOwnSql("ss", "?1")} AND ss.client_key = ?2
+			AND ${keyFreshSql("ss.created_at", "?3")}`,
+    accountId,
+    key,
+    keyCutoff(now),
+  );
+  return scheduled === undefined ? undefined : presentScheduled(db, scheduled);
+}
+
+// Whether scheduled_at, as postStatus reads it, schedules the post at `scheduleNow`: a time in the future.
+function schedules(scheduledAt: string | undefined, scheduleNow: number): scheduledAt is string {
+  return scheduledAt !== undefined && Date.parse(scheduledAt) > scheduleNow;
+}
 
 // POST /api/v1/statuses (PostStatusService), with or without scheduled_at. The status replied to and the status quoted
 // are checked first (postTargetsOf). Then an Idempotency-Key is resolved, against the account's statuses and its
@@ -381,9 +416,11 @@ export type ScheduleResult = CreateStatusResult | { status: "scheduled"; value: 
 // nothing (so a key that reserved a scheduled status is never posted twice, once now and once when it is published).
 // An expired key is taken from the older rows, in this transaction, and posts anew.
 // Then the pair as sent is held to the raw bound, and a blank text takes its warning (convertedPost), whether the post
-// is made now or scheduled. No scheduled_at, or a time not in the future, posts at once; otherwise the post is checked
-// as an immediate one (the status replied to, the media, a blank text), then against ScheduledStatus's validations, and
-// kept with its media held.
+// is made now or scheduled. The accounts the request resolved for the text's unknown addresses (`resolved`,
+// mention-addresses.ts) are stored either way, so a scheduled post's publication finds them by the addresses its params
+// keep. No scheduled_at, or a time not in the future at the request's time (`scheduleNow`), posts at once; otherwise
+// the post is checked as an immediate one (the status replied to, the media, a blank text), then against
+// ScheduledStatus's validations at that time, and kept with its media held.
 export const postStatus = userWriteOperation.atStoreTime("storeNow")<
   ScheduleInput & { storeNow: number },
   ScheduleResult
@@ -403,34 +440,27 @@ export const postStatus = userWriteOperation.atStoreTime("storeNow")<
     if (status !== null) {
       return { status: "ok", value: status };
     }
-    const scheduled = db.first<ScheduledRow>(
-      `SELECT ${COLUMNS} FROM scheduled_statuses ss WHERE ${scheduledOwnSql("ss", "?1")} AND ss.client_key = ?2
-				AND ${keyFreshSql("ss.created_at", "?3")}`,
-      accountId,
-      input.idempotencyKey,
-      keyCutoff(input.now),
-    );
-    // One whose params cannot be read answers as none.
-    const shown = scheduled === undefined ? undefined : presentScheduled(db, scheduled);
+    const shown = keyedScheduled(db, accountId, input.idempotencyKey, input.now);
     if (shown !== undefined) {
       return { status: "scheduled", value: shown };
     }
     releaseKey(db, accountId, input.idempotencyKey);
   }
-  const post = convertedPost(input);
+  const { resolved = [], scheduleNow = input.now, ...sentPost } = input;
+  const post = convertedPost(sentPost);
   if (post === null) {
     return { status: "invalid", error: TOO_LONG };
   }
-  if (post.scheduledAt === undefined || Date.parse(post.scheduledAt) <= post.now) {
-    return postNow(db, viewer, post, applicationId, input.storeNow);
+  if (!schedules(post.scheduledAt, scheduleNow)) {
+    return postNow(db, viewer, post, applicationId, input.storeNow, resolved);
   }
   const scheduledAt = post.scheduledAt;
   // As PostStatusService#schedule_status!: allowed_mentions is kept in the params and checked at publication.
-  const prepared = preparePost(db, accountId, { ...post, allowedMentions: undefined }, null, input.storeNow);
+  const prepared = preparePost(db, accountId, { ...post, allowedMentions: undefined }, null, input.storeNow, resolved);
   if (!isPrepared(prepared)) {
     return refusedPost(db, prepared, presentFor(input.present, accountId));
   }
-  const errors = scheduleErrors(db, accountId, scheduledAt, input.now, null);
+  const errors = scheduleErrors(db, accountId, scheduledAt, scheduleNow, null);
   if (errors.length > 0) {
     return invalid(errors);
   }
@@ -474,6 +504,43 @@ export const postStatus = userWriteOperation.atStoreTime("storeNow")<
     throw new Error("the scheduled status was written with unreadable params");
   }
   return { status: "scheduled", value };
+});
+
+// The post's step before any network work (mention-addresses.ts mentionGateOperation): the addresses of the text the
+// post would be written with (convertedPost), none when a check postStatus makes before it composes refuses or the key
+// repeats. Advisory: postStatus judges every check again where it writes.
+export const postMentionGate = mentionGateOperation<
+  MentionGateInput &
+    Pick<
+      ScheduleInput,
+      "text" | "spoilerText" | "inReplyToId" | "quotedStatusId" | "mediaIds" | "scheduledAt" | "idempotencyKey"
+    >
+>((db, input, { accountId }, domain) => {
+  if (postTargetsOf(db, accountId, input) !== "ok") {
+    return null;
+  }
+  if (input.scheduledAt !== undefined && !isTime(input.scheduledAt)) {
+    return null;
+  }
+  const key = input.idempotencyKey;
+  if (
+    key !== undefined &&
+    (keyedStatusId(db, accountId, key, input.now) !== null ||
+      keyedScheduled(db, accountId, key, input.now) !== undefined)
+  ) {
+    return null;
+  }
+  const post = convertedPost(input);
+  if (post === null || !Array.isArray(mediaToAttach(db, accountId, post.mediaIds, null, input.now))) {
+    return null;
+  }
+  if (
+    schedules(post.scheduledAt, input.now) &&
+    scheduleErrors(db, accountId, post.scheduledAt, input.now, null).length > 0
+  ) {
+    return null;
+  }
+  return selectAddresses(db, preparedText(post.text), accountId, domain);
 });
 
 // The default and largest page of GET /api/v1/scheduled_statuses (DEFAULT_STATUSES_LIMIT, and limit_param's cap at

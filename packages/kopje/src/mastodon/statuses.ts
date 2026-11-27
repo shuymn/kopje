@@ -1,5 +1,7 @@
 import { API_VISIBILITIES, type ApiVisibility, QUOTE_POLICY_NAMES, type QuotePolicyName } from "../domain/audience";
+import type { UserCredential } from "../domain/auth";
 import { parseFocus } from "../domain/media-focus";
+import { type MentionGate, remoteAddresses, type ResolvedAddress } from "../domain/mention-addresses";
 import { checkPoll, isPollInput, type PollInput } from "../domain/polls";
 import type { Refresh } from "../domain/reply-walk-reads";
 import { blankText, exceedsRawLength, MAX_STATUS_CHARACTERS, statusLength } from "../domain/status-text";
@@ -14,6 +16,7 @@ import {
 import { envInMaintenance } from "../platform/config";
 import { railsBlank } from "../platform/rails-blank";
 import { StoreUnavailableError, WRITE_REFUSALS } from "../platform/store-errors";
+import { storedText } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
 import { sha256Hex } from "../security/tokens";
 import {
@@ -36,7 +39,9 @@ import { type Params, parseBoolean } from "./params";
 
 // /api/v1/statuses: posting, editing, deleting, the per-status reads, favourite, reblog and bookmark, pins and
 // conversation mutes.
-// Requests are checked here as Mastodon's controllers and validators do; the Store authorizes and decides.
+// Requests are checked here as Mastodon's controllers and validators do; the Store authorizes and decides. A post or an
+// edit whose text names an address on another host first asks the Store's mention gate, then resolves the unknown
+// addresses it answers before the write (resolvedMentions, domain/mention-addresses.ts).
 
 const FORBIDDEN = () => mastodonError(403, "This action is not allowed");
 const REPLY_NOT_FOUND = () => mastodonError(404, "The post you are trying to reply to does not appear to exist.");
@@ -205,6 +210,55 @@ export function parseScheduledAt(raw: string): string | null {
   return /^\d{4}-/.test(iso) ? iso : null;
 }
 
+// Whether the text a post or an edit composes names an address on another host than the request's (the stored domain,
+// WEB-6): the text, or, when it is blank and nothing is quoted (`quoted` false; an edit's quote is the Store's to know),
+// the warning, which the Store then takes as the text (statuses.ts convertedPost, editStatus). Within the raw bound.
+function hasRemoteAddress(text: string, spoilerText: string, quoted: boolean, host: string): boolean {
+  const storedSpoiler = storedText(spoilerText);
+  const stored = storedText(text);
+  if (exceedsRawLength(stored, storedSpoiler)) {
+    return false;
+  }
+  return (
+    remoteAddresses(stored, host).length > 0 ||
+    (blankText(text) && !quoted && remoteAddresses(storedSpoiler, host).length > 0)
+  );
+}
+
+// What a post's or an edit's write takes: the accounts resolved for its text's unknown addresses, the credential and
+// `now` (taken after the fetches, engineering.md; the request's own when nothing was fetched), and the request's time
+// (`requestNow`, the gate's), at which a post's schedule is judged. Without an address on another host, no gate is
+// asked. The gate's authorization failure is answered; a write refusal it answers, its `none`, or any other failure of
+// it leaves the addresses as text, and the write decides the request (503 for a refusal).
+async function resolvedMentions(
+  c: ApiContext,
+  deps: ApiDeps,
+  remote: boolean,
+  gate: (credential: UserCredential, now: number) => Promise<MentionGate>,
+): Promise<{ resolved: ResolvedAddress[]; credential: UserCredential; now: number; requestNow: number }> {
+  const credential = userCredential(c, deps);
+  const requestNow = deps.now();
+  const unresolved = { resolved: [], credential, now: requestNow, requestNow };
+  if (deps.resolveAddresses === undefined || !remote) {
+    return unresolved;
+  }
+  let answer: MentionGate;
+  try {
+    answer = await gate(credential, requestNow);
+  } catch {
+    return unresolved;
+  }
+  if (answer.status === "refused") {
+    return unresolved;
+  }
+  const start = authorized(answer);
+  if (start.kind === "none") {
+    return unresolved;
+  }
+  const resolved = await deps.resolveAddresses(c.env, start);
+  return { resolved, credential: userCredential(c, deps), now: deps.now(), requestNow };
+}
+
 export const createStatus: ApiHandler = withParams(async (c, deps, p) => {
   // StatusesController#set_thread and #set_quoted_status look a target up only when its id is `present?`.
   const inReplyToId = presentParam(p.get("in_reply_to_id"));
@@ -242,7 +296,25 @@ export const createStatus: ApiHandler = withParams(async (c, deps, p) => {
   // unique per account (statuses_client_key), and among the account's scheduled statuses.
   const key = emptyToUndefined(c.req.header("idempotency-key")?.trim());
   const idempotencyKey = key === undefined ? undefined : await sha256Hex(key);
-  const credential = userCredential(c, deps);
+  const { resolved, credential, now, requestNow } = await resolvedMentions(
+    c,
+    deps,
+    hasRemoteAddress(composed.text, composed.spoilerText, quotedStatusId !== undefined, new URL(c.req.url).hostname),
+    (credential, now) =>
+      storeCall(c, deps, (s, b) =>
+        s.postMentionGate(b, {
+          credential,
+          now,
+          text: composed.text,
+          spoilerText: composed.spoilerText,
+          inReplyToId,
+          quotedStatusId,
+          mediaIds: composed.mediaIds,
+          scheduledAt,
+          idempotencyKey,
+        }),
+      ),
+  );
   const input = {
     credential,
     ...composed,
@@ -254,12 +326,15 @@ export const createStatus: ApiHandler = withParams(async (c, deps, p) => {
     allowedMentions: p.list("allowed_mentions"),
     idempotencyKey,
     objectId: crypto.randomUUID(),
-    now: deps.now(),
+    now,
     present: present(c),
   };
   // The key is resolved against statuses and scheduled statuses alike; with scheduled_at the answer is a
-  // ScheduledStatus, or a Status when the time is not in the future (domain/scheduled-statuses.ts).
-  const result = authorized(await storeCall(c, deps, (s, b) => s.postStatus(b, { ...input, scheduledAt })));
+  // ScheduledStatus, or a Status when the time is not in the future at the request's time (scheduleNow,
+  // domain/scheduled-statuses.ts).
+  const result = authorized(
+    await storeCall(c, deps, (s, b) => s.postStatus(b, { ...input, scheduledAt, resolved, scheduleNow: requestNow })),
+  );
   switch (result.status) {
     case "ok":
     case "scheduled":
@@ -313,15 +388,32 @@ export const editStatus: ApiHandler = withParams(async (c, deps, p) => {
     const found = authorized(await storeCall(c, deps, (s, b) => s.editTarget(b, { credential, id: statusId(c) })));
     return found === "ok" ? mastodonError(422, problem ?? "Validation failed") : recordNotFound();
   }
-  const credential = userCredential(c, deps);
+  const id = statusId(c);
+  const { resolved, credential, now } = await resolvedMentions(
+    c,
+    deps,
+    hasRemoteAddress(composed.text, composed.spoilerText, false, new URL(c.req.url).hostname),
+    (credential, now) =>
+      storeCall(c, deps, (s, b) =>
+        s.editMentionGate(b, {
+          credential,
+          now,
+          id,
+          text: composed.text,
+          spoilerText: composed.spoilerText,
+          mediaIds: composed.mediaIds,
+        }),
+      ),
+  );
   const result = await storeCall(c, deps, (s, b) =>
     s.editStatus(b, {
       credential,
-      id: statusId(c),
+      id,
       ...composed,
       mediaAttributes,
       quotePolicy,
-      now: deps.now(),
+      resolved,
+      now,
       present: present(c),
     }),
   );

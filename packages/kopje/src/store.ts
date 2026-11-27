@@ -14,6 +14,7 @@ import * as remoteActors from "./domain/remote-actors";
 import * as remoteMedia from "./domain/remote-media";
 import * as remoteStills from "./domain/remote-media-stills";
 import * as scheduled from "./domain/scheduled-statuses";
+import * as statuses from "./domain/statuses";
 import { UNLOCK_ACCEPTS_PER_ROUND, unlockAcceptStep } from "./domain/unlock-accepts";
 import {
   captureMedia,
@@ -684,6 +685,17 @@ export class Store extends DurableObject<Env> {
   // OPS-8), then the domain and the first request's preparation.
   resolutionGate(callerBuild: string, input: Omit<OperationInput<typeof inbox.resolutionGate>, "refused">) {
     return this.#kernel.executeDeciding(callerBuild, inbox.resolutionGate, input, "write");
+  }
+
+  // A post's and an edit's step before they resolve unknown mention addresses (domain/mention-addresses.ts): whether
+  // writes are refused (the reason, decided in the same transaction, after which nothing is read: no key leaves the
+  // Store and nothing is fetched, OPS-8), then the credential, then the addresses and their first request's preparation.
+  postMentionGate(callerBuild: string, input: Omit<OperationInput<typeof scheduled.postMentionGate>, "refused">) {
+    return this.#kernel.executeDeciding(callerBuild, scheduled.postMentionGate, input, "write");
+  }
+
+  editMentionGate(callerBuild: string, input: Omit<OperationInput<typeof statuses.editMentionGate>, "refused">) {
+    return this.#kernel.executeDeciding(callerBuild, statuses.editMentionGate, input, "write");
   }
 
   // The look-up's step before it fetches: checkCredential, and whether a write would be admitted now (refused: null,

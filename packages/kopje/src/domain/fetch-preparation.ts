@@ -11,7 +11,8 @@ import { originOf } from "./remote-actors";
 export type FetchPreparation = { signer: FetchSigner; ticket: PolicyTicket | null };
 
 // The one producer of FetchPreparation, for the answers that decide a fetch: the inbox gate, a receiveActivity need, a
-// search resolution's gate (inbox.ts resolutionGate) and a poll refresh's reservation (polls.ts reservePollRefresh).
+// search resolution's gate (inbox.ts resolutionGate), a post's or an edit's mention gate (mention-addresses.ts
+// mentionGateOperation) and a poll refresh's reservation (polls.ts reservePollRefresh).
 // Null for a target of this instance's own origin: the paths it serves never fetch one (federation/inbound.ts
 // fetchNeeded and prepare; resolutionTarget), so no key leaves the Store for it; a signature key at this origin, which
 // Fedify may still fetch, then costs the Worker its own signer and policy reads.

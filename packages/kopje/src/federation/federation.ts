@@ -2,6 +2,8 @@ import {
   createFederation,
   type DocumentLoader,
   type Federation,
+  type KvKey,
+  type KvStore,
   kvCache,
   type NodeInfo,
   type RemoteDocument,
@@ -50,7 +52,7 @@ import { jsonRefusal } from "../platform/json-bounds";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-version";
 import { railsBlank } from "../platform/rails-blank";
 import { callStore, type StoreStub } from "../platform/store-client";
-import { StoreUnavailableError } from "../platform/store-errors";
+import { StoreUnavailableError, toStoreUnavailable } from "../platform/store-errors";
 import { bytesToBase64, generateWrappedKey, importPublicKeyPem, type KeyGen } from "../security/key-wrap";
 import { createKeyring, type KeyOwner, requestSigner, type Signer } from "../security/keyring";
 import { DoKvStore } from "./kv-store";
@@ -141,16 +143,8 @@ async function createInstanceActorKey(
 function federationParts(deps: FederationDeps, state: FederationState) {
   const { build, domain } = deps;
   const origin = `https://${domain}`;
-  const rpc = async <T>(call: (store: StoreStub) => Promise<T>): Promise<T> => {
-    try {
-      return await callStore(() => call(deps.store()));
-    } catch (error) {
-      if (error instanceof StoreUnavailableError) {
-        state.storeError ??= error;
-      }
-      throw error;
-    }
-  };
+  const rpc = <T>(call: (store: StoreStub) => Promise<T>): Promise<T> =>
+    recordingRefusal(state, () => callStore(() => call(deps.store())));
   const kv = new DoKvStore(deps.store, build, deps.now);
   const keyring = createKeyring(deps.kek);
   const loaderDeps: LoaderDeps = {
@@ -247,23 +241,31 @@ export type RemoteLoaders = {
 // document held to the JSON bounds as `document`'s are.
 export type ResolveLoader = (url: string, terminal: boolean) => Promise<ResolveAnswer>;
 
+// shared: a signer several sets of loaders share (sharedFetchSigner), in place of these loaders' own; a Store refusal it
+// rejects with is recorded in this set's state, as these loaders' own Store calls record theirs. recordContextRefusal:
+// a Store refusal the JSON-LD context cache meets is recorded in the state too (recordingKv), for a caller that stops at
+// one (an address resolution, OPS-8); otherwise the cache's failed write is swallowed, as Fedify's kvCache swallows it.
 export function createRemoteLoaders(
   deps: FederationDeps,
   state: FederationState,
   recipient: string | FollowerSigner | null,
   budget: FetchBudget,
   prefetched: FetchSigner | null = null,
+  { shared, recordContextRefusal = false }: { shared?: () => Promise<Signer>; recordContextRefusal?: boolean } = {},
 ): RemoteLoaders & { resolve: ResolveLoader } {
   const parts = federationParts(deps, state);
   const loaderDeps = { ...parts.loaderDeps, budget };
   let offered = prefetched;
   let resolved: Promise<Signer> | undefined;
   // Resolved on the first fetch only: a request refused before any fetch unwraps no key.
-  const signer = () =>
-    (resolved ??= (async () =>
-      parts.signerOf(
-        offered ?? (await parts.rpc<FetchSigner>((s) => s.fetchSigner(deps.build, { by: recipient }))),
-      ))());
+  const signer =
+    shared === undefined
+      ? () =>
+          (resolved ??= (async () =>
+            parts.signerOf(
+              offered ?? (await parts.rpc<FetchSigner>((s) => s.fetchSigner(deps.build, { by: recipient }))),
+            ))())
+      : () => recordingRefusal(state, shared);
   // Keyed without the fragment: HTTP never sends it, so `actor#main-key` and `actor` are one fetch. Key ids are still
   // compared whole by Fedify and by receiveInbound.
   const memoized = (caps: DocumentCaps): DocumentLoader => {
@@ -275,7 +277,7 @@ export function createRemoteLoaders(
   };
   return {
     document: memoized({}),
-    context: boundedContexts(loaderDeps, parts.kv),
+    context: boundedContexts(loaderDeps, recordContextRefusal ? recordingKv(parts.kv, state) : parts.kv),
     webfinger: createWebFingerLoader(loaderDeps),
     capped: memoized,
     resolve: async (url, terminal) =>
@@ -285,6 +287,54 @@ export function createRemoteLoaders(
         offered = chosen;
       }
     },
+  };
+}
+
+// A Store refusal `call` rejects with, recorded in the state before anything that would swallow it sees it.
+async function recordingRefusal<T>(state: FederationState, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    const unavailable = toStoreUnavailable(error);
+    if (unavailable !== undefined) {
+      state.storeError ??= unavailable;
+    }
+    throw error;
+  }
+}
+
+// The context cache's KvStore, recording a Store refusal in the state: Fedify's kvCache swallows a failed write, so a
+// request that goes on (an address resolution's next address, OPS-8) would not otherwise learn the Store refused.
+// Opt-in (createRemoteLoaders' recordContextRefusal): for any other request a refused cache write stays harmless.
+function recordingKv(kv: KvStore, state: FederationState): KvStore {
+  return {
+    get: <T>(key: KvKey) => recordingRefusal(state, () => kv.get<T>(key)),
+    set: (key, value, options) => recordingRefusal(state, () => kv.set(key, value, options)),
+    // kvCache deletes and lists nothing.
+    delete: (key) => kv.delete(key),
+    list: (prefix) => kv.list(prefix),
+  };
+}
+
+// One instance-actor signer (DATA-7) for several sets of loaders (createRemoteLoaders' `shared`), from the fetch
+// signer a Store answer prepared (`prepared`), else read on the first fetch (fetchSigner), unwrapped on the first fetch
+// (a missing instance key is created then). It is kept once it resolves; a rejection is not kept, so the next fetch
+// prepares it again.
+export function sharedFetchSigner(deps: FederationDeps, prepared: FetchSigner | null): () => Promise<Signer> {
+  const parts = federationParts(deps, { resolvedUsername: null, source: null, storeError: null, ticket: null });
+  let kept: Promise<Signer> | undefined;
+  return () => {
+    if (kept === undefined) {
+      const preparing = (async () =>
+        parts.signerOf(prepared ?? (await parts.rpc<FetchSigner>((s) => s.fetchSigner(deps.build, { by: null })))))();
+      kept = preparing;
+      preparing.catch(() => {
+        if (kept === preparing) {
+          kept = undefined;
+        }
+      });
+    }
+    return kept;
   };
 }
 
@@ -314,7 +364,7 @@ export function withinBounds(remote: RemoteDocument): RemoteDocument {
 
 // JSON-LD contexts, cached in the KvStore. Checked before they are cached and again on every cache hit, since an
 // entry may predate the check.
-function boundedContexts(loaderDeps: LoaderDeps, kv: DoKvStore): DocumentLoader {
+function boundedContexts(loaderDeps: LoaderDeps, kv: KvStore): DocumentLoader {
   const loader = createContextLoader(loaderDeps);
   const cached = kvCache({ loader: async (url, options) => withinBounds(await loader(url, options)), kv });
   return async (url, options) => withinBounds(await cached(url, options));

@@ -1836,11 +1836,36 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   warning as its text, no warning and `sensitive` true, as an immediate post is written, and is published so. Mastodon
   keeps the blank text and drops the warning from the stored parameters (`PostStatusService#scheduled_options`), so its
   publication fails without media and posts the blank text without the warning with media.
-- `allowed_mentions[]` is compared with the mentions Kopje writes: accounts it already knows (nothing is fetched), not
-  blocked by the author and not suspended. `unexpected_accounts` lists the accounts that fit the 8 MiB answer, in
-  mention order. A scheduled post's parameters, the list included, must fit 128 KiB of JSON (`Record invalid`); the
-  list is checked when the post is published, and a post it refuses is dropped, as in Mastodon. Numbers sent in a JSON
-  list are kept as strings in `params.allowed_mentions` (Mastodon keeps the JSON types).
+- `allowed_mentions[]` is compared with the mentions Kopje writes, after unknown addresses are resolved (below):
+  accounts not blocked by the author and not suspended. `unexpected_accounts` lists the accounts that fit the 8 MiB
+  answer, in mention order. A scheduled post's parameters, the list included, must fit 128 KiB of JSON (`Record
+  invalid`); the list is checked when the post is published, and a post it refuses is dropped, as in Mastodon. Numbers
+  sent in a JSON list are kept as strings in `params.allowed_mentions` (Mastodon keeps the JSON types).
+- A post, a scheduled post or an edit resolves the unknown `@user@host` addresses of its text before it is written
+  (`src/domain/mention-addresses.ts`), as `ProcessMentionsService` resolves them, with these differences:
+  - At most `MENTION_ADDRESSES_PER_POST` unknown addresses a request are resolved, the first in text order; the
+    others stay text. Mastodon has no cap. Accepted, 2026-11-27.
+  - Only an address's own account is mentioned: one whose address WebFinger confirms is the address typed. An alias, a
+    split-domain account's server host (`user@web.example` for an account whose address is `user@example`) or an old
+    domain stays text, though the requests are made; typing the account's address mentions it. Mastodon follows the
+    WebFinger subject and mentions that account, and search with `resolve=true` answers it in both. A client that
+    lists the searched account in `allowed_mentions` gets the alias as text. Accepted, 2026-11-27.
+  - An address on a domain the author blocks is not fetched and takes none of those places; Mastodon fetches it and
+    then drops the mention. The text is the same.
+  - A scheduled post's addresses are resolved when it is scheduled, and its publication finds the accounts stored then,
+    fetching nothing; Mastodon resolves at publication. So publication mentions whatever usable account holds an address
+    then (one stored meanwhile included, and not one deleted, suspended or blocked since), and an address no account
+    holds then stays text, also one that did not resolve when the post was scheduled (its server down, the account made
+    later, a domain blocked then); the remote server sees the requests when the post is scheduled, also for a post
+    later deleted; and a post scheduled before this release publishes with the accounts already stored. Accepted,
+    2026-11-27.
+  - An actor that answers 410 during this resolution leaves its address as text and deletes nothing; Mastodon queues
+    the deletion of a stored actor that answers 410. Such an actor stays until its own paths remove it (an inbox
+    `Delete`, a refresh, a delivery's 410). Accepted, 2026-11-27.
+  - An edit that changes nothing, a post a concurrent request made a key repeat, and a post or an edit then refused may
+    have made the requests and store no account (an edit is judged unchanged where it is written). A post refused after
+    resolution (unexpected mentions, the direct quote check, a refused schedule) keeps the accounts it stored, as
+    Mastodon keeps them.
 - An `Idempotency-Key` lasts one hour after the status or scheduled status it made; a scheduled post published within
   that hour keeps it until one hour after its publication. A repeated key answers the scheduled status it made
   (Mastodon answers 404 for an immediate repeat), and a key whose status was deleted posts anew (Mastodon answers 404

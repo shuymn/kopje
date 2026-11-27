@@ -1,8 +1,10 @@
 import { type DocumentLoader, FetchError, type RemoteDocument } from "@fedify/fedify";
 
 import type { ResolutionStart } from "../domain/inbox";
+import { type AddressResolver, isOwnAccount, type ResolvedAddress } from "../domain/mention-addresses";
 import type { ActorState, DocumentRevision, Handle, RemoteActorInput } from "../domain/remote-actors";
 import { type Resolved, resolutionTarget, webfingerUrl } from "../domain/remote-statuses";
+import { mentionKey } from "../domain/status-text";
 import { readConfig, userKek } from "../platform/config";
 import { normalizeDomain } from "../platform/domain-name";
 import { scanAlternate } from "../platform/html-scan";
@@ -11,6 +13,7 @@ import { isRemoteUsername } from "../platform/identity-bounds";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { parseLinkHeader } from "../platform/link-header";
 import { callStore, type StoreResolver } from "../platform/store-client";
+import { toStoreUnavailable } from "../platform/store-errors";
 import { goneSettler } from "./actor-gone";
 import { featuredCollectionOf } from "./featured-collections";
 import {
@@ -20,12 +23,14 @@ import {
   type FederationState,
   type RemoteLoaders,
   type ResolveLoader,
+  sharedFetchSigner,
 } from "./federation";
 import { typeIs } from "./json-shapes";
 import {
   answeredStatus,
   type FetchBudget,
   isTransientLoadError,
+  mentionBudget,
   type OtherAnswer,
   RefusedFetchError,
   type ResolveAnswer,
@@ -54,6 +59,9 @@ import { ACTOR_TYPES, CONVERTED_TYPES, idOf, parseRemoteStatus, STATUS_TYPES } f
 // past a newer one. A URL is first read as a stored actor's id, before any probe: such a URL is resolved as that actor,
 // so a 410 at it deletes the actor under the revision read before the fetch (ID-1, actor-gone.ts); a 410 at the probe
 // or at an alternate deletes nothing, having no revision read before it.
+//
+// Posting, scheduling and editing resolve the unknown mention addresses of their text through the same resolveAddress
+// (createAddressResolver, domain/mention-addresses.ts), and keep only an address's own account.
 
 // requestJobs: asks for a jobs round (a gone actor's purge, actor-gone.ts); absent, cron runs it. budget: the request's
 // fetch budget (RES-6) at its start; absent, requestBudget's (a test passes one with prior use).
@@ -118,7 +126,10 @@ export function createResolver(deps: ResolverDeps): Resolver {
         await deps.requestJobs?.(env);
       }
     };
-    const resolved = await resolveWith({ ...loaders, stateOf, domain, settleGone, budget }, query.trim());
+    const resolved = await resolveWith(
+      { ...loaders, stateOf, domain, settleGone, budget, keptHandle: (read) => read.handle },
+      query.trim(),
+    );
     if (state.storeError !== null) {
       throw state.storeError;
     }
@@ -127,13 +138,15 @@ export function createResolver(deps: ResolverDeps): Resolver {
 }
 
 // The loaders, the Store read of an actor's state, this instance's domain, what a gone actor's document does
-// (actor-gone.ts), and the request's fetch budget (RES-6), whose deadline bounds a page's scan.
+// (actor-gone.ts), the request's fetch budget (RES-6), whose deadline bounds a page's scan, and the stored handle a
+// document's claim is compared with before its confirmation is skipped (confirmedInput; null: it is confirmed).
 type Resolving = RemoteLoaders & {
   resolve: ResolveLoader;
   stateOf: (uri: string) => Promise<ActorState>;
   domain: string;
   settleGone: (fetched: FetchedActor, uri: string, revision: DocumentRevision) => Promise<void>;
   budget: FetchBudget;
+  keptHandle: (state: ActorState) => Handle | null;
 };
 
 // An actor's document, fetched after its state was read (`read`, when the caller read it already) with a memo of its
@@ -165,7 +178,7 @@ async function storable(
   if (fetched.kind !== "ok" || fetched.input === null) {
     return null;
   }
-  const checked = await confirmedInput(loaders, fetched.input, state.handle, loaders.domain);
+  const checked = await confirmedInput(loaders, fetched.input, loaders.keptHandle(state), loaders.domain);
   return state.handle === null && checked.outcome !== "confirmed"
     ? null
     : { actor: checked.input, revision: state.revision };
@@ -329,6 +342,81 @@ async function resolveAddress(loaders: Resolving, username: string, domain: stri
   const found = await webfingerAt(loaders, username, domain);
   const href = typeof found === "string" ? null : found.self;
   return href === null ? NONE : resolveAccount(loaders, href);
+}
+
+// The unknown mention addresses of a post, a scheduled post or an edit (domain/mention-addresses.ts), from what the
+// Store's mention gate answered (`start`): each, in order, resolved as search resolves an address (resolveAddress,
+// NET-1, NET-4, ID-1), its own account kept (isOwnAccount). All share one budget (mentionBudget, RES-6) and one
+// instance-actor signer (sharedFetchSigner, DATA-7: the gate's preparation, a rejection prepared again at the next
+// fetch); each has its own loaders and state, so only the first spends the gate's verdict (VIS-30) and a Store refusal
+// is recorded against the address that met it. No address starts once the fetches, the bytes or the deadline are spent.
+// Two differences from search: an actor whose stored handle is another address is confirmed again even when its claim
+// is that handle, so an account that moved to the typed address is found under it; and a 410 at the actor deletes
+// nothing (its address stays text). A failure drops its address; a Store refusal also stops the rest. It never throws:
+// the write decides the request.
+export function createAddressResolver(deps: ResolverDeps): AddressResolver {
+  return async (env, start) => {
+    const build = deps.build(env);
+    const store = () => deps.store(env);
+    const config = readConfig(env);
+    const federation: FederationDeps = {
+      domain: start.domain,
+      build,
+      store,
+      kek: config.ok ? userKek(config.config) : "",
+      now: deps.now,
+      keygen: deps.keygen,
+      loader: deps.loader,
+    };
+    const budget = (deps.budget ?? mentionBudget)(Date.now());
+    const signer = sharedFetchSigner(federation, start.prepared?.signer ?? null);
+    const found: ResolvedAddress[] = [];
+    for (const [index, { key, username, domain }] of start.addresses.entries()) {
+      if (budget.fetches <= 0 || budget.bytes <= 0 || Date.now() >= budget.deadline) {
+        break;
+      }
+      const state: FederationState = {
+        resolvedUsername: null,
+        source: null,
+        storeError: null,
+        ticket: index === 0 ? (start.prepared?.ticket ?? null) : null,
+      };
+      const loaders = createRemoteLoaders(federation, state, null, budget, null, {
+        shared: signer,
+        recordContextRefusal: true,
+      });
+      const stateOf = async (uri: string) => {
+        const read = await callStore(() => store().actorState(build, { uri }));
+        state.ticket = read.ticket;
+        return read.state;
+      };
+      try {
+        const resolved = await resolveAddress(
+          {
+            ...loaders,
+            stateOf,
+            domain: start.domain,
+            settleGone: () => Promise.resolve(),
+            budget,
+            keptHandle: (read) => (read.handle !== null && mentionKey(read.handle) === key ? read.handle : null),
+          },
+          username,
+          domain,
+        );
+        if (state.storeError !== null) {
+          break;
+        }
+        if (resolved.kind === "account" && isOwnAccount(key, resolved.actor)) {
+          found.push({ key, actor: resolved.actor, revision: resolved.revision });
+        }
+      } catch (error) {
+        if (state.storeError !== null || toStoreUnavailable(error) !== undefined) {
+          break;
+        }
+      }
+    }
+    return found;
+  };
 }
 
 // The status of the last answer a URL's own fetches received, null while none did: Mastodon's

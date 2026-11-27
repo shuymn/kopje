@@ -356,6 +356,15 @@ export function domainBlocksSql(owner: string, x: string): string {
 		WHERE pda.id = ${x})`;
 }
 
+// Whether `owner` blocks `domain`, a normalized domain, as domainBlocksSql matches an account's stored domain (exactly,
+// without subdomains), for an address no account holds yet (mention-addresses.ts selectAddresses): one seek of
+// domain_blocks_pair.
+export function blocksDomain(db: Db, owner: string, domain: string): boolean {
+  return (
+    db.first("SELECT 1 AS x FROM main.domain_blocks WHERE account_id = ?1 AND domain = ?2", owner, domain) !== undefined
+  );
+}
+
 // Whether `owner` blocks the account `x` or its domain. Such an account is never a recipient of the owner's content
 // (R17, R23: Mastodon's ProcessMentionsService drops the mention).
 export function blockedSql(owner: string, x: string): string {

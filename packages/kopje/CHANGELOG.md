@@ -8,6 +8,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Added
+
+- A post, a scheduled post or an edit that names `@user@host` for an account the instance has not stored resolves the
+  address and mentions the account, as Mastodon does: the account is linked, notified or delivered to, and
+  `allowed_mentions` and the direct quote check count it (an omitted one now answers 422 `unexpected_accounts`). At most
+  4 unknown addresses a request are resolved, only the address's own account is mentioned, and a scheduled post
+  resolves its addresses when it is scheduled ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Posting). A
+  failed resolution leaves the address as text and never fails the post.
+
 ## [0.8.0] - 2026-11-27
 
 A minor release, published under the npm dist-tag `latest`. An instance can now take video and audio uploads and show
