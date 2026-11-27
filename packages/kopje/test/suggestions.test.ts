@@ -209,6 +209,20 @@ describe("suggestions", () => {
     ]);
   });
 
+  // R39 (FriendsOfFriendsSource: accounts.moved_to_account_id IS NULL): a move counts when it names a stored account,
+  // as R21 reads it, so an imported id naming none leaves the account listed.
+  it("leaves out a moved account, and lists one whose move names no stored account", async () => {
+    const { h, alice, dave, r0, r1, r2 } = await world();
+    const all = [r0, r2, r1, dave.id];
+    expect(await suggested(h, alice)).toEqual(all);
+    await sql(h.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", r1, r0);
+    expect(await suggested(h, alice)).toEqual([r2, r1, dave.id]);
+    await sql(h.store, "UPDATE accounts SET moved_to_account_id = '999999999999999999' WHERE id = ?", r0);
+    expect(await suggested(h, alice)).toEqual(all);
+    await sql(h.store, "UPDATE accounts SET moved_to_account_id = NULL WHERE id = ?", r0);
+    expect(await suggested(h, alice)).toEqual(all);
+  });
+
   it("takes nothing from a source R13 hides from the viewer, local or remote", async () => {
     const { h, alice, bob, dave, r0, r1, r2 } = await world();
     // Without bob: r0 by carol alone.

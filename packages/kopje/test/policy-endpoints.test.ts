@@ -406,6 +406,65 @@ describe("the status read endpoints agree with the model of their rules", () => 
     const problems = await runInDurableObject(store, (_instance, state) => check(state.storage.sql, c));
     expect(problems).toEqual([]);
   });
+
+  // A fixed case in which an account some viewer would be suggested and the author of a post some link timeline would
+  // list have moved, so the moved branch of the suggestions and of the link timeline runs whatever the generator drew:
+  // the first case of a fixed seed that has both.
+  it("leaves out a moved account's suggestion and link post, as the model does", async () => {
+    const windows = {
+      sources: SUGGESTION_SOURCES,
+      edgesPerSource: SUGGESTION_EDGES_PER_SOURCE,
+      edges: SUGGESTION_EDGES,
+      kept: SUGGESTIONS_KEPT,
+    };
+    // Each public status's link, as check() records it, and the links whose timeline is open.
+    const linkOf = (st: number) => `https://link${st % 3}.example/`;
+    const chosen = fc
+      .sample(caseArb, { seed: 1561, numRuns: 400 })
+      .map((c) => ({ ...c, world: { ...c.world, moves: [] } }))
+      .flatMap((c) => {
+        const m = new PolicyModel(c.world);
+        const remote = (x: number) => c.world.accounts[x]?.local === false;
+        const discoverable = (x: number) => c.discoverable[x] === 1;
+        const suggested = c.world.accounts
+          .flatMap((account, viewer) => (account.local ? m.suggestions(viewer, discoverable, windows) : []))
+          .find(remote);
+        const copies = new Map(
+          c.world.statuses.flatMap((status, st) => (status.visibility === "public" ? [[st, linkOf(st)] as const] : [])),
+        );
+        const linked = c.world.statuses.findIndex(
+          (status, st) =>
+            st % 3 !== 1 &&
+            remote(status.author) &&
+            m.linkTimeline(linkOf(st), copies, discoverable, null).includes(st),
+        );
+        return suggested === undefined || linked < 0 ? [] : [{ c, suggested, linked, copies, discoverable }];
+      });
+    expect(chosen.length).toBeGreaterThan(0);
+    const { c, suggested, linked, copies, discoverable } = chosen[0]!;
+    const author = c.world.statuses[linked]!.author;
+    const moves = [...new Set([suggested, author])].map((from) => ({ from, to: 0 }));
+    const moved: Case = { ...c, world: { ...c.world, moves } };
+    const m = new PolicyModel(moved.world);
+    expect(
+      c.world.accounts.some(
+        (account, viewer) => account.local && m.suggestions(viewer, discoverable, windows).includes(suggested),
+      ),
+    ).toBe(false);
+    expect(m.linkTimeline(linkOf(linked), copies, discoverable, null)).not.toContain(linked);
+    const { problems, stored } = await runInDurableObject(store, (_instance, state) => ({
+      problems: check(state.storage.sql, moved),
+      stored: state.storage.sql
+        .exec("SELECT id, moved_to_account_id FROM accounts WHERE moved_to_account_id IS NOT NULL ORDER BY id")
+        .toArray(),
+    }));
+    expect(stored).toEqual(
+      moves
+        .map((move) => ({ id: accountId(move.from), moved_to_account_id: accountId(move.to) }))
+        .toSorted((a, b) => (a.id < b.id ? -1 : 1)),
+    );
+    expect(problems).toEqual([]);
+  }, 120_000);
 });
 
 // Runs every endpoint for every viewer of the case and returns what disagrees with the model.

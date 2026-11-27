@@ -1,6 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { ACCOUNTS_ID_INDEX } from "../src/db/indexes";
 import { ANSWER_BYTES } from "../src/domain/answer-budget";
 import {
   SUGGESTION_EDGES,
@@ -16,7 +17,7 @@ import { answer, maximalAccounts } from "./budget-helpers";
 import { migratedStore } from "./helpers";
 import { type GrownRead, grownReads, measuredRead, observedSql, watchedCursor } from "./read-helpers";
 import { community, follow } from "./status-helpers";
-import { numbers, remoteAccountsSql, SUGGESTION_BASE } from "./suggestion-fixtures";
+import { numbers, remoteAccountsSql, SUGGESTION_BASE, suggestionAccount } from "./suggestion-fixtures";
 
 // RES-7 and RES-3 for follow suggestions (docs/visibility.md, "Read bounds"): the plan reads each window as a range of
 // follows_following whatever the planner's statistics, the rows read grow below each window's bound and stay flat
@@ -191,6 +192,43 @@ describe("suggestions read their windows as ranges (RES-7)", () => {
     expectRanges(grown.plan);
     expect(grown.rows).toBeLessThanOrEqual((await plan(fresh)).rows + 2 * SUGGESTION_EDGES_PER_SOURCE + ALLOWANCE);
   }, 120_000);
+});
+
+describe("a candidate's move (RES-7)", () => {
+  // R39's moved term: the candidate row is read once by key in the ranking, and the move's target by key, with
+  // statistics taken before any candidate moved; a moved candidate is left out.
+  it("is one key lookup of its target, with statistics older than the moves", async () => {
+    const stub = await store(graph(0, 1, 50));
+    await sql(stub, "ANALYZE");
+    const before = await measure(stub);
+    expect(before.shown).toHaveLength(Math.min(51, SUGGESTIONS_KEPT));
+    // Every other candidate moves to the next one.
+    await sql(
+      stub,
+      `UPDATE accounts SET moved_to_account_id = CAST(CAST(id AS INTEGER) + 1 AS TEXT)
+			WHERE id <> ? AND CAST(id AS INTEGER) % 2 = 0 AND CAST(id AS INTEGER) < ? + 51`,
+      VIEWER,
+      String(BASE),
+    );
+    // The last candidate's move names no stored account, and it stays listed.
+    const moved = await sql<{ id: string }>(
+      stub,
+      "SELECT a.id FROM accounts a JOIN accounts t ON t.id = a.moved_to_account_id",
+    );
+    expect(moved.length).toBeGreaterThan(20);
+    const { plan: rows } = await plan(stub);
+    const details = rows.map((row) => row.detail);
+    // By its key, through the primary key or the discoverable accounts' partial index (accounts_directory_new).
+    const candidates = details.filter((detail) => /^(SEARCH|SCAN) a\b/.test(detail));
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatch(/^SEARCH a USING INDEX \S+ \(id=\?\)$/);
+    expect(details.filter((detail) => /^(SEARCH|SCAN) pmt\b/.test(detail))).toEqual([
+      `SEARCH pmt USING COVERING INDEX ${ACCOUNTS_ID_INDEX} (id=?)`,
+    ]);
+    const after = await measure(stub);
+    expect(after.shown.some((id) => moved.some((row) => row.id === id))).toBe(false);
+    expect(after.shown[0]).toBe(suggestionAccount(50));
+  });
 });
 
 describe("suggestions read rows within their windows (RES-7)", () => {

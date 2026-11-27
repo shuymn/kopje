@@ -480,11 +480,14 @@ export function suggestionSourceSql(owner: string, viewer: string): string {
 }
 
 // R39: whether the account `x`, with its accounts row `a` in scope, is a candidate for the suggestions of `viewer`:
-// someone else, discoverable (accounts.discoverable = 1), neither followed nor requested by the viewer (a follow in
-// either state, one seek of follows_pair), and not dismissed by them (follow_recommendation_mutes). R12
-// (listedForSql) judges each candidate after this.
+// someone else, discoverable (accounts.discoverable = 1), not moved (as movedSql reads it: one key lookup, only for a
+// row whose moved_to_account_id is set), neither followed nor requested by the viewer (a follow in either state, one
+// seek of follows_pair), and not dismissed by them (follow_recommendation_mutes). R12 (listedForSql) judges each
+// candidate after this.
 export function suggestionCandidateSql(x: string, a: string, viewer: string): string {
   return `(${x} <> ${viewer} AND ${a}.discoverable = 1
+		AND CASE WHEN ${a}.moved_to_account_id IS NULL THEN 1 ELSE NOT EXISTS (SELECT 1 FROM main.accounts pmt
+			INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE pmt.id = ${a}.moved_to_account_id) END
 		AND NOT EXISTS (SELECT 1 FROM main.follows pf WHERE pf.account_id = ${viewer} AND pf.target_account_id = ${x})
 		AND NOT EXISTS (SELECT 1 FROM main.follow_recommendation_mutes pr
 			WHERE pr.account_id = ${viewer} AND pr.target_account_id = ${x}))`;

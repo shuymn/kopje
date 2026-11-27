@@ -264,10 +264,10 @@ export class PolicyModel {
   // "Suggestions"). A follow's id follows its place in world.follows. The sources are the viewer's `sources` newest
   // accepted follows, those whose following R13 shows the viewer (followListsShown) bringing each its
   // `edgesPerSource` newest accepted follows, source after source, newest first, of which the first `edges` count.
-  // A candidate is someone else, discoverable (`discoverable`, accounts.discoverable by index), neither followed nor
-  // requested by the viewer, not dismissed by them, and listed to them (R12). The candidates are ranked by how many
-  // counted edges reach them, then by follower count (none is stored in a world: 0 each), then newest first; the
-  // first `kept` are the answer.
+  // A candidate is someone else, discoverable (`discoverable`, accounts.discoverable by index), not moved, neither
+  // followed nor requested by the viewer, not dismissed by them, and listed to them (R12). The candidates are ranked by
+  // how many counted edges reach them, then by follower count (none is stored in a world: 0 each), then newest first;
+  // the first `kept` are the answer.
   suggestions(
     viewer: number,
     discoverable: (x: number) => boolean,
@@ -286,6 +286,7 @@ export class PolicyModel {
     const candidate = (x: number) =>
       x !== viewer &&
       discoverable(x) &&
+      !this.moved(x) &&
       !this.world.follows.some((f) => f.from === viewer && f.to === x) &&
       !this.world.dismissals.some((d) => d.owner === viewer && d.target === x) &&
       this.listedFor(x, viewer);
