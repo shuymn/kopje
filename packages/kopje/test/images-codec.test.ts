@@ -5,8 +5,10 @@ import { imageBlurhash } from "../src/platform/blurhash";
 import { DeadlinePassed, within } from "../src/platform/deadline";
 import { isAnimated } from "../src/platform/image-bytes";
 import {
+  AVATAR_EDGE,
   type CallGuard,
   type EncodeOptions,
+  HEADER_PIXELS,
   ImageCodecError,
   imagesCodec,
   PREVIEW_RGBA_LIMIT,
@@ -17,9 +19,20 @@ import {
   SMALL_EDGE,
   stillEncodes,
 } from "../src/platform/images";
-import { ANIMATED_GIF, ANIMATED_WEBP, APNG, PNG_PLAIN, WEBP_PLAIN, WIDE_PNG } from "./fixtures/images";
+import {
+  ANIMATED_GIF,
+  ANIMATED_WEBP,
+  APNG,
+  GIF,
+  JPEG_SERIAL,
+  PNG_PLAIN,
+  WEBP_PLAIN,
+  WIDE_PNG,
+} from "./fixtures/images";
 import { fakeBinding } from "./images-binding";
-import { bytes, recordRgba, TestCodec } from "./media-helpers";
+import { bytes, columnsPng, recordRgba, TestCodec } from "./media-helpers";
+import { animatedWebp } from "./remote-media-fixtures";
+import { encodeWebp } from "./webp-fixtures";
 
 // The chunks of a PNG (type, data) and of a WebP, walked plainly to check the fixtures.
 function pngChunks(file: Uint8Array): { type: string; data: Uint8Array }[] {
@@ -382,5 +395,194 @@ describe("imagesCodec's guarded output reads (r1 M6)", () => {
       DeadlinePassed,
     );
     expect(reads).toBe(1);
+  });
+});
+
+// A profile image's full image takes its role's shape (platform/images.ts fullBox, shapeProblem): an avatar a 400×400
+// cover, a header within Mastodon's 750,000-pixel box as a square; an animation Images leaves unshaped is made again
+// as a still of that shape, within the three outputs an upload is charged.
+describe("processImage of a profile image", () => {
+  const hashed = (): ProcessOptions => ({ blurhash: { end: Date.now() + 60_000, now: Date.now } });
+  const sizeOf = (image: { width: number; height: number }) => [image.width, image.height];
+
+  it("makes an avatar's full image a 400×400 cover and its preview from it", async () => {
+    expect(AVATAR_EDGE).toBe(400);
+    const codec = new TestCodec();
+    const result = await processImage(codec, bytes(WIDE_PNG), { ...hashed(), role: "avatar" });
+    if (!result.ok) {
+      throw new Error(result.reason);
+    }
+    expect(codec.encodeCalls[0]).toEqual({ width: 400, height: 400, fit: "cover", format: "image/png" });
+    expect(codec.encodeCalls[1]).toEqual({ width: 400, height: 400, format: "image/png", still: true });
+    const [full, preview, rgba] = codec.outputs;
+    expect(full?.transforms).toEqual([{ width: 400, height: 400, fit: "cover" }]);
+    expect(preview?.transforms).toEqual([{ width: 400, height: 400, fit: "scale-down" }]);
+    // The preview and its RGBA are made from the served full image.
+    expect(preview?.input).toEqual(result.image.full.bytes);
+    expect(rgba?.input).toEqual(result.image.full.bytes);
+    expect([sizeOf(result.image.full), sizeOf(result.image.small)]).toEqual([
+      [400, 400],
+      [400, 400],
+    ]);
+    expect(result.image.blurhash).toMatch(/^U.{35}$/);
+  });
+
+  it("enlarges a small avatar to 400×400", async () => {
+    const codec = new TestCodec();
+    const result = await processImage(codec, await columnsPng(200, 50), { role: "avatar" });
+    expect(result.ok && sizeOf(result.image.full)).toEqual([400, 400]);
+  });
+
+  it("keeps an attachment's shape when no role is given", async () => {
+    const codec = new TestCodec();
+    const result = await processImage(codec, bytes(WIDE_PNG));
+    expect(codec.encodeCalls[0]).toEqual({ width: 3840, height: 3840, format: "image/png" });
+    expect(codec.outputs[0]?.transforms).toEqual([{ width: 3840, height: 3840, fit: "scale-down" }]);
+    expect(result.ok && sizeOf(result.image.full)).toEqual([3840, 960]);
+  });
+
+  it.each([
+    // [input, the box asked for, the full image served]
+    [[4000, 1000], 1732, [1732, 433]],
+    [[1000, 750], null, [1000, 750]],
+    [[1000, 751], 999, [999, 750]],
+    [[8000, 200], 3840, [3840, 96]],
+    [[896, 864], 882, [882, 851]],
+    [[8000, 50], 3840, [3840, 24]],
+  ] as const)("sizes a header's box from its long and short edges: %j in %j", async ([width, height], box, served) => {
+    expect(HEADER_PIXELS).toBe(750_000);
+    const codec = new TestCodec();
+    const result = await processImage(codec, await columnsPng(width, height), { role: "header" });
+    expect(codec.outputs[0]?.transforms).toEqual(box === null ? [] : [{ width: box, height: box, fit: "scale-down" }]);
+    expect(result.ok && sizeOf(result.image.full)).toEqual(served);
+  });
+
+  it("boxes a header in a square, whatever its orientation", async () => {
+    const shapes: unknown[] = [];
+    for (const [width, height] of [
+      [4000, 1000],
+      [1000, 4000],
+    ] as const) {
+      const codec = new TestCodec();
+      const result = await processImage(codec, await columnsPng(width, height), { role: "header" });
+      shapes.push([codec.outputs[0]?.transforms, result.ok && sizeOf(result.image.full)]);
+    }
+    expect(shapes).toEqual([
+      [[{ width: 1732, height: 1732, fit: "scale-down" }], [1732, 433]],
+      [[{ width: 1732, height: 1732, fit: "scale-down" }], [433, 1732]],
+    ]);
+  });
+
+  it.each<[string, "avatar" | "header", [number, number], [number, number]]>([
+    ["an avatar of 401×400", "avatar", [4000, 1000], [401, 400]],
+    ["a header past its box", "header", [4000, 1000], [1733, 433]],
+    ["a 1×1 header", "header", [4000, 1000], [1, 1]],
+    ["a header resized where none was asked", "header", [1000, 750], [999, 750]],
+    ["a header past its box on a thin image", "header", [7000, 500], [3241, 231]],
+    ["a header past FULL_EDGE", "header", [5000, 100], [5000, 100]],
+    ["a header of another ratio", "header", [4000, 1000], [1732, 500]],
+  ])("refuses a role's output that is not its shape: %s", async (_name, role, [width, height], [w, h]) => {
+    const output = await columnsPng(w, h);
+    const codec = new TestCodec();
+    codec.encodeResponder = (_options, index) => (index === 0 ? output : null);
+    const result = await processImage(codec, await columnsPng(width, height), { ...hashed(), role });
+    expect(result).toEqual({ ok: false, reason: "failed", detail: `output is not of the ${role}'s shape` });
+    // One full output started, and no other: a still input has no fallback.
+    expect(codec.encodeCalls).toHaveLength(1);
+  });
+
+  it.each([
+    ["a still JPEG", bytes(JPEG_SERIAL)],
+    ["a single-frame GIF", bytes(GIF)],
+    ["an APNG", bytes(APNG)],
+  ])("never falls back for %s", async (_name, input) => {
+    const webp = await encodeWebp(401, 400);
+    const png = await columnsPng(401, 400);
+    const codec = new TestCodec();
+    codec.encodeResponder = (options, index) => (index === 0 ? (options.format === "image/png" ? png : webp) : null);
+    const result = await processImage(codec, input, { ...hashed(), role: "avatar" });
+    expect(result).toEqual({ ok: false, reason: "failed", detail: "output is not of the avatar's shape" });
+    expect(codec.encodeCalls).toHaveLength(1);
+  });
+
+  it("falls back to a still avatar for an animation Images left unshaped", async () => {
+    const codec = new TestCodec();
+    // Images answers the animation at its own size: not a 400×400 avatar.
+    codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_WEBP) : null);
+    const result = await processImage(codec, bytes(ANIMATED_WEBP), { ...hashed(), role: "avatar" });
+    if (!result.ok) {
+      throw new Error(result.reason);
+    }
+    // The animated full, the still full, and the RGBA of the still full: three outputs, no preview of its own.
+    expect(codec.encodeCalls).toEqual([
+      { width: 400, height: 400, fit: "cover", format: "image/webp" },
+      { width: 400, height: 400, fit: "cover", format: "image/webp", still: true },
+      { width: 400, height: 400, format: "rgba", limit: 4 * 400 * 400, guard: expect.any(Function) },
+    ]);
+    const { full, small, blurhash } = result.image;
+    expect([sizeOf(full), full.animated, isAnimated(full.bytes, "image/webp")]).toEqual([[400, 400], false, false]);
+    expect(small).toBe(full);
+    expect(blurhash).toMatch(/^U.{35}$/);
+    // The responder answered the first; the RGBA is the last output that reached the binding.
+    expect(codec.outputs.at(-1)?.input).toEqual(full.bytes);
+  });
+
+  it("falls back to a still header, with no RGBA, for an animation Images left unshaped", async () => {
+    const input = animatedWebp([await encodeWebp(2000, 1000), await encodeWebp(2000, 1000, { fill: "flat" })], {
+      width: 2000,
+      height: 1000,
+    });
+    const codec = new TestCodec();
+    codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_WEBP) : null);
+    const result = await processImage(codec, input, { ...hashed(), role: "header" });
+    if (!result.ok) {
+      throw new Error(result.reason);
+    }
+    expect(codec.encodeCalls.map(({ guard: _guard, ...call }) => call)).toEqual([
+      { width: 1225, height: 1225, format: "image/webp" },
+      { width: 1225, height: 1225, format: "image/webp", still: true },
+      { width: 640, height: expect.any(Number), format: "image/webp", still: true },
+    ]);
+    const { full, small, blurhash } = result.image;
+    expect([full.animated, small.animated, blurhash, result.blurhashStop]).toEqual([false, false, null, null]);
+    expect(Math.max(full.width, full.height)).toBe(1225);
+    expect(Math.max(small.width, small.height)).toBe(640);
+  }, 30_000);
+
+  it("falls back for an animated GIF whose output came back as another type", async () => {
+    const codec = new TestCodec();
+    codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_GIF) : null);
+    const result = await processImage(codec, bytes(ANIMATED_GIF), { ...hashed(), role: "avatar" });
+    expect(codec.encodeCalls.map((call) => [call.format, call.still ?? false])).toEqual([
+      ["image/webp", false],
+      ["image/webp", true],
+      ["rgba", false],
+    ]);
+    expect(result.ok && [sizeOf(result.image.full), result.image.full.animated]).toEqual([[400, 400], false]);
+  });
+
+  it("fails when the still is not of the role's shape either", async () => {
+    const codec = new TestCodec();
+    codec.encodeResponder = (_options, index) =>
+      index === 0 ? bytes(ANIMATED_WEBP) : index === 1 ? bytes(WEBP_PLAIN) : null;
+    const result = await processImage(codec, bytes(ANIMATED_WEBP), { ...hashed(), role: "avatar" });
+    expect(result).toEqual({ ok: false, reason: "failed", detail: "output is not of the avatar's shape" });
+    expect(codec.encodeCalls).toHaveLength(2);
+  });
+
+  it("does not fall back after an output that does not walk", async () => {
+    const codec = new TestCodec();
+    codec.encodeResponder = (_options, index) => (index === 0 ? new Uint8Array([...bytes(ANIMATED_WEBP), 0]) : null);
+    const result = await processImage(codec, bytes(ANIMATED_WEBP), { ...hashed(), role: "avatar" });
+    expect(result).toEqual({ ok: false, reason: "failed", detail: "output is malformed" });
+    expect(codec.encodeCalls).toHaveLength(1);
+  });
+
+  it("does not fall back without a role", async () => {
+    const codec = new TestCodec();
+    codec.encodeResponder = (_options, index) => (index === 0 ? bytes(ANIMATED_GIF) : null);
+    const result = await processImage(codec, bytes(ANIMATED_GIF), hashed());
+    expect(result).toEqual({ ok: false, reason: "failed", detail: "output is not of the requested type" });
+    expect(codec.encodeCalls).toHaveLength(1);
   });
 });

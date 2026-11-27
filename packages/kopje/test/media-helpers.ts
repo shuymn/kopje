@@ -227,6 +227,38 @@ export function pngChunk(type: string, data: Uint8Array): Uint8Array {
   return out;
 }
 
+// An RGB PNG of `width` x `height` whose column x is the colour `colourAt(x)` on every row: an image whose crop or
+// scale shows in its pixels, of any size (the rows are deflated with CompressionStream).
+export async function columnsPng(
+  width: number,
+  height: number,
+  colourAt: (x: number) => readonly [number, number, number] = () => [0, 0, 0],
+): Promise<Uint8Array> {
+  const row = new Uint8Array(1 + 3 * width);
+  for (let x = 0; x < width; x++) {
+    row.set(colourAt(x), 1 + 3 * x);
+  }
+  const raw = new Uint8Array(row.length * height);
+  for (let y = 0; y < height; y++) {
+    raw.set(row, y * row.length);
+  }
+  const deflated = new Uint8Array(
+    await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer(),
+  );
+  const ihdr = new Uint8Array(13);
+  const view = new DataView(ihdr.buffer);
+  view.setUint32(0, width);
+  view.setUint32(4, height);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  const signature = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  return new Uint8Array([
+    ...signature,
+    ...pngChunk("IHDR", ihdr),
+    ...pngChunk("IDAT", deflated),
+    ...pngChunk("IEND", new Uint8Array()),
+  ]);
+}
+
 // `png` with a chunk inserted right after IHDR.
 export function pngWithChunk(png: Uint8Array, type: string, payload: string | Uint8Array): Uint8Array {
   const ihdrEnd = 8 + 25;

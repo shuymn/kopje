@@ -6,11 +6,12 @@ import {
   IMAGE_MATRIX_LIMIT,
   type ImageType,
   isAnimated,
+  MALFORMED,
   retainedMetadata,
   sniffImageType,
   webpSize,
 } from "./image-bytes";
-import { stripImageOutput } from "./remote-media-bytes";
+import { stripImageOutput, walkGif } from "./remote-media-bytes";
 
 // Re-encoding of uploaded images (MEDIA-3). The Images binding is reached only through ImageCodec, a narrow
 // interface, so tests can substitute a codec that keeps EXIF or fails; production uses imagesCodec(env.IMAGES).
@@ -31,11 +32,14 @@ export type ImageInfo = { format: string; width?: number; height?: number };
 // `guard`: runs each binding call (output() and the output's info()) and each read of the output, started inside it;
 // one that gives up rejects, and a read given up cancels the output stream (readBodyPrefix), so nothing is left reading
 // it. Without it
-// the calls run as they are. `format` 'rgba': raw pixels, read only by encodeRgba.
+// the calls run as they are. `format` 'rgba': raw pixels, read only by encodeRgba. `fit` 'cover': the box is filled and
+// cropped around the centre, a smaller image enlarged (an avatar, processImage); without it the image is fitted within
+// the box and never enlarged (scale-down).
 export type CallGuard = <T>(work: () => Promise<T>) => Promise<T>;
 export type EncodeOptions = {
   width?: number;
   height?: number;
+  fit?: "cover";
   format: OutputType | "rgba";
   still?: true;
   limit?: number;
@@ -60,9 +64,13 @@ export class ImageCodecError extends Error {
 }
 
 // A check of a re-encoded output failed (encodeChecked). Its message is Kopje's own; a codec's message, which the
-// platform writes about the request's bytes, is never passed on as a detail (DATA-5).
+// platform writes about the request's bytes, is never passed on as a detail (DATA-5). `unshaped`: the output is of
+// another type than asked or, for a profile image, not of its role's shape (processImage's still fallback).
 class ImageOutputError extends ImageCodecError {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly unshaped = false,
+  ) {
     super(null, message);
     this.name = "ImageOutputError";
   }
@@ -145,11 +153,11 @@ export function imagesCodec(binding: ImagesBinding, { input = "stream" }: { inpu
         throw codecError(error);
       }
     },
-    async encode(bytes, { width, height, format, still, limit, guard = unguarded }) {
+    async encode(bytes, { width, height, fit, format, still, limit, guard = unguarded }) {
       try {
         let transformer = binding.input(stream(bytes, input));
         if (width !== undefined && height !== undefined) {
-          transformer = transformer.transform({ width, height, fit: "scale-down" });
+          transformer = transformer.transform({ width, height, fit: fit ?? "scale-down" });
         }
         // anim is passed both ways: the binding's default (true) is not relied on. Images makes animated output only
         // as GIF or WebP, and refuses PNG output with anim: true (9401, "Animated output is only supported for GIF or
@@ -198,6 +206,13 @@ export function profileImageAccepted(head: Uint8Array): boolean {
 // style (640x360 pixels).
 export const FULL_EDGE = 3840;
 export const SMALL_EDGE = 640;
+// An avatar's full image, in pixels an edge: Mastodon v4.7.5 crops one to 400x400 around its centre and enlarges a
+// smaller one (Account::Avatar's "400x400#", app/models/concerns/account/avatar.rb:9-16; Vips::Image.thumbnail with
+// crop: :centre and no size: :down, lib/paperclip/vips_lazy_thumbnail.rb:25,100,108-110).
+export const AVATAR_EDGE = 400;
+// A header's most pixels before it is scaled down: Mastodon v4.7.5's HEADER_MAX_PIXELS, 1500 * 500
+// (app/models/concerns/account/header.rb:9-16), converted only past it (vips_lazy_thumbnail.rb:136-139).
+export const HEADER_PIXELS = 750_000;
 // The longest RGBA output of a preview (fit never upscales past SMALL_EDGE), in bytes: 1,638,400.
 export const PREVIEW_RGBA_LIMIT = 4 * SMALL_EDGE * SMALL_EDGE;
 // The least time an RGBA output of a preview is started with: one binding call and a read of at most
@@ -269,9 +284,12 @@ export type ProcessResult =
 // it (a custom emoji) nothing more is asked. Its `guard(until)`: the RGBA output's guard giving up at `until` on the
 // caller's clock (an upload's thumbnail, whose waits are the route's); without it, inTime's. `guard`: runs the
 // inspection's info() and every call and read of both encodes (EncodeOptions guard), so an image made by a deadline
-// gives up each Images call at it (an upload's thumbnail, mastodon/media.ts); without it they run as they are.
+// gives up each Images call at it (an upload's thumbnail, mastodon/media.ts); without it they run as they are. `role`:
+// the image is an avatar or a header, whose full image takes its role's shape (fullBox, checked by shapeProblem);
+// without it (an attachment, a thumbnail, a custom emoji) the full image only keeps within FULL_EDGE.
 type BlurhashOptions = { end: number; now: () => number; guard?: (until: number) => CallGuard };
-export type ProcessOptions = { blurhash?: BlurhashOptions; guard?: CallGuard };
+export type ImageRole = "avatar" | "header";
+export type ProcessOptions = { blurhash?: BlurhashOptions; guard?: CallGuard; role?: ImageRole };
 
 export function fit(size: Size, edge: number): Size {
   const scale = Math.min(1, edge / Math.max(size.width, size.height));
@@ -324,7 +342,7 @@ async function encodeChecked(
 ): Promise<EncodedImage> {
   const encoded = await codec.encode(bytes, options);
   if (sniffImageType(encoded) !== options.format) {
-    throw new ImageOutputError("output is not of the requested type");
+    throw new ImageOutputError("output is not of the requested type", true);
   }
   const output = stripImageOutput(encoded, options.format);
   if (output === null) {
@@ -424,6 +442,60 @@ async function previewBlurhash(
   }
 }
 
+// The full image's transformation for an input of `size` (as info() reads it, before Images applies its orientation)
+// and `role`, and the long edge it is scaled down to (`edge`, null when it is not resized). Every box is a square, so
+// it bounds the long edge whichever way the image turns, and scale-down keeps the aspect:
+//   - an avatar: AVATAR_EDGE square, cover (cropped around the centre, a smaller image enlarged);
+//   - a header past HEADER_PIXELS: the square whose side is the long edge of Mastodon's box (PixelGeometryParser,
+//     vips_lazy_thumbnail.rb:13-19, sqrt(pixels × long / short) rounded), at most FULL_EDGE;
+//   - otherwise: FULL_EDGE square when the long edge passes it, else no resize.
+function fullBox(
+  size: Size,
+  role: ImageRole | undefined,
+): { resize: Pick<EncodeOptions, "width" | "height" | "fit">; edge: number | null } {
+  if (role === "avatar") {
+    return { resize: { width: AVATAR_EDGE, height: AVATAR_EDGE, fit: "cover" }, edge: AVATAR_EDGE };
+  }
+  const long = Math.max(size.width, size.height);
+  const short = Math.min(size.width, size.height);
+  if (role === "header" && size.width * size.height > HEADER_PIXELS) {
+    const edge = Math.min(FULL_EDGE, Math.round(Math.sqrt((HEADER_PIXELS * long) / short)));
+    return { resize: { width: edge, height: edge }, edge };
+  }
+  return long > FULL_EDGE
+    ? { resize: { width: FULL_EDGE, height: FULL_EDGE }, edge: FULL_EDGE }
+    : { resize: {}, edge: null };
+}
+
+// Whether a profile image's full output of `full` is not of its role's shape for an input of `size` and the box's
+// `edge` (fullBox), over the edges sorted long and short so a rotation does not matter: an avatar exactly AVATAR_EDGE
+// square; a header scaled down with its long edge E - 1 to E and its short edge within one pixel of the input's ratio
+// (Images and Mastodon round the short side differently); a header not resized at the input's own size.
+function shapeProblem(role: ImageRole, size: Size, edge: number | null, full: Size): boolean {
+  if (role === "avatar") {
+    return full.width !== AVATAR_EDGE || full.height !== AVATAR_EDGE;
+  }
+  const long = Math.max(size.width, size.height);
+  const short = Math.min(size.width, size.height);
+  const longOut = Math.max(full.width, full.height);
+  const shortOut = Math.min(full.width, full.height);
+  if (edge === null) {
+    return longOut !== long || shortOut !== short;
+  }
+  return longOut < edge - 1 || longOut > edge || Math.abs(shortOut - Math.round((short * longOut) / long)) > 1;
+}
+
+// Whether an input of `type` is animated, for the still fallback: a GIF of two or more images, or one that does not
+// walk (fail closed); a WebP isAnimated calls animated. Any other type is a still (a PNG's output is always one).
+function animatedInput(bytes: Uint8Array, type: ImageType): boolean {
+  if (type === "image/gif") {
+    let images = 0;
+    const walked = walkGif(bytes, (block) => (block.kind === "image" && ++images >= 2 ? true : undefined));
+    return walked === MALFORMED || walked === true;
+  }
+  return type === "image/webp" && isAnimated(bytes, type);
+}
+
 export async function processImage(
   codec: ImageCodec,
   bytes: Uint8Array,
@@ -449,17 +521,51 @@ export async function processImage(
     return { ok: false, reason: "too_large" };
   }
   const format = OUTPUT[type];
+  const { role } = options;
   try {
-    // Images applies the input's Exif orientation before it resizes, so the box is a FULL_EDGE square, which bounds the
-    // long edge whichever way the image turns (scale-down keeps the aspect); `full` has the size Images served.
-    const resize = Math.max(original.width, original.height) > FULL_EDGE ? { width: FULL_EDGE, height: FULL_EDGE } : {};
-    const full = await encodeChecked(codec, bytes, { ...resize, format, ...guard });
+    // Images applies the input's Exif orientation before it resizes, so every box is a square (fullBox); `full` has
+    // the size Images served, which a profile image's role checks (shapeProblem).
+    const box = fullBox(original, role);
+    const made = async (still: boolean): Promise<EncodedImage> => {
+      const encoded = await encodeChecked(codec, bytes, {
+        ...box.resize,
+        format,
+        ...(still ? { still: true as const } : {}),
+        ...guard,
+      });
+      if (role !== undefined && shapeProblem(role, original, box.edge, encoded)) {
+        throw new ImageOutputError(`output is not of the ${role}'s shape`, true);
+      }
+      return encoded;
+    };
+    let full: EncodedImage;
+    let fellBack = false;
+    try {
+      full = await made(false);
+    } catch (error) {
+      // The still fallback: an animation Images left unshaped (of another size, or another type) is made again as a
+      // still of the role's shape. It starts at most the three outputs an upload is charged (RES-6): the still full
+      // serves as an avatar's preview, and a header gets no RGBA.
+      if (
+        !(error instanceof ImageOutputError && error.unshaped) ||
+        role === undefined ||
+        format !== "image/webp" ||
+        !animatedInput(bytes, type)
+      ) {
+        throw error;
+      }
+      full = await made(true);
+      fellBack = true;
+    }
     // The preview is made from the re-encoded image, so it starts without metadata and in the served orientation. It
     // is a still, so an animated image's preview serves as its account's avatar_static or header_static (media.ts).
     const preview = fit(full, SMALL_EDGE);
-    const small = await encodeChecked(codec, full.bytes, { ...preview, format, still: true, ...guard });
+    const small =
+      fellBack && role === "avatar"
+        ? full
+        : await encodeChecked(codec, full.bytes, { ...preview, format, still: true, ...guard });
     const hashed =
-      options.blurhash === undefined
+      options.blurhash === undefined || (fellBack && role === "header")
         ? { blurhash: null, stop: null }
         : await previewBlurhash(codec, full.bytes, preview, small, options.blurhash);
     // An image keeps no blurhash on any other failure of the RGBA output, as before.
