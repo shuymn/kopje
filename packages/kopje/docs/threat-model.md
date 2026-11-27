@@ -2758,8 +2758,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   counterexample", "collects no rel=me after a noscript holding a comment, which it reads as raw text", "collects no
   rel=me after a noscript holding", "collects no rel=me after a select start tag", "collects no rel=me after an svg or
   math start tag the region rules refuse", "collects no rel=me hidden in a CDATA section Nokogiri reads in an SVG
-  title", "collects no rel=me inside a template", "refuses a rel=me inside a template whatever its context", "never
-  finds a rel=me the scripting-off parser does not, and returns its first first, after regions"),
+  title", "collects no rel=me inside a template", "refuses a rel=me inside a template whatever its context", "refuses
+  rel=me after a raw-text element in a template", "never finds a rel=me the scripting-off parser does not, and
+  returns its first first, after regions"),
   `test/html-rewriter-facts.test.ts` (the HTMLRewriter facts the scan rests on). A rel=me candidate has the token "me"
   among all its rel tokens, ASCII case-insensitively, as Mastodon's `NokogiriHandler.link_rel_include` downcases both;
   a rel past 2,048 decoded characters is not tokenized and no rel=me at or after it is collected, so a later anchor

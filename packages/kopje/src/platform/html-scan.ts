@@ -40,7 +40,10 @@ import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 //   - nor the insertion modes of <template> contents, where a scripting-off parser can drop an <a> or <link> (after
 //     a <col>) or move it (after a <tr>): a <template> start tag, in any namespace, opens a region that ends when its
 //     end tag handler runs for "template" (nested ones counted). A rel=me candidate inside one, or after a template
-//     that ended otherwise, is refused and latches (relMeInTemplate); a rel=me after a template that ended is kept.
+//     that ended otherwise, is refused and latches (relMeInTemplate), and so is any after an HTML raw-text, RCDATA or
+//     tokenizer-switching start tag (RAW_IN_TEMPLATE) inside one, which the template's insertion mode can ignore
+//     where lol-html reads raw text, so the two end the template at different tags (<template><col><style>
+//     </template>…). A rel=me after a template of ordinary elements that ended is kept.
 //   - only elements in the HTML namespace count; SVG and MathML elements are skipped, and HTML elements inside an
 //     integration point are HTML; an integration point element itself (an SVG <title>, <desc> or <foreignObject>, a
 //     MathML <mi>) is foreign, as in the spec. Where the foreign-content model differs (above), a foreign <title> can
@@ -153,6 +156,8 @@ export type PageScan = {
 export type ScanFailure = { failed: "ambiguity" | "memory" | "parser" };
 
 const XHTML = "http://www.w3.org/1999/xhtml";
+// The raw-text, RCDATA and tokenizer-switching elements that latch rel=me inside an open <template> (header).
+const RAW_IN_TEMPLATE = "style, script, title, textarea, iframe, xmp, noembed, noframes, noscript, plaintext";
 const SVG = "http://www.w3.org/2000/svg";
 // The elements an SVG region may hold, as lol-html reports tagName (lowercased): ordinary elements to the HTML tree
 // builder too, should a </p> or </br> have taken the region out of foreign content.
@@ -699,6 +704,16 @@ async function scanPaced(
             }),
           );
         } catch {
+          afterTemplate = true;
+        }
+      }),
+    })
+    .on(RAW_IN_TEMPLATE, {
+      // In an open template, an HTML raw-text, RCDATA or tokenizer-switching element that a template's insertion mode
+      // can ignore (a <style> after a <col>) makes lol-html and the spec parser end the template at different tags.
+      element: guarded<Element>((element) => {
+        scan.work.elements++;
+        if (templateDepth > 0 && element.namespaceURI === XHTML) {
           afterTemplate = true;
         }
       }),

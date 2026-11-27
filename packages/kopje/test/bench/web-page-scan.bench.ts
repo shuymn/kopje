@@ -62,7 +62,8 @@ const CASES: Record<string, Case> = {
     page: fill("<title>t</title>"),
     check: (scan) => {
       expect(scan.title).toBe("t");
-      expect(scan.work.elements).toBe(Math.floor(MiB / 16));
+      // Each <title> runs its own handler and the raw-text-in-template one.
+      expect(scan.work.elements).toBe(2 * Math.floor(MiB / 16));
     },
   },
   "a reference flood in the title": {

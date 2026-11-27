@@ -397,6 +397,39 @@ describe("scanHtml against a scripting-off parser", () => {
     });
   });
 
+  it.each([
+    ["<template><col><style></template><textarea></style></template><a rel=me href=x>", []],
+    ["<template><col><style></template><a rel=me href=A></style></template><a rel=me href=B>", ["A", "B"]],
+  ])("refuses rel=me after a raw-text element in a template: %s", async (page, oracle) => {
+    // The template's column-group mode ignores the <style>, which lol-html reads as raw text up to </style>.
+    expect(parse5RelMe(page)).toEqual(oracle);
+    expect(await scan(page)).toMatchObject({ relMe: [], relMeInTemplate: true });
+  });
+
+  const RAW_IN_TEMPLATE = ["style", "script", "title", "textarea", "iframe", "xmp", "noembed", "noframes", "noscript"];
+  const PLACES = ["", "<head>", "<body>", "<table>", "<svg><path/></svg>", "<noscript><img></noscript>"];
+  it.each(
+    [...RAW_IN_TEMPLATE, "plaintext"].flatMap((name) =>
+      PLACES.flatMap((place) => [
+        `${place}<template><col><${name}></template><textarea></${name}></template><a rel=me href=x>`,
+        `${place}<template><col><${name}></template><a rel=me href=A></${name}></template><a rel=me href=B>`,
+        `${place}<template><${name}></template></${name}></template><a rel=me href=C>`,
+        `${place}<template><tr><${name}>x</${name}></template><a rel=me href=D>`,
+      ]),
+    ),
+  )("finds no rel=me the parser does not, first first, after a raw-text element in a template: %s", async (page) => {
+    const result = await scan(page);
+    const oracle = parse5RelMe(page);
+    for (const href of result.relMe) {
+      expect(oracle).toContain(href);
+    }
+    if (result.relMe.length > 0 && !result.relMeOrderAfterTable) {
+      expect(result.relMe[0]).toBe(oracle[0]);
+    }
+    // The refusal ran, but for a <plaintext>, after which neither parser sees an element.
+    expect(result.relMeInTemplate || result.relMeAfterForeign || page.includes("<plaintext>")).toBe(true);
+  });
+
   it("keeps collecting rel=me after a template that ended with its own end tag", async () => {
     for (const page of [
       "<template><div>x</div></template><a rel=me href=x>",
@@ -759,6 +792,13 @@ describe("scanHtml against a scripting-off parser", () => {
     "<a href=ID>",
   ];
   const TEMPLATE_BREAKERS = [
+    ...["style", "script", "title", "textarea", "iframe", "xmp", "noembed", "noframes", "noscript"].flatMap((name) => [
+      `<${name}>`,
+      `</${name}>`,
+      `<${name}></template>`,
+      `<${name}>x</${name}>`,
+    ]),
+    "<plaintext>",
     "<template>",
     "</template>",
     "</TEMPLATE>",
