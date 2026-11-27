@@ -350,6 +350,19 @@ describe("update_credentials: data URIs", () => {
     (await h.request(pathOf(url ?? null))).headers.get("content-type");
   const charges = (store: StoreStub) =>
     sql(store, "SELECT name, value FROM kopje_state WHERE name LIKE 'images_%transforms:%' ORDER BY name");
+  // A harness that counts the Store's reservations: one consumes an upload attempt even when it is discarded later.
+  const counting = async () => {
+    let reservations = 0;
+    const h = await setup((store) =>
+      storeWith(store, {
+        reserveMedia: (...args: unknown[]) => {
+          reservations++;
+          return (store.reserveMedia as (...a: unknown[]) => Promise<unknown>)(...args);
+        },
+      }),
+    );
+    return { h, reservations: () => reservations };
+  };
 
   it("sets an avatar and a header from data URIs in JSON, urlencoded, multipart and the query", async () => {
     const h = await setup();
@@ -396,7 +409,7 @@ describe("update_credentials: data URIs", () => {
   });
 
   it("refuses a data URI whose bytes are not an image, whatever it declares, charging nothing", async () => {
-    const h = await setup();
+    const { h, reservations } = await counting();
     const before = await charges(h.store);
     const refusal = (kind: string) => ({
       status: 422,
@@ -415,6 +428,7 @@ describe("update_credentials: data URIs", () => {
       await answer(await patch(h, h.users.alice.token, formOf([["header", uri(AVIF_FIXTURE, "image/avif")]]))),
     ];
     expect(sent).toEqual([refusal("Avatar"), refusal("Avatar"), refusal("Header"), refusal("Header")]);
+    expect(reservations()).toBe(0);
     expect(h.codec.calls).toBe(0);
     expect(await media(h.store)).toEqual([]);
     expect(await charges(h.store)).toEqual(before);
@@ -455,8 +469,9 @@ describe("update_credentials: data URIs", () => {
     expect(await served(h, textLast?.avatar_url)).toBe("image/webp");
   });
 
+  // Of an otherwise parseable form: a form whose parameter shapes conflict answers 400 Malformed request body first.
   it("answers 413 for a data URI past the text bound, decoding nothing", async () => {
-    const h = await setup();
+    const { h, reservations } = await counting();
     const decoded = vi.spyOn(dataUri, "decodeRubyBase64");
     try {
       // A PNG's data URI of `bytes` UTF-8 bytes, padded with spaces the decoder skips.
@@ -485,12 +500,14 @@ describe("update_credentials: data URIs", () => {
         Array.from({ length: 3 }, () => ({ status: 413, body: { error: "Request body is too large" } })),
       );
       expect(decoded).not.toHaveBeenCalled();
+      expect(reservations()).toBe(0);
       expect(h.codec.calls).toBe(0);
       expect(await media(h.store)).toEqual([]);
       expect(await profile(h.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
       // At the bound, one part is decoded once and set.
       expect((await sendJson(h, { avatar: padded(API_BODY_LIMIT - 13) })).status).toBe(200);
       expect(decoded).toHaveBeenCalledTimes(1);
+      expect(reservations()).toBe(1);
       expect((await profile(h.store))?.avatar_url).toMatch(/\/full\.png$/);
     } finally {
       decoded.mockRestore();

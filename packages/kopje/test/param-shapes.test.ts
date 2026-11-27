@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -7,7 +8,10 @@ import {
   PARAM_PATH_BUDGET,
   readParams,
 } from "../src/mastodon/params";
-import { bearer } from "./api-helpers";
+import { originalKey } from "../src/platform/media-files";
+import { bearer, sql } from "./api-helpers";
+import { PNG_PLAIN } from "./fixtures/images";
+import { bytes, TestCodec } from "./media-helpers";
 import { community, getJson } from "./status-helpers";
 
 // Rack's limits on a query and a urlencoded body (platform/rails-params.ts): 4 MiB and 4,096 fields.
@@ -186,13 +190,21 @@ describe("parameter shapes at the API's routes", () => {
   });
 
   // A profile image's data URI at the body bound (mastodon/accounts.ts profileFiles, platform/data-uri.ts): a prefix
-  // that fails after a run of type characters, one that fails after the subtype's, and a payload decoded whole, which
-  // is no image.
+  // that fails after a run of type characters, one that fails after the subtype's, a payload decoded whole, which is
+  // no image, and a PNG without padding spread over the bound by the spaces the decoder skips, whose last group of
+  // three sextets (the end of IEND's CRC) is decoded only at the end of the value.
   it("recognizes and decodes a data URI at the text bound within its time bound", async () => {
-    const h = await community(["alice"]);
+    const h = await community(["alice"], undefined, { images: () => new TestCodec() });
+    const prefix = "data:image/png;base64,";
     // `{"avatar":""}` is 13 bytes.
-    const fill = (prefix: string, unit: string) => `${prefix}${unit.repeat(API_BODY_LIMIT - 13 - prefix.length)}`;
-    const values = [fill("data:", "a"), fill("data:a/", "a"), fill("data:image/png;base64,", "A")];
+    const room = API_BODY_LIMIT - 13 - prefix.length;
+    const fill = (start: string, unit: string) => `${start}${unit.repeat(API_BODY_LIMIT - 13 - start.length)}`;
+    const unpadded = PNG_PLAIN.replace(/=+$/, "");
+    expect(unpadded.length % 4).toBe(3);
+    const gap = Math.floor((room - unpadded.length) / unpadded.length);
+    const spread = [...unpadded].map((c) => `${" ".repeat(gap)}${c}`).join("");
+    const png = `${prefix}${" ".repeat(room - spread.length)}${spread}`;
+    const values = [fill("data:", "a"), fill("data:a/", "a"), fill(prefix, "A"), png];
     const answers = [];
     for (const avatar of values) {
       const body = JSON.stringify({ avatar });
@@ -212,6 +224,14 @@ describe("parameter shapes at the API's routes", () => {
       [API_BODY_LIMIT, 400, true],
       [API_BODY_LIMIT, 400, true],
       [API_BODY_LIMIT, 422, true],
+      [API_BODY_LIMIT, 200, true],
     ]);
+    // The PNG's bytes to the last, as uploaded (`originals/<id>` keeps them).
+    const [set] = await sql<{ id: string }>(
+      h.store,
+      "SELECT m.id FROM media_attachments m JOIN accounts a ON m.url = a.avatar_url WHERE a.username = 'alice'",
+    );
+    const original = await env.MEDIA.get(originalKey(set!.id));
+    expect(new Uint8Array(await original!.arrayBuffer())).toEqual(bytes(PNG_PLAIN));
   });
 });
