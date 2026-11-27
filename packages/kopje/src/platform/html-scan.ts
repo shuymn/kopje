@@ -92,7 +92,7 @@ export type PageMeta = { property: string | null; name: string | null; content: 
 export type PageScan = {
   // The first <html lang>, decoded.
   lang: string | null;
-  // The first HTML <title> whose end tag was seen, before any <svg> or <math>, decoded and untrimmed.
+  // The first HTML <title> whose end tag was seen, before any <svg> or <math> start tag, decoded and untrimmed.
   title: string | null;
   // The href of each <a> or <link> whose rel has the token "me" among all its tokens, ASCII case-insensitively (as
   // Mastodon's NokogiriHandler.link_rel_include downcases both), in document order; null when it is missing or past its
@@ -107,6 +107,8 @@ export type PageScan = {
   // Whether the page has the bytes of a <frameset> start tag anywhere (a <noscript> included), which can replace the
   // body: then no rel=me is returned.
   relMeWithFrameset: boolean;
+  // The regions that ended and let rel=me collection resume after them.
+  resumed: { svg: number; noscript: number };
   // Every <link>, rel tokens lowercased.
   links: PageLink[];
   // Every <meta> with a property or a name, both lowercased; first wins is the caller's rule.
@@ -124,6 +126,27 @@ export type PageScan = {
 export type ScanFailure = { failed: "ambiguity" | "memory" | "parser" };
 
 const XHTML = "http://www.w3.org/1999/xhtml";
+const SVG = "http://www.w3.org/2000/svg";
+// The elements an SVG region may hold, as lol-html reports tagName (lowercased): ordinary elements to the HTML tree
+// builder too, should a </p> or </br> have taken the region out of foreign content.
+const PLAIN_SVG: ReadonlySet<string> = new Set([
+  "g",
+  "path",
+  "rect",
+  "circle",
+  "ellipse",
+  "line",
+  "polyline",
+  "polygon",
+  "defs",
+  "use",
+  "symbol",
+  "lineargradient",
+  "radialgradient",
+  "stop",
+  "clippath",
+  "mask",
+]);
 const REL_SEPARATOR = /[\t\n\f\r ]+/;
 // Labels lol-html does not decode natively (not ASCII-compatible): transcoded to UTF-8 first.
 const TRANSCODED = new Set(["utf-16le", "utf-16be", "iso-2022-jp"]);
@@ -247,6 +270,7 @@ async function scanPaced(
     relMeAfterForeign: false,
     relMeAfterLongRel: false,
     relMeWithFrameset: false,
+    resumed: { svg: 0, noscript: 0 },
     links: [],
     metas: [],
     jsonLd: [],
@@ -256,7 +280,11 @@ async function scanPaced(
   };
   let afterNoscript = false;
   let afterSelect = false;
+  // Latched for good by an <svg> outside the region rules, or a <math>.
   let afterForeign = false;
+  // The open SVG region (header): rel=me is collected again once its </svg> ends it.
+  let svgRegion: object | null = null;
+  let titleAfterForeign = false;
   let afterLongRel = false;
   let langSeen = false;
   // The first HTML title: its raw text while open, then done.
@@ -304,6 +332,9 @@ async function scanPaced(
   };
   // Whether a rel=me candidate here is refused for its context, noted when it is.
   const refusedContext = (): boolean => {
+    if (svgRegion !== null) {
+      latchForeign();
+    }
     scan.relMeAfterNoscript ||= afterNoscript;
     scan.relMeAfterSelect ||= afterSelect;
     scan.relMeAfterForeign ||= afterForeign;
@@ -317,6 +348,10 @@ async function scanPaced(
       scan.relMe.push(href !== null && fits(href.length) ? href : null);
     }
   };
+  function latchForeign() {
+    afterForeign = true;
+    svgRegion = null;
+  }
   // Every handler is wrapped: a throw would fail the stream with no reason given, so it marks the scan broken.
   const guarded = <T>(handler: (node: T) => void) => {
     return (node: T) => {
@@ -340,9 +375,47 @@ async function scanPaced(
 
   const rewriter = new HTMLRewriter()
     .on("svg, math", {
-      element: guarded<Element>(() => {
+      element: guarded<Element>((element) => {
         scan.work.elements++;
-        afterForeign = true;
+        titleAfterForeign = true;
+        if (afterForeign) {
+          return;
+        }
+        if (svgRegion !== null || element.tagName !== "svg" || element.namespaceURI !== SVG) {
+          latchForeign();
+          return;
+        }
+        const region = {};
+        svgRegion = region;
+        try {
+          // Throws on <svg/>, which has no end tag.
+          element.onEndTag(
+            guarded((end) => {
+              if (svgRegion !== region) {
+                return;
+              }
+              if (end.name === "svg") {
+                svgRegion = null;
+                scan.resumed.svg++;
+              } else {
+                latchForeign();
+              }
+            }),
+          );
+        } catch {
+          latchForeign();
+        }
+      }),
+    })
+    .on("svg *", {
+      element: guarded<Element>((element) => {
+        scan.work.elements++;
+        if (afterForeign) {
+          return;
+        }
+        if (svgRegion === null || element.namespaceURI !== SVG || !PLAIN_SVG.has(element.tagName)) {
+          latchForeign();
+        }
       }),
     })
     .on("noscript", {
@@ -437,7 +510,7 @@ async function scanPaced(
     })
     .on("title", {
       element: counted((element) => {
-        if (titleDone || title !== null || afterForeign) {
+        if (titleDone || title !== null || titleAfterForeign) {
           return;
         }
         const open = { raw: "", overflow: false };

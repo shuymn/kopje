@@ -34,9 +34,10 @@ type Node = DefaultTreeAdapterMap["node"];
 
 // The oracle: the rel=me hrefs a spec parser with scripting off (as Mastodon's Nokogiri HTML5 parse) finds, in
 // document order, template contents included; HTML namespace only; the token "me" among all tokens, ASCII
-// case-insensitively, as Mastodon's NokogiriHandler.link_rel_include downcases the token list and the token.
-function parse5RelMe(page: string): string[] {
-  const found: string[] = [];
+// case-insensitively, as Mastodon's NokogiriHandler.link_rel_include downcases the token list and the token; null for
+// a missing href, as the scan keeps it.
+function parse5RelMe(page: string): (string | null)[] {
+  const found: (string | null)[] = [];
   const walk = (node: Node) => {
     if ("tagName" in node) {
       const attribute = (name: string) => node.attrs.find((a) => a.name === name)?.value;
@@ -50,7 +51,7 @@ function parse5RelMe(page: string): string[] {
           .map((token) => token.replace(/[A-Z]+/g, (upper) => upper.toLowerCase()))
           .includes("me")
       ) {
-        found.push(attribute("href") ?? "");
+        found.push(attribute("href") ?? null);
       }
       if (node.tagName === "template" && "content" in node) {
         walk(node.content);
@@ -170,8 +171,10 @@ describe("scanHtml collection", () => {
   it("takes the first HTML title whose end tag was seen, untrimmed", async () => {
     expect((await scan("<title> Page </title><title>Second</title>")).title).toBe(" Page ");
     // lol-html can report a foreign title as HTML where its foreign-content model differs from the spec's: no title
-    // after an svg or math start tag is taken.
+    // after an svg or math start tag is taken, after an svg that rel=me collection resumes after too.
     expect((await scan("<svg><title>icon</title></svg><title>Page</title>")).title).toBeNull();
+    const resumed = await scan("<svg><path/></svg><title>x</title><a rel=me href=h>");
+    expect(resumed).toMatchObject({ title: null, relMe: ["h"], resumed: { svg: 1 } });
     expect((await scan("<math></math><title>Page</title>")).title).toBeNull();
     expect((await scan("<title>never closed")).title).toBeNull();
   });
@@ -310,15 +313,65 @@ describe("scanHtml against a scripting-off parser", () => {
     expect((await scan("<a rel=me href=x></a><frame>")).relMe).toEqual(["x"]);
   });
 
-  it("collects no rel=me after an svg or math start tag", async () => {
+  it("collects rel=me again after a plain svg ends with its own end tag", async () => {
+    for (const page of [
+      '<svg viewBox="0 0 16 16"><path d="M0 0"></path></svg><a rel=me href=x>',
+      '<SVG class=i><g><path d="M0 0"/><rect/><circle/><ellipse/><line/><polyline/><polygon/></g></SVG><a rel=me href=x>',
+      "<svg><defs><linearGradient><stop/></linearGradient><radialGradient></radialGradient><clipPath><use/></clipPath>" +
+        "<mask></mask><symbol></symbol></defs>text</svg><a rel=me href=x>",
+      "<svg><path></svg><a rel=me href=x>",
+    ]) {
+      expect(parse5RelMe(page)).toEqual(["x"]);
+      expect(await scan(page)).toMatchObject({ relMe: ["x"], relMeAfterForeign: false, resumed: { svg: 1 } });
+    }
+    // Every region before the anchor, in order, and a rel=me before them kept first.
+    const page = `<a rel=me href=first></a>${"<svg><path/></svg>".repeat(49)}<a rel="nofollow me" href=x>`;
+    expect(await scan(page)).toMatchObject({ relMe: ["first", "x"], resumed: { svg: 49 } });
+  });
+
+  it.each([
+    ["a foreignObject", "<svg><foreignObject></foreignObject></svg>"],
+    ["a template", "<svg><template></template></svg>"],
+    ["an svg a", "<svg><a></a></svg>"],
+    ["an svg a holding a rel=me", "<svg><a rel=me href=in></a></svg>"],
+    ["a nested svg", "<svg><svg></svg></svg>"],
+    ["a math", "<svg><math></math></svg>"],
+    ["an svg style", "<svg><style></style></svg>"],
+    ["an svg image", "<svg><image/></svg>"],
+    ["a self-closing svg", "<svg/>"],
+    ["an svg closed by another element's end tag", "<p><svg><path></p>"],
+    ["an element after </p> breaks out of svg", "<svg></p><g></g></svg>"],
+    ["an element after </br> breaks out of svg", "<svg></br><path></path></svg>"],
+    ["an HTML start tag breaking out of svg", "<svg><g><p></p></g></svg>"],
+    ["a math", "<math></math>"],
+  ])("collects no rel=me after %s", async (_label, region) => {
+    const page = `<a rel=me href=before></a>${region}<a rel=me href=x>`;
+    const result = await scan(page);
+    expect(result).toMatchObject({ relMe: ["before"], relMeAfterForeign: true, resumed: { svg: 0 } });
+    expect(result.dropped.relMe).toBeGreaterThanOrEqual(1);
+  });
+
+  it("collects no rel=me after an svg or math start tag the region rules refuse", async () => {
     for (const page of [
       "<math><svg><desc><a rel=me href=x>",
       "<svg><math><mtext><a rel=me href=x>",
-      "<svg></svg><a rel=me href=x>",
+      "<svg><template><foreignObject></template><a rel=me href=x>",
     ]) {
       expect(await scan(page)).toMatchObject({ relMe: [], relMeAfterForeign: true });
     }
-    expect((await scan("<a rel=me href=x></a><svg></svg>")).relMe).toEqual(["x"]);
+    // Latched for good: a plain svg after a refused one does not resume.
+    expect(await scan("<svg/><svg><path/></svg><a rel=me href=x>")).toMatchObject({
+      relMe: [],
+      relMeAfterForeign: true,
+      resumed: { svg: 0 },
+    });
+    expect((await scan("<a rel=me href=x></a><svg/>")).relMe).toEqual(["x"]);
+  });
+
+  it("refuses a rel=me inside an open svg region and stays latched after it", async () => {
+    const page = "<svg><path></p><a rel=me href=in></a></svg><a rel=me href=x>";
+    expect(parse5RelMe(page)).toEqual(["in", "x"]);
+    expect(await scan(page)).toMatchObject({ relMe: [], relMeAfterForeign: true, dropped: { relMe: 2 } });
   });
 
   // A token soup of the constructs above; Kopje may miss a rel=me the oracle finds, never find one it does not.
@@ -427,6 +480,125 @@ describe("scanHtml against a scripting-off parser", () => {
       runs(5000),
     );
   });
+  // The structured run: a soup, one to three regions with hostile fragments injected, a rel=me and a soup. A uniform
+  // soup almost never builds a region that ends and then a rel=me, so the run counts the regions that resumed.
+  const SVG_ELEMENTS = [
+    "g",
+    "path",
+    "rect",
+    "circle",
+    "ellipse",
+    "line",
+    "polyline",
+    "polygon",
+    "defs",
+    "use",
+    "symbol",
+    "linearGradient",
+    "radialGradient",
+    "stop",
+    "clipPath",
+    "mask",
+  ];
+  const SVG_BODY = [
+    ...SVG_ELEMENTS.flatMap((name) => [`<${name} d="M0 0">`, `</${name}>`, `<${name}/>`]),
+    "<title>GitHub</title>",
+    "<desc>d</desc>",
+    "<title>",
+    "</title>",
+    "text",
+    " ",
+  ];
+  const SVG_BREAKERS = [
+    "<svg/>",
+    "<svg>",
+    "<title/>",
+    "<desc/>",
+    "</SVG>",
+    "</svg>",
+    "</p>",
+    "</br>",
+    "<p>",
+    "<foreignObject>",
+    "<a rel=me href=ID>",
+    "<a>",
+    "<![CDATA[",
+    "]]>",
+    "<!--",
+    "-->",
+    "<math>",
+    "<template>",
+    "<style>",
+    "<script>",
+    "<image>",
+    "<font color=red>",
+    "<title><g/>",
+  ];
+  const SVG_OPEN = ["<svg>", '<svg viewBox="0 0 16 16" class="octicon">', "<SVG>"];
+  const SVG_CLOSE = ["</svg>", "</SVG>"];
+  // Soup without the table fragments: a rel=me foster-parented out of a table precedes earlier ones in the spec
+  // parser's document order, which the scan does not model (checked apart, by relMeOrderAfterTable).
+  const SOUP = FRAGMENTS.filter((part) => !/^<\/?(table|tr|td|caption|colgroup)>$/.test(part));
+  const body = (valid: string[], breakers: string[]) =>
+    fc
+      .array(fc.oneof({ arbitrary: fc.constantFrom(...valid), weight: 6 }, fc.constantFrom(...breakers)), {
+        maxLength: 8,
+      })
+      .map((parts) => parts.join(""));
+  const svgRegion = fc
+    .tuple(fc.constantFrom(...SVG_OPEN), body(SVG_BODY, SVG_BREAKERS), fc.constantFrom(...SVG_CLOSE))
+    .map((parts) => parts.join(""));
+  const soup = fc.array(fc.constantFrom(...SOUP), { maxLength: 4 }).map((parts) => parts.join(""));
+  const relMeAnchor = fc.constantFrom(
+    "<a rel=me href=ID>",
+    '<a rel="nofollow me" href=ID></a>',
+    "<link rel=me href=ID>",
+  );
+  const structured = fc
+    .tuple(
+      soup,
+      fc.array(fc.tuple(fc.option(relMeAnchor), svgRegion), { minLength: 1, maxLength: 3 }),
+      relMeAnchor,
+      soup,
+    )
+    .map(([before, regions, anchor, after]) => {
+      const middle = regions.map(([rel, region]) => (rel ?? "") + region).join("");
+      let id = 0;
+      return (before + middle + anchor + after).replace(/ID/g, () => `h${id++}`);
+    });
+
+  it(
+    "never finds a rel=me the scripting-off parser does not, and returns its first first, after regions",
+    { timeout: 300_000 },
+    async () => {
+      const counts = { pages: 0, failed: 0, svgResumed: 0, pagesResumedWithRelMe: 0 };
+      await fc.assert(
+        fc.asyncProperty(structured, async (page) => {
+          counts.pages++;
+          const result = await scanOrFailure(page);
+          if ("failed" in result) {
+            counts.failed++;
+            return;
+          }
+          const oracle = parse5RelMe(page);
+          for (const href of result.relMe) {
+            expect(href === null || oracle.includes(href), `${href} in ${JSON.stringify(page)}`).toBe(true);
+          }
+          if (result.relMe.length > 0) {
+            expect(result.relMe[0], `first in ${JSON.stringify(page)}`).toBe(oracle[0]);
+          }
+          counts.svgResumed += result.resumed.svg;
+          if (result.resumed.svg > 0 && result.relMe.length > 0) {
+            counts.pagesResumedWithRelMe++;
+          }
+        }),
+        runs(5000),
+      );
+      console.log(JSON.stringify({ structuredRun: counts }));
+      expect(counts.svgResumed).toBeGreaterThan(0);
+      expect(counts.pagesResumedWithRelMe).toBeGreaterThan(0);
+    },
+  );
 });
 
 describe("scanHtml failures", () => {
@@ -576,6 +748,7 @@ describe("scanHtml bounds", () => {
       relMeAfterForeign: false,
       relMeAfterLongRel: false,
       relMeWithFrameset: false,
+      resumed: { svg: big, noscript: big },
       links: Array.from({ length: l.links }, () => ({
         rel: Array.from({ length: l.relTokens }, () => ""),
         href: null,
