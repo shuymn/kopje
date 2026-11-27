@@ -950,6 +950,11 @@ describe("scanHtml on hostile 1 MiB pages", () => {
     ["80k metas", fill("<meta name=a>"), "scanned"],
     ["many JSON-LD scripts", fill('<script type="application/ld+json">{}</script>'), "scanned"],
     ["many titles", fill("<title>t</title>"), "scanned"],
+    ["an unclosed svg of <g/>", fill("<g/>", "<svg>"), "scanned"],
+    ["an svg of nested closed svgs, latched", fill("<svg></svg>", "<svg>"), "scanned"],
+    ["repeated closed svg regions", fill('<svg><path d="M0 0"/></svg>'), "scanned"],
+    ["repeated noscript regions", fill("<noscript><img src=x></noscript>"), "scanned"],
+    ["one 1 MiB noscript", fill("<img src=x>", "<noscript>", "</noscript>"), "scanned"],
   ])("stays within the caps on %s", { timeout: 60_000 }, async (_label, page, outcome) => {
     const bytes = encode(page);
     expect(bytes.byteLength).toBeLessThanOrEqual(MiB);
@@ -965,9 +970,34 @@ describe("scanHtml on hostile 1 MiB pages", () => {
     expect(result.jsonLd.length).toBeLessThanOrEqual(SCAN_LIMITS.jsonLd);
     expect(result.outputUnits).toBe(unitsOf(result));
     expect(result.outputUnits).toBeLessThanOrEqual(OUTPUT_MAX_UNITS);
-    // A matched start tag is at least 6 bytes ("<link>"), and a text chunk at least one.
-    expect(result.work.elements).toBeLessThanOrEqual(bytes.byteLength / 6);
+    // The cheapest handler calls: a nested <svg> (5 bytes) runs both "svg, math" and "svg *"; a <g> 3 bytes, one. A text
+    // chunk or a comment is at least one byte.
+    expect(result.work.elements).toBeLessThanOrEqual(bytes.byteLength / 2.5);
     expect(result.work.textChunks).toBeLessThanOrEqual(bytes.byteLength);
+  });
+
+  it("counts both handlers of a nested svg start tag, at bytes / 2.5", async () => {
+    const page = "<svg>".repeat(10_000);
+    const result = await scan(page);
+    expect(result.work.elements).toBe(2 * 10_000 - 1);
+    expect(result.work.elements).toBeGreaterThan(page.length / 3);
+    expect(result).toMatchObject({ resumed: { svg: 0 } });
+  });
+
+  it("runs the region paths on the floods", { timeout: 60_000 }, async () => {
+    const closed = '<svg><path d="M0 0"/></svg>';
+    const svg = await scan(fill(closed));
+    expect(svg.resumed.svg).toBe(Math.floor(MiB / closed.length));
+    const region = "<noscript><img src=x></noscript>";
+    const noscript = await scan(fill(region));
+    expect(noscript.resumed.noscript).toBe(Math.floor(MiB / region.length));
+    // The </p> leaves svg, so the anchor is a candidate, refused inside the open region.
+    const unclosed = await scan(fill("<g/>", "<svg>", "</p><a rel=me href=x>"));
+    expect(unclosed).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
+    // The <svg>, every <g/>, and the anchor's two handlers ("svg *" and "a[rel]").
+    expect(unclosed.work.elements).toBe(1 + Math.floor((MiB - 5 - 21) / 4) + 2);
+    const long = await scan(fill("<img src=x>", "<noscript>", "</noscript><a rel=me href=x>"));
+    expect(long).toMatchObject({ relMe: [], relMeAfterNoscript: true, resumed: { noscript: 0 } });
   });
 
   // A tag within the attribute budget observed on this runtime: 32,766 extra attributes plus rel and href (32,768 in

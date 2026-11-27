@@ -48,6 +48,7 @@ const CASES: Record<string, Case> = {
       expect(scan.links.map((link) => link.rel[0])).toEqual(["canonical", "icon", "me"]);
       expect(scan.jsonLd).toHaveLength(1);
       expect(scan.relMeAfterForeign).toBe(false);
+      expect(scan.resumed.svg).toBeGreaterThan(0);
     },
   },
   "70k closed rel=me anchors": {
@@ -72,8 +73,46 @@ const CASES: Record<string, Case> = {
     },
   },
   "10k attributes on one tag": {
-    page: fill(" a=b", "<a rel=me href=x", ">"),
+    // Within the rewriter's shared attribute budget (test/html-rewriter-facts.test.ts), the rest of the MiB text.
+    page: fill("x", `<a rel=me href=x${" a=b".repeat(10_000)}>`),
     check: (scan) => expect(scan.relMe).toEqual(["x"]),
+  },
+  // The region floods (#1559): rel=me collection resumes after a plain <svg> or <noscript>.
+  "an unclosed svg of <g/>": {
+    page: fill("<g/>", "<svg>", "</p><a rel=me href=x>"),
+    check: (scan) => {
+      expect(scan).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
+      expect(scan.work.elements).toBe(1 + Math.floor((MiB - 5 - 21) / 4) + 2);
+    },
+  },
+  "an svg of nested closed svgs, latched": {
+    page: fill("<svg></svg>", "<svg>", "</svg></p><a rel=me href=x>"),
+    check: (scan) => {
+      expect(scan).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
+      // The outer <svg>, both handlers of every nested one, and the anchor after the outer </svg>.
+      expect(scan.work.elements).toBe(1 + 2 * Math.floor((MiB - 5 - 27) / 11) + 1);
+    },
+  },
+  "repeated closed svg regions": {
+    page: fill('<svg><path d="M0 0"/></svg>', "", "<a rel=me href=x>"),
+    check: (scan) => {
+      expect(scan.relMe).toEqual(["x"]);
+      expect(scan.resumed.svg).toBe(Math.floor((MiB - 17) / 27));
+    },
+  },
+  "repeated noscript regions": {
+    page: fill("<noscript><img src=x></noscript>", "", "<a rel=me href=x>"),
+    check: (scan) => {
+      expect(scan.relMe).toEqual(["x"]);
+      expect(scan.resumed.noscript).toBe(Math.floor((MiB - 17) / 32));
+    },
+  },
+  "one 1 MiB noscript": {
+    page: fill("<img src=x>", "<noscript>", "</noscript><a rel=me href=x>"),
+    check: (scan) => {
+      expect(scan).toMatchObject({ relMe: [], relMeAfterNoscript: true, resumed: { noscript: 0 } });
+      expect(scan.work.textChunks).toBeGreaterThan(0);
+    },
   },
   "80k metas": {
     page: fill("<meta name=a>"),
