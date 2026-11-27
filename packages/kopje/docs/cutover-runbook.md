@@ -482,8 +482,9 @@ kopje-admin fingerprint compare <work>/fp-b.json <work>/fp-c.json
 - **Go:** `media-rebuild` exits 0 (every local image is served); health has no failing check; sign-in works; the data
   looks right, images included; Push registration succeeds; the fingerprints match. `media-rebuild` exits 3 with the
   rows that need a decision (`original-missing`, `type-mismatch`, `failed`), when the Images quota or the monthly
-  budget stopped it, or when a call made no progress (`no-progress`, [backup.md](backup.md), restore step 6):
-  publishing then leaves those images unserved (404) until it is run again and succeeds, a decision for the owner.
+  budget stopped it, or when three calls in a row made no progress (`no-progress`, [backup.md](backup.md), restore
+  step 6): publishing then leaves those images unserved (404) until it is run again and succeeds, a decision for the
+  owner.
 - **Rollback:** as step 7.
 
 ### 9. Publish (2 min) — the point of no return

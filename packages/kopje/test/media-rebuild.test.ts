@@ -438,30 +438,35 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     expect(await files(rows[1]!)).toEqual([false, false]);
   });
 
-  it("continues after the time budget until one row has been built", async () => {
+  it("ends the call at the time budget after a slow failed attempt, its cursor past it, and builds the next row next", async () => {
     const h = await setup();
-    await addRow(h.store);
+    const failed = await addRow(h.store);
     const second = await addRow(h.store);
     let clock = NOW;
     const codec = new TestCodec();
-    // The first row's info() answers past REBUILD_CALL_BUDGET_MS, and as no image: a failed attempt, not a build.
+    // The first row's info() answers past REBUILD_CALL_BUDGET_MS, and as no image: a failed attempt, which is handled.
     vi.spyOn(codec, "info").mockImplementationOnce(() => {
       clock += REBUILD_CALL_BUDGET_MS + 10_000;
       return Promise.resolve({ format: "image/svg+xml" });
     });
-    const step = await rebuildMedia(
-      {
-        build: BUILD,
-        store: h.store,
-        bucket: env.MEDIA,
-        images: codec,
-        now: () => clock,
-        authority: { ...ACCESS, teamDomain: team.teamDomain },
-        monthlyTransforms: 100,
-      },
-      { after: null, dryRun: false },
-    );
-    expect(step).toMatchObject({ done: true, next: second.id, counts: { failed: 1, built: 1 } });
+    const call = (after: string | null) =>
+      rebuildMedia(
+        {
+          build: BUILD,
+          store: h.store,
+          bucket: env.MEDIA,
+          images: codec,
+          now: () => clock,
+          authority: { ...ACCESS, teamDomain: team.teamDomain },
+          monthlyTransforms: 100,
+        },
+        { after, dryRun: false },
+      );
+    const first = await call(null);
+    expect(first).toMatchObject({ done: false, stopped: null, next: failed.id, counts: { failed: 1, built: 0 } });
+    expect(await files(second)).toEqual([false, false]);
+    const next = await call(failed.id);
+    expect(next).toMatchObject({ done: true, next: second.id, counts: { built: 1 } });
     expect(await files(second)).toEqual([true, true]);
   });
 

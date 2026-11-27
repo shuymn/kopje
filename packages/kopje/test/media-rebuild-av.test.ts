@@ -812,7 +812,7 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     await expectStill(store, second);
   });
 
-  // A video or audio row built, or a video's fallback (its file copied, its preview cleared), counts as a build for
+  // A video or audio row's attempt, built or a video's fallback (its file copied, its preview cleared), counts for
   // REBUILD_CALL_BUDGET_MS: past it, the image row after it is not looked at.
   it.each([
     ["an audio row built", "audio", { built: 1 }],
@@ -853,6 +853,44 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     expect(step).toMatchObject({ ok: true, done: false, stopped: null, next: av.id, counts });
     expect(heads.filter((key) => key.includes(image.token))).toEqual([]);
     expect(await env.MEDIA.head(`files/${image.token}/full`)).toBeNull();
+  });
+
+  it("starts no video or audio row past the time budget after an image row", async () => {
+    const store = await setup();
+    const image = { id: mediaId(), token: randomToken() };
+    await sql(
+      store,
+      `INSERT INTO media_attachments (id, account_id, type, url, preview_url, file_token, content_type, meta, processed)
+			VALUES (?, ?, 'image', ?, ?, ?, 'image/png', '{"original":{"width":1,"height":1}}', 1)`,
+      image.id,
+      ACCOUNT,
+      `${ORIGIN}/media/${image.token}/full.png`,
+      `${ORIGIN}/media/${image.token}/small.png`,
+      image.token,
+    );
+    await env.MEDIA.put(`originals/${image.id}`, bytes(PNG_PLAIN));
+    const av = await addAv(store, "audio");
+    let clock = NOW;
+    const heads: string[] = [];
+    const recording = recordingBucket((key) => {
+      if (key === `files/${image.token}/small`) {
+        clock += REBUILD_CALL_BUDGET_MS;
+      }
+      return Promise.resolve();
+    });
+    const bucket = new Proxy(recording.bucket, {
+      get: (target, property, receiver) =>
+        property === "head"
+          ? (key: string) => {
+              heads.push(key);
+              return env.MEDIA.head(key);
+            }
+          : (Reflect.get(target, property, receiver) as unknown),
+    });
+    const step = await run(store, { bucket, now: () => clock });
+    expect(step).toMatchObject({ ok: true, done: false, stopped: null, next: image.id, counts: { built: 1 } });
+    expect(heads.filter((key) => key.includes(av.token))).toEqual([]);
+    expect(await env.MEDIA.head(`files/${av.token}/full`)).toBeNull();
   });
 
   it("gives up the still at the row's deadline and keeps the lease", async () => {
