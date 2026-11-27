@@ -1052,8 +1052,8 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
 // an imported snapshot may hold any text. A playable one's preview_url is judged again too (playablePreview, with
 // VIDEO_POSTER on `origin`): a snapshot recorded by an earlier release gave a video or audio file without a preview
 // image the file itself as its preview. #1560: an entry is withheld (withheldMedia) while a domain block's reject_media
-// rules its owner: the owner of the current attachment of the status its id names (`owners`, that row's verdict, null
-// for the author's own), else the author (`authorRejected`). A withheld entry without a remote_url (a converted
+// rules its owner: the owner of the current attachment of the status its id names, when editMediaSql kept that id whole
+// (`owners`, that row's verdict, null for the author's own), else the author (`authorRejected`). A withheld entry without a remote_url (a converted
 // version's, cli/lib/cutover/convert.js) takes its stored http(s) url for it, with the instance's origin known, unless that url is on
 // the instance's own domain (hostDomain, whatever its spelling). editMediaSql's proxy_id is never presented. `page`: the
 // instance's origin when a page presents the history without one (web-pages/status.ts pageHistory), which marks a
@@ -1083,7 +1083,9 @@ function snapshotMedia(
       description: presentedMediaDescription(media.description),
       blurhash: storedBlurhash(media.blurhash),
     };
-    const live = typeof media.id === "string" && verdicts.owners.has(media.id);
+    // Only an entry whose raw id editMediaSql kept whole (proxy_id 1) can name a current attachment: a cut id may name
+    // one it is not.
+    const live = proxyId === 1 && typeof media.id === "string" && verdicts.owners.has(media.id);
     const owner = live ? (verdicts.owners.get(media.id) ?? null) : null;
     if (!(owner === 1 || (owner === null && verdicts.authorRejected))) {
       return shown;

@@ -517,6 +517,32 @@ describe("reject_media in the presented statuses (#1560)", () => {
     expect(await remotes()).toEqual([urls[0], null, null, null]);
   });
 
+  // An entry's id whose cut names a current attachment (a NUL, then more than SNAPSHOT_KEY_LIMIT bytes in all) is not
+  // that attachment: it takes no URL from it, and no owner's verdict, so the author's withholds it.
+  it("does not match a NUL-truncated snapshot id to a live attachment", async () => {
+    const w = await mediaWorld();
+    const rejected = await account(w, REJECTED);
+    const control = await account(w, CONTROL);
+    const r = await statusOf(w, rejected, `https://${REJECTED}/m/1.png`);
+    const nulId = `${r.media}\u0000${"a".repeat(20)}`;
+    const file = `https://${REJECTED}/m/leak.png`;
+    await sql(
+      w.t.store,
+      `INSERT INTO status_edits (status_id, content, spoiler_text, sensitive, media_json, created_at)
+				VALUES (?1, '', '', 0, ?2, ?3)`,
+      r.status,
+      JSON.stringify([{ id: nulId, type: "image", url: file, preview_url: null, remote_url: file }]),
+      new Date(w.clock.now).toISOString(),
+    );
+    await rejectMedia(w, REJECTED);
+    const [sameOwner] = (await history(w, r.status))[0]!.media_attachments;
+    expect([sameOwner!.type, sameOwner!.url, sameOwner!.preview_url]).toEqual(["unknown", null, null]);
+    // The current attachment of an unruled owner (an imported row) lends the entry no verdict either.
+    await sql(w.t.store, "UPDATE media_attachments SET account_id = ? WHERE id = ?", control, r.media);
+    const [foreignOwner] = (await history(w, r.status))[0]!.media_attachments;
+    expect([foreignOwner!.type, foreignOwner!.url, foreignOwner!.preview_url]).toEqual(["unknown", null, null]);
+  });
+
   it("withholds a snapshot entry with an unsafe id without a URL", async () => {
     const w = await mediaWorld();
     const rejected = await account(w, REJECTED);
