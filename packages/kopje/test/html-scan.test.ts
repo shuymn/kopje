@@ -320,6 +320,10 @@ describe("scanHtml against a scripting-off parser", () => {
       "<svg><defs><linearGradient><stop/></linearGradient><radialGradient></radialGradient><clipPath><use/></clipPath>" +
         "<mask></mask><symbol></symbol></defs>text</svg><a rel=me href=x>",
       "<svg><path></svg><a rel=me href=x>",
+      // An SVG title or desc holding text (and comments) only, closed by its own end tag.
+      '<svg><title>GitHub</title><path d="M0 0"/></svg><a rel=me href=x>',
+      "<svg><desc>d<!-- c --></desc><path/></svg><a rel=me href=x>",
+      "<svg><g><title>a &amp; b</title></g><desc></desc></svg><a rel=me href=x>",
     ]) {
       expect(parse5RelMe(page)).toEqual(["x"]);
       expect(await scan(page)).toMatchObject({ relMe: ["x"], relMeAfterForeign: false, resumed: { svg: 1 } });
@@ -343,6 +347,13 @@ describe("scanHtml against a scripting-off parser", () => {
     ["an element after </p> breaks out of svg", "<svg></p><g></g></svg>"],
     ["an element after </br> breaks out of svg", "<svg></br><path></path></svg>"],
     ["an HTML start tag breaking out of svg", "<svg><g><p></p></g></svg>"],
+    ["an XHTML title after </p>", "<svg></p><title>t</title></svg>"],
+    ["a start tag inside an SVG title", "<svg><title><g/></title></svg>"],
+    ["a title inside an SVG title", "<svg><title><title></title></title></svg>"],
+    ["a start tag inside an SVG desc", "<svg><desc><path></path></desc></svg>"],
+    ["an SVG title closed by </svg>", "<svg><title>t</svg>"],
+    ["<![CDATA[ in an SVG title", "<svg><title><![CDATA[></title></svg>"],
+    ["<![CDATA[ in an SVG desc", "<svg><desc><![CDATA[></desc></svg>"],
     ["a math", "<math></math>"],
   ])("collects no rel=me after %s", async (_label, region) => {
     const page = `<a rel=me href=before></a>${region}<a rel=me href=x>`;
@@ -366,6 +377,21 @@ describe("scanHtml against a scripting-off parser", () => {
       resumed: { svg: 0 },
     });
     expect((await scan("<a rel=me href=x></a><svg/>")).relMe).toEqual(["x"]);
+  });
+
+  it("keeps the card metadata after a self-closing SVG title or desc, which has no end tag", async () => {
+    for (const region of ["<svg><title/></svg>", "<svg><desc/></svg>"]) {
+      const result = await scan(`${region}<a rel=me href=x></a><meta property="og:title" content="t">`);
+      expect(result).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
+      expect(result.metas).toEqual([{ property: "og:title", name: null, content: "t" }]);
+    }
+  });
+
+  it("collects no rel=me hidden in a CDATA section Nokogiri reads in an SVG title", async () => {
+    // Nokogiri's HTML5 parser reads the CDATA section up to "]]>" and finds no rel=me; lol-html and parse5 end it at
+    // the first ">", so the differential run cannot see this.
+    const page = "<svg><title><![CDATA[></title></svg><a rel=me href=x>]]>";
+    expect(await scan(page)).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
   });
 
   it("refuses a rel=me inside an open svg region and stays latched after it", async () => {

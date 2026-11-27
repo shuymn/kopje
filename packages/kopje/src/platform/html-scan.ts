@@ -119,7 +119,7 @@ export type PageScan = {
   dropped: { relMe: number; links: number; metas: number; jsonLd: number; values: number };
   // UTF-16 code units in the returned strings, at most OUTPUT_MAX_UNITS.
   outputUnits: number;
-  // Element handler calls and text chunks seen, for the work bounds.
+  // Element handler calls, and text chunks and comments seen, for the work bounds.
   work: { elements: number; textChunks: number };
 };
 
@@ -282,8 +282,9 @@ async function scanPaced(
   let afterSelect = false;
   // Latched for good by an <svg> outside the region rules, or a <math>.
   let afterForeign = false;
-  // The open SVG region (header): rel=me is collected again once its </svg> ends it.
-  let svgRegion: object | null = null;
+  // The open SVG region (header), and the SVG <title> or <desc> open in it: rel=me is collected again once its </svg>
+  // ends it.
+  let svgRegion: { inside: "title" | "desc" | null } | null = null;
   let titleAfterForeign = false;
   let afterLongRel = false;
   let langSeen = false;
@@ -385,7 +386,7 @@ async function scanPaced(
           latchForeign();
           return;
         }
-        const region = {};
+        const region: { inside: "title" | "desc" | null } = { inside: null };
         svgRegion = region;
         try {
           // Throws on <svg/>, which has no end tag.
@@ -394,7 +395,7 @@ async function scanPaced(
               if (svgRegion !== region) {
                 return;
               }
-              if (end.name === "svg") {
+              if (end.name === "svg" && region.inside === null) {
                 svgRegion = null;
                 scan.resumed.svg++;
               } else {
@@ -406,6 +407,14 @@ async function scanPaced(
           latchForeign();
         }
       }),
+      // Inside an SVG <title> or <desc>, lol-html reads <![CDATA[ as a comment ending at the first ">", where Nokogiri
+      // reads a CDATA section up to "]]>".
+      comments: guarded<Comment>((comment) => {
+        scan.work.textChunks++;
+        if (svgRegion !== null && comment.text.startsWith("[CDATA[")) {
+          latchForeign();
+        }
+      }),
     })
     .on("svg *", {
       element: guarded<Element>((element) => {
@@ -413,7 +422,35 @@ async function scanPaced(
         if (afterForeign) {
           return;
         }
-        if (svgRegion === null || element.namespaceURI !== SVG || !PLAIN_SVG.has(element.tagName)) {
+        const region = svgRegion;
+        // A start tag inside a <title> or <desc> is refused before the element list.
+        if (region === null || region.inside !== null || element.namespaceURI !== SVG) {
+          latchForeign();
+          return;
+        }
+        const name = element.tagName;
+        if (name !== "title" && name !== "desc") {
+          if (!PLAIN_SVG.has(name)) {
+            latchForeign();
+          }
+          return;
+        }
+        region.inside = name;
+        try {
+          // Throws on <title/> or <desc/>.
+          element.onEndTag(
+            guarded((end) => {
+              if (svgRegion !== region) {
+                return;
+              }
+              if (end.name === name) {
+                region.inside = null;
+              } else {
+                latchForeign();
+              }
+            }),
+          );
+        } catch {
           latchForeign();
         }
       }),
