@@ -2780,14 +2780,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   fetch, never a service binding, which NET-1 makes strictly public. Each caller's differences from Mastodon's parser
   are listed in docs/mastodon-deviations.md. Local profile link verification (`src/federation/field-links.ts`) runs only
   from the cron, one claimed account a round, within the budgets and deadlines RES-6 states; its scan collects rel=me
-  hrefs, the title and lang only, and its logs carry the failure kind and the hostname only. Its hops are admitted as
+  hrefs, the title and lang only, and its logs carry the failure kind, the skipped contexts and the hostname only; it
+  HEADs no rel=me when one came after a `<table>`, so it never HEADs another link than Mastodon's first. Its hops are
+  admitted as
   status cards' are (below, `webHopRefused` before and after each DNS check, the GET's hops and the HEAD's alike); a
   policy read that fails at either point leaves the value unchecked, checked again after the claim's hold, with no value
   the claim checked. Its records and finish are writes fenced by the claim token, the credential epoch and availability,
   so a suspension or the Store's maintenance during a round lets nothing be stamped; a request already under way for the
   claimed account may still be sent (Mastodon does not fence it either). `test/field-links.test.ts`
   ("refuses hosts and redirects the sink refuses before any request, and logs the host only", "never contacts a host
-  the domain policy refuses", "sends no HEAD when the first rel=me href is %s", "stamps nothing for an account suspended
+  the domain policy refuses", "sends no HEAD when the first rel=me href is %s", "sends no HEAD when a rel=me came
+  after a table, whose first rel=me may not be Mastodon's", "logs the rel=me candidates skipped for their context on
+  %s, with no URL", "stamps nothing for an account suspended
   during a GET, nor once it is unsuspended", "retries a round the Store refused during a GET once its hold ends",
   "discards a late record and finish from an older claim", "starts no request and follows no redirect once
   maintenance is entered during a DNS check", "leaves a value unchecked when a policy RPC fails %s the DNS check").

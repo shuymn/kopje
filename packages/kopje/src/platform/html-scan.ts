@@ -7,26 +7,41 @@ import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 // It runs on workerd's HTMLRewriter (lol-html): a spec tokenizer with a tree-builder simulator that tracks namespaces,
 // foreign content and integration points, streaming natively. Facts it rests on are pinned by
 // test/html-rewriter-facts.test.ts: attribute values and text chunks come raw (references undecoded, CR kept), the
-// first of duplicate attributes wins, an end tag handler runs only for an explicit end tag, a meta charset is not
-// re-sniffed, an unsupported label fails construction, and a parsing ambiguity or the 3 MiB buffer limit fails the
-// stream. Any failure is a failure of the whole scan: nothing partial is returned.
+// first of duplicate attributes wins, an end tag handler runs for the end tag that closes the element, an ancestor's
+// included, with that tag's name lowercased (never for an element the end of the input closes), onEndTag throws on a
+// self-closing foreign element, a meta charset is not re-sniffed, an unsupported label fails construction, and a
+// parsing ambiguity or the 3 MiB buffer limit fails the stream. Any failure is a failure of the whole scan: nothing
+// partial is returned.
 //
 // Kopje follows lol-html where it differs from Mastodon's parser (Nokogiri's HTML5 parser, scripting off):
 //   - lol-html parses <noscript> as raw text (scripting on), so markup a scripting-off parser puts in a comment can
-//     surface as elements. No rel=me after the first <noscript> start tag is collected (relMeAfterNoscript); card
-//     metadata after one may differ from Mastodon's.
+//     surface as elements. An HTML <noscript> outside an SVG region opens a region whose raw text is kept up to
+//     NOSCRIPT_CHARS; rel=me collection resumes at its </noscript> when plainNoscript accepts the text, where every
+//     later <a> or <link> is an element for both parsers, in the same order (the scripting-off parser ends the
+//     noscript at the same end tag, or ignores it with an ordinary element still open). Any other noscript latches:
+//     no rel=me after it is collected (relMeAfterNoscript). Card metadata after a noscript may differ from Mastodon's.
 //   - lol-html does not model the "in select" insertion mode, where a scripting-off parser ignores <a> and <link>
 //     start tags, nor how <template> and end tags inside a select change it: no rel=me after the first <select> start
 //     tag is collected (relMeAfterSelect).
 //   - nor does it model <frameset>, which replaces the body (or makes later markup ignored), and it does not see one
 //     inside a <noscript>: a page with "<frameset" anywhere in its bytes returns no rel=me (relMeWithFrameset).
 //   - its foreign-content model differs from the spec's in places (an <svg> inside <math> enters SVG, where the spec
-//     keeps MathML; a <template> or a stray end tag can leave it in HTML where the spec stays foreign): no rel=me after
-//     the first <svg> or <math> start tag is collected (relMeAfterForeign).
+//     keeps MathML; a <template> or a stray end tag can leave it in HTML where the spec stays foreign). An SVG <svg>
+//     outside a region opens one, and rel=me collection resumes when its end tag handler runs for "svg" and every
+//     element started in it was an SVG element of PLAIN_SVG, or an SVG <title> or <desc> with no start tag in it closed
+//     by its own end tag, and no comment in it began "[CDATA[" (inside an SVG <title> or <desc>, lol-html reads
+//     <![CDATA[ as a comment ending at the first ">", where Nokogiri reads a CDATA section to "]]>"). PLAIN_SVG are
+//     ordinary elements to the HTML tree builder too, should a </p> or </br> have left foreign content. Anything
+//     else, a <math>, a self-closing <svg> or an <svg> closed by another element's end tag latches: no rel=me after it
+//     is collected (relMeAfterForeign). A rel=me candidate inside an open region latches too.
+//   - nor does it model table foster parenting, which moves a rel=me misplaced in a <table> before the table in the
+//     tree's document order, so relMe's order can differ from Mastodon's after a <table> start tag
+//     (relMeOrderAfterTable; its caller does not HEAD the first rel=me then).
 //   - only elements in the HTML namespace count; SVG and MathML elements are skipped, and HTML elements inside an
 //     integration point are HTML; an integration point element itself (an SVG <title>, <desc> or <foreignObject>, a
 //     MathML <mi>) is foreign, as in the spec. Where the foreign-content model differs (above), a foreign <title> can
-//     be reported as HTML, so no <title> after the first <svg> or <math> start tag is taken.
+//     be reported as HTML, so no <title> after the first <svg> or <math> start tag is taken, after a region that
+//     resumed rel=me too.
 //   - lol-html keeps a stack of open elements, and each start tag's attributes, within one shared 3 MiB budget: some
 //     50,000 unclosed elements, or a start tag of tens of thousands of attributes, fail the scan (memory). The budget is
 //     shared, so no attribute count is guaranteed to pass.
@@ -100,8 +115,9 @@ export type PageScan = {
   // Mastodon's NokogiriHandler.link_rel_include downcases both), in document order; null when it is missing or past its
   // cap, the slot kept.
   relMe: (string | null)[];
-  // Whether a rel=me candidate was skipped for following a <noscript>, a <select>, or an <svg> or <math> start tag,
-  // or for being or following an <a> or <link> whose rel is past REL_CHARS.
+  // Whether a rel=me candidate was skipped for following (or standing in) a <noscript> or an <svg> outside the region
+  // rules (header), a <select> or <math> start tag, or for being or following an <a> or <link> whose rel is past
+  // REL_CHARS. A region that resumed and refused nothing leaves them false.
   relMeAfterNoscript: boolean;
   relMeAfterSelect: boolean;
   relMeAfterForeign: boolean;
