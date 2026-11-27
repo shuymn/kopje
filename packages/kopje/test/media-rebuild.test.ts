@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, inject, it, vi } from "vitest";
 
-import { run } from "../cli/lib/main.js";
+import { NO_PROGRESS_REPEATS, run } from "../cli/lib/main.js";
 import { REBUILD_LEASE_MS, REBUILD_PAGE, REBUILD_SETTLE_MS, SCAN_WINDOW } from "../src/domain/media-rebuild";
 import { handleScheduled } from "../src/jobs/scheduled";
 import { sweepMedia } from "../src/mastodon/media";
@@ -876,13 +876,25 @@ describe("kopje-admin media-rebuild", () => {
     expect((await cli(h, ["media-rebuild", "extra"])).code).toBe(2);
   });
 
-  it("stops when a step makes no progress", async () => {
-    // A call that gave up its first row answers the cursor it was sent; the CLI does not post it again.
-    for (const [steps, after] of [
-      [[{ next: null }], null],
-      [[{ next: "120000000000000001" }, { next: "120000000000000001" }], "120000000000000001"],
-    ] as const) {
-      const posted: unknown[] = [];
+  it(`stops after ${NO_PROGRESS_REPEATS} steps in a row that make no progress, and goes on after fewer`, async () => {
+    expect(NO_PROGRESS_REPEATS).toBe(3);
+    const ROW = "120000000000000001";
+    // A step that gave up its row answers the cursor it was sent; a later call may finish the row (a video whose
+    // `full` was published before its still's deadline).
+    const cases: { steps: { next: string | null; done?: boolean }[]; code: number; after?: string | null }[] = [
+      // Two unmoved answers, then the row finishes: the command goes on and ends normally.
+      { steps: [{ next: null }, { next: null }, { next: ROW, done: true }], code: 0 },
+      // Three in a row: no fourth post.
+      { steps: [{ next: null }, { next: null }, { next: null }], code: 3, after: null },
+      // Progress resets the count.
+      {
+        steps: [{ next: null }, { next: null }, { next: ROW }, { next: ROW }, { next: ROW }, { next: ROW }],
+        code: 3,
+        after: ROW,
+      },
+    ];
+    for (const { steps, code: expected, after } of cases) {
+      const posted: { after: string | null }[] = [];
       const out: string[] = [];
       const err: string[] = [];
       const code = await run({
@@ -907,11 +919,16 @@ describe("kopje-admin media-rebuild", () => {
           return Response.json({ ok: true, counts: {}, problems: [], done: false, stopped: "deadline", ...step });
         },
       });
-      expect(code).toBe(3);
-      expect(posted).toHaveLength(steps.length);
-      expect(posted.at(-1)).toMatchObject({ after: steps.length === 1 ? null : steps[0].next });
-      expect(JSON.parse(out.join(""))).toMatchObject({ stopped: "no-progress" });
-      expect(err.join("")).toContain(`handled no row after ${after ?? "the start"} (deadline)`);
+      expect([code, posted.length]).toEqual([expected, steps.length]);
+      if (expected === 3) {
+        expect(posted.at(-1)).toEqual(expect.objectContaining({ after }));
+        expect(JSON.parse(out.join(""))).toMatchObject({ stopped: "no-progress" });
+        expect(err.join("")).toContain(
+          `${NO_PROGRESS_REPEATS} calls in a row returned the cursor they were sent (${after ?? "the start"}; the last stopped: deadline)`,
+        );
+      } else {
+        expect(JSON.parse(out.join(""))).toMatchObject({ stopped: null });
+      }
     }
   });
 

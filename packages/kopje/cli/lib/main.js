@@ -5,6 +5,11 @@ import { dumpToFile, formatBytes, importFromFile, verifyBackup } from "./command
 // The media processor's execution profiles (src/platform/media-transcoder.ts PROBE_PROFILES).
 const PROBE_PROFILES = ["normalize@standard-4", "still@standard-1"];
 
+// media-rebuild stops after this many answers in a row that are not done and return the cursor they were sent. A call
+// can make durable progress on a row and still give it up (a video's `full` published, its still past the deadline),
+// and the next call finishes it; three such answers in a row mean the row outlasts the lease each time.
+export const NO_PROGRESS_REPEATS = 3;
+
 const USAGE = `Usage: kopje-admin <command> [options]
 
 Commands
@@ -963,7 +968,9 @@ export async function run({
         let after = null;
         /** @type {string | null} */
         let stopped = null;
-        // Why the call that made no progress stopped (deadline or lease-overrun), for the message.
+        // Answers in a row that returned the cursor they were sent, and why the last stopped (deadline or
+        // lease-overrun), for the message.
+        let unmoved = 0;
         /** @type {string | null} */
         let stalled = null;
         // Another call holds the rebuild lease (or one of ours gave up a step and kept it): wait for it, at most
@@ -1009,11 +1016,12 @@ export async function run({
           if (step.done) {
             break;
           }
-          // A call that handled no row (it gave up its first one, which then holds the lease until it expires) is
-          // not posted again: the same row may outlast every lease.
-          if (step.next === after) {
+          // A call that handled no row gave up its first one, which then holds the lease until it expires; after
+          // NO_PROGRESS_REPEATS of them in a row the command stops, as the same row may outlast every lease.
+          unmoved = step.next === after ? unmoved + 1 : 0;
+          stalled = step.stopped;
+          if (unmoved >= NO_PROGRESS_REPEATS) {
             stopped = "no-progress";
-            stalled = step.stopped;
             break;
           }
           after = step.next;
@@ -1026,7 +1034,7 @@ export async function run({
               : stopped === "retry"
                 ? "stopped: the media processor or Images failed for a moment (busy or unavailable); run it again later"
                 : stopped === "no-progress"
-                  ? `stopped: a call handled no row after ${after ?? "the start"} (${stalled ?? "no reason given"}); run it again later`
+                  ? `stopped: ${NO_PROGRESS_REPEATS} calls in a row returned the cursor they were sent (${after ?? "the start"}; the last stopped: ${stalled ?? "no reason given"}); run it again later`
                   : "stopped: the monthly transformation budget (IMAGES_MONTHLY_TRANSFORMS) is spent; raise it or wait",
           );
         }

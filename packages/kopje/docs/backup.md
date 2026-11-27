@@ -377,9 +377,10 @@ paths are built only from validated ids. Work in a new, empty directory so nothi
    `original-missing` (the backup did not hold it: `pending` or `absent` in the index), `type-mismatch` (the original
    is not of the type the row's URLs name), `failed` (Images could not re-encode it), or a stop on the Images quota
    (9422) or the monthly budget: run it again once the allowance is back. A call starts no new row after two minutes
-   once it has built one, and the command goes on with the next call. It also exits 3 (`no-progress`) when a call
-   handles no row, naming the row it continued after: the row after it took longer than the 10-minute lease, which
-   the call keeps until it expires; run it again later. If the command itself fails while a call runs (Node's fetch
+   once it has built one, and the command goes on with the next call. It also exits 3 (`no-progress`) when three
+   calls in a row return the cursor they were sent: it prints that cursor (the row after it is the one not finished)
+   and the reason the last call reported (`deadline` or `lease-overrun`, after which the call keeps the lease until
+   it expires); run it again later. If the command itself fails while a call runs (Node's fetch
    waits 300 seconds for an answer), that call goes on under its lease: run the command again, which waits for the
    lease, skips the rows whose files exist and builds, and charges again, the rows that still lack one.
 
