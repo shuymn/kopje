@@ -235,13 +235,15 @@ into Kopje's own media (R2):
    become WebP), `url` and `preview_url` at `https://<domain>/media/<token>/{full,small}.<png|webp>`, and `meta` with
    the full size (within 3840 pixels) and the preview size (within 640) computed as the upload path sizes them. An
    avatar or header becomes the account's profile image: an unattached row with no `gc_at`, whose full URL
-   `avatar_url` or `header_url` holds. An image that only earlier versions of a status show gets a row of that status
-   that it does not show (`shown` 0, as an edit that drops media leaves it), one per status, so its files are kept and
-   go with the status. An earlier version that shows an image the status still shows names that
-   row's files, with the description that version had. Every row, also when several show the same image, has its own
-   token, files and original, so Kopje's per-row lifecycle (the sweep after a deletion, backups, the rebuild) needs
-   nothing else. The token is HMAC-SHA256 under the image's secret of the row's key, base64url (43 characters, the shape
-   of Kopje's tokens): `profile\n<actor URI>\n<avatar|header>`, `attachment\n<status URI>\n<position>`,
+   `avatar_url` or `header_url` holds. Its sizes are an attachment's until the rebuild of step 4 makes its files in the
+   profile image's shape (an avatar 400×400, a header within 750,000 pixels), records their real sizes, and sets the
+   account's `avatar_static` or `header_static` for an animated one. An image that only earlier versions of a status
+   show gets a row of that status that it does not show (`shown` 0, as an edit that drops media leaves it), one per
+   status, so its files are kept and go with the status. An earlier version that shows an image the status still shows
+   names that row's files, with the description that version had. Every row, also when several show the same image, has
+   its own token, files and original, so Kopje's per-row lifecycle (the sweep after a deletion, backups, the rebuild)
+   needs nothing else. The token is HMAC-SHA256 under the image's secret of the row's key, base64url (43 characters, the
+   shape of Kopje's tokens): `profile\n<actor URI>\n<avatar|header>`, `attachment\n<status URI>\n<position>`,
    `image\n<Image object id>` for an unattached image, `edit\n<status URI>\n<image id>`. A token so depends only on
    `images.json` and the legacy data, and cannot be derived from public URIs without the secret. A local profile image
    that is one of legacy's defaults, an image under cloudflare/wildebeest's default account

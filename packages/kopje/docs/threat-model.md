@@ -3468,7 +3468,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Tests use Miniflare's local Images binding (sharp); the production binding's output is verified on a deployed
   instance. The media rebuild, which makes the served files of restored or moved media from their originals, goes
   through the same `processImage` and writes nothing for an original that fails, and never serves an original instead;
-  it refuses an original whose served type differs from the row's (its URLs name that type).
+  it refuses an original whose served type differs from the row's (its URLs name that type). A row its own account's
+  `avatar_url` or `header_url` names is built with that role, as a header when both name it (`rebuildCandidates`
+  probes the account by key; an emoji's row has none), and once both its files are written `finishRebuild` sets that
+  account's statics as an upload sets them; `test/media-rebuild.test.ts` ("builds a profile row in its account's
+  shape, a header first", "gives a rebuilt profile row its account's statics after its files are written").
   `test/media-rebuild.test.ts` ("makes both files … and corrects meta", "reports a missing original and a type
   mismatch"). The RGBA output of an upload's preview, from which its blurhash is computed, is only hashed: it is never
   stored or served. A video's or audio file's custom thumbnail (#1828 PR6) is an image upload through the same
