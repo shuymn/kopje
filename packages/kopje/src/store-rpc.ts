@@ -597,6 +597,7 @@ export const STORE_RPC = {
   mediaRebuildRowLive: mediaRebuild.rebuildRowLive,
   chargeMediaRebuild: mediaRebuild.chargeRebuild,
   recordMediaRebuild: mediaRebuild.recordRebuild,
+  finishMediaRebuild: mediaRebuild.finishRebuild,
   recordMediaRebuildStill: mediaRebuild.recordAvStill,
   fallbackMediaRebuild: mediaRebuild.fallbackAvRebuild,
   claimMediaRebuildProbe: mediaRebuild.claimRebuildProbe,

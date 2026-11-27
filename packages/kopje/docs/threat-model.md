@@ -3449,20 +3449,35 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/platform/remote-media-bytes.ts`, the strip of remote images, its Exif dropped whatever its orientation) and
   refuses one that does not walk, a byte after its end included; it then checks every output with `retainedMetadata`
   (`src/platform/image-bytes.ts`), which refuses any EXIF, XMP, IPTC, comment, text chunk or unknown JPEG application
-  segment, and refuses the upload otherwise (500, as Mastodon answers a failed transformation). Kopje does not count
-  colour signalling as metadata: ICC profiles and PNG 3's `cICP`, `mDCV` and `cLLI` say how to display the pixels (a
-  colour space, a display's mastering volume, light levels), not who made the image or where, and are kept only at their
-  specified lengths (4, 24 and 8 bytes, `pngChunkKept`), so they carry nothing else. Production Images converts a PNG to
-  sRGB and writes neither `iCCP` nor `cICP` in its PNG output, so an upload is served in sRGB; the allowance keeps them
-  in cached remote images (NET-3) and in the output of a codec that writes them. `test/image-bytes.test.ts` ("refuses
-  every EXIF block", "refuses XMP, IPTC, comments"), `test/remote-media-bytes.test.ts` ("stripImageOutput"),
+  segment, and refuses the upload otherwise (500, as Mastodon answers a failed transformation). An avatar or header goes
+  through `processImage` with its role (`ProcessOptions.role`, from `storeProfileImage`): its full image is asked for
+  in the role's shape (a 400×400 cover for an avatar, Mastodon's 750,000-pixel box as a square for a header), and that
+  shape is checked on Images' output before anything is written, and so is its preview's (its static: 400×400 for an
+  avatar, the full image scaled down into a 640 square for a header); an animation whose full output is not of that
+  shape or type is made again as a still of it through `encodeChecked`, and any other output that is not of its
+  shape, the fallback's preview included, refuses the upload (500); `test/images-codec.test.ts` ("processImage of a
+  profile image"), `test/profile-images.test.ts` ("update_credentials: the avatar's and header's shape"). Kopje does
+  not count colour signalling as metadata: ICC profiles and PNG 3's `cICP`, `mDCV` and `cLLI` say how to display the
+  pixels (a colour space, a display's mastering volume, light levels), not who made the image or where, and are kept
+  only at their specified lengths (4, 24 and 8 bytes, `pngChunkKept`), so they carry nothing else. Production Images
+  converts a PNG to sRGB and writes neither `iCCP` nor `cICP` in its PNG output, so an upload is served in sRGB; the
+  allowance keeps them in cached remote images (NET-3) and in the output of a codec that writes them.
+  `test/image-bytes.test.ts` ("refuses every EXIF block", "refuses XMP, IPTC, comments"),
+  `test/remote-media-bytes.test.ts` ("stripImageOutput"),
   `test/media.test.ts` ("re-encodes an image without its location", "refuses a failed transformation", "strips … from an
   output", "refuses an output that does not walk", "uploads a screenshot", "a PNG's Exif orientation is applied", "keeps
   a PNG output's colour signalling"), `test/card-image-process.test.ts` ("stores a WebP output whose EXIF Images kept").
   Tests use Miniflare's local Images binding (sharp); the production binding's output is verified on a deployed
   instance. The media rebuild, which makes the served files of restored or moved media from their originals, goes
   through the same `processImage` and writes nothing for an original that fails, and never serves an original instead;
-  it refuses an original whose served type differs from the row's (its URLs name that type).
+  it refuses an original whose served type differs from the row's (its URLs name that type). A row its own account's
+  `avatar_url` or `header_url` names is built with that role, as a header when both name it (`rebuildCandidates`
+  probes the account by key; an emoji's row and a remote account's have none), and once both its files are written
+  `finishRebuild` sets that account's statics as an upload sets them, to the URL an upload of the row's token is
+  given (never the stored preview URL), and never for an emoji's row or a remote account's;
+  `test/media-rebuild.test.ts` ("builds a profile row in its account's shape, a header first", "gives a rebuilt profile
+  row its account's statics after its files are written", "rebuilds a row named as an avatar without touching the
+  account for …", "writes both statics of an animated row both images name, …").
   `test/media-rebuild.test.ts` ("makes both files … and corrects meta", "reports a missing original and a type
   mismatch"). The RGBA output of an upload's preview, from which its blurhash is computed, is only hashed: it is never
   stored or served. A video's or audio file's custom thumbnail (#1828 PR6) is an image upload through the same
@@ -3805,8 +3820,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   update, `PATCH` and `PUT /api/v1/profile`, the settings page's image, and the thumbnail of `PUT`/`PATCH
   /api/v1/media/:id`) takes a multipart body of the limit plus each file and its part headers (17,858,560 bytes for
   `update_credentials` and the profile update, 17,842,176 for the media update), chosen from `Content-Type` before any
-  byte is read, while its text, each part as sent, stays within the limit in UTF-8 bytes, and, for the media update
-  (the rule's `outside`), all but the thumbnail file's body within the limit plus one part's headers; a
+  byte is read, while its text, each part as sent and the query with it, stays within the limit in UTF-8 bytes, and,
+  for the media update (the rule's `outside`), all but the thumbnail file's body within the limit plus one part's
+  headers; the query beside a JSON body, or a body of any other type, is bounded by Rack's limits below in code and by
+  Workers' 16 KB URL limit in production; an `avatar` or `header` sent as a base64 data URI is text under these bounds
+  (413 past them; within the raw body limit, a form whose shapes conflict answers 400 before its text is counted),
+  decoded (`profileFiles`, `src/mastodon/accounts.ts`) before anything is reserved or charged, so an input its
+  signature refuses reserves and charges nothing, and one Images then refuses is charged as the same file would be
+  (RES-6); `test/profile-images.test.ts` ("answers 413 for a data URI past the text bound, decoding nothing",
+  "refuses a data URI whose bytes are not an image, whatever it declares, charging nothing"); a
   JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty arrays) or
   2,097,152 UTF-16 code units of all its keys, charged before each key is built, and past 32 levels of nesting; the
   query, and a urlencoded body, are refused past Rack's limits (4 MiB, 4,096 fields), a multipart body at its 4,096th
@@ -3972,6 +3994,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   code units RES-1 charges (`src/platform/rails-params.ts`); `test/param-shapes.test.ts` ("reads a query at Rack's
   limits and both caps within a generous time, before any token", "reads a form body at its limit and both caps within
   a generous time").
+  A profile image's data URI: _Enforced (main):_ its prefix is scanned once from the start and its payload decoded in
+  one pass (`src/platform/data-uri.ts`), with no pattern over the payload; `test/param-shapes.test.ts` ("recognizes and
+  decodes a data URI at the text bound within its time bound").
   A URL's host key: _Enforced (main):_ `hostDomain` (`src/platform/domain-name.ts`) drops the trailing dots in one
   backward scan, where a regex retries at each dot of an interior run; `test-node/cutover-convert.test.ts` ("is read
   within a generous time at the size of an inbound activity"), `test/host-trailing-dots.test.ts` ("answers an inbound
@@ -5139,7 +5164,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   monthly share of it (`IMAGES_ACCOUNT_MONTHLY_TRANSFORMS`, default a tenth), so one account (R4) cannot lock the
   others out; every refusal answers 429, and a used-up Images allowance answers 503 when it refuses a required output
   (the input's `info()`, the full image, the preview or their `info()`); a 9422 from the preview's RGBA output alone
-  keeps the upload, answered 200 with a null blurhash. A custom emoji charges two, and a rebuilt row what its writer was
+  keeps the upload, answered 200 with a null blurhash. An avatar or header whose animation Images leaves unshaped is
+  made again as a still (MEDIA-3) within the same three: the animated full image, the still full image, then the
+  still full image's RGBA for an avatar (whose preview it is) or the preview for a header (which keeps no blurhash);
+  `test/images-codec.test.ts` ("falls back to a still avatar …", "falls back to a still header, with no RGBA, …"),
+  `test/profile-images.test.ts` ("sets a still avatar and header when Images leaves an animation unshaped"). A custom
+  emoji charges two, and a rebuilt row what its writer was
   charged (two for an emoji's, three for any other), to the instance budget only. Card images (A11) draw on their own
   monthly counter (`IMAGES_CARD_MONTHLY_TRANSFORMS`, default 0), one transformation charged right before each Images
   output, two an image (its WebP and its RGBA, which Images may bill as one transformation, so the count is a ceiling),

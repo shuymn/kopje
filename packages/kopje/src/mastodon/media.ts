@@ -14,6 +14,7 @@ import {
   type CallGuard,
   IMAGE_MATRIX_LIMIT,
   IMAGE_SIZE_LIMIT,
+  type ImageRole,
   processImage,
   type ProcessedImage,
   SIGNATURE_BYTES,
@@ -402,14 +403,15 @@ function deadlineGuard(deps: Pick<ApiDeps, "now" | "wait">, end: number): CallGu
 // transformations, Images re-encodes, R2 keeps the original and the served files, and the Store completes the row.
 // With `end` (a thumbnail made during a video or audio upload's staging, makeThumbnail), each step starts only before
 // it (DeadlinePassed otherwise) and every Images call and read is given up at it (ProcessOptions guard); a step already
-// started runs to its own end, so the caller's cleanup waits for this to settle.
+// started runs to its own end, so the caller's cleanup waits for this to settle. With `role` (an avatar or header,
+// storeProfileImage), the full image takes its role's shape (processImage); an attachment and a thumbnail have none.
 async function transformReserved(
   c: UploadContext,
   deps: ApiDeps,
   upload: Upload,
   bytes: Uint8Array,
   fields: { description: string; focus: { x: number; y: number } | undefined },
-  end = Infinity,
+  { end = Infinity, role }: { end?: number; role?: ImageRole } = {},
 ): Promise<Failure | MediaAttachment> {
   const { id, token, credential } = upload;
   const begin = <T>(step: () => Promise<T>): Promise<T> =>
@@ -443,6 +445,7 @@ async function transformReserved(
         ...(end === Infinity ? {} : { guard: (until: number) => deadlineGuard(deps, until) }),
       },
       ...(end === Infinity ? {} : { guard }),
+      ...(role === undefined ? {} : { role }),
     }),
   );
   if (!processed.ok) {
@@ -495,7 +498,8 @@ async function transformReserved(
   return media ?? EXPIRED;
 }
 
-// A completed upload that is to become an avatar or header, made from bytes the caller has read and checked. The
+// A completed upload that is to become an avatar or header (`kind`, the shape processImage gives it), made from bytes
+// the caller has read and checked. The
 // helper owns the reservation until it answers ok, and discards it on any failure, thrown errors and a lost completion
 // answer included (discard). After ok the caller owns the upload until the Store applies it, and discards it if that
 // does not commit.
@@ -504,6 +508,7 @@ export async function storeProfileImage(
   deps: ApiDeps,
   credential: () => UserCredential,
   bytes: Uint8Array,
+  kind: ImageRole,
 ): Promise<{ ok: true; upload: ProfileUpload } | ({ ok: false } & Failure)> {
   const reserved = await reserve(c, deps, credential);
   if (!reserved.ok) {
@@ -512,7 +517,7 @@ export async function storeProfileImage(
   const { upload } = reserved;
   let outcome: Failure | MediaAttachment;
   try {
-    outcome = await transformReserved(c, deps, upload, bytes, { description: "", focus: undefined });
+    outcome = await transformReserved(c, deps, upload, bytes, { description: "", focus: undefined }, { role: kind });
   } catch (error) {
     await discard(c, deps, upload);
     throw error;
@@ -552,7 +557,7 @@ export async function storeThumbnail(
   const { upload } = reserved;
   let outcome: Failure | MediaAttachment;
   try {
-    outcome = await transformReserved(c, deps, upload, bytes, { description: "", focus: undefined }, end);
+    outcome = await transformReserved(c, deps, upload, bytes, { description: "", focus: undefined }, { end });
   } catch (error) {
     // A completion that committed with both its replies lost is doomed here (discard): the sweep takes its files now.
     await discard(c, deps, upload);

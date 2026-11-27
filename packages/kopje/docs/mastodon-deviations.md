@@ -217,18 +217,34 @@ A pull request that fixes a gap removes the exceptions that cite it.
 Profile credentials (`PATCH /api/v1/accounts/update_credentials`, `GET`, `PATCH` and `PUT /api/v1/profile`, the
 settings page):
 
-- `avatar` and `header` are multipart files only: a data URI or any other non-empty text value answers 400 (Paperclip
-  has no handler for it); an empty value reads as absent. Each file must be under 8 MB (8,388,608 bytes is refused)
-  and JPEG, PNG, GIF or WebP by its signature; AVIF is refused. The multipart body may be 17,858,560 bytes (1 MiB of
-  text plus two files and their part headers), its text at most 1 MiB in UTF-8 bytes.
-- Images are not cropped to 400×400 or capped at 1500×500; an image past 33,177,600 pixels answers 422, an error of
-  `avatar` or `header` (Mastodon keeps the account unchanged and answers 200). A GIF has no separate limit of 921,600
-  pixels, which in Mastodon bounds its own conversion of a GIF.
-- For an uploaded image whose served file is animated, `avatar_static` and `header_static` are a still of at most
-  640 px on the long edge (the upload's preview); Mastodon's is 400×400 or the header's own size, and only for a GIF.
+- `avatar` and `header` are multipart files; on the API routes they may also be a base64 data URI
+  (`data:<type>;base64,…`) in a JSON, urlencoded, multipart text or query value, decoded as Paperclip decodes it. Any
+  other non-empty text value answers 400 (Paperclip has no handler for it); an empty value reads as absent. Each image
+  must be under 8 MB (8,388,608 bytes is refused) and JPEG, PNG, GIF or WebP by its signature, whatever type a data URI
+  declares; AVIF is refused. The multipart body may be 17,858,560 bytes (two files and their part headers beside the
+  text). A urlencoded or multipart form's text and the query share 1 MiB in UTF-8 bytes; a JSON body has its own 1 MiB,
+  beside which (as beside any other body type) the query is bounded by Workers' 16 KB URL limit. An otherwise
+  parseable request past its bound answers 413 (within the raw body limit, a form whose parameter shapes conflict
+  answers 400 before the text is counted), so a data
+  URI's image is at most about 786,000 bytes, where Mastodon takes one under 8 MB; a larger image is sent as a
+  multipart file.
+- An image past 33,177,600 pixels answers 422, an error of `avatar` or `header` (Mastodon keeps the account unchanged
+  and answers 200). A GIF has no separate limit of 921,600 pixels, which in Mastodon bounds its own conversion of a
+  GIF.
+- An avatar is cropped to 400×400 around its centre and a smaller one enlarged, as Mastodon's, a GIF too: a 600×300
+  GIF is 400×400 here and 200×200 in Mastodon, whose GIF path never enlarges. A header past 750,000 pixels is scaled
+  down into a square whose side is the long edge of Mastodon's box, so an Exif-rotated image is boxed the same way;
+  the result matches Mastodon's up to a pixel of rounding (896×864 is 882×851 here, 881×850 in Mastodon). Every image
+  keeps within 3,840 px on its long edge, which Mastodon's box does not: 8000×50 is 3840×24 here and 8000×50 in
+  Mastodon, 8000×200 is 3840×96 here and 5477×137 in Mastodon. An animation Cloudflare Images does not resize into
+  that shape is set as a still of it.
+- For an uploaded header whose served file is animated, `header_static` is a still of at most 640 px on the long edge
+  (the upload's preview), where Mastodon's is the GIF's own size, and only for a GIF (a 1200×700 GIF header's is
+  640×373 here and 1200×700 in Mastodon). An animated avatar's `avatar_static` is a 400×400 still, as Mastodon's.
   Otherwise they equal `avatar` and `header`.
-- A local animated WebP stays animated in `avatar` and `header`, where Mastodon flattens it to one frame. An APNG is
-  served as a still PNG, as Images makes animated output only as GIF or WebP.
+- A local animated WebP stays animated in `avatar` and `header` (unless Images does not resize it, above), where
+  Mastodon flattens it to one frame. An APNG is served as a still PNG, as Images makes animated output only as GIF or
+  WebP.
 - A remote account's `avatar` and `header` are Kopje's cached copy on the instance's own origin (`/media/r/…`) once the
   cron has fetched it, and the remote URL until then or when no copy can be made, where Mastodon shows its own copy or
   `missing.png`; while a domain block with `reject_media` rules the account's stored domain, both are the default
@@ -308,7 +324,7 @@ settings page):
   non-empty string other than a false value is true) and fails the document on `null` and on an empty string, which
   casts to `nil`.
 - Images uploaded before still renditions were made keep `avatar_static` and `header_static` equal to the image until
-  they are replaced.
+  they are replaced, unless `kopje-admin media-rebuild` makes their missing files, which sets an animated one's still.
 - The `preview_url` of an animated upload (status media included) is a still.
 - `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
   and interactions, or one account's posts the viewer may see, never a public index.

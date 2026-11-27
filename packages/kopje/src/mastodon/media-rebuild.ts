@@ -2,6 +2,7 @@ import {
   REBUILD_LEASE_MS,
   type RebuildCharge,
   type RebuildLeaseResult,
+  type RebuildFinish,
   type RebuildRecord,
   type RebuildRow,
 } from "../domain/media-rebuild";
@@ -56,20 +57,22 @@ import { avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./media-rebuild-a
 //     row left with the poster is processed again only by `--stills`;
 //   - an image's files: re-encodes through the same checks, but the row's preview dimensions or blurhash can be left
 //     disagreeing with the stored `small`, which a later run skips (pre-existing, #1835).
-// A call that gave up a step keeps the lease until it expires. The bound: per row, at most two R2 reads, six Images
+// A call that gave up a step keeps the lease until it expires. The bound: per row, at most two R2 reads, seven Images
 // calls (an emoji's: the preflight info() and processImage's five; any other row's: processImage's six, its preview's
-// RGBA included) and five Store calls, each given up within the lease, then at most three R2 writes, each awaited.
+// RGBA included, or seven for a header made again as a still, of which three are outputs) and five Store calls, each given up within the lease, then at most three R2 writes, each awaited.
 //
 // Each row that lacks a file: its original is read from originals/<id>; the original's type must be served as the
 // row's content_type (its URLs name that type, so a mismatch is reported and left alone, never rewritten); the
 // instance's transformation budget is charged, as the row's writer charged it (domain/media-rebuild.ts chargeRebuild);
-// processImage re-encodes it as an upload does (MEDIA-3: metadata stripped, long edge capped, a preview, and for a
+// processImage re-encodes it as an upload does (MEDIA-3: metadata stripped, long edge capped, a preview, for a row its
+// own account names as its avatar or header that image's shape (RebuildRow.role; an emoji's row has none), and for a
 // row that is not an emoji's the preview's blurhash, its RGBA output given up with the row's other steps or
 // RGBA_CALL_MS after it starts, platform/images.ts); the Store records the real sizes in meta and the blurhash,
 // keeping the stored one when there is none; only then are
-// files/<token>/{full,small} written; and once both writes have completed the Store is asked whether the row is still
-// live, and the files are deleted again if it is not (defence in depth: nothing deletes rows while the rebuild may
-// run). Images refusing for quota (9422) or the monthly budget being spent stops the call; a 9422 from the preview's
+// files/<token>/{full,small} written; and once both writes have completed the Store finishes the row
+// (domain/media-rebuild.ts finishRebuild): if it is still live, its account's statics for the images that name it are
+// set as an upload sets them, and if it is not, the files are deleted again (defence in depth: nothing deletes rows
+// while the rebuild may run). Images refusing for quota (9422) or the monthly budget being spent stops the call; a 9422 from the preview's
 // RGBA output stops it after the row is built without a new blurhash, and the RGBA output given up gives up the row as
 // any other in-row step.
 //
@@ -569,7 +572,11 @@ async function pass(
         return step("budget", false);
       }
       const processed = await bounded(() =>
-        processImage(deps.images, bytes, row.emoji ? {} : { blurhash: { end: deadline, now } }),
+        processImage(
+          deps.images,
+          bytes,
+          row.emoji ? {} : { blurhash: { end: deadline, now }, ...(row.role === null ? {} : { role: row.role }) },
+        ),
       );
       if (!processed.ok) {
         if (processed.reason === "quota") {
@@ -626,9 +633,23 @@ async function pass(
       await settled(() => bucket.put(keys[0], built.bytes, { httpMetadata: { contentType: built.contentType } }));
       await settled(() => bucket.put(keys[1], preview.bytes, { httpMetadata: { contentType: preview.contentType } }));
       // Defence in depth: nothing deletes rows while a rebuild holds the lease, but if the row went while the files
-      // were written, they are deleted again so nothing serves them.
-      const live = await bounded(() => store.mediaRebuildRowLive(build, { id: row.id, token: row.token }));
-      if (!live) {
+      // were written, they are deleted again so nothing serves them. A live row's account takes its statics now.
+      const finished = await bounded<RebuildFinish>(
+        async () =>
+          await store.finishMediaRebuild(build, {
+            authority: deps.authority,
+            holder: control.holder,
+            id: row.id,
+            token: row.token,
+          }),
+      );
+      if (finished.status === "denied") {
+        throw new Refused("wrong-authority", finished.reason);
+      }
+      if (finished.status === "lease-lost") {
+        throw new Refused("rebuild-lease-lost", "the rebuild lease expired during the call");
+      }
+      if (finished.status === "gone") {
         await settled(() => bucket.delete([...keys]));
         counts.gone++;
       } else {

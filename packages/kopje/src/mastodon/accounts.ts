@@ -16,6 +16,7 @@ import type { Authorized, UserCredential } from "../domain/auth";
 import { DIRECTORY_DEFAULT_LIMIT, DIRECTORY_MAX_LIMIT } from "../domain/directory";
 import { PROFILE_IMAGES, type ProfileImage } from "../domain/media";
 import { MAX_RAW_LENGTH, noteLength } from "../domain/status-text";
+import { base64DataUriPayload, decodeRubyBase64 } from "../platform/data-uri";
 import { parseAddress } from "../platform/domain-name";
 import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageAccepted, SIGNATURE_BYTES } from "../platform/images";
 import { railsBlank } from "../platform/rails-blank";
@@ -292,20 +293,22 @@ function contentTypeProblems(kind: ProfileImage): Problem[] {
   ];
 }
 
-// The avatar and header files of a credentials form (multipart), checked as Paperclip validates them before anything
-// is reserved, each problem as Paperclip adds it (the content type's, then the size's: attachment_size_validator.rb
-// adds less_than to the image and then to its file size); or 'string' for a file parameter sent as a non-empty text
-// value (Paperclip has no handler for it: 400). An empty value reads as absent. Only a file's first bytes are read.
+// The avatar and header of a credentials form, each a file part or a base64 data URI (platform/data-uri.ts), checked
+// as Paperclip validates them before anything is reserved, each problem as Paperclip adds it (the content type's, then
+// the size's: attachment_size_validator.rb adds less_than to the image and then to its file size); or 'string' for any
+// other non-empty text value (Paperclip has no handler for it: 400). An empty value reads as absent.
 export async function profileFiles(
   p: Params,
-): Promise<{ images: Partial<Record<ProfileImage, File>>; problems: ImageProblems } | "string"> {
-  const images: Partial<Record<ProfileImage, File>> = {};
+): Promise<{ images: Partial<Record<ProfileImage, Blob>>; problems: ImageProblems } | "string"> {
+  const images: Partial<Record<ProfileImage, Blob>> = {};
   const problems: Record<ProfileImage, Problem[]> = { avatar: [], header: [] };
   for (const kind of PROFILE_IMAGES) {
-    if ((p.get(kind) ?? "") !== "") {
+    const text = p.get(kind) ?? "";
+    const payload = base64DataUriPayload(text);
+    if (text !== "" && payload === undefined) {
       return "string";
     }
-    const file = p.file(kind);
+    const file = payload === undefined ? p.file(kind) : new Blob([decodeRubyBase64(text, payload)]);
     if (file === undefined) {
       continue;
     }
@@ -336,7 +339,7 @@ export async function storeProfileImages(
   c: UploadContext,
   deps: ApiDeps,
   credential: () => UserCredential,
-  images: Partial<Record<ProfileImage, File>>,
+  images: Partial<Record<ProfileImage, Blob>>,
   owned: ProfileUpload[],
 ): Promise<ProfileImages | Failure | Problem[]> {
   const ids: ProfileImages = {};
@@ -345,7 +348,7 @@ export async function storeProfileImages(
     if (file === undefined) {
       continue;
     }
-    const stored = await storeProfileImage(c, deps, credential, new Uint8Array(await file.arrayBuffer()));
+    const stored = await storeProfileImage(c, deps, credential, new Uint8Array(await file.arrayBuffer()), kind);
     if (!stored.ok) {
       return profileFailure(kind, stored);
     }
