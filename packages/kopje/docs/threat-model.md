@@ -6928,8 +6928,9 @@ so the Store isolate's 128 MB holds them together.
   else, read nothing more, and the post or edit is answered 503 by its write); the write's own transaction checks again.
   A refusal that begins while a post's addresses resolve does not by itself stop them: `actorState` and `fetchRefused`
   are reads, admitted in readonly, so the remaining addresses go on within the request's budget and the write answers
-  503; the resolution stops when a Store call is refused (the instance key's creation, a JSON-LD context's cache write,
-  or `full` maintenance) (`test/mention-resolution-races.test.ts`; `test/mention-resolution.test.ts` ("stops at a Store
+  503; when a Store call is refused (the instance key's creation, a JSON-LD context's cache write, or `full`
+  maintenance) the address being resolved may finish its requests, and no later address starts
+  (`test/mention-resolution-races.test.ts`; `test/mention-resolution.test.ts` ("stops at a Store
   refusal of a JSON-LD context's cache write")). The scheduled backup's runner lease is refused in
   its transaction, so cron makes no S3 call and takes no dump freeze (an operator's rescue dump still works). Reads and
   sessions pass, so imported data can be read and the owner can sign in for the checks before publication. `publish` (an
