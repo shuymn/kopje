@@ -1853,11 +1853,12 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   - An address on a domain the author blocks is not fetched and takes none of those places; Mastodon fetches it and
     then drops the mention. The text is the same.
   - A scheduled post's addresses are resolved when it is scheduled, and its publication finds the accounts stored then,
-    fetching nothing; Mastodon resolves at publication. So an address that does not resolve when the post is scheduled
-    (its server down, the account made later, a domain blocked then) stays text at publication; publication mentions
-    whatever usable account holds the address then (one stored meanwhile included, and not one deleted, suspended or
-    blocked since); the remote server sees the requests when the post is scheduled, also for a post later deleted; and
-    a post scheduled before this release publishes with the accounts already stored. Accepted, 2026-11-27.
+    fetching nothing; Mastodon resolves at publication. So publication mentions whatever usable account holds an address
+    then (one stored meanwhile included, and not one deleted, suspended or blocked since), and an address no account
+    holds then stays text, also one that did not resolve when the post was scheduled (its server down, the account made
+    later, a domain blocked then); the remote server sees the requests when the post is scheduled, also for a post
+    later deleted; and a post scheduled before this release publishes with the accounts already stored. Accepted,
+    2026-11-27.
   - An actor that answers 410 during this resolution leaves its address as text and deletes nothing; Mastodon queues
     the deletion of a stored actor that answers 410. Such an actor stays until its own paths remove it (an inbox
     `Delete`, a refresh, a delivery's 410). Accepted, 2026-11-27.
@@ -1889,8 +1890,7 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   and sends `status.update`, but records no history entry and leaves `edited_at` as it was: the policy is not part of a
   status's versions, as with `PUT /api/v1/statuses/:id/interaction_policy`. Mastodon counts such a change as an edit
   (`app/services/update_status_service.rb:121`, `:124`, `:174-176` in v4.7.5), so it snapshots a version (`:31`,
-  `:170-172`) and sets `edited_at` (`:126`). Such an edit resolves no address, where Mastodon's resolves its text's
-  unknown addresses. Accepted, 2026-11-15.
+  `:170-172`) and sets `edited_at` (`:126`). Accepted, 2026-11-15.
 
 Streaming (`status.update`; Mastodon's `FanOutOnWriteService` with `update: true`; VIS-26 in
 [threat-model.md](threat-model.md)):

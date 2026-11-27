@@ -2944,8 +2944,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   with WebFinger unsigned; the search after the fetch judges the token again at its own time. Posting, scheduling and
   editing (`POST /api/v1/statuses`, `PUT /api/v1/statuses/:id`) fetch their text's unknown mention addresses the same
   way, as the instance actor only, after the Store's mention gate (`postMentionGate` in
-  `src/domain/scheduled-statuses.ts`, `editMentionGate` in `src/domain/statuses.ts`) has answered a write refusal, then
-  the token (401, 403 or 422 before anything is fetched), then the addresses, with WebFinger unsigned; the write judges
+  `src/domain/scheduled-statuses.ts`, `editMentionGate` in `src/domain/statuses.ts`) has answered the token in the order
+  OPS-8 gives (401, 403 or 422 before anything is fetched), with WebFinger unsigned; the write judges
   the token again with a credential taken after the fetches (`createAddressResolver` in `src/federation/resolve.ts`;
   `test/mention-resolution-store-calls.test.ts`). A signed-in poll read's
   refresh fetches the post's document by its signer's key (DATA-7) through the request's own memo, never from the
@@ -4847,7 +4847,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   scheduled) and editing resolve the unknown `@user@host` addresses of the text they compose before the write
   (`src/domain/mention-addresses.ts`, `createAddressResolver` in `src/federation/resolve.ts`): at most 4 a request, the
   first in text order, with one signer and one budget of 16 fetches and 2 MiB of kept bodies; each load is cut at the
-  15 s deadline and no address starts after it. One address costs at most 4 requests on its plain path (the
+  15 s deadline. One address costs at most 4 requests on its plain path (the
   split-domain confirmation); hops, retries and contexts draw on the same budget, and an address is not started once
   the fetches, the bytes or the deadline are spent (`test/mention-resolution-store-calls.test.ts`). Addresses past the
   cap or the budget stay text. Store calls that are no load (`actorState`, the policy reads, the signer and the key's
@@ -6926,11 +6926,12 @@ so the Store isolate's 128 MB holds them together.
   writes are refused (`Store.inboxGate`; a search resolution's `Store.resolutionGate` likewise, and nothing is fetched,
   NET-4; a post's or an edit's `Store.postMentionGate` and `Store.editMentionGate` answer the refusal before anything
   else, read nothing more, and the post or edit is answered 503 by its write); the write's own transaction checks again.
-  A refusal that begins while a post's addresses resolve does not stop them: `actorState` and `fetchRefused` are reads,
-  admitted in readonly, so the remaining addresses go on within the request's budget and the write answers 503; the
-  resolution stops when a Store call is refused (the instance key's creation, or `full` maintenance)
-  (`test/mention-resolution-races.test.ts`). The scheduled backup's runner lease is refused in its
-  transaction, so cron makes no S3 call and takes no dump freeze (an operator's rescue dump still works). Reads and
+  A refusal that begins while a post's addresses resolve does not by itself stop them: `actorState` and `fetchRefused`
+  are reads, admitted in readonly, so the remaining addresses go on within the request's budget and the write answers
+  503; the resolution stops when a Store call is refused (the instance key's creation, a JSON-LD context's cache write,
+  or `full` maintenance) (`test/mention-resolution-races.test.ts`; `test/mention-resolution.test.ts` ("stops at a Store
+  refusal of a JSON-LD context's cache write")). The scheduled backup's runner lease is refused in
+  its transaction, so cron makes no S3 call and takes no dump freeze (an operator's rescue dump still works). Reads and
   sessions pass, so imported data can be read and the owner can sign in for the checks before publication. `publish` (an
   Access admin, or `IMPORT_TOKEN` while the Store has no
   usable admin access, so a restore without Access completes) clears that state and sets the published mark in one
