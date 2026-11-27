@@ -8,12 +8,23 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-27
+
+A minor release, published under the npm dist-tag `latest`. An instance can now take video and audio uploads and show
+stills of remote videos, through the media processor, an optional container the operator adds to the instance
+([docs/media-processor.md](docs/media-processor.md)); without it nothing changes, and both budgets default to 0. A remote
+video that comes without a preview is playable in clients such as Elk. It adds three Store migrations. Upgrading is
+recommended.
+
 ### Instance changes
 
 - Store schema: adds three migrations (0121, 0122, 0123), applied on the first request after the deploy. Until they are
   applied the Store refuses every request, and it stays readonly until it is verified
   ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an earlier version needs
-  the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). Migration `0121_media_processing` creates
+  the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the representative store defined in
+  `test/bench/migration-cost.ts` the three took 8,073–8,360 ms together (median 8,354 ms) in three runs of the migration
+  bench workflow on a GitHub-hosted runner, in workerd's local Durable Object SQLite, including the Store-wide
+  foreign-key check that 0121 and 0123 require. Migration `0121_media_processing` creates
   two empty tables with their indexes (`media_processing`, the state of a video or audio upload while the media
   processor works on it, and `media_av_slots`, the processor's capacity) and reads no existing row; it creates a table
   that references `media_attachments`, so the upgrade checks every reference of the Store. Neither table is in a dump.
@@ -24,11 +35,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   custom thumbnail an image upload is), two partial indexes (each built by one pass over the table) and three
   triggers; it rewrites no existing row, and the column is in a dump. It adds a unique key to an existing table, so the
   upgrade checks every reference of the Store.
-- `wrangler.jsonc`: no change.
+- `wrangler.jsonc`: no change. The compatibility date (`2026-10-11`), the compatibility flags and the bindings are
+  unchanged; the template gains a commented, optional block for the media processor (below).
 
 ### Added
 
-- The first part of video and audio support: the package ships the media processor's container (`container/`, a
+- The media processor: the package ships the media processor's container (`container/`, a
   pinned ffmpeg build and a small server with fixed operations), the `MediaProcessor` Durable Object that runs it, and
   `kopje-admin media-processor probe`, which runs the activation probe of `normalize@standard-4` or of
   `still@standard-1` (a still of the packaged clip, its PNG and Images) and records its verdict for the deployed
@@ -110,7 +122,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - `GET`, `PUT` and `DELETE /api/v1/media/:id` answer a video or audio upload in each processing state as Mastodon
   does: 206 with its URLs and `meta` null while it is processing, 422 `Error processing thumbnail for uploaded media`
   once it failed, and DELETE dooms it in either. An upload's own answers and a scheduled status show a video without a
-  still with `/assets/video-poster.png`, as statuses do. Nothing makes such uploads yet.
+  still with `/assets/video-poster.png`, as statuses do.
 
 ### Fixed
 
