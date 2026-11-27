@@ -48,7 +48,6 @@ function actor(attachment: unknown, extra: Partial<RemoteActorInput> = {}, uri =
     ...confirmedAs(uri.split("/").at(-1)!, new URL(uri).host),
     displayName: "a",
     inboxUrl: `${uri}/inbox`,
-    movedTo: null,
     raw: JSON.stringify({ id: uri, attachment }),
     ...extra,
   };
@@ -243,7 +242,9 @@ describe("arming remote field links at a store", () => {
           storeNow: NOW,
           origin: ORIGIN,
           actorUri: URI,
-          actor: actor([property(link(A))], { movedTo: target }),
+          actor: actor([property(link(A))], {
+            raw: JSON.stringify({ id: URI, attachment: [property(link(A))], movedTo: target }),
+          }),
           actorRevision: actorState(new Db(state.storage.sql), URI).revision,
           activity: {
             type: "Move",

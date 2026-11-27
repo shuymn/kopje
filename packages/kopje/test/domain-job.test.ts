@@ -50,7 +50,6 @@ const ACTOR = {
   ...actorDefaults(),
   displayName: "R",
   inboxUrl: "https://moved.example/users/r/inbox",
-  movedTo: null,
 };
 const BASE = 600_000_000_000_000_000;
 

@@ -603,15 +603,27 @@ Accounts (the `Account` and credential account entities):
 - `last_status_at` is the publication date of the newest stored status that reaches followers, computed when read:
   deleting that status moves it back, where Mastodon 4.6 keeps the newest it counted (`account/counters.rb:53-75`).
 - `moved` is the latest of two writes: every stored actor document sets it from its `movedTo` or clears it, and a
-  verified `Move` sets it when Kopje first processes it; a replay of a known `Move` writes nothing. A `movedTo` naming
-  an account Kopje does not know reads as none: it is not fetched (Mastodon fetches it,
-  `process_account_service.rb:310-314`). Mastodon processes a `Move` once per source account for 7 days (`move.rb:38`),
-  Kopje once per activity id while its job is kept (30 days). Mastodon refreshes an account on a signature only after
-  verification with the stored key fails (`signature_verification.rb:59-61`), and `possibly_stale?` chooses a full
-  refresh or one of the key alone, which leaves `movedTo` as it was (`signature_verification.rb:123-127`,
-  `process_account_service.rb:103`); Kopje stores every fresh document it fetches, its `movedTo` included, unless a
-  newer store superseded it (below). A local account never has one: Kopje sends no `Move`. Followers move only on a
-  verified `Move` whose target lists the source.
+  verified `Move` sets it when Kopje first processes it; a replay of a known `Move` writes nothing. The member is read
+  by its literal spelling, as Mastodon reads `@json['movedTo']`, with no JSON-LD context applied (`namedMove` in
+  `src/domain/collection-requests.ts`): a string, an array's first value, or an object's `id`, which must be an absolute
+  `http:` or `https:` URI with an authority and without whitespace or a backslash, other than the actor's own id. It
+  names the stored account, local or remote, whose id is that URI without its fragment, as Mastodon looks it up
+  (`split('#').first`). Mastodon fails the account's processing on an array or an object (a `TypeError`), where Kopje
+  reads them. A relative, empty, compact (`as:foo`) or non-http value names none, as Mastodon finds no account for it;
+  so do an `@id` object, a nested array and an array whose first value is not a string or an object, on which Mastodon
+  fails, and a value with surrounding whitespace, which Mastodon does not verify. Kopje looks the URI up as the URL
+  parser normalizes it (the scheme and host lowercased), where Mastodon looks up the spelling it was given. A move an
+  earlier release stored from Fedify's reading of the same document (which resolved relative and empty values against
+  the actor's id, read `@id` and nested arrays, applied the document's context, and kept the fragment) is recomputed
+  only when the account's document is next stored: such a move can then clear, and a `movedTo` with a fragment or under
+  a context that renames the member can then resolve. A `movedTo` naming an account Kopje does not know reads as none:
+  it is not fetched (Mastodon fetches it, `process_account_service.rb:310-314`). Mastodon processes a `Move` once per
+  source account for 7 days (`move.rb:38`), Kopje once per activity id while its job is kept (30 days). Mastodon
+  refreshes an account on a signature only after verification with the stored key fails
+  (`signature_verification.rb:59-61`), and `possibly_stale?` chooses a full refresh or one of the key alone, which
+  leaves `movedTo` as it was (`signature_verification.rb:123-127`, `process_account_service.rb:103`); Kopje stores every
+  fresh document it fetches, its `movedTo` included, unless a newer store superseded it (below). A local account never
+  has one: Kopje sends no `Move`. Followers move only on a verified `Move` whose target lists the source.
 - A remote actor's document is stored only while the Store revision read before its fetch holds (ID-1 in
   `docs/threat-model.md`): a document fetched before another store of the actor committed is not stored. Mastodon
   serializes the processing of one account (`process_account_service.rb:30`) but stores whatever document it processes

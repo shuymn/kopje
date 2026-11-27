@@ -14,9 +14,10 @@ import {
 import { type Account, presentAccountsWithin, USERNAME_LIMIT } from "../src/domain/accounts";
 import { ADMIN_EMAIL_COLUMNS, LOCAL_EMAIL_COLUMNS } from "../src/domain/admin-authority";
 import { jsonBytes } from "../src/domain/answer-budget";
+import { namedMove } from "../src/domain/collection-requests";
 import { purgeBatch, receiveActivity } from "../src/domain/inbox";
 import { actorState, type RemoteActorInput } from "../src/domain/remote-actors";
-import { DOMAIN_BYTES } from "../src/platform/identity-bounds";
+import { ACTOR_URI_LIMIT, DOMAIN_BYTES } from "../src/platform/identity-bounds";
 import { setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { customEmoji } from "./emoji-fixtures";
@@ -501,7 +502,7 @@ describe("query plans of moves (RES-7)", () => {
       ...confirmedAs(uri.split("/").at(-1)!, "remote.example"),
       displayName: "mover",
       inboxUrl: `${uri}/inbox`,
-      movedTo,
+      raw: JSON.stringify({ movedTo }),
     });
     const targetUri = `https://remote.example/users/u${target}`;
     // One purging account referenced by others per phase.
@@ -589,4 +590,71 @@ describe("query plans of moves (RES-7)", () => {
       await sql(h.store, "SELECT count(*) AS n FROM accounts WHERE moved_to_account_id = ?", purged.after),
     ).toEqual([{ n: 0 }]);
   }, 60_000);
+});
+
+// ID-4: the account a profile's movedTo names is read from the literal member, as Mastodon 4.7.5 reads
+// `@json['movedTo']` (collection-requests.ts namedMove; docs/mastodon-deviations.md lists where the two differ).
+describe("the literal reading of movedTo (ID-4)", () => {
+  const SELF = "https://a.example/users/a";
+  const B = "https://other.example/users/b";
+  const C = "https://other.example/users/c";
+  const read = (movedTo: unknown, document: Record<string, unknown> = {}) =>
+    namedMove(JSON.stringify({ id: SELF, ...document, movedTo }), SELF);
+  // Exactly ACTOR_URI_LIMIT bytes, and one past it.
+  const atLimit = `${B}/${"x".repeat(ACTOR_URI_LIMIT - B.length - 1)}`;
+
+  it("reads an absolute http(s) URI, alone, first in an array or as an object's id", () => {
+    const cases: [string, unknown, string][] = [
+      ["a string", B, B],
+      ["the scheme and host in any case", "HTTPS://OTHER.example/users/b", B],
+      ["http", "http://other.example/users/b", "http://other.example/users/b"],
+      ["a fragment, kept for the lookup to drop", `${B}#main`, `${B}#main`],
+      ["an array", [B], B],
+      ["an array's first value", [B, C], B],
+      ["an object's id", { id: B }, B],
+      ["a typed object's id", { type: "Person", id: B }, B],
+      ["an array's first object", [{ id: B }], B],
+      ["at ACTOR_URI_LIMIT", atLimit, atLimit],
+    ];
+    for (const [label, value, expected] of cases) {
+      expect(read(value), label).toBe(expected);
+    }
+    // The literal member, whatever the context maps `movedTo` to, and the last of a duplicate key.
+    expect(read(B, { "@context": [{ movedTo: "https://elsewhere.example/ns#moved" }] })).toBe(B);
+    expect(namedMove(`{"movedTo": "${C}", "movedTo": "${B}"}`, SELF)).toBe(B);
+  });
+
+  it("reads none for any other value", () => {
+    const cases: [string, unknown][] = [
+      ["@id", { "@id": B }],
+      ["a nested array", [[B]]],
+      ["an array whose first value is no string", [null, B]],
+      ["an object without an id", { type: "Person" }],
+      ["a number", 5],
+      ["null", null],
+      ["a relative reference", "/users/b"],
+      ["a bare host and path", "other.example/users/b"],
+      ["empty", ""],
+      ["leading whitespace", ` ${B}`],
+      ["trailing whitespace", `${B}\n`],
+      ["inner whitespace", "https://other.example/users/b c"],
+      ["no slashes", "https:other.example/users/b"],
+      ["backslashes for slashes", "https:\\\\other.example\\b"],
+      ["a backslash in the path", "https://other.example/users\\b"],
+      ["no authority", "https:///other.example/users/b"],
+      ["a compact IRI", "as:foo"],
+      ["mailto", "mailto:a@b"],
+      ["another scheme", "ftp://other.example/users/b"],
+      ["itself", SELF],
+      ["itself, spelled otherwise", "HTTPS://A.EXAMPLE/users/a"],
+      ["past ACTOR_URI_LIMIT", `${atLimit}x`],
+    ];
+    for (const [label, value] of cases) {
+      expect(read(value), label).toBeNull();
+    }
+    expect(read(undefined)).toBeNull();
+    expect(namedMove(null, SELF)).toBeNull();
+    expect(namedMove("not json", SELF)).toBeNull();
+    expect(namedMove(JSON.stringify([{ movedTo: B }]), SELF)).toBeNull();
+  });
 });

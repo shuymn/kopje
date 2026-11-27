@@ -1,5 +1,6 @@
 import type { Db } from "../db/sql";
 import { httpUrl } from "../platform/http-url";
+import { isStorableActorId } from "../platform/identity-bounds";
 import { requireExactIncrement } from "./ids";
 
 // The collections a remote actor's document names, and the request to sync them, which storing an actor makes
@@ -180,4 +181,39 @@ export function actorCollections(raw: string | null): ActorCollections {
     following: idOf(document.following),
     outbox: idOf(document.outbox),
   };
+}
+
+// An absolute http(s) URI with an authority, in any case of the scheme, without whitespace or a backslash anywhere:
+// what namedMove takes before the URL parser, which would repair `https:host/b`, `https:\\host`, `https:///host/b` and
+// surrounding whitespace.
+const MOVE_URI = /^https?:\/\/[^\s\\/?#]+(?:[/?#][^\s\\]*)?$/i;
+
+// The account a stored actor document's movedTo names (ID-4), read from the literal member as Mastodon 4.7.5 reads
+// `@json['movedTo']` (process_account_service.rb:166), with no JSON-LD context applied: an array gives its first value
+// and an object its id (collectionValue), and the string must be an absolute http(s) URI (MOVE_URI) that Kopje stores
+// as an actor id, other than `uri` itself; its href, else null. Where Mastodon fails on an array or an object, this
+// reads them (docs/mastodon-deviations.md). The stored row it names is remote-actors.ts moveTargetSql's.
+export function namedMove(raw: string | null, uri: string): string | null {
+  let value: unknown;
+  try {
+    const parsed = raw === null ? null : (JSON.parse(raw) as unknown);
+    value =
+      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as { movedTo?: unknown }).movedTo
+        : null;
+  } catch {
+    // A stored document always parses; an unreadable one names no move.
+    return null;
+  }
+  const named = collectionValue(value);
+  if (named === null || !MOVE_URI.test(named)) {
+    return null;
+  }
+  let href: string;
+  try {
+    href = new URL(named).href;
+  } catch {
+    return null;
+  }
+  return isStorableActorId(href) && href !== uri ? href : null;
 }

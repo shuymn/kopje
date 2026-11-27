@@ -552,7 +552,6 @@ const R_ACTOR: RemoteActorInput = {
   keys: [],
   emojiTags: [],
   raw: "{}",
-  movedTo: null,
   avatarDescription: "",
   headerDescription: "",
   showFeatured: null,

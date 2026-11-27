@@ -383,10 +383,7 @@ export function confirmedAs(username: string, domain: string): Pick<RemoteActorI
 
 // What a test's RemoteActorInput leaves at its defaults: a Person with no profile text or images, flags off, no shared
 // inbox, keys or emoji, and an empty document. A fresh object each call.
-export function actorDefaults(): Omit<
-  RemoteActorInput,
-  "uri" | "claim" | "confirmed" | "displayName" | "inboxUrl" | "movedTo"
-> {
+export function actorDefaults(): Omit<RemoteActorInput, "uri" | "claim" | "confirmed" | "displayName" | "inboxUrl"> {
   return {
     actorType: "Person",
     note: "",

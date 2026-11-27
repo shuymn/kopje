@@ -1447,7 +1447,6 @@ function documentOf(w: World, r: Remote, doc: Document): RemoteActorInput {
     inboxUrl: doc.inbox,
     sharedInboxUrl: doc.sharedInbox,
     keys: doc.keys.map((pem) => ({ id: `${a.uri}#main-key`, pem })),
-    movedTo: null,
   };
 }
 

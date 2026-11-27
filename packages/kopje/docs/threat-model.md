@@ -446,7 +446,8 @@ against their own instance. TLS is assumed between all parties.
   `alsoKnownAs`. _Enforced (main):_ `prepare` in `src/federation/inbound.ts`, `move` in
   `src/domain/inbox.ts`; `test/inbox.test.ts` ("ignores a Move whose target does not list the actor"). The stored
   move (`accounts.moved_to_account_id`, shown as `Account#moved`) is display-only, the source's own claim as in
-  Mastodon: an actor document's `movedTo` may name any stored account, and a verified `Move` sets it when first
+  Mastodon: an actor document's `movedTo`, read by its literal spelling as an absolute http(s) URI (`namedMove` in
+  `src/domain/collection-requests.ts`), may name any stored account, and a verified `Move` sets it when first
   processed; followers move only on a verified `Move` (`upsertRemoteActor` in `src/domain/remote-actors.ts` and `move`
   in `src/domain/inbox.ts`; `test/inbox.test.ts` ("account moves")). Setting it issues a new revision of the source
   (ID-1), so a document of the source fetched before the `Move` committed never clears it, a stale-author refresh

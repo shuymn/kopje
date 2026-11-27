@@ -3023,7 +3023,6 @@ describe("verifying quotes in stages: rounds, budgets, leases, generations and r
       ...confirmedAs("erin", "other.example"),
       displayName: "erin 2",
       inboxUrl: `${erin.uri}/inbox`,
-      movedTo: null,
       avatarUrl: `${OTHER}/system/avatars/erin-3.png`,
     };
     await complete(fetching, { author: { kind: "ok", value: document } });

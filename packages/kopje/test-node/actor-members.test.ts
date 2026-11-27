@@ -275,6 +275,11 @@ describe("the members Fedify is handed (#1709)", () => {
           "function f(actor: Actor) { return actor.url; }",
           `${INBOUND} url: reads url, which FEDIFY_MEMBERS lacks`,
         ],
+        // movedTo is read from the JSON (collection-requests.ts namedMove), never from Fedify's object.
+        "a read of successorId": [
+          "function f(actor: Actor) { return actor.successorId; }",
+          `${INBOUND} successorId: reads movedTo, which FEDIFY_MEMBERS lacks`,
+        ],
         // #1747: the flags are read from the JSON as Rails casts them (remote-actor.ts remoteActorInput), never from
         // Fedify's object.
         "a read of manuallyApprovesFollowers": [

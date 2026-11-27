@@ -259,7 +259,6 @@ describe("a remote account's feature policy", () => {
       ...confirmedAs("keep", "mastodon.example"),
       displayName: "keep",
       inboxUrl: `${actor.uri}/inbox`,
-      movedTo: null,
       ...(featurePolicy === undefined ? {} : { featurePolicy }),
     });
     await runInDurableObject(t.store, (_instance, state) => {

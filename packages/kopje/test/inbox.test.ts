@@ -1070,7 +1070,6 @@ describe("ID-6: the authorization table, one negative case per row", () => {
         ...actorDefaults(),
         displayName: "pwned",
         inboxUrl: null,
-        movedTo: null,
       },
       activity: { type: "UpdateActor", id: `${LOCAL}/u` },
     });
@@ -1722,7 +1721,8 @@ describe("account moves", () => {
     expect(await movedTo(t.store, bob.uri)).toBeNull();
     await refresh(t, bob, { ...bob.document, movedTo: bob.uri }, 3);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
-    // Named as an array or an object with an id: Fedify reads each as the successor.
+    // Named as an array or an object with an id: the first value and the id are read (collection-requests.ts
+    // namedMove).
     for (const [n, document] of [
       [4, { ...bob.document, movedTo: [carol.uri] }],
       [5, { ...bob.document, movedTo: { id: carol.uri } }],
@@ -1732,8 +1732,8 @@ describe("account moves", () => {
       await refresh(t, bob, document, n);
       expect(await movedTo(t.store, bob.uri), String(n)).toBe(carol.uri);
     }
-    // Spelled as the expanded property, it is not read, as Mastodon reads only `movedTo` (#1709: Fedify is handed the
-    // literal members alone, federation/remote-actor.ts fedifyActorView).
+    // Spelled as the expanded property, it is not read, as Mastodon reads only `movedTo` (collection-requests.ts
+    // namedMove).
     const { movedTo: _literal, ...unmoved } = bob.document;
     await refresh(t, bob, { ...unmoved, "https://www.w3.org/ns/activitystreams#movedTo": { "@id": carol.uri } }, 6);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
@@ -1743,6 +1743,89 @@ describe("account moves", () => {
     await sql(t.store, "UPDATE accounts SET deleted_at = '2026-01-01T00:00:00.000Z' WHERE uri = ?", carol.uri);
     await refresh(t, bob, { ...bob.document, movedTo: carol.uri }, 8);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
+  });
+
+  // ID-4: the literal member as an absolute URI, and the stored account whose actor id is that URI without its
+  // fragment, as Mastodon reads `@json['movedTo']` and looks it up (docs/mastodon-deviations.md).
+  it("resolves the literal movedTo to the stored account it names, without the fragment", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const carol = await mastodonActor(t.web, "carol", { key: 2 });
+    const erin = await mastodonActor(t.web, "erin", { key: 3 });
+    const frank = await mastodonActor(t.web, "frank", { key: 4 });
+    for (const actor of [carol, erin, frank, bob]) {
+      await t.post(actor, follow(actor, DAVE_URI));
+    }
+    // Rows that the relative and empty spellings, read against bob's id, would name, and one whose actor id carries a
+    // fragment.
+    const fragmented = `${MASTODON}/users/x#main`;
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE uri = ?", `${MASTODON}/users/`, erin.uri);
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE uri = ?", fragmented, frank.uri);
+    const cases: [unknown, string | null][] = [
+      [{ "@id": carol.uri }, null],
+      ["/users/carol", null],
+      ["", null],
+      [fragmented, null],
+      [`${carol.uri}#main`, carol.uri],
+      [[carol.uri], carol.uri],
+      [{ id: carol.uri }, carol.uri],
+    ];
+    let n = 0;
+    for (const [value, expected] of cases) {
+      const label = JSON.stringify(value);
+      // From the other state first, so each store is seen writing the move.
+      await refresh(t, bob, { ...bob.document, movedTo: expected === null ? carol.uri : null }, ++n);
+      expect(await movedTo(t.store, bob.uri), label).toBe(expected === null ? carol.uri : null);
+      await refresh(t, bob, { ...bob.document, movedTo: value }, ++n);
+      expect(await movedTo(t.store, bob.uri), label).toBe(expected);
+    }
+  });
+
+  // A move stored from an earlier reading of the same document is recomputed when it is stored again, as every store
+  // sets or clears the move: a relative or `@id` movedTo stops naming an account, and one under a context that maps the
+  // term elsewhere starts to.
+  it("recomputes a stored move when the same document is stored again", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const carol = await mastodonActor(t.web, "carol", { key: 2 });
+    await t.post(carol, follow(carol, DAVE_URI));
+    await t.post(bob, follow(bob, DAVE_URI));
+    const [{ id: bobId } = { id: "" }] = await sql<{ id: string }>(
+      t.store,
+      "SELECT id FROM accounts WHERE uri = ?",
+      bob.uri,
+    );
+    const [{ id: carolId } = { id: "" }] = await sql<{ id: string }>(
+      t.store,
+      "SELECT id FROM accounts WHERE uri = ?",
+      carol.uri,
+    );
+    const shown = async () => {
+      const response = await t.request(`/api/v1/accounts/${bobId}`);
+      expect(response.status).toBe(200);
+      const account = await response.json<{ moved?: { id: string } | null }>();
+      return Object.hasOwn(account, "moved") ? (account.moved?.id ?? null) : undefined;
+    };
+    const elsewhere = {
+      ...bob.document,
+      "@context": [...(bob.document["@context"] as unknown[]), { movedTo: "https://elsewhere.example/ns#moved" }],
+      movedTo: carol.uri,
+    };
+    const cases: [string, Record<string, unknown>, string | null, string | null][] = [
+      ["relative", { ...bob.document, movedTo: "/users/carol" }, carolId, null],
+      ["@id", { ...bob.document, movedTo: { "@id": carol.uri } }, carolId, null],
+      ["a context mapping movedTo elsewhere", elsewhere, null, carolId],
+    ];
+    let n = 0;
+    for (const [label, document, earlier, now] of cases) {
+      await refresh(t, bob, document, ++n);
+      // The move an earlier reading stored for this document.
+      await sql(t.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", earlier, bobId);
+      expect(await shown(), label).toBe(earlier ?? undefined);
+      await refresh(t, bob, document, ++n);
+      expect(await movedTo(t.store, bob.uri), label).toBe(now === null ? null : carol.uri);
+      expect(await shown(), label).toBe(now ?? undefined);
+    }
   });
 
   it("leaves it as it was on a frozen refresh and under a domain block", async () => {
@@ -1760,7 +1843,7 @@ describe("account moves", () => {
       ...confirmedAs("bob", "mastodon.example"),
       displayName: "bob",
       inboxUrl: `${bob.uri}/inbox`,
-      movedTo: target,
+      raw: JSON.stringify({ movedTo: target }),
     });
     const store = (target: string) =>
       runInDurableObject(t.store, (_instance, state) =>

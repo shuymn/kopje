@@ -27,7 +27,6 @@ const INVENTORY = [
   "inbox",
   "name",
   "summary",
-  "movedTo",
   "alsoKnownAs",
   "publicKey",
   "assertionMethod",
@@ -127,6 +126,9 @@ describe("members Kopje does not read from Fedify refuse no actor (#1709, ID-1)"
       // nameMap holds one, refused the actor whole while Fedify read it.
       ["urlHref", { url: { type: "Link", href: 5 } }],
       ["urlNameMap", { url: { type: "Link", href: `${MASTODON}/@x`, nameMap: { en: 5 } } }],
+      // movedTo, read from the JSON (collection-requests.ts namedMove): an embedded actor whose icon is not an Image
+      // refused the actor whole while Fedify read it.
+      ["movedTo", { movedTo: { type: "Person", id: `${MASTODON}/users/next`, icon: { type: "Document" } } }],
     ];
     for (const [name, extra] of cases) {
       const actor = await mastodonActor(t.web, name.toLowerCase());

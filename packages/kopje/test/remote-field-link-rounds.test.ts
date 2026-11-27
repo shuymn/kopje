@@ -53,7 +53,6 @@ function actor(hrefs: string[], uri = URI): RemoteActorInput {
     displayName: "a",
     inboxUrl: `${uri}/inbox`,
     url: uri === URI ? PROFILE : null,
-    movedTo: null,
     raw: JSON.stringify({
       id: uri,
       attachment: hrefs.map((href, i) => ({ type: "PropertyValue", name: `f${i}`, value: link(href) })),
