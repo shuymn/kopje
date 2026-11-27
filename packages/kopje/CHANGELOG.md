@@ -43,9 +43,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 - A local avatar is cropped to 400×400 around its centre, a smaller one enlarged, and a header is scaled down to
   Mastodon's 750,000-pixel box in its aspect ratio, whether set through the API, the settings page or rebuilt by
-  `kopje-admin media-rebuild`. An animation that Cloudflare Images does not resize is set as a still. A rebuilt
-  animated avatar or header now shows its still as `avatar_static` or `header_static`. An avatar or header already
-  stored keeps its files until the account sets a new one, which sends the new image to other servers.
+  `kopje-admin media-rebuild`. An animation that Cloudflare Images returns in another type or shape is set as a still.
+  A rebuilt animated avatar or header now shows its still as `avatar_static` or `header_static`. An avatar or header
+  already stored keeps its files until the account sets a new one, which sends the new image to other servers.
+- A profile, avatar or header saved on the settings page is sent to other servers at once, as through
+  `update_credentials`, instead of at the next scheduled run, up to five minutes later.
 - `avatar` and `header` in `update_credentials` and `/api/v1/profile` take a base64 data URI (`data:<type>;base64,…`)
   in a JSON, form or multipart text value within the request's 1 MiB of text, decoded as Mastodon decodes it; any
   other non-empty text still answers 400.
