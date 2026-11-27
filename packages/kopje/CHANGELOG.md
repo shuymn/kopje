@@ -17,6 +17,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   resolves its addresses when it is scheduled ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Posting). A
   failed resolution leaves the address as text and never fails the post.
 
+### Changed
+
+- A video upload whose processing estimate does not fit the time left at its duration's rendition is encoded at the
+  first lower rendition that fits (720p at 30 fps, then 480p at 30 fps) instead of being refused, and is refused only
+  when none fits. A 1080p60 video of about 112 to 120 s is now taken at 720p, and 2160p HDR video up to about 91 s
+  (30 fps) or 47 s (60 fps) instead of 69 s and 35 s on `/api/v1/media`
+  ([docs/media-processor.md](docs/media-processor.md), "Estimated admission limits"). The time limits, the job budget
+  and the cost bound are unchanged.
+
 ## [0.8.0] - 2026-11-27
 
 A minor release, published under the npm dist-tag `latest`. An instance can now take video and audio uploads and show

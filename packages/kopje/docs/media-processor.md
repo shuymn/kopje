@@ -140,25 +140,30 @@ desktop Chrome, Firefox and WebKit held an answer 600 s and more, so the shortes
 `V2_PROCESS_MS`, which caps it. Safari on iOS and the mobile apps were not measured; a client that stops waiting sooner
 shows the upload as failed while it completes, unattached, and is swept.
 
-Estimated admission limits. The container refuses a video (422 `Validation failed: File is too long or too large to
-process`) whose conservative encode estimate passes 0.7 of the encode time its endpoint leaves. The table gives what
-that estimate admits with this release's constants, from the estimate model (`container/server/plan.go`) and the time
-allocation (`allocate` in `src/domain/media-processing.ts`) for a 90 MiB input (the longest input time), each stage
-taking its planned time, and on v1 3 s from the request's arrival to the queue. These are estimates, not measured wall
-times: measured encodes took 0.38 to 1.08 of their estimate. Every file is also at most 90 MiB, which at b Mb/s is about
-755 / b seconds, and at most 600 s of video or 1200 s of audio.
+Estimated admission limits. The container encodes a video at its duration's rendition (below) when its conservative
+encode estimate fits 0.7 of the encode time its endpoint leaves, else at the first lower rendition whose estimate fits,
+and refuses it (422 `Validation failed: File is too long or too large to process`) only when none does. Decoding and,
+for HDR, tone mapping cost the same at every rendition, so a source whose decode alone passes that share is refused. The
+table gives what that estimate admits with this release's constants, and at which rendition, from the estimate model
+(`container/server/plan.go`) and the time allocation (`allocate` in `src/domain/media-processing.ts`) for a 90 MiB input
+(the longest input time), each stage taking its planned time, and on v1 3 s from the request's arrival to the queue.
+These are estimates, not measured wall times: measured encodes took 0.38 to 1.08 of their estimate. Every file is also
+at most 90 MiB, which at b Mb/s is about 755 / b seconds, and at most 600 s of video or 1200 s of audio. The figures are
+for a video with audio (a silent video may fit at a slightly longer duration), and a rendition is a cap: a 30 fps source
+encoded at the 1080p60 rendition stays at 30 fps.
 
-| Source                                 | `/api/v1/media`                                | `/api/v2/media`            |
-| -------------------------------------- | ---------------------------------------------- | -------------------------- |
-| H.264 or HEVC, 1080p up to 30 fps, SDR | 600 s                                          | 600 s                      |
-| H.264, 1080p60, SDR                    | up to 111 s, and 120–600 s (encoded at 720p30) | up to 113 s, and 120–600 s |
-| HEVC, 2160p30, SDR                     | 463 s                                          | 468 s                      |
-| HEVC, 2160p30, HDR (tone mapped)       | 69 s                                           | 70 s                       |
-| HEVC, 2160p60, HDR (tone mapped)       | 35 s                                           | 35 s                       |
-| Audio (MP3 output)                     | 1200 s                                         | 1200 s                     |
+| Source                                 | `/api/v1/media`                                             | `/api/v2/media`                                             |
+| -------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------- |
+| H.264 or HEVC, 1080p up to 30 fps, SDR | 600 s, each at its duration's rendition                     | 600 s, each at its duration's rendition                     |
+| H.264, 1080p60, SDR                    | 600 s: 1080p60 up to 111 s, then 720p30 (480p30 past 300 s) | 600 s: 1080p60 up to 113 s, then 720p30 (480p30 past 300 s) |
+| HEVC, 2160p30, SDR                     | 463 s, each at its duration's rendition                     | 468 s, each at its duration's rendition                     |
+| HEVC, 2160p30, HDR (tone mapped)       | 91 s: 1080p60 up to 69 s, 720p30 up to 83 s, then 480p30    | 92 s: 1080p60 up to 70 s, 720p30 up to 84 s, then 480p30    |
+| HEVC, 2160p60, HDR (tone mapped)       | 47 s: 1080p60 up to 35 s, 720p30 up to 45 s, then 480p30    | 48 s: 1080p60 up to 35 s, 720p30 up to 45 s, then 480p30    |
+| Audio (MP3 output)                     | 1200 s                                                      | 1200 s                                                      |
 
-A video is re-encoded to an H.264 and AAC MP4 (at most 1080p at 60 fps up to 120 s, 720p at 30 fps up to 300 s, 480p
-at 30 fps up to 600 s), audio to MP3; a longer file, or one past the processing envelope, is refused with 422. A colour
+A video is re-encoded to an H.264 and AAC MP4 (its duration's rendition is at most 1080p at 60 fps up to 120 s, 720p at
+30 fps up to 300 s, 480p at 30 fps up to 600 s; a longer video is refused), audio to MP3. The same file may get a lower
+rendition when less time is left (a slow upload, contention), as its admission depends on the time left. A colour
 profile the encoder cannot use is dropped and the video is encoded under the BT.709 label. Two uploads at once already
 processing make a third answer 503 `Media processing is busy. Try again in a moment.`
 

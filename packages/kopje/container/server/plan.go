@@ -25,7 +25,9 @@ const (
 )
 
 // A rung of the output ladder: the longest duration it takes and the geometry and frame rate it keeps to. The rungs
-// are starting values, set from the measurement of NORMALIZE_INSTANCE (P27).
+// are starting values, set from the measurement of NORMALIZE_INSTANCE (P27). A video takes the rung of its duration,
+// or a lower one when its estimate does not fit that rung (planVideo); never a higher one, whose geometry or frame
+// rate the output verifier (src/platform/av-bytes.ts) refuses for that duration.
 type rung struct {
 	maxDuration  float64
 	longEdge     int
@@ -306,13 +308,14 @@ func matrixFor(video *probeStream) string {
 	return "smpte170m"
 }
 
-func rungFor(duration float64) rung {
-	for _, r := range ladder {
+// durationRung is the index in ladder of the rung a duration takes: the first whose maxDuration it is within.
+func durationRung(duration float64) int {
+	for i, r := range ladder {
 		if duration <= r.maxDuration {
-			return r
+			return i
 		}
 	}
-	return ladder[len(ladder)-1]
+	return len(ladder) - 1
 }
 
 // videoMaxrate keeps a whole file near AV_OUTPUT_TARGET: with bufsize equal to maxrate, the overshoot is at most one
@@ -323,15 +326,16 @@ func videoMaxrate(duration float64, audioBitrate int) int {
 }
 
 // fitWithin scales w x h down (never up) so the long edge is at most long and the short edge at most short, to even
-// dimensions, as the scale filter of normalizeArgs does.
+// dimensions of at least 2 (yuv420p's least), as the scale filter of videoArgs does. A dimension under 2 is scaled up
+// to 2.
 func fitWithin(w, h, long, short int) (int, int) {
 	l, s := max(w, h), min(w, h)
 	f := math.Min(1, math.Min(float64(long)/float64(l), float64(short)/float64(s)))
-	return int(float64(w)*f/2) * 2, int(float64(h)*f/2) * 2
+	return max(2, int(float64(w)*f/2)*2), max(2, int(float64(h)*f/2)*2)
 }
 
 // planNormalize decides the operation by the probed streams and refuses, before any decoding, an input outside the
-// limits or whose conservative estimate does not fit encodeMs.
+// limits or whose conservative estimate does not fit encodeMs (a video's on no rung from its duration's down).
 func planNormalize(p *probeResult, encodeMs float64) (*plan, refusal) {
 	video, audio := selectStreams(p)
 	return planStreams(p, video, audio, encodeMs)
@@ -370,47 +374,58 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 	if frames > maxVideoFrames {
 		return nil, refuseFrames
 	}
-	r := rungFor(duration)
-	audioBitrate := 0
-	if audio != nil {
-		audioBitrate = r.audioBitrate
-	}
-	outW, outH := fitWithin(video.Width, video.Height, r.longEdge, r.shortEdge)
-	outFrames := math.Min(frames, math.Ceil(duration*float64(r.fps)))
-	decode, ok := decodeNsPerPixel[video.CodecName]
-	if !ok {
-		decode = decodeNsDefault
-	}
-	hdr := isHDR(video)
-	if hdr {
-		decode += tonemapNsPerPixel
-	}
-	estimate := fixedEstimateMs +
-		float64(video.Width*video.Height)*frames*decode/1e6 +
-		float64(outW*outH)*outFrames*encodeNsPerPixel/1e6
-	audioIndex, audioRate := -1, 0
-	if audio != nil {
-		estimate += duration * audioMsPerSecond
-		audioIndex, audioRate = audio.Index, int(parsePositive(audio.SampleRate))
-	}
-	if estimate > estimateSafety*encodeMs {
-		return nil, refuseEnvelope
-	}
-	return &plan{
+	pl := &plan{
 		kind:       "video",
 		videoIndex: video.Index,
-		audioIndex: audioIndex,
-		audioRate:  audioRate,
+		audioIndex: -1,
 		duration:   duration,
-		hdr:        hdr,
+		hdr:        isHDR(video),
 		icc:        streamICC(video),
 		primaries:  otherPrimaries(video),
 		transfer:   otherTransfer(video),
 		matrix:     matrixFor(video),
-		rung:       r,
-		maxrate:    videoMaxrate(duration, audioBitrate),
-		estimateMs: estimate,
-	}, ""
+	}
+	if audio != nil {
+		pl.audioIndex, pl.audioRate = audio.Index, int(parsePositive(audio.SampleRate))
+	}
+	// The duration's rung first, then each lower one: the first whose estimate fits is encoded, with its own AAC
+	// bitrate and maxrate.
+	for _, r := range ladder[durationRung(duration):] {
+		estimate := videoEstimate(video, audio, frames, duration, r)
+		if estimate > estimateSafety*encodeMs {
+			continue
+		}
+		aac := 0
+		if audio != nil {
+			aac = r.audioBitrate
+		}
+		pl.rung, pl.maxrate, pl.estimateMs = r, videoMaxrate(duration, aac), estimate
+		return pl, ""
+	}
+	return nil, refuseEnvelope
+}
+
+// videoEstimate is the conservative estimate, in ms, of normalizing a video of frames source frames at rung r:
+// decoding every frame (and tone mapping an HDR one) at the source's size, which no rung changes, encoding the rung's
+// frames at its geometry, the audio and the fixed work. It does not grow down the ladder: a lower rung's geometry and
+// frame rate are within the higher one's.
+func videoEstimate(video, audio *probeStream, frames, duration float64, r rung) float64 {
+	decode, ok := decodeNsPerPixel[video.CodecName]
+	if !ok {
+		decode = decodeNsDefault
+	}
+	if isHDR(video) {
+		decode += tonemapNsPerPixel
+	}
+	outW, outH := fitWithin(video.Width, video.Height, r.longEdge, r.shortEdge)
+	outFrames := math.Min(frames, math.Ceil(duration*float64(r.fps)))
+	estimate := fixedEstimateMs +
+		float64(video.Width*video.Height)*frames*decode/1e6 +
+		float64(outW*outH)*outFrames*encodeNsPerPixel/1e6
+	if audio != nil {
+		estimate += duration * audioMsPerSecond
+	}
+	return estimate
 }
 
 func planAudio(p *probeResult, audio *probeStream, encodeMs float64) (*plan, refusal) {

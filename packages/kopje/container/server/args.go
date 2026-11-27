@@ -168,7 +168,8 @@ func videoArgs(p *plan, t threading, in, out string) []string {
 	}
 	fit := fmt.Sprintf("min(1,min(%d/max(iw,ih),%d/min(iw,ih)))", r.longEdge, r.shortEdge)
 	vf = append(vf,
-		fmt.Sprintf("scale=w='trunc(iw*%s/2)*2':h='trunc(ih*%s/2)*2':out_color_matrix=bt709:out_range=tv", fit, fit),
+		fmt.Sprintf("scale=w='max(2,trunc(iw*%s/2)*2)':h='max(2,trunc(ih*%s/2)*2)':out_color_matrix=bt709:out_range=tv",
+			fit, fit),
 		"setsar=1", hdrDrop, "format=yuv420p", label709)
 	maxrate := strconv.Itoa(p.maxrate)
 	args := cat(commonArgs, pixelGuard, t.filterArgs(), []string{"-i", "file:" + in, "-map", fmt.Sprintf("0:%d", p.videoIndex)})

@@ -31,7 +31,7 @@
       "seconds": 299,
       "transfer": "sdr",
       "rate": "2M",
-      "expect": { "v2": "admitted", "v1-90": "refused", "v1-300": "refused" }
+      "expect": { "v2": "admitted", "v1-90": "refused", "v1-300": "admitted" }
     },
     {
       "name": "b301.mp4",
@@ -58,7 +58,7 @@
       "seconds": 26,
       "transfer": "sdr",
       "rate": "8M",
-      "expect": { "v1-90": "refused" }
+      "expect": { "v1-90": "admitted" }
     },
     {
       "name": "hevc-17.mp4",
@@ -76,6 +76,24 @@
       "seconds": 21,
       "transfer": "sdr",
       "rate": "15M",
+      "expect": { "v1-90": "admitted" }
+    },
+    {
+      "name": "hevc-49.mp4",
+      "codec": "hevc",
+      "size": "3840x2160",
+      "seconds": 49,
+      "transfer": "sdr",
+      "rate": "10M",
+      "expect": { "v1-90": "admitted" }
+    },
+    {
+      "name": "hevc-52.mp4",
+      "codec": "hevc",
+      "size": "3840x2160",
+      "seconds": 52,
+      "transfer": "sdr",
+      "rate": "10M",
       "expect": { "v1-90": "refused" }
     },
     {
@@ -92,6 +110,24 @@
       "codec": "hevc",
       "size": "3840x2160",
       "seconds": 184,
+      "transfer": "sdr",
+      "rate": "2M",
+      "expect": { "v1-300": "admitted" }
+    },
+    {
+      "name": "hevc-266.mp4",
+      "codec": "hevc",
+      "size": "3840x2160",
+      "seconds": 266,
+      "transfer": "sdr",
+      "rate": "2M",
+      "expect": { "v1-300": "admitted" }
+    },
+    {
+      "name": "hevc-272.mp4",
+      "codec": "hevc",
+      "size": "3840x2160",
+      "seconds": 272,
       "transfer": "sdr",
       "rate": "2M",
       "expect": { "v1-300": "refused" }
@@ -112,7 +148,7 @@
       "seconds": 9,
       "transfer": "arib-std-b67",
       "rate": "20M",
-      "expect": { "v1-90": "refused" }
+      "expect": { "v1-90": "admitted" }
     },
     {
       "name": "hlg-38.mp4",
@@ -130,7 +166,7 @@
       "seconds": 42,
       "transfer": "arib-std-b67",
       "rate": "10M",
-      "expect": { "v1-300": "refused" }
+      "expect": { "v1-300": "admitted" }
     },
     {
       "name": "hlg-68.mp4",
@@ -146,6 +182,24 @@
       "codec": "hevc",
       "size": "3840x2160",
       "seconds": 72,
+      "transfer": "arib-std-b67",
+      "rate": "6M",
+      "expect": { "v2": "admitted" }
+    },
+    {
+      "name": "hlg-90.mp4",
+      "codec": "hevc",
+      "size": "3840x2160",
+      "seconds": 90,
+      "transfer": "arib-std-b67",
+      "rate": "6M",
+      "expect": { "v2": "admitted" }
+    },
+    {
+      "name": "hlg-94.mp4",
+      "codec": "hevc",
+      "size": "3840x2160",
+      "seconds": 94,
       "transfer": "arib-std-b67",
       "rate": "6M",
       "expect": { "v2": "refused" }
@@ -166,7 +220,7 @@
       "seconds": 9,
       "transfer": "smpte2084",
       "rate": "20M",
-      "expect": { "v1-90": "refused" }
+      "expect": { "v1-90": "admitted" }
     },
     {
       "name": "pq-38.mp4",
@@ -184,7 +238,7 @@
       "seconds": 42,
       "transfer": "smpte2084",
       "rate": "10M",
-      "expect": { "v1-300": "refused" }
+      "expect": { "v1-300": "admitted" }
     },
     {
       "name": "pq-68.mp4",
@@ -200,6 +254,24 @@
       "codec": "hevc",
       "size": "3840x2160",
       "seconds": 72,
+      "transfer": "smpte2084",
+      "rate": "6M",
+      "expect": { "v2": "admitted" }
+    },
+    {
+      "name": "pq-90.mp4",
+      "codec": "hevc",
+      "size": "3840x2160",
+      "seconds": 90,
+      "transfer": "smpte2084",
+      "rate": "6M",
+      "expect": { "v2": "admitted" }
+    },
+    {
+      "name": "pq-94.mp4",
+      "codec": "hevc",
+      "size": "3840x2160",
+      "seconds": 94,
       "transfer": "smpte2084",
       "rate": "6M",
       "expect": { "v2": "refused" }

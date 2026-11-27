@@ -25,7 +25,7 @@ func hasPair(args []string, flag, value string) bool {
 }
 
 func videoPlan(hdr bool, audio int) *plan {
-	return &plan{kind: "video", videoIndex: 0, audioIndex: audio, duration: 60, hdr: hdr, rung: rungFor(60),
+	return &plan{kind: "video", videoIndex: 0, audioIndex: audio, duration: 60, hdr: hdr, rung: ladder[durationRung(60)],
 		maxrate: videoMaxrate(60, 192_000)}
 }
 
@@ -118,10 +118,14 @@ func TestVideoArgsPinTheEncoding(t *testing.T) {
 		t.Fatalf("subtitle or data streams kept: %v", args)
 	}
 	vf := valueOf(args, "-vf")
+	// The 1080p rung's fit, each output dimension at least 2 as fitWithin (which the estimate counts) keeps it: without
+	// the floor a 1920x4 source at the 480p rung would scale to a height of 0, which ffmpeg reads as the input's 4 rows.
+	fit := "min(1,min(1920/max(iw,ih),1080/min(iw,ih)))"
+	scale1080 := "scale=w='max(2,trunc(iw*" + fit + "/2)*2)':h='max(2,trunc(ih*" + fit + "/2)*2)':"
 	// The frame cap, then a frame's ICC profile goes (the MP4 muxer would write the source's bytes into a colr box).
 	// -frames:v would end the audio with the video.
 	if slices.Contains(args, "-frames:v") || !strings.HasPrefix(vf, "trim=end_frame=36000,"+iccDrop+",") || strings.Contains(vf, "tonemap") ||
-		!strings.Contains(vf, "1920/max(iw,ih),1080/min(iw,ih)") {
+		!strings.Contains(vf, scale1080) {
 		t.Fatalf("filter %q", vf)
 	}
 	// Every frame leaves tagged BT.709 limited range, which the encoder writes to the SPS and the colr box (it takes
@@ -141,10 +145,36 @@ func TestVideoArgsPinTheEncoding(t *testing.T) {
 	if slices.Contains(silent, "-c:a") || hasPair(silent, "-map", "0:-1") {
 		t.Fatalf("a silent video gets an audio track: %v", silent)
 	}
-	long := &plan{kind: "video", videoIndex: 0, audioIndex: 1, duration: 500, rung: rungFor(500), maxrate: 1}
+	long := &plan{kind: "video", videoIndex: 0, audioIndex: 1, duration: 500, rung: ladder[durationRung(500)], maxrate: 1}
 	if a := videoArgs(long, threadsDefault, "in", "out"); !hasPair(a, "-b:a", "128000") || !hasPair(a, "-fpsmax", "30") ||
 		!strings.Contains(valueOf(a, "-vf"), "854/max(iw,ih),480/min(iw,ih)") {
 		t.Fatalf("480p rung: %v", a)
+	}
+}
+
+// A video planned below its duration's rung is encoded with that rung's geometry, frame rate and AAC bitrate, and the
+// maxrate that bitrate leaves: 60 s of 1080p60 with AAC at 38,320 ms of encode time takes 480p30, 128 kb/s of AAC and
+// 56 MiB over 60 s less it (7,701,367 b/s; with the 1080p rung's 192 kb/s it would be 7,637,367). A silent video takes
+// the whole 7,829,367.
+func TestVideoArgsFollowTheChosenRung(t *testing.T) {
+	video := stream("video", "h264", 1920, 1080, "60/1", "60")
+	for _, c := range []struct {
+		streams []probeStream
+		audio   string
+		maxrate string
+	}{
+		{[]probeStream{video, stream("audio", "aac", 0, 0, "0/0", "60")}, "128000", "7701367"},
+		{[]probeStream{video}, "", "7829367"},
+	} {
+		p, refused := planNormalize(probeOf("60", c.streams...), 38_320)
+		if refused != "" {
+			t.Fatalf("refused %s", refused)
+		}
+		a := videoArgs(p, threadsDefault, "in", "out")
+		if valueOf(a, "-b:a") != c.audio || !hasPair(a, "-maxrate", c.maxrate) || !hasPair(a, "-bufsize", c.maxrate) ||
+			!hasPair(a, "-fpsmax", "30") || !strings.Contains(valueOf(a, "-vf"), "854/max(iw,ih),480/min(iw,ih)") {
+			t.Fatalf("%d streams: %v", len(c.streams), a)
+		}
 	}
 }
 

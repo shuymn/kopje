@@ -71,7 +71,9 @@ export const OUTPUT_SHORT_EDGE = 1080;
 // plan.go's ladder: the first rung whose duration takes the output's longest track (its media edit, without a start
 // delay, as plan.go reads the longest stream's duration) gives its caps. plan.go picks it by the source's duration,
 // which the output may run past by a 30 fps frame and an AAC frame (at 44.1 kHz): RUNG_SLACK_MS, that
-// rounded up to 100 ms, lets an output that long still take its source's rung.
+// rounded up to 100 ms, lets an output that long still take its source's rung. plan.go may encode at a lower rung than
+// the duration's (when the estimate does not fit it), whose geometry and frame rate are within these caps and whose
+// AAC bitrate is in AAC_BITRATES.
 export const OUTPUT_LADDER = [
   { durationMs: 120_000, longEdge: OUTPUT_LONG_EDGE, shortEdge: OUTPUT_SHORT_EDGE, fps: FRAME_RATE_LIMIT },
   { durationMs: 300_000, longEdge: 1280, shortEdge: 720, fps: 30 },

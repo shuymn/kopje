@@ -10,6 +10,9 @@
 # each rung's last duration (exactly 120 s of 320x180 at 60 fps and 300 s of 720p30, with audio, kept at 60 fps and at
 # 1280x720), and 119.9 s of the first with its audio starting 500 ms late, which the verifier must hold to the same rung;
 # and M4A, FLAC, Ogg, MP3 and Opus-only WebM audio.
+# Lower-rung planning (#1202): the 3 s 1080p60 input again, given LOWER_ENCODE_MS of encode time, which its estimate
+# fits at 720p30 and not on its own 1080p60 rung, is encoded at 1280x720 and 30 fps with each stream as long as the
+# input's.
 # The work deadline (#1828 PR4 plan, P8): rung1.mp4 delivered over about 4 s, to a second container held to
 # SLOW_CPUS so that its encode really takes longer than the time left, answers from its arrival within the work
 # deadline SLOW_WORK_MS (refused for the envelope, or cut at the deadline), where the old fixed stage times (an encode
@@ -68,6 +71,10 @@ MEMORY="${MEMORY:-8g}"
 WORK_MS="${WORK_MS:-660000}"
 STILL_MS="${STILL_MS:-30000}"
 SLOW_WORK_MS=30000
+# Encode time for rung1.mp4 short of its 1080p60 estimate (about 9.8 s; plan.go's coefficients), which 0.7 of it
+# reaches only past 14.0 s, and past its 720p30 one (about 3.7 s), which it covers while more than 5.3 s is left: the
+# input and the probe may take about 8 s before the plan changes to 480p30 (locally they took under 30 ms).
+LOWER_ENCODE_MS=13500
 SLOW_CPUS=0.05
 MIN_SSIM_480P="${MIN_SSIM_480P:-0.95}"
 work="$(mktemp -d "${TMPDIR:-/tmp}/kopje-container-smoke.XXXXXX")"
@@ -610,12 +617,24 @@ for name, seconds in (("header-short.mp4", 1), ("header-long.mp4", 10)):
     out[i + 20 : i + 24] = struct.pack(">I", seconds * scale)
     open(sys.argv[1].replace("header.mp4", name), "wb").write(out)
 PY
-for case in vfr.mp4 longaudio.mp4 header-short.mp4 header-long.mp4; do
+# Lower-rung planning: rung1.mp4, which the first loop saw encoded at 1080p60 with a roomy work deadline, given
+# LOWER_ENCODE_MS of encode time as lower.mp4, is encoded at 720p30 when only the lower rung's estimate fits.
+cp "$work/fixture/rung1.mp4" "$work/fixture/lower.mp4"
+for case in vfr.mp4 longaudio.mp4 header-short.mp4 header-long.mp4 lower.mp4; do
   cp "$work/fixture/$case" "$work/in/"
-  got="$(normalize "$case" "$case.out")"
+  if [ "$case" = lower.mp4 ]; then
+    got="$(WORK_MS=$((LOWER_ENCODE_MS + 1000)) STILL_MS=1000 normalize "$case" "$case.out")"
+  else
+    got="$(normalize "$case" "$case.out")"
+  fi
   ok=false
   if [ "${got% *}" = 200 ]; then
     ok=true
+    if [ "$case" = lower.mp4 ]; then
+      geometry="$(ffprobe -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "/o/$case.out")"
+      [ "$geometry" = "1280,720,30/1" ] || ok=false
+      got="$got, $geometry (want 1280,720,30/1)"
+    fi
     for stream in v a; do
       want="$(decoded "$work/in" "$case" "$stream")"
       [ "$stream" = v ] && video_length="$want"
