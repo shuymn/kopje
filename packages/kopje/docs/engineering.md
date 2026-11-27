@@ -131,9 +131,9 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   once per reference. Every statement the Workers suites run prepares at `CTE_GUARD_LIMIT` (96) on Node's 3.54.1
   (`test-node/sql-depth.ts`), so a fragment holding a CTE keeps each reference within it: read rows in one pass rather
   than through a CTE referenced several times, leave out a walk a sibling term of the same `AND` already implies, or
-  resolve a walk ahead of the statement's other cursors (`statusReads`' `hoisted` in `audience.ts`, whose comment gives
-  the mechanism). workerd from 1.20261111.1 lifts the limit; the Node guard keeps it, so a statement that passes it
-  prepares on either.
+  resolve a walk ahead of the statement's other cursors without moving where it is evaluated (`statusReads`' `hoisted`
+  in `audience.ts`, whose comment gives the mechanism). workerd from 1.20261111.1 lifts the limit; the Node guard keeps
+  it, so a statement that passes it prepares on either.
 
 ## Tests
 

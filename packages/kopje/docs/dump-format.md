@@ -118,11 +118,15 @@ executing the text, so a row of any size stays under the platform's 100 KB state
 
 ### Stored bounds
 
-Each paragraph below gives the stored bound of a table or column (the CHECK or trigger of the migration it names), what
-a chunk past it fails with, refused as `chunk-failed`, and what a restored Store does with the values. Column affinity
-applies before every check: a column declared INTEGER stores numeric text and an integral REAL as the integer, and one
-declared TEXT stores a number as its decimal text. A dump taken before a migration restores into a Store at its own
-migrations, which then upgrades; a paragraph says what the upgrade writes where it writes anything.
+The paragraphs below give the stored bounds of tables and columns and what a restored Store does with the values. Most
+name a migration whose CHECK or trigger holds the bound, and a chunk past it is refused as `chunk-failed` with the
+failure they give; a paragraph that says otherwise states its own outcome (an `outbound_activities.body` is checked as
+JSON only, and an `addressing` that staging does not accept is not refused but sends personal copies; a thumbnail link
+whose parent is missing or unsuitable passes the chunk and fails verification with `thumbnail-link-invalid`). Column
+affinity applies before every check: a column declared INTEGER stores numeric text and an integral REAL as the integer,
+and one declared TEXT stores a number as its decimal text. A dump taken before a migration restores only into a Store at
+its own migrations, as the header's `migrations` rule requires, which then upgrades; a paragraph says what the upgrade
+writes where it writes anything.
 
 A job's retry state is its row's `attempts` and `due_at`, in `inbound_jobs` (migration `0080_inbound_job_attempts`) and
 in `quote_revocations`, `domain_block_cleanups`, `notification_request_jobs`, `notification_clears`,

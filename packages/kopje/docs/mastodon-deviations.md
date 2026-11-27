@@ -46,7 +46,8 @@ Other documents point here rather than repeat the release.
   336,000 bytes) and an announcement near its derived maximum (497,996) are skipped too, as are events whose statuses
   are near their stored bounds (remote statuses, or content filled by mentions). The figures are pinned by
   `test/streaming/public.test.ts` and `test/status-bounds.test.ts`, the skips of a notification and an announcement with
-  their REST reads by `test/streaming/public.test.ts` and `test/streaming/announcements.test.ts`. Accepted, 2026-11-17.
+  their REST reads by `test/streaming/public.test.ts` and `test/streaming/announcements.test.ts`. Accepted, 2026-11-15,
+  and at 254 KiB, 2026-11-17.
 - **Streaming output.** Kopje cannot see whether a client reads what it is sent (the runtime gives no signal of unsent
   output and cannot ping), so it charges each connection everything it hands it, with the runtime's overhead per frame,
   until the connection ends. Before an event or an error reply would take a connection past `STREAM_OUTPUT.socketBytes`
@@ -292,11 +293,12 @@ settings page):
   then the update every resolve runs (`process_account_service.rb:77,219`) writes nil into the `NOT NULL` column, so the
   resolve answers 500 and leaves a row with no name or key. Accepted, 2026-11-17. Mastodon reads more forms and stores
   their time where Kopje stores its own: day-first and named dates, compact and one-digit fields, signed, longer or `BC`
-  years, week and ordinal dates, zone names and offsets it ignores or reads otherwise, other spacing, and a JSON number
-  as it is (`test/fixtures/rails-time.json` lists each form with Mastodon's value). A known account's `created_at` stays
-  the first one Kopje stored and is never later than the time it was stored, where Mastodon assigns `published` on every
-  update, a future time included; so an update whose `published` it cannot cast is applied here, where Mastodon writes
-  nil into the `NOT NULL` column and drops the update.
+  years, text after the date or time, week and ordinal dates, an hour alone, `infinity`, zone names and offsets it
+  ignores or reads otherwise, a zone after a date alone, a `.` with no digits or a fraction after the minutes, other
+  spacing, and a JSON number as it is (`test/fixtures/rails-time.json` lists each form with Mastodon's value). A known
+  account's `created_at` stays the first one Kopje stored and is never later than the time it was stored, where Mastodon
+  assigns `published` on every update, a future time included; so an update whose `published` it cannot cast is applied
+  here, where Mastodon writes nil into the `NOT NULL` column and drops the update.
 - A remote account's `show_featured`, `show_media` and `show_media_replies` change only when its actor's
   `showFeatured`, `showMedia` or `showRepliesInMedia` is a JSON boolean, and keep their stored values otherwise, as
   when the key is absent (`process_account_service.rb:258-260`). Mastodon casts any other value as a form value (a
@@ -1330,6 +1332,7 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
   (`deleted_at` set, for its moderators alone).
 - A child `noop` block exempts the accounts of its subdomains from a parent's `suspend`; Mastodon suspends
   `Account.by_domain_and_subdomains` of the suspending block.
+- Severing writes no `severed_relationships` notification (Mastodon's `block_domain_service.rb` writes them).
 - Severity `silence` is refused with 422 on create and update.
 - A host is ruled and claimed without every trailing dot: the block of `blocked.example` covers an actor, an inbox or a
   fetch on `blocked.example..`, and an actor whose id is there claims `<username>@blocked.example`, stored once
@@ -1815,13 +1818,13 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   failure recorded. Mastodon cannot store such rows.
 - A post, an edit or a scheduled post whose media are a new set answers Mastodon's `not_ready` for a video or audio
   upload still processing or failed, and refuses a video or audio file beside other media, as Mastodon does. An edit
-  that keeps the set its status shows (in any order), and the publication of a scheduled status already held, are not
-  refused for mixing a video or audio file with other media: a status the cutover converted with a video among images is
-  edited and published, where Mastodon refuses the edit. A redraft of such a status (a new post naming the media its
-  deletion detached) is a new set and is refused as Mastodon refuses it; for 24 hours after the deletion (the grace
-  period of detached media) the owner can still post the video alone and the images together. An image reservation that
-  never completed, and a video or audio upload whose request is still sending it, are not found (Mastodon's processing
-  has no such state).
+  that keeps the set its status shows (in any order), and the publication of a scheduled status already held, keep the
+  outcome they had before these rules: a status the cutover converted with a video among images is edited and published
+  as before, where Mastodon refuses the edit. A redraft of such a status (a new post naming the media its deletion
+  detached) is a new set and is refused as Mastodon refuses it; for 24 hours after the deletion (the grace period of
+  detached media) the owner can still post the video alone and the images together. An image reservation that never
+  completed, and a video or audio upload whose request is still sending it, are not found (Mastodon's processing has no
+  such state).
 - A `scheduled_at` of white space alone (a space, U+0085, U+FEFF) answers 422 `Record invalid`, an empty one reads
   as absent. Mastodon's `String#to_datetime` (`PostStatusService`) reads a value blank to Rails (a space, U+0085) as
   absent, so the status is posted at once, and refuses U+FEFF. Accepted, 2026-11-18.
@@ -1946,9 +1949,11 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
     where Mastodon has no reader for one.
   - **Types.** The activity's `type` and its embedded object's (an `Undo`'s, a `Reject`'s or an `Accept`'s) given as an
     absolute IRI are read as the name the compaction gives them only in a body of a closed shape whose compaction Kopje
-    can show succeeds: under the ActivityStreams context, alone or with security/v1's, without a proof, at most 1,000
-    values as received and once compacted (counting three for each value), every `id` and IRI-typed value an http(s)
-    IRI, every type such an IRI or a plain name, every language map a map of tags to strings or nulls, and no array
+    can show succeeds: under the ActivityStreams context, alone or with security/v1's, and without a proof; at most
+    1,000 values as received, and at most 1,000 once compacted, counting `full_context` for its context, its signature
+    once as received, and three for each other value; every `id`, and every value of an IRI-typed property but a null or
+    an object, an http(s) IRI as written or over a prefix of the body's context; every type such an IRI or a name other
+    than `id` and `type` (which expand to keywords); every language map a map of tags to strings or nulls; and no array
     directly in another. Every other body's types are read as given; a status's or a mention's `type` given as an IRI
     there is read as given, so such a status is refused and such a mention read as absent.
   - **Names.** Kopje reads a name, as a member or as a type, only where the compaction writes it so: where it means in
@@ -1981,16 +1986,23 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
     context of definitions Mastodon or Fedify write, an array directly in another, a proof of plain names, an `id` that
     is a blank node, a relative reference or another scheme, more values than the count of three allows, and the
     members at and after the point the patch stops at (an `actor` of one such IRI is read as it, an `object: [null, a]`
-    as `a`, a one-element `type` as that type). An activity's or its undone object's `id` not on its actor's origin is
-    refused all the same (ID-6). A member Kopje's readers read (`id`, `type`, `actor`, `object`) that Kopje cannot read
-    as Mastodon does makes the activity refused, where Mastodon may apply it. An `actor` of two values, of `null` alone,
-    or of an IRI Kopje cannot show the compaction keeps, is refused; one of a `null` beside the signer is the signer's.
-    An `Undo` whose undone activity's `object` the patch gives back as an array, or whose type is an array of types, is
-    refused, as Mastodon's `undo.rb` raises on it. A `Delete` typed by its plain name whose `object` is an array is
-    refused, as Mastodon's inbox raises on it before anything else (`inboxes_controller.rb`
-    `unknown_affected_account?`) and answers 500 each time it is sent again. An `Undo` Kopje applies ends what an
-    unsigned one does: each ends what its signer did or holds, or lifts its own block, so reading it so grants nothing
-    its signer could not send directly; every other type keeps the reading as received.
+    as `a`, a one-element `type` as that type). Kopje tells where the patch stops only at an array under a name typed
+    `@id` with no container whose values, the arrays in it flattened, are `null`s and http(s) IRIs: it stops where they
+    are fewer or more than its elements, as JSON-LD's expansion flattens an array in another and drops a `null` (`to:
+    [null]`, `cc: [a, a, null]`, `object: [[a], []]`, `to: [[a, b]]`, `to: [[]]`; an array of equal values is not
+    shortened and stops neither), and not where they are as many, nor at an array of such IRIs and nodes. An activity's
+    or its undone object's `id` not on its actor's origin is refused all the same (ID-6). A member Kopje's readers read
+    (`id`, `type`, `actor`, `object`) that Kopje cannot read as Mastodon does makes the activity refused, where Mastodon
+    may apply it. An `actor` of two values, of `null` alone, or of an IRI Kopje cannot show the compaction keeps, is
+    refused; one of a `null` beside the signer is the signer's. An `Undo` whose undone activity's `object` the patch
+    gives back as an array, or whose type is an array of types, is refused, as Mastodon's `undo.rb` raises on it. A
+    `Delete` typed by its plain name whose `object` is an array is refused, as Mastodon applies nothing: its inbox reads
+    the `object` of a `Delete` or an `Update` so typed whose actor is present before anything else
+    (`inboxes_controller.rb` `unknown_affected_account?`, `value_or_id`), which raises on an array, and answers 500 each
+    time it is sent again; one typed as an IRI, which that check passes, and an `Undo` or a `Reject` given so are
+    applied by both. An `Undo` Kopje applies ends what an unsigned one does: each ends what its signer did or holds, or
+    lifts its own block, so reading it so grants nothing its signer could not send directly; every other type keeps the
+    reading as received.
 
   Compacting would add JSON-LD processing to every signed activity before its HTTP signature is verified, and its
   readers would read a form other than the one the author proof verifies. This is weighed again when a sender is seen

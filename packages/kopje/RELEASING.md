@@ -91,7 +91,8 @@ A pull request adds its notes under `## [Unreleased]` in `CHANGELOG.md`; a relea
    of each stays in `~/.local/state/kopje/bench-held-output` until its Worker is confirmed gone; if the bench was
    killed or prints that it could not confirm one, `cleanup` deletes what the records name. A deploy that failed or was
    stopped may still land, so its record is dropped only when its Worker is still absent 10 minutes after the deploy
-   command ended, on the assumption that Cloudflare finishes or abandons an upload request within that time; after that, list the account's Workers again and delete any `kopje-bench-held-` Worker left.
+   command ended, on the assumption that Cloudflare finishes or abandons an upload request within that time; once that
+   window has passed, list the account's Workers again and delete any `kopje-bench-held-` Worker left.
 
    ```sh
    pnpm --filter kopje bench:held-output
@@ -114,7 +115,7 @@ A pull request adds its notes under `## [Unreleased]` in `CHANGELOG.md`; a relea
    Record the largest sum, the workerd version and the date in `STORE_BASELINE` (`src/stream-output.ts`) when the sum is
    above the recorded one or the workerd differs (`test-node/stream-output.test.ts` fails until the workerd matches).
    The test derives the output caps from it: set `STREAM_OUTPUT` to what it derives, or, when a rule fails (a fresh
-   socket no longer takes any unit), do not release until the streaming policy is changed.
+   socket no longer takes any unit), stop the release for the owner's decision.
 
    Merge it.
 

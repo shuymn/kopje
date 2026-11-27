@@ -240,9 +240,10 @@ exception for frame, landmarks and chrome, and still uses the tokens. Where a ru
   never drops a stored field. A text control's `maxlength`, which counts UTF-16 code units, admits every value the
   server accepts (twice its limit in code points; for the bio, whose limit counts a link as 23 characters, the raw
   bound the server refuses past); the server refuses a longer one with its message, or cuts a field to its limit
-  (browser job). Each image card holds, after its upload form, a form that posts the image's description alone, so it
-  changes nothing else. A textarea shows its value whole, a leading newline included, and the route counts a
-  description with the CRLF line breaks a browser submits read as LF.
+  (browser job). The profile form is read with the API's body limit, which a bio of that length needs once form-encoded.
+  Each image card holds, after its upload form, a form that posts the image's description alone, so it changes nothing
+  else. A textarea shows its value whole, a leading newline included, and the route counts a description with the CRLF
+  line breaks a browser submits read as LF.
 - An app's consent page names its website by host (the whole URL in hidden text), the account in full and the
   permissions in plain language by group, the scopes' own names behind a "Technical scopes" disclosure, and admin
   ones in a fail (danger) alert: amber reads as "go" on this site. Settings' authorized apps name the same groups

@@ -157,21 +157,22 @@ against their own instance. TLS is assumed between all parties.
   `QuoteRequest` grants no quote, nor does any for a quote so named. A body Kopje can show Mastodon reads as received it
   reads as received: one past Mastodon's JSON-LD limits, and one whose data-integrity proof keeps something once
   jsonld.js expands it with the preloaded contexts alone (`proofExpandsToSomething`). That expansion runs before any
-  signature is verified, within Mastodon's 1,000 values and at most 32 contexts of the body and its proof
-  (`PROOF_CONTEXT_LIMIT`, counted as RES-6 states); a proof past it, naming another context, whose expansion raises, or
-  with a key Mastodon's json-ld and jsonld.js treat differently (a keyword a node does not hold, a line shaped like a
-  keyword) is read as named. A body with a node whose types make Mastodon's json-ld raise, so that its job applies
-  nothing (two types or more, one of which is not a string or is shaped like a keyword on a line, `["Tombstone",
-  "@foo"]`, `"x\n@abc"`, or a type beside `@set`), is refused (`typesSortable`). Those rules and the proof's comparison
-  are the second layer, held alone to Mastodon's reading by the sweeps below; under the primary guard no such key or
-  type is written, and a proof holds no nested node. Where Mastodon gives up the compaction of another body, or still
-  writes under a name the body defines otherwise a value of a shape that definition does not coerce, Kopje reads less,
-  except `sensitive`, which marks the status wherever Mastodon may. The remaining differences are listed in
-  `docs/mastodon-deviations.md` ("Reading inbound activities"). None of them lets Kopje grant an access Mastodon's
-  reading would not (a follow, a status's audience, a lifted block, a quote's approval); some leave in place one
-  Mastodon's reading would withdraw (a follow its `Reject` ends, a status its `Delete` removes, a block an `Undo` of it
-  lifts), and those are listed there too. A retraction (a `Reject`, `Undo`, `Block` or `Delete` by the name its type is
-  read as, `RETRACTIONS`) is read as the compaction writes it where Kopje shows the compaction succeeds: an `actor`
+  signature is verified, within Mastodon's 1,000 values and at most 32 contexts of the body and its proof, each URL or
+  object of a `@context`, each type and each value under a key whose definition carries a context of its own counting
+  one, in every node, a language map's array included (`PROOF_CONTEXT_LIMIT`, RES-6); a proof past it, naming another
+  context, whose expansion raises, or with a key Mastodon's json-ld and jsonld.js treat differently (a keyword a node
+  does not hold, a line shaped like a keyword) is read as named. A body with a node whose types make Mastodon's json-ld
+  raise, so that its job applies nothing (two types or more, one of which is not a string or is shaped like a keyword on
+  a line, `["Tombstone", "@foo"]`, `"x\n@abc"`, or a type beside `@set`), is refused (`typesSortable`). Those rules and
+  the proof's comparison are the second layer, held alone to Mastodon's reading by the sweeps below; under the primary
+  guard no such key or type is written, and a proof holds no nested node. Where Mastodon gives up the compaction of
+  another body, or still writes under a name the body defines otherwise a value of a shape that definition does not
+  coerce, Kopje reads less, except `sensitive`, which marks the status wherever Mastodon may. The remaining differences
+  are listed in `docs/mastodon-deviations.md` ("Reading inbound activities"). None of them lets Kopje grant an access
+  Mastodon's reading would not (a follow, a status's audience, a lifted block, a quote's approval); some leave in place
+  one Mastodon's reading would withdraw (a follow its `Reject` ends, a status its `Delete` removes, a block an `Undo` of
+  it lifts), and those are listed there too. A retraction (a `Reject`, `Undo`, `Block` or `Delete` by the name its type
+  is read as, `RETRACTIONS`) is read as the compaction writes it where Kopje shows the compaction succeeds: an `actor`
   given as a one-element array as that element; a node reference given as `{"@id": …}` alone under a name both contexts
   type `@id` as its IRI, where the compaction writes it as given (`referencesAsIris`; the compaction shown of the body
   so read, its values counted as received); and a member at or after a certain stop of Mastodon's patch as the
@@ -962,36 +963,40 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `MAX_FORWARD_QUOTES` quoting statuses by id (64 across all owners, a policy cap on the raw candidates) by account id,
   so a quote never takes a booster's place; a suspended owner's too), signed by the owner in its own lanes (NET-2),
   recorded in the `Delete`'s first transaction, whose hide fixes the kept boosts (VIS-1; that transaction's bounds are
-  RES-6's). Its audience is its references, each class fixed then: `Audience.shares`, the boost and the public, unlisted
-  or private quoting statuses, and `receiptShares`, the direct or limited ones. The forward is staged before any of its
-  evidence goes: the original's job, its author's purge and a quoting status's own deletion each stop their batch while
-  it is unstaged, and each boost's withdrawal stages it too. It reaches every share's receipts and the rows and
-  unexpanded targets of its earlier activities, and, when a share resolves, the owner's followers by shared inbox as its
-  `Announce` or `Create` went, whatever the forwarded `to` says; a direct or limited quote reaches only its receipts,
-  the inboxes its `Create` was delivered to, never a row or target of it in any state, so no server that never received
-  such a quote learns of it (`test/forward-delete.test.ts` ("sends nothing to an inbox of a Create that gave up, is in
-  flight or is unexpanded")). In each lane the `Announce` or `Create` goes before the forward, and the forward before
-  the boost's `Undo` (an `Announce` still unsent may be dropped once the original is gone). A forward neither supersedes
-  nor is superseded by another activity, the stamp's forward (VIS-28), a quoting status's `Update` or `Delete` and a
-  withdrawing `Reject` of a `Follow` with the same id included. Its shared-inbox fallback (NET-2) moves a row only when
-  the row's provenance names exactly one recipient with a personal inbox on the same origin; a row serving several
-  recipients, more than 16, or unknown ones (an inbox a reference reached already, or whose delivery of it gave up and
-  is kept) gives up visibly. _Gap (accepted):_ a server that has the boost or the quote only from the outbox or a fetch
-  is not reached, nor are a quoting status's poll voters or wider reach; an inbox whose `Create` of a direct or limited
-  quote is still in flight when the forward stages is not reached (it may get the quote and later find the original
-  gone). _Enforced (main):_ `deleteObject`, `recordForwards`, `stageForwards`, `deleteStatusBatch`, `purgeBatch`,
-  `deleteLocalStatusBatch` and `withdrawLocalBoosts` in `src/domain/inbox.ts`, `shareReaches`, `stagedList` and
-  `stagedShare` in `src/domain/audience.ts`, `targetsOf`, `stageRetraction` and `forwardFallback` in
-  `src/domain/deliveries.ts`; `test/forward-delete.test.ts` ("one intent by the booster", "stages every forward before
-  its boost is withdrawn", "moves a row in place only for one recipient", "both forwards deliver in full", "forwards
-  nothing through a converted limited boost", "forwards through a local quote in every state", "a direct quote's forward
-  reaches its receipts and no follower inbox", "skips a withdrawn quoting status", "the barriers before a quote's
-  evidence goes"), `test/migrations.test.ts` ("0091_live_local_quotes"). A profile change (API or settings page, images,
-  their descriptions and fields included) records an `Update` of the actor to Public for the followers, only when the
-  published document changed (a description is published only while its image exists); it replaces the earlier actor
-  Updates still waiting, and is never turned into a Create. A suspended actor sends none. Publication of a cutover
-  records the same Update for each local profile whose images the conversion changed (OPS-8). _Enforced (main):_
-  `src/domain/actor-update.ts`, `enqueueActivity` in `src/domain/deliveries.ts`; `test/actor-update.test.ts`.
+  RES-6's). Its audience is its references, each class fixed then (a quoting status's own deletion rewrites its
+  visibility): `Audience.shares`, the boost and the public, unlisted or private quoting statuses, and `receiptShares`,
+  the direct or limited ones. The forward is staged before any of its evidence goes, by three barriers that each stop
+  their batch while it is unstaged: the original's job before its boosts are withdrawn or it is removed, its author's
+  purge before each of its statuses is deleted, and a quoting status's own deletion before its `Delete` supersedes or
+  stages anything (once that `Delete` has finished staging, a `Create` completed later records no receipt, and the
+  forward's evidence walk skips the `Delete`'s targets); each boost's withdrawal stages it too. It reaches every share's
+  receipts and the rows and unexpanded targets of its earlier activities, and, when a share resolves, the owner's
+  followers by shared inbox as its `Announce` or `Create` went, whatever the forwarded `to` says; a direct or limited
+  quote reaches only its receipts, the inboxes its `Create` was delivered to, never a row or target of it in any state,
+  so no server that never received such a quote learns of it (`test/forward-delete.test.ts` ("sends nothing to an inbox
+  of a Create that gave up, is in flight or is unexpanded")). In each lane the `Announce` or `Create` goes before the
+  forward, and the forward before the boost's `Undo` (an `Announce` still unsent may be dropped once the original is
+  gone). A forward neither supersedes nor is superseded by another activity, the stamp's forward (VIS-28), a quoting
+  status's `Update` or `Delete` and a withdrawing `Reject` of a `Follow` with the same id included. Its shared-inbox
+  fallback (NET-2) moves a row only when the row's provenance names exactly one recipient with a personal inbox on the
+  same origin; a row serving several recipients, more than 16, or unknown ones (an inbox a reference reached already, or
+  whose delivery of it gave up and is kept) gives up visibly. _Gap (accepted):_ a server that has the boost or the quote
+  only from the outbox or a fetch is not reached, nor are a quoting status's poll voters or wider reach; an inbox whose
+  `Create` of a direct or limited quote is still in flight when the forward stages is not reached (it may get the quote
+  and later find the original gone). _Enforced (main):_ `deleteObject`, `recordForwards`, `stageForwards`,
+  `deleteStatusBatch`, `purgeBatch`, `deleteLocalStatusBatch` and `withdrawLocalBoosts` in `src/domain/inbox.ts`,
+  `shareReaches`, `stagedList` and `stagedShare` in `src/domain/audience.ts`, `targetsOf`, `stageRetraction` and
+  `forwardFallback` in `src/domain/deliveries.ts`; `test/forward-delete.test.ts` ("one intent by the booster", "stages
+  every forward before its boost is withdrawn", "moves a row in place only for one recipient", "both forwards deliver in
+  full", "forwards nothing through a converted limited boost", "forwards through a local quote in every state", "a
+  direct quote's forward reaches its receipts and no follower inbox", "skips a withdrawn quoting status", "the barriers
+  before a quote's evidence goes"), `test/migrations.test.ts` ("0091_live_local_quotes"). A profile change (API or
+  settings page, images, their descriptions and fields included) records an `Update` of the actor to Public for the
+  followers, only when the published document changed (a description is published only while its image exists); it
+  replaces the earlier actor Updates still waiting, and is never turned into a Create. A suspended actor sends none.
+  Publication of a cutover records the same Update for each local profile whose images the conversion changed (OPS-8).
+  _Enforced (main):_ `src/domain/actor-update.ts`, `enqueueActivity` in `src/domain/deliveries.ts`;
+  `test/actor-update.test.ts`.
 - **VIS-4: the object endpoint serves public and unlisted local statuses only.** `/ap/o/:uuid` and status documents
   answer for local `public` and `unlisted` statuses, as Mastodon does for an unauthenticated fetch. `private`, `direct`,
   `limited`, remote objects and statuses of suspended accounts answer 404, whether or not the request is signed.
@@ -1165,22 +1170,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Mastodon's does (`fan_out_on_write_service.rb:62-75`, `local_notification_worker.rb:15-16`): a `quote` or `mention`
   notification its recipient dismissed or cleared is written and pushed again at the author's next significant edit,
   at a reset of an accepted quote by a new stamp or policy-only edit, and at a quote state change Mastodon broadcasts
-  (the revocations and approvals RES-6 lists, and a round's decision that moves the state of a work whose first
+  (a stamp's `Delete` that revokes the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke
+  API, an `Accept` of a local quote's request, and a round's decision that moves the state of a work whose first
   verification is a same-version `Update`'s that reset nothing or a relayed `Delete`'s recheck, or that follows a
-  failure that may pass: `quotes.broadcast`; `fanOutQuoteChange` in `src/domain/quotes.ts`); a kept one is a repeat.
-  Its push is sent only for a newly inserted row. A remote favourite notifies when it is created and its notification
-  goes with it, as Mastodon's does: a further `Like` it tracks notifies nothing, and an `Undo` followed by the next
-  reaction's `Like` notifies (and pushes) again, while the reverse order does not;
-  `test/inbox-reactions.test.ts` ("VIS-10: the favourite notification follows the aggregate"). _Enforced (main):_
-  `notify` in `src/domain/notifications.ts`; `test/statuses.test.ts` ("a retry has no second side effect"),
-  `test/timelines.test.ts` ("notifies followers who asked to be notified, once"); the update fan-out: `notifyEdited` in
-  `src/domain/update-fan-out.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new
-  push", "…but not a kept one: the same row, no new push", "a local quote's stamp Delete fans out its status once; a
-  repeated Delete none", "an approval Update notifies when the round accepts the quote, not before", "a new stamp on
-  an accepted quote notifies at the Update; its acceptance by the round notifies no more", "…and from a same-version
-  Update's work whose fetch it raced: its acceptance notifies"). Push: _Enforced (main):_ `notify` records pushes for
-  the row it inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`);
-  `test/push-send.test.ts` ("pushes every notification type Kopje emits, once each (VIS-10)").
+  failure that may pass: `quotes.broadcast`; `fanOutQuoteChange` in `src/domain/quotes.ts`); a kept one is a repeat. Its
+  push is sent only for a newly inserted row. A remote favourite notifies when it is created and its notification goes
+  with it, as Mastodon's does: a further `Like` it tracks notifies nothing, and an `Undo` followed by the next
+  reaction's `Like` notifies (and pushes) again, while the reverse order does not; `test/inbox-reactions.test.ts`
+  ("VIS-10: the favourite notification follows the aggregate"). _Enforced (main):_ `notify` in
+  `src/domain/notifications.ts`; `test/statuses.test.ts` ("a retry has no second side effect"), `test/timelines.test.ts`
+  ("notifies followers who asked to be notified, once"); the update fan-out: `notifyEdited` in
+  `src/domain/update-fan-out.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new push",
+  "…but not a kept one: the same row, no new push", "a local quote's stamp Delete fans out its status once; a repeated
+  Delete none", "an approval Update notifies when the round accepts the quote, not before", "a new stamp on an accepted
+  quote notifies at the Update; its acceptance by the round notifies no more", "…and from a same-version Update's work
+  whose fetch it raced: its acceptance notifies"). Push: _Enforced (main):_ `notify` records pushes for the row it
+  inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`); `test/push-send.test.ts` ("pushes
+  every notification type Kopje emits, once each (VIS-10)").
 - **VIS-11: earlier versions keep the original audience.** Edit history and earlier versions are visible only to the
   status's original audience, and an edit of a non-public status never widens that audience (a recipient added by an
   edit does not see earlier versions). This differs from Mastodon on purpose. _Enforced (main):_
@@ -1364,14 +1370,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   RES-7): at most 50 filters per account, 20 keywords of 512 characters per filter and 200 statuses per filter, each
   status matched on at most 10,000 code units of its text and the statuses of one response on 400,000 together, shared
   by water-filling (short texts whole, long ones up to one level; a page of 40 is always matched in full, but a keyword
-  deep in a long status of a very large response may be missed, while filter statuses always match). The level comes
-  from each status's stored measure (`statuses.filter_text_units`), or an upper bound of an unmeasured one's text in
-  bytes, and each cut is also bounded by what is left of the 400,000, so the answer stays within it whatever the stored
-  figures say (`test/filter-text-units.test.ts`). Each keyword is an escaped literal pattern (the `iu` flags, no
-  quantifier) that cannot backtrack. _Enforced (main):_
-  `src/domain/filters.ts`, `src/domain/status-presenter.ts`, migration `0012_filters`; `test/filters.test.ts` (API,
-  ownership, matching, the worst case at the caps), `test/policy-filters.test.ts` (generated worlds),
-  `test/policy-bounds.test.ts` (rows read up to the caps).
+  deep in a long status of a very large response may be missed, while filter statuses always match). The level is set
+  from each status's stored measure (`statuses.filter_text_units`), or for an unmeasured one from an upper bound of its
+  text in bytes, so an answer of unmeasured statuses may be cut where its texts would fit; each cut is charged once,
+  when it is fixed, and is also bounded by what is left of the 400,000, so the answer stays within it whatever the
+  stored figures say (`test/filter-text-units.test.ts`). Each keyword is an escaped literal pattern (the `iu` flags, no
+  quantifier) that cannot backtrack. _Enforced (main):_ `src/domain/filters.ts`, `src/domain/status-presenter.ts`,
+  migration `0012_filters`; `test/filters.test.ts` (API, ownership, matching, the worst case at the caps),
+  `test/policy-filters.test.ts` (generated worlds), `test/policy-bounds.test.ts` (rows read up to the caps).
 - **VIS-19: a private note is its author's alone, and an endorsement lasts only as long as the follow.** A note
   (`AccountNote`) on an account is shown only to the local account that wrote it, as the `note` of its Relationship
   with that account; no other read path reads the notes (`test-node/policy-boundary.test.ts`), and they are never
@@ -1688,7 +1694,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (manage_federation): the block API of VIS-30; domain allows list none, and their create answers 403. The measures
   (view_dashboard) are counts, never rows: each served key's walk is bounded (docs/visibility.md, the admin measures)
   and answers 422 beyond its bound, never an undercount; the keys Kopje does not serve answer 422 (MD-2); dimensions and
-  retention answer `[]`. `src/domain/admin-domain-blocks.ts`, `src/domain/admin-measures.ts`;
+  retention answer `[]`. Any other caller is refused by the gate (403 `Forbidden`) before the body is read, in Mastodon
+  4.7.5's refusal order. `src/domain/admin-domain-blocks.ts`, `src/domain/admin-measures.ts`;
   `test/admin-domain-blocks.test.ts`, `test/admin-measures.test.ts`, `test/admin-measures-keys.test.ts`,
   `test/admin-measures-bounds.test.ts`, `test/admin-domain-blocks-replay.test.ts`. Announcements are the Access admin's
   (AUTH-5), never the OAuth admin's; each write logs its row in its own transaction (`test/admin-announcements.test.ts`,
@@ -2689,65 +2696,66 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   whole call, the reading of a returned stream included, ends at the file's deadline, at most `WEB_MEDIA_TIMEOUT_MS`
   (30 s), and the hops' hosts are returned on success only. An image is read whole within its kind's cap (avatars,
   headers and thumbnails below 2 MiB, emoji below 256 KiB, attachment images below 16 MiB), counted after workerd's
-  Content-Encoding decoding and refused at the first byte past it, then verified without decoding a pixel as MEDIA-6
-  states (`src/platform/remote-media-bytes.ts`), at most 16,777,216 pixels as its headers state them; a still of an
-  animated one is remuxed within a still cap (`src/platform/image-still.ts`). Video and audio are streamed only with a
+  Content-Encoding decoding and refused at the first byte past it, then judged without decoding a pixel
+  (`src/platform/remote-media-bytes.ts`): its type by its signature (the remote Content-Type is never read), a walk of
+  its whole container (a JPEG's scans up to EOI), at most 16,777,216 pixels as its headers state them, a non-identity
+  orientation refused, its metadata stripped in place and the output checked again; a still of an animated one is
+  remuxed within a still cap, never decoded (`src/platform/image-still.ts`). Video and audio are streamed only with a
   Content-Length below 40 MiB and no Content-Encoding but identity, recognized from their first 1 MiB as a container
   MEDIA-6 lists before anything past it is read; the stream errors on any other byte count, and holds back the bytes
   that complete the length until the end is confirmed. A failure names a closed kind and the hostname only.
-  `test/remote-file.test.ts` ("NET-3: refuses a URL the sink or the
-  own-host rule refuses before any network step", "NET-3: admits every hop before and after its DNS check, follows at
-  most 3 redirects, never lets fetch follow", "NET-3: refuses the own host on a redirect as a blocked host", "NET-3: a
-  host the policy refuses, before or after its DNS check, is blocked and never requested", "NET-3: cancels a body at
-  its kind cap", "NET-3: ends at the file deadline, a stalled DNS check or body included", "NET-3: a returned stream
-  errors at the file deadline while its consumer is still reading", "classifies failures as permanent or transient,
-  each with the host only", "refuses a stream without a length, past the cap or encoded, before reading it", "refuses
-  Ogg, a category mismatch and an image from the prefix, cancelling the rest unread", "stores a streamed file whole in
-  R2, and nothing of a short or long one"), `test/web-page.test.ts` ("NET-3: reads a 200 whole within maxBytes and
-  returns every hop host, sending only the User-Agent", "NET-3: allows the whole call WEB_MEDIA_TIMEOUT_MS", "NET-3:
-  streams exactly the declared length after its prefix, asking for identity", "NET-3: the streamed mode refuses",
-  "NET-3: a streamed body shorter or longer than its length errors", "NET-3: a returned stream errors at the deadline
-  while its consumer is still reading"), `test/web-page-encoding.test.ts` ("NET-3: the streamed mode asks for identity
-  and gets it from an origin that negotiates", "NET-3: the streamed mode refuses an origin that answers gzip although
-  identity was asked for"), `test/remote-media-bytes.test.ts` ("accepts every image type with its real structure",
-  "strips APP1, APP13 and COM between scans and after the last scan, and data after EOI", "refuses orientation",
-  "refuses an AVIF with a non-identity irot or any imir", "refuses an image past the pixel limit", "recognizes video
-  and audio by their containers", "refuses Ogg whatever it carries", "never reads out of bounds or throws on
-  truncated or mutated files"), `test/image-still.test.ts` ("makes none past the still cap", "handles a hostile 16
-  MiB GIF in linear time"). Remote avatars, headers, custom emoji and attachments: _Enforced (main):_ only the cron's
-  round fetches them, through this sink alone (`remoteMediaRound` in `src/federation/remote-media.ts`, the Store's part
-  in `src/domain/remote-media.ts`). A slot is claimed only while it is eligible (`slotEligibleSql`): an avatar or
-  header of an available stored remote account whose current URL is the slot's byte for byte; a custom emoji of the
-  domain whose snapshot named it, keyed by that domain and its URL, the domain covered by no block; an attachment's
-  file or icon of a remote attachment row whose current URL is the slot's byte for byte (for the file, whose type gives
-  the slot's category), of an available author, whose status is not withdrawn and has no delete job waiting, and that
-  arrived within `MEDIA_CACHE_RETENTION_DAYS`; any of them on a host no domain block covers. Its admission before each
-  put and its record are fenced by the claim, the slot's generation, the token reserved for it and that eligibility
-  again, with no recorded redirect host covered by a block. A round has one deadline (240 s): its maintenance first
-  (45 s), then at most 30 files (24 in lane 0, three at a time; 6 attachment files in lane 1, one at a time, beside
-  them), each started only when its 30 s fits before 220 s, then the records; every external operation starts only when
-  its own budget fits what is left of its allocation. A streamed video or audio file is admitted, then put to R2 as it
-  is read, exactly its declared length, under the file's deadline; its body is cancelled when it is not admitted.
-  `test/remote-media.test.ts` ("fetches, verifies and puts a still profile image, and an animated one with its
-  still", "fails a file the sink or the verification refuses, recording each failure", "records nothing for a claim
-  whose URL changed, whose account was suspended or blocked, or an older claim", "records nothing for a redirect host
-  the domain policy covers, nor for another category", "records nothing once the reservation expired, nor for another
-  generation of the same claim"), `test/remote-media-rounds.test.ts` ("makes the derived own Store calls and puts
-  through a full round of files with stills", "starts no request once maintenance is entered during a held DNS check",
-  "starts no operation whose budget does not fit what is left of its allocation").
-  Emoji: `test/remote-emoji.test.ts` ("enqueue the emoji of a stored Note, a newer Update and an Update(Person)",
-  "keeps one slot a domain and url, in either arrival order, and a block of one domain retires only its own",
-  "enqueues nothing for a local or unset domain, a covered host or a URL the fetch refuses", "stores an emoji with its
-  still, and fails a JPEG one for good"). Attachments: `test/remote-attachments.test.ts` ("enqueues each attachment’s
-  file in lane 1 by its category and its icon in lane 0", "resets the file of an attachment whose type changes at the
-  same URL", "claims no file of an attachment whose status is hidden or has a delete job waiting", "stores a streamed
-  video just under 40 MiB whole, exactly its length, and charges it", "cancels a streamed body its admission refuses,
-  putting nothing", "gives up a streamed put at the file deadline, keeps the call outstanding, and dooms what lands
-  late", "reads one attachment file at a time while profile images go on beside it").
-  Kopje fetches nothing for local emoji; peers fetch `/media/…` and `/emojis/:id`.
-  The media processor's container is no sink: it starts with `enableInternet: false` and Kopje sets no outbound handler,
-  so R9 reaches nothing (MEDIA-8). `test/media-processor.test.ts`, `test/media-processor-steps.test.ts` ("the
-  uninterrupted run completes, releases the slot and clears the storage (H2's control)").
+  `test/remote-file.test.ts` ("NET-3: refuses a URL the sink or the own-host rule refuses before any network step",
+  "NET-3: admits every hop before and after its DNS check, follows at most 3 redirects, never lets fetch follow",
+  "NET-3: refuses the own host on a redirect as a blocked host", "NET-3: a host the policy refuses, before or after its
+  DNS check, is blocked and never requested", "NET-3: cancels a body at its kind cap", "NET-3: ends at the file
+  deadline, a stalled DNS check or body included", "NET-3: a returned stream errors at the file deadline while its
+  consumer is still reading", "classifies failures as permanent or transient, each with the host only", "refuses a
+  stream without a length, past the cap or encoded, before reading it", "refuses Ogg, a category mismatch and an image
+  from the prefix, cancelling the rest unread", "stores a streamed file whole in R2, and nothing of a short or long
+  one"), `test/web-page.test.ts` ("NET-3: reads a 200 whole within maxBytes and returns every hop host, sending only the
+  User-Agent", "NET-3: allows the whole call WEB_MEDIA_TIMEOUT_MS", "NET-3: streams exactly the declared length after
+  its prefix, asking for identity", "NET-3: the streamed mode refuses", "NET-3: a streamed body shorter or longer than
+  its length errors", "NET-3: a returned stream errors at the deadline while its consumer is still reading"),
+  `test/web-page-encoding.test.ts` ("NET-3: the streamed mode asks for identity and gets it from an origin that
+  negotiates", "NET-3: the streamed mode refuses an origin that answers gzip although identity was asked for"),
+  `test/remote-media-bytes.test.ts` ("accepts every image type with its real structure", "strips APP1, APP13 and COM
+  between scans and after the last scan, and data after EOI", "refuses orientation", "refuses an AVIF with a
+  non-identity irot or any imir", "refuses an image past the pixel limit", "recognizes video and audio by their
+  containers", "refuses Ogg whatever it carries", "never reads out of bounds or throws on truncated or mutated files"),
+  `test/image-still.test.ts` ("makes none past the still cap", "handles a hostile 16 MiB GIF in linear time"). Remote
+  avatars, headers, custom emoji and attachments: _Enforced (main):_ only the cron's round fetches them, through this
+  sink alone (`remoteMediaRound` in `src/federation/remote-media.ts`, the Store's part in `src/domain/remote-media.ts`).
+  A slot is claimed only while it is eligible (`slotEligibleSql`): an avatar or header of an available stored remote
+  account whose current URL is the slot's byte for byte; a custom emoji of the domain whose snapshot named it, keyed by
+  that domain and its URL, the domain covered by no block; an attachment's file or icon of a remote attachment row whose
+  current URL is the slot's byte for byte (for the file, whose type gives the slot's category), of an available author,
+  whose status is not withdrawn and has no delete job waiting, and that arrived within `MEDIA_CACHE_RETENTION_DAYS`; any
+  of them on a host no domain block covers. Its admission before each put and its record are fenced by the claim, the
+  slot's generation, the token reserved for it and that eligibility again, with no recorded redirect host covered by a
+  block. A round has one deadline (240 s): its maintenance first (45 s), then at most 30 files (24 in lane 0, three at a
+  time; 6 attachment files in lane 1, one at a time, beside them), each started only when its 30 s fits before 220 s,
+  then the records; every external operation starts only when its own budget fits what is left of its allocation. A
+  streamed video or audio file is admitted, then put to R2 as it is read, exactly its declared length, under the file's
+  deadline; its body is cancelled when it is not admitted. `test/remote-media.test.ts` ("fetches, verifies and puts a
+  still profile image, and an animated one with its still", "fails a file the sink or the verification refuses,
+  recording each failure", "records nothing for a claim whose URL changed, whose account was suspended or blocked, or an
+  older claim", "records nothing for a redirect host the domain policy covers, nor for another category", "records
+  nothing once the reservation expired, nor for another generation of the same claim"),
+  `test/remote-media-rounds.test.ts` ("makes the derived own Store calls and puts through a full round of files with
+  stills", "starts no request once maintenance is entered during a held DNS check", "starts no operation whose budget
+  does not fit what is left of its allocation"). Emoji: `test/remote-emoji.test.ts` ("enqueue the emoji of a stored
+  Note, a newer Update and an Update(Person)", "keeps one slot a domain and url, in either arrival order, and a block of
+  one domain retires only its own", "enqueues nothing for a local or unset domain, a covered host or a URL the fetch
+  refuses", "stores an emoji with its still, and fails a JPEG one for good"). Attachments:
+  `test/remote-attachments.test.ts` ("enqueues each attachment’s file in lane 1 by its category and its icon in lane 0",
+  "resets the file of an attachment whose type changes at the same URL", "claims no file of an attachment whose status
+  is hidden or has a delete job waiting", "stores a streamed video just under 40 MiB whole, exactly its length, and
+  charges it", "cancels a streamed body its admission refuses, putting nothing", "gives up a streamed put at the file
+  deadline, keeps the call outstanding, and dooms what lands late", "reads one attachment file at a time while profile
+  images go on beside it"). Kopje fetches nothing for local emoji; peers fetch `/media/…` and `/emojis/:id`. The media
+  processor's container is no sink: it starts with `enableInternet: false` and Kopje sets no outbound handler, so R9
+  reaches nothing (MEDIA-8). `test/media-processor.test.ts`, `test/media-processor-steps.test.ts` ("the uninterrupted
+  run completes, releases the slot and clears the storage (H2's control)").
 - **NET-4: signed fetches stay with their signer.** A document fetched with a signature is cached under a key that
   includes the signing key id and is never served to another key or to the unsigned path; the RFC 9421 retry (NET-1)
   signs with the same key, so its document is cached under the same key id.
@@ -3042,32 +3050,32 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   awaited to completion, never given up, and each starts only after the Store confirms the lease is still the call's;
   once a renewal or that check fails, no further write starts, the call reports `lease-overrun` and the lease is not
   released. Renewals, confirmations and releases name their take's generation and succeed only while it is the live
-  lease, so a late renewal changes nothing; a heartbeat that hangs is given up after 30 seconds. A PITR restore is
-  refused while the lease is live, and the lease while a restore is being scheduled (`pitr_restoring`). Since a restore
-  rewinds the maintenance start and the unpublished flag, the Store records each restore outside its database before
-  scheduling it (an R2 object named by its id, `restoreMarkerKey` in `src/platform/media-files.ts`, never served), and
-  the rebuild counts readiness from it: an unpublished flag from before it is not ready, and maintenance settles from
-  the later of its start and the restore. An import reset or cutover reset never writes the maintenance flag, so it
-  leaves no stale start. Per row the other steps are bounded: two R2 reads, six Images calls and five Store calls, each
-  given up a minute before the renewed 10-minute lease ends. As defence in depth the rebuild records the row before it
-  writes the files and, once both writes have completed, deletes the files it wrote if the row is no longer live. It
-  deletes nothing else. `test/media-rebuild.test.ts` ("leaves out remote, doomed and unfinished rows", "runs only where
-  delete_media, the sweep and reconciliation cannot delete media", "is refused in a writable Store and under the env
-  maintenance alone", "waits for maintenance to settle", "refuses leaving maintenance and every media-deleting write
-  while the lease is live", "awaits a pending write past the deadline", "deletes the files it wrote for a row that went
-  while it wrote them", "refuses a restore while the lease is live", "counts the settle period again from a restore").
-  A confirmation whose reply leaves less than a minute of its grant, on the call's clock, starts nothing:
-  `test/media-rebuild.test.ts` ("starts no write on a confirmation whose reply arrives once the lease may have ended").
-  Accepted residual risk: R2 cannot check the lease's generation, so a put already pending when its call's lease ended
-  (a Worker terminated mid-write, or one whose heartbeats were all delayed) can land after a newer holder's write of the
-  same key, under the capability URL of a row that existed when the rebuild started, having passed the checks. A video's
-  or audio's `full` is then a byte-identical copy of the verified original. A video's `small` may differ, each write
-  carrying its own `{width, height, blurhash}` metadata; the next rebuild that processes the preview adopts the object
-  stored last and brings the row's metadata into agreement, or gives the row the poster when that object's size does
-  not fit, and a row left with the poster is processed again only by `--stills`: `test/media-rebuild-av.test.ts`
-  ("converges when an earlier holder's still put lands over the small a later call recorded"). An image's files are
-  re-encodes of the same original, but the row's preview dimensions or blurhash can be left disagreeing with the stored
-  `small`, which a later run skips (#1835).
+  lease, so a late renewal changes nothing; a heartbeat that hangs is given up after 30 seconds and the next is sent on
+  time. A PITR restore is refused while the lease is live, and the lease while a restore is being scheduled
+  (`pitr_restoring`). Since a restore rewinds the maintenance start and the unpublished flag, the Store records each
+  restore outside its database before scheduling it (an R2 object named by its id, `restoreMarkerKey` in
+  `src/platform/media-files.ts`, never served), and the rebuild counts readiness from it: an unpublished flag from
+  before it is not ready, and maintenance settles from the later of its start and the restore. An import reset or
+  cutover reset never writes the maintenance flag, so it leaves no stale start. Per row the other steps are bounded: two
+  R2 reads, six Images calls and five Store calls, each given up a minute before the renewed 10-minute lease ends. As
+  defence in depth the rebuild records the row before it writes the files and, once both writes have completed, deletes
+  the files it wrote if the row is no longer live. It deletes nothing else. `test/media-rebuild.test.ts` ("leaves out
+  remote, doomed and unfinished rows", "runs only where delete_media, the sweep and reconciliation cannot delete media",
+  "is refused in a writable Store and under the env maintenance alone", "waits for maintenance to settle", "refuses
+  leaving maintenance and every media-deleting write while the lease is live", "awaits a pending write past the
+  deadline", "deletes the files it wrote for a row that went while it wrote them", "refuses a restore while the lease is
+  live", "counts the settle period again from a restore"). A confirmation whose reply leaves less than a minute of its
+  grant, on the call's clock, starts nothing: `test/media-rebuild.test.ts` ("starts no write on a confirmation whose
+  reply arrives once the lease may have ended"). Accepted residual risk: R2 cannot check the lease's generation, so a
+  put already pending when its call's lease ended (a Worker terminated mid-write, or one whose heartbeats were all
+  delayed) can land after a newer holder's write of the same key, under the capability URL of a row that existed when
+  the rebuild started, having passed the checks. A video's or audio's `full` is then a byte-identical copy of the
+  verified original. A video's `small` may differ, each write carrying its own `{width, height, blurhash}` metadata; the
+  next rebuild that processes the preview adopts the object stored last and brings the row's metadata into agreement, or
+  gives the row the poster when that object's size does not fit, and a row left with the poster is processed again only
+  by `--stills`: `test/media-rebuild-av.test.ts` ("converges when an earlier holder's still put lands over the small a
+  later call recorded"). An image's files are re-encodes of the same original, but the row's preview dimensions or
+  blurhash can be left disagreeing with the stored `small`, which a later run skips (#1835).
   A video or audio row (`src/mastodon/media-rebuild-av.ts`) is rebuilt under the same lease and fences, one a call,
   within `REBUILD_AV_MS` (120 s, its stages bounded at 60, 60 and 75 s). Its `files/<token>/full` is the original
   streamed through the output verifier (`avVerifier`, MEDIA-3) into the put, the last chunk held until the verifier
@@ -4249,16 +4257,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   N ≤ 19 (admin emoji reservations are not rate-limited). A row's card type and dimensions and its video's iframe src
   and dimensions (migration `0069_card_embeds`) are bounded by its triggers (a src of 512 bytes, 512 once escaped;
   integers within 0 to 65,535), for imports too. The oEmbed endpoint cache (`card_oembed_endpoints`) holds one row per
-  host, written only by a record and only while it holds fewer than 2,048 rows, each live for 24 hours; a claim deletes
-  at most 100 rows by its expiry index, the expired first, then those written for past the window (an import's), so an
-  import's excess expires too (`src/domain/link-cards.ts`; `test/link-card-rounds.test.ts` ("keeps at most
-  OEMBED_ENDPOINTS_MAX rows", "expires at most OEMBED_EXPIRE_BATCH rows a claim, the expired first", "reads a bounded
-  number of rows for the lookup, both expiry ends and the capacity, after ANALYZE and growth"),
-  `test/migrations.test.ts` ("defaults the existing rows without rewriting them, then bounds every new column as
-  stored")). The remote media cache (migration `0077_remote_media`, MEDIA-7): at most one slot per account and kind, and
-  at most 20,000 pending slots (an enqueue past it waits for the backfill); a slot pending more than a week is dropped
-  (at most 500 a claim); its bytes in R2 within `REMOTE_MEDIA_CACHE_BYTES`; each maintenance call does at most 500
-  deletions, 500 validity checks, 200 suspended slots, 200 reclaimed objects and 200 backfilled accounts
+  host, written only by a record and only while it holds fewer than 2,048 rows (counted over at most 2,048 index
+  entries), each live for 24 hours; a claim deletes at most 100 rows by its expiry index, the expired first, then those
+  written for past the window (an import's), so an import's excess expires too (`src/domain/link-cards.ts`;
+  `test/link-card-rounds.test.ts` ("keeps at most OEMBED_ENDPOINTS_MAX rows", "expires at most OEMBED_EXPIRE_BATCH rows
+  a claim, the expired first", "reads a bounded number of rows for the lookup, both expiry ends and the capacity, after
+  ANALYZE and growth"), `test/migrations.test.ts` ("defaults the existing rows without rewriting them, then bounds every
+  new column as stored")). The remote media cache (migration `0077_remote_media`, MEDIA-7): at most one slot per account
+  and kind, and at most 20,000 pending slots (an enqueue past it waits for the backfill); a slot pending more than a
+  week is dropped (at most 500 a claim); its bytes in R2 within `REMOTE_MEDIA_CACHE_BYTES`; each maintenance call does
+  at most 500 deletions, 500 validity checks, 200 suspended slots, 200 reclaimed objects and 200 backfilled accounts
   (`src/domain/remote-media.ts`; `test/remote-media.test.ts` ("changes the pending count by the old-to-new state delta
   at the pending limit", "expires slots pending more than a week, never one under an open hold"),
   `test/migrations.test.ts` ("0077_remote_media")). _Enforced (main)_ for snapshots: `test/snapshot.test.ts` ("snapshot
@@ -4679,29 +4687,29 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   MENTION_URL_ACCOUNTS", "skips a mention's profile link past MAX_STATUS_MENTION_ROWS silent rows with smaller account
   ids", "skips a current mention's profile link at an Update after an import grew the status past its mention rows")).
   Its claim expires at most 500 pending rows, then walks at most 64 due rows by `(due_at, status_id)` and stops at 6
-  claims; each row walked is deleted, attached from another status's fresh copy, deferred to another row's open hold on
-  its URL, or claimed for 5 minutes (twice the round); with at most 100 cached oEmbed endpoints expired, a claim writes
-  at most 664 rows. The URL lookups seek `status_cards_fresh` and `status_cards_claimed` with the partial indexes' own
-  predicates, so stale copies and expired holds are not read, after `ANALYZE` and growth alike. A claim makes at most
-  two GET chains (up to eight HTTP GETs, at most 3 redirects a chain), 3 claims at a time: 6 × 2 × 10 s ÷ 3 = 40 seconds
-  within the fetches' 50. The claims share 144 DNS and HTTP subrequests (12 chains at `WEB_PAGE_MAX_SUBREQUESTS`: at
-  most 48 requests and 96 DNS lookups) and 48 pre-DNS policy reads, and make at most 48 post-DNS admissions; the round's
-  own Store calls are one claim and at most 6 records or releases, and it ends within 60 seconds. At most 1,728 network
-  claims a day, 3,456 GET chains and 13,824 HTTP GETs; attachments from a copy are not counted there. Memory per claim,
-  as the round's test computes it, is the larger of its two phases, which never overlap: the page (the 1 MiB prefix; the
-  scan's strings, 632,896 code units with 64 links, 1,265,792 bytes; one JSON-LD script being parsed, 65,536 bytes, and
-  its parsed value at its worst shape, 393,208 bytes, a V8 size estimate: 2,773,112 bytes) or the endpoint (its 64 KiB
-  body buffer and copy, the decoded text, its parsed value at its worst shape, 786,424 bytes, the iframe capture, the
-  page's fields at their stored bounds with the endpoint and template, 9,239 code units, and the expanded URL: 1,205,335
-  bytes); 2,773,112 bytes a claim, 8,319,336 for the three at once; lol-html's native buffers, `JSON.parse`'s internals
-  and htmlparser2's parser state are not counted (`src/domain/link-cards.ts`, `src/federation/link-cards.ts`;
-  `test/link-card-rounds.test.ts` ("claims the first CARD_ROUND_CLAIMS rows of seven and leaves the seventh untouched",
-  "walks at most CARD_CLAIM_WALK due rows, deleting each one given up, the 65th left for the next claim", "defers a row
-  whose URL another row holds, within one walk and across rounds", "deletes a row whose next token would pass
-  SAFE_INTEGER_MAX, and claims one that reaches it", "reads a bounded number of rows for each lookup by URL, after
-  ANALYZE and growth, hit and miss", "derives its budgets and hold", "computes the memory model of a round from its
-  bounds", "the cold path: %s", "the cached path fetches the endpoint first, then on a fallback the page only, and never
-  writes")).
+  claims; each row walked is deleted, attached from another status's fresh copy (an existence-gated update by key: no
+  donor writes nothing), deferred to another row's open hold on its URL, or claimed for 5 minutes (twice the round);
+  with at most 100 cached oEmbed endpoints expired, a claim writes at most 664 rows. The URL lookups seek
+  `status_cards_fresh` and `status_cards_claimed` with the partial indexes' own predicates, so stale copies and expired
+  holds are not read, after `ANALYZE` and growth alike. A claim makes at most two GET chains (up to eight HTTP GETs, at
+  most 3 redirects a chain), 3 claims at a time: 6 × 2 × 10 s ÷ 3 = 40 seconds within the fetches' 50. The claims share
+  144 DNS and HTTP subrequests (12 chains at `WEB_PAGE_MAX_SUBREQUESTS`: at most 48 requests and 96 DNS lookups) and 48
+  pre-DNS policy reads, and make at most 48 post-DNS admissions; the round's own Store calls are one claim and at most 6
+  records or releases, and it ends within 60 seconds. At most 1,728 network claims a day, 3,456 GET chains and 13,824
+  HTTP GETs; attachments from a copy are not counted there. Memory per claim, as the round's test computes it, is the
+  larger of its two phases, which never overlap: the page (the 1 MiB prefix; the scan's strings, 632,896 code units with
+  64 links, 1,265,792 bytes; one JSON-LD script being parsed, 65,536 bytes, and its parsed value at its worst shape,
+  393,208 bytes, a V8 size estimate: 2,773,112 bytes) or the endpoint (its 64 KiB body buffer and copy, the decoded
+  text, its parsed value at its worst shape, 786,424 bytes, the iframe capture, the page's fields at their stored bounds
+  with the endpoint and template, 9,239 code units, and the expanded URL: 1,205,335 bytes); 2,773,112 bytes a claim,
+  8,319,336 for the three at once; lol-html's native buffers, `JSON.parse`'s internals and htmlparser2's parser state
+  are not counted (`src/domain/link-cards.ts`, `src/federation/link-cards.ts`; `test/link-card-rounds.test.ts` ("claims
+  the first CARD_ROUND_CLAIMS rows of seven and leaves the seventh untouched", "walks at most CARD_CLAIM_WALK due rows,
+  deleting each one given up, the 65th left for the next claim", "defers a row whose URL another row holds, within one
+  walk and across rounds", "deletes a row whose next token would pass SAFE_INTEGER_MAX, and claims one that reaches it",
+  "reads a bounded number of rows for each lookup by URL, after ANALYZE and growth, hit and miss", "derives its budgets
+  and hold", "computes the memory model of a round from its bounds", "the cold path: %s", "the cached path fetches the
+  endpoint first, then on a fallback the page only, and never writes")).
   Card images: _Enforced (main):_ a record links its card's image in its own transaction (`status_cards.image_id`); the
   cron runs one round per tick (`src/federation/card-images.ts`). Its claim runs at every share
   (`IMAGES_CARD_MONTHLY_TRANSFORMS`, default 0: no fetch and no Images call, while the expiry and GC still run): it
@@ -5019,8 +5027,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   waiting out maintenance spends no retry. A round runs at most 4 batches in all, failed and stalled ones included, each
   within `PURGE_BATCH` rows and its attempt's row; backoff and parking are RES-5's. A deletion's batch first hides its
   remote status if it is not hidden (an older build's or an import's job left it shown), and clears its content again
-  after an `Update` that arrived once the retraction expired rewrote it: at most 3 rows each time, written before the
-  batch's savepoint so a failed batch cannot undo it, and charged to that batch's `PURGE_BATCH`
+  after an `Update` that arrived once the retraction expired rewrote it (`withdrawn` stays 1): at most 3 rows each time,
+  written before the batch's savepoint so a failed batch cannot undo it, and charged to that batch's `PURGE_BATCH`
   (`test/inbound-job-isolation.test.ts` ("charges the hide of a shown status to its batch")). A request's first batch,
   and one a delivery of the same activity runs again, runs only while its job is due. A boost of a boost cannot be
   removed by these batches: restore refuses a dump holding one ([dump-format.md](dump-format.md), "Bounded work"), no
@@ -5182,53 +5190,54 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   walk owes its root what it has no room for: a stored reply as a row debt, a cut reading as a collection debt with its
   place. A scan or a debt's consideration is a Store-only step of its own, at most one a hand-out. A walk runs at most
   one scan per scan-due node and at most `WALK_STATUSES` considerations, so at most 200 scans of 200 index rows (40,000
-  rows, each with at most six key reads), at most 40,000 row-debt inserts and 80,000 row-debt changes a walk, 3,200 a
-  turn, and with at most 200 collection debts written or re-keyed and 600 payments and drops, at most 81,000 debt-row
-  changes a walk. A consideration reads one debt and at most `WALK_STATUSES` − 2 ancestors, and records at most
-  `WALK_STATUSES` − 1 nodes within the walk's cap. A debt is unique by root and owed status, and by status and depth
-  (depths 0 to `WALK_STATUSES` − 1), so a status is named by at most `WALK_STATUSES` debts and all number at most
-  `WALK_STATUSES` × S at all times. A walk reaches at most `WALK_STATUSES` − 1 links below its root, and no cursor or
-  debt is written for a status or root whose removal has begun (`test/reply-walk-debt-bounds.test.ts` ("owes exactly
-  40,000 row debts over 200 scans, each its own step of at most 200 inserts, no request for them", "changes 80,000 debt
-  rows when another root holds a debt at every status and depth it owes, at most 3,200 a turn", "changes 80,198 debt
-  rows in a thread of cut collections, within 81,000", "records a 197-status path and the owed status in one
-  consideration, within WALK_STATUSES + 2 rows", "ends 199 nodes at spent WALK_PAGES in one hand-out, owing each its
-  collection debt within 3 rows a node", "examines each scanned row with at most six key reads, in one scan of
-  REPLY_SCAN_ROWS rows a hand-out", the plans of the scans and debts), `test/reply-walk-debts.test.ts` ("owes a reply to
-  one root at a time while its parent moves from root to root, each owing it at the same depth", "owes no cut collection
-  of a status whose %s's removal began during its fetch, and scans a removed status without a cursor", "owes nothing
-  from a scan once its root's removal began in the scan's turn", "fetches no status more than WALK_STATUSES - 1 links
-  below the root, and owes nothing for them"), `test/reply-walk-generated.test.ts`).
-  Create walks: _Enforced (main):_ a remote status a store creates has its replies walked (a create walk, Mastodon's
-  `Create#fetch_replies`; `src/domain/reply-walk-create.ts`) only when the store's context sets `readReplies`, which
-  only the stores of what was delivered or what a user asked for do (an inbound `Create` or `Update`, an `Announce`'s
-  original, an `Add`'s status, a `QuoteRequest`'s quoting status, a search or interaction resolution); a walk's own
-  stores, quote verification's and a collection sync's never do, so nothing a walk causes starts another walk and no
-  walk's caps start afresh. A create walk runs in the same family, steps and charges as a context walk, takes a node's
-  first `CREATE_WALK_ITEMS` (5) items on the node's origin, stored or not (Mastodon's `FetchRepliesService`), reads
-  first pages only, and records at most `CREATE_WALK_STATUSES` (20) nodes and hands out at most `CREATE_WALK_PAGES` (10)
-  documents, so at most 2 × 20 + 10 = 50 documents (400 requests); the Store applies these rules whatever the Worker
-  hands it. Context walks are claimed first; create walks in the order the Store recorded them, whatever either clock
-  says, and one recorded a day ago by the Store's clock is dropped at its claim. Its at most `CREATE_WALK_STATUSES` − 1
-  replies each lead to a context walk's reply's follow-on work (above) (`test/reply-walk-create.test.ts` ("records at
-  most CREATE_WALK_STATUSES nodes and CREATE_WALK_ITEMS items a page", "hands out at most CREATE_WALK_PAGES documents",
-  "hands out at most NODE_ATTEMPTS × (CREATE_WALK_STATUSES - 1) + CREATE_WALK_PAGES documents", "records the same of a
-  page, and ends the node there", "ends a status's node at the first page its completion embeds, whatever next it
-  names", "a walk's reply: its collection is read by the context walk alone", "quote verification's quoted status,
-  fetched or embedded: its collection is never read", "a collection sync's pin: its collection is never read", "starts
-  no walk along an alternating reply and quote chain longer than a walk", "claims context walks first, then create walks
-  in the order they were queued", "claims create walks in the order the Store recorded them, whatever the Worker's clock
-  or its own says", "claims at once the walk of a Create whose Worker clock is ahead of the Store's, as its answer
-  asks")).
+  rows, each with at most six key reads), each scan with one cursor write and at most 200 row-debt inserts each after at
+  most one replacement delete: at most 40,000 row-debt inserts and 80,000 row-debt changes a walk, 3,200 a turn, and
+  with at most 200 collection debts written or re-keyed and 600 payments and drops, at most 81,000 debt-row changes a
+  walk. A consideration reads one debt and at most `WALK_STATUSES` − 2 ancestors, and records at most `WALK_STATUSES` −
+  1 nodes within the walk's cap. A debt is unique by root and owed status, and by status and depth (depths 0 to
+  `WALK_STATUSES` − 1): a walk owing a status at a depth another root's debt holds replaces it, so a status is named by
+  at most `WALK_STATUSES` debts and all number at most `WALK_STATUSES` × S at all times. A root's walks take its oldest
+  debt first, a walk reaches at most `WALK_STATUSES` − 1 links below its root, and no cursor or debt is written for a
+  status or root whose removal has begun (`test/reply-walk-debt-bounds.test.ts` ("owes exactly 40,000 row debts over 200
+  scans, each its own step of at most 200 inserts, no request for them", "changes 80,000 debt rows when another root
+  holds a debt at every status and depth it owes, at most 3,200 a turn", "changes 80,198 debt rows in a thread of cut
+  collections, within 81,000", "records a 197-status path and the owed status in one consideration, within
+  WALK_STATUSES + 2 rows", "ends 199 nodes at spent WALK_PAGES in one hand-out, owing each its collection debt within 3
+  rows a node", "examines each scanned row with at most six key reads, in one scan of REPLY_SCAN_ROWS rows a hand-out",
+  the plans of the scans and debts), `test/reply-walk-debts.test.ts` ("owes a reply to one root at a time while its
+  parent moves from root to root, each owing it at the same depth", "owes no cut collection of a status whose %s's
+  removal began during its fetch, and scans a removed status without a cursor", "owes nothing from a scan once its
+  root's removal began in the scan's turn", "fetches no status more than WALK_STATUSES - 1 links below the root, and
+  owes nothing for them"), `test/reply-walk-generated.test.ts`). Create walks: _Enforced (main):_ a remote status a
+  store creates has its replies walked (a create walk, Mastodon's `Create#fetch_replies`;
+  `src/domain/reply-walk-create.ts`) only when the store's context sets `readReplies`, which only the stores of what was
+  delivered or what a user asked for do (an inbound `Create` or `Update`, an `Announce`'s original, an `Add`'s status, a
+  `QuoteRequest`'s quoting status, a search or interaction resolution); a walk's own stores, quote verification's and a
+  collection sync's never do, so nothing a walk causes starts another walk and no walk's caps start afresh. A create
+  walk runs in the same family, steps and charges as a context walk, takes a node's first `CREATE_WALK_ITEMS` (5) items
+  on the node's origin, stored or not (Mastodon's `FetchRepliesService`), reads first pages only, and records at most
+  `CREATE_WALK_STATUSES` (20) nodes and hands out at most `CREATE_WALK_PAGES` (10) documents, so at most 2 × 20 + 10 =
+  50 documents (400 requests); the Store applies these rules whatever the Worker hands it. Context walks are claimed
+  first; create walks in the order the Store recorded them, whatever either clock says, and one recorded a day ago by
+  the Store's clock is dropped at its claim. Its at most `CREATE_WALK_STATUSES` − 1 replies each lead to a context
+  walk's reply's follow-on work (above) (`test/reply-walk-create.test.ts` ("records at most CREATE_WALK_STATUSES nodes
+  and CREATE_WALK_ITEMS items a page", "hands out at most CREATE_WALK_PAGES documents", "hands out at most NODE_ATTEMPTS
+  × (CREATE_WALK_STATUSES - 1) + CREATE_WALK_PAGES documents", "records the same of a page, and ends the node there",
+  "ends a status's node at the first page its completion embeds, whatever next it names", "a walk's reply: its
+  collection is read by the context walk alone", "quote verification's quoted status, fetched or embedded: its
+  collection is never read", "a collection sync's pin: its collection is never read", "starts no walk along an
+  alternating reply and quote chain longer than a walk", "claims context walks first, then create walks in the order
+  they were queued", "claims create walks in the order the Store recorded them, whatever the Worker's clock or its own
+  says", "claims at once the walk of a Create whose Worker clock is ahead of the Store's, as its answer asks")).
   Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per instance (503), the 256
   reached only if the output allowance below holds them; 16 subscriptions per socket, 16 stream keys per account and a
-  socket's attachment at most 12 KiB of JSON with its clone within the runtime's 16 KiB at any output charge
-  (`Too many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The
-  fan-out runs in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU
-  allowance (60 s, Deployment assumptions): a turn spends at most 512 checks, 64 presentations and 4,096 sends, runs a
-  unit only while what is left covers a unit's worst case (35 checks: 16 tokens, home, the mention, one for each of 16
-  keys and the feeds' mention filter; one presentation, 254 KiB of payload, 256 sends) and leaves the rest to the next
-  turn. A payload is measured in UTF-8 bytes as encoded, from the presented object before anything is encoded
+  socket's attachment at most 12 KiB of JSON with its clone within the runtime's 16 KiB at any output charge (`Too many
+  subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs in
+  turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance (60 s,
+  Deployment assumptions): a turn spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while
+  what is left covers a unit's worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys and the
+  feeds' mention filter; one presentation, 254 KiB of payload, 256 sends) and leaves the rest to the next turn. A
+  payload is measured in UTF-8 bytes as encoded, from the presented object before anything is encoded
   (`encodedTwiceBytes`); past 254 KiB it is skipped and logged with no string made (254 KiB keeps the largest frame and
   its terminating byte within 256 KiB). A unit within it is encoded once and sent one stream's envelope at a time, so a
   unit's isolate peak is its rows, its presented object and four frames of the largest at most, 48,551,863.5 bytes
@@ -5261,12 +5270,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   open again after a wake (seen on a deployed instance): a marked socket stays closed whatever the runtime reports, sent
   nothing, its messages unhandled, counted as closing, and charged until it leaves; a subscription leaves the mark room
   within the runtime's 16 KiB (`test/streaming/output.test.ts` ("keeps a socket it closed closed when a wake lists it
-  open")).
-  While a listed socket's charge is unknown (a socket of an earlier release, an unreadable attachment), no frame is sent
-  and upgrades answer 503 until it is gone, and it is closed (1011, logged as `output_closed` with scope `unknown` and
-  its numbers null); what such a socket holds is outside the bound while it stays listed, and so is the tag-table
-  capacity such sockets grew until the runtime discards the object's hibernation manager, which neither their ending, an
-  eviction that hibernates nor a code update does; Kopje has no signal of it. `src/stream-output.ts`,
+  open")). While a listed socket's charge is unknown (a socket of an earlier release, an unreadable attachment), no
+  frame is sent and upgrades answer 503 until it is gone, and it is closed (1011, logged as `output_closed` with scope
+  `unknown` and its numbers null); what such a socket holds is outside the bound while it stays listed, and so is the
+  tag-table capacity such sockets grew until the runtime discards the object's hibernation manager, which neither their
+  ending, an eviction that hibernates nor a code update does; Kopje has no signal of it. `src/stream-output.ts`,
   `src/stream-hub.ts`; `test/streaming/output.test.ts`, `test-node/stream-output.test.ts`. The journal records nothing
   once it spans 4,096 ids, and is pruned behind the position, at most 500 rows a call, finished journal rows first so
   the span shrinks at once, then a delete's capture rows. A turn that read anything moves the position, also past what
@@ -5524,46 +5532,46 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`test/trend-links-round.test.ts` ("imported timestamps")). workerd's SQLite reports no memory high-water, so these
   bounds are derived, not measured. The Store isolate's peak while the link part runs is derived by phase against half
   of its 128 MB: 59,812,006 bytes while the candidates are read (the hashtag and status parts' rows and the candidates
-  with 25% headroom, the statement's SQLite peak), and 57,942,827 while the shown copies are chosen and the links scored
-  and written (every row the round may read, its RowMeter cap, with 25% headroom, the maps, the scored rows, one link's
-  copies being judged and the writes' JSON), each with 8 MB for other live Store work; `test/trend-links-round.test.ts`
-  ("the Store’s memory while the round scores links"). The round keeps only each shown copy's language, the copies' rows
-  dropped once the choice is made. `GET /api/v1/trends/tags` reads 68,062 rows for 20 hashtags with 201 or 10,000 public
-  statuses each, half of them by unavailable authors, on the same kind of accounts and full review tables
-  (`test/trends-maxima.test.ts`). `GET /api/v1/trends/links` reads 772,980 rows for a page of 20 links at their history
-  caps (200 public copies of the 7 days each, 20 public boosts of each copy), and the same past them, over a full trend
-  table (250 listed links, each allowance walking 126 suffixes) with every author and booster available, on its own
-  eight-label domain under 100 active suspend blocks that cover none, so every availability walks both keys to the end
-  (643,540 with half of them deleted; `test/trends-maxima.test.ts`, ceiling 800,000). `GET /api/v1/timelines/link` reads
-  3,256 rows before presentation (the token, the trends setting, the gate, the window and the rule over it) for a page
-  of 40 from a window of 120 public copies, the same with 10,000 older public copies and 10,000 newer unlisted ones, and
-  3,136 for a window the rule rejects whole, for a viewer with blocks, mutes and domain blocks, a link whose allowance
-  walks 126 suffixes among 10,000 publisher reviews, and authors on eight-label domains under 100 active suspend blocks
-  (`test/link-timeline.test.ts`, ceiling 3,500); presentation is bounded as for the other timelines. Each plan is of the
-  production statement as it runs, with statistics taken before the data grew. Review lookups are key seeks;
-  `coveredSql` uses `CROSS JOIN` to keep instance-block matches as domain seeks even with stale statistics. _Enforced
-  (main)_ for reads from bounded inputs: the presenter's status graph, R, its authors, polls, votes, media and filter
-  rules, the visibility rule's account lookups, status and account search candidates, relationship and account batches,
-  the presented accounts and their local rows (by id, by ids and by a profile page's username), the account lists'
-  windows (a follow by its rowid in a correlated lookup), mention resolution, media attachment, inbound addressing and
-  lane promotion drive key seeks from their inputs (`CROSS JOIN`, `INDEXED BY` on the inner side), so statistics older
-  than the Store's growth, even taken with one account and one poll, cannot turn them into scans. Each witness plans the
-  production statement on a Store grown after `ANALYZE` and checks the seek and flat rows read
-  (`test/status-rows.test.ts`, `test/filters.test.ts`, `test/search-edge.test.ts`, `test/account-relations.test.ts`,
-  `test/account-presenter-reads.test.ts`, `test/web-profile-tabs.test.ts`, `test/statuses.test.ts`,
-  `test/inbox-statuses.test.ts`, `test/deliveries.test.ts`). So do context and conversation reads, remote featured-tag
-  counts, tag history, login, outbound reach (the status, its parent, quoters and followers), the send-time check, the
-  personal-inbox fallback, receipts, inbound Flag objects and follow-answer discovery (`test/context-work.test.ts`,
-  `test/conversations.test.ts`, `test/featured-tags.test.ts`, `test/tags.test.ts`, `test/oauth.test.ts`,
-  `test/delivery-send-check.test.ts`, `test/inbox-flag.test.ts`, `test/follow-answers.test.ts`). The followers' and poll
-  voters' readers, whole and staged, judge each inbox in their projection alone (`reachInboxSql`): they return main's
-  targets by main's plans, reading no more rows than main's (the staged pages as many), linear in the signer's own
-  followers or voters and flat as other accounts' grow, under singleton statistics and after `ANALYZE`
-  (`test/reach-inbox-plans.test.ts`). The presented accounts' witnesses grow accounts, local_accounts and follows (the
-  profile tabs' also statuses and the condition walk's tables) and check the access paths to those three: `a` and `l` by
-  key, a follow by its rowid, no scan of any; not the status, field and cache tables the presenter also reads. The
-  `a INDEXED BY` of the owned lists' window (`windowAccountIds`) and of the follow lists' window join changes no plan,
-  so no witness fails without it. The credential account's `follow_requests_count` reads a window of
+  with 25% headroom, the statement's SQLite peak and 8 MB for other live Store work), and 57,942,827 while the shown
+  copies are chosen and the links scored and written (every row the round may read, its RowMeter cap, with 25% headroom,
+  the maps, the scored rows, one link's copies being judged and the writes' JSON), each with 8 MB for other live Store
+  work; `test/trend-links-round.test.ts` ("the Store’s memory while the round scores links"). The round keeps only each
+  shown copy's language, the copies' rows dropped once the choice is made. `GET /api/v1/trends/tags` reads 68,062 rows
+  for 20 hashtags with 201 or 10,000 public statuses each, half of them by unavailable authors, on the same kind of
+  accounts and full review tables (`test/trends-maxima.test.ts`). `GET /api/v1/trends/links` reads 772,980 rows for a
+  page of 20 links at their history caps (200 public copies of the 7 days each, 20 public boosts of each copy), and the
+  same past them, over a full trend table (250 listed links, each allowance walking 126 suffixes) with every author and
+  booster available, on its own eight-label domain under 100 active suspend blocks that cover none, so every
+  availability walks both keys to the end (643,540 with half of them deleted; `test/trends-maxima.test.ts`, ceiling
+  800,000). `GET /api/v1/timelines/link` reads 3,256 rows before presentation (the token, the trends setting, the gate,
+  the window and the rule over it) for a page of 40 from a window of 120 public copies, the same with 10,000 older
+  public copies and 10,000 newer unlisted ones, and 3,136 for a window the rule rejects whole, for a viewer with blocks,
+  mutes and domain blocks, a link whose allowance walks 126 suffixes among 10,000 publisher reviews, and authors on
+  eight-label domains under 100 active suspend blocks (`test/link-timeline.test.ts`, ceiling 3,500); presentation is
+  bounded as for the other timelines. Each plan is of the production statement as it runs, with statistics taken before
+  the data grew. Review lookups are key seeks; `coveredSql` uses `CROSS JOIN` to keep instance-block matches as domain
+  seeks even with stale statistics. _Enforced (main)_ for reads from bounded inputs: the presenter's status graph, R,
+  its authors, polls, votes, media and filter rules, the visibility rule's account lookups, status and account search
+  candidates, relationship and account batches, the presented accounts and their local rows (by id, by ids and by a
+  profile page's username), the account lists' windows (a follow by its rowid in a correlated lookup), mention
+  resolution, media attachment, inbound addressing and lane promotion drive key seeks from their inputs (`CROSS JOIN`,
+  `INDEXED BY` on the inner side), so statistics older than the Store's growth, even taken with one account and one
+  poll, cannot turn them into scans. Each witness plans the production statement on a Store grown after `ANALYZE` and
+  checks the seek and flat rows read (`test/status-rows.test.ts`, `test/filters.test.ts`, `test/search-edge.test.ts`,
+  `test/account-relations.test.ts`, `test/account-presenter-reads.test.ts`, `test/web-profile-tabs.test.ts`,
+  `test/statuses.test.ts`, `test/inbox-statuses.test.ts`, `test/deliveries.test.ts`). So do context and conversation
+  reads, remote featured-tag counts, tag history, login, outbound reach (the status, its parent, quoters and followers),
+  the send-time check, the personal-inbox fallback, receipts, inbound Flag objects and follow-answer discovery
+  (`test/context-work.test.ts`, `test/conversations.test.ts`, `test/featured-tags.test.ts`, `test/tags.test.ts`,
+  `test/oauth.test.ts`, `test/delivery-send-check.test.ts`, `test/inbox-flag.test.ts`, `test/follow-answers.test.ts`).
+  The followers' and poll voters' readers, whole and staged, judge each inbox in their projection alone
+  (`reachInboxSql`): they return main's targets by main's plans, reading no more rows than main's (the staged pages as
+  many), linear in the signer's own followers or voters and flat as other accounts' grow, under singleton statistics and
+  after `ANALYZE` (`test/reach-inbox-plans.test.ts`). The presented accounts' witnesses grow accounts, local_accounts
+  and follows (the profile tabs' also statuses and the condition walk's tables) and check the access paths to those
+  three: `a` and `l` by key, a follow by its rowid, no scan of any; not the status, field and cache tables the presenter
+  also reads. The `a INDEXED BY` of the owned lists' window (`windowAccountIds`) and of the follow lists' window join
+  changes no plan, so no witness fails without it. The credential account's `follow_requests_count` reads a window of
   `readWindow(FOLLOW_REQUESTS_COUNT)` (120) of the account's newest pending requests by `follows_target`, then judges
   each requester (R1: its row, its local row and its domain coverage by key) outside the window, so its read stays flat
   however many requests are stored (`test/account-presenter-reads.test.ts` ("reads a window of the viewer's newest

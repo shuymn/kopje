@@ -150,20 +150,22 @@ takes that identifier, so the statuses of a thread delivered out of order share 
 stored takes the uri it names (`in_reply_to_uri`), and any other status its own uri (the trigger `statuses_thread`).
 Any identifier is taken, whatever its origin, as Mastodon takes it: a sender can only group its own statuses with
 others, and a conversation is also keyed by its participants, the sender among them. Deleting a status or a conversation
-changes no other status's thread, so a later reply joins the thread its parent was stored in. A status leaves its
-conversations however it is deleted (a delete, an inbound `Delete`, a purge): its `conversation_statuses` rows cascade,
-and the trigger `conversation_statuses_removed` of migration `0009_conversations` moves the last status back to the
-newest left, or deletes the conversation when none is left (`AccountConversation.remove_status`). A block ends the
-blocker's conversations with the blocked account (`AfterBlockService#clear_conversations!`). The list reads only the
-owner's rows, newest last status first, through the `(account_id, last_status_id)` index; anyone else's conversation
-is not found, read, marked or deleted. Mastodon renders a conversation's last status with no read rule; Kopje shows it
-only when the owner may still see it (`statusReads` under `visible`, R2) and it is not a boost, and otherwise shows
-`last_status: null`, as Mastodon does for a last status it can no longer load: so a last status whose author is
-suspended or blocks the owner is not shown, while the conversation and its participants stay. Mastodon never puts a
-boost in a conversation, and no writer of Kopje's links one (`addToConversation`), so only a restored row names one,
-as its last status or as a link the trigger moves the last status back to; the read shows it as null (RES-3). The
-participants are presented as accounts are elsewhere (an unavailable one redacted); with nobody else in it, the owner's
-own account.
+changes no other status's thread, so a later reply joins the thread its parent was stored in. Migration
+`0009_conversations` gives the statuses already stored theirs by the same rule, from the start of each reply chain down
+(a status in a cycle of replies, or below one, takes what a start would), reading the conversation a received status
+named from the object it keeps (`raw`), with the same checks as the receive path. A status leaves its conversations
+however it is deleted (a delete, an inbound `Delete`, a purge): its `conversation_statuses` rows cascade, and the
+trigger `conversation_statuses_removed` of migration `0009_conversations` moves the last status back to the newest left,
+or deletes the conversation when none is left (`AccountConversation.remove_status`). A block ends the blocker's
+conversations with the blocked account (`AfterBlockService#clear_conversations!`). The list reads only the owner's rows,
+newest last status first, through the `(account_id, last_status_id)` index; anyone else's conversation is not found,
+read, marked or deleted. Mastodon renders a conversation's last status with no read rule; Kopje shows it only when the
+owner may still see it (`statusReads` under `visible`, R2) and it is not a boost, and otherwise shows `last_status:
+null`, as Mastodon does for a last status it can no longer load: so a last status whose author is suspended or blocks
+the owner is not shown, while the conversation and its participants stay. Mastodon never puts a boost in a conversation,
+and no writer of Kopje's links one (`addToConversation`), so only a restored row names one, as its last status or as a
+link the trigger moves the last status back to; the read shows it as null (RES-3). The participants are presented as
+accounts are elsewhere (an unavailable one redacted); with nobody else in it, the owner's own account.
 
 Notifications: `shownSql(r, type, from, status, now, admin, warning, item, collection)` is R15, one rule for writing
 (`notify`), listing and reading notifications, and for sending their pushes (`domain/push.ts`, judged again at the time
@@ -760,19 +762,22 @@ A local collection's id is built from its owner's stored actor id, `<actor id>/c
 (`localCollectionUri`) for every surface that names it (the API's `uri` and `tagged_collections`, the Note's tag, the
 collection's documents, the owner's `featured_collections`, the activities and the page's alternate); it is none where
 the account presenter shows no actor id either. None compares it with the request's host or the configured one, so a
-collection's id resolves exactly when its owner's actor id does. A link, a Note's tag, a Flag's object and a search
-with `resolve=true` name a collection through one resolver (`namedCollection`): a local collection by its id exactly as
-the surfaces emit it, or, over http or https on the instance's domain, by an address whose GET serves it as the routes
-read it (`servedCollectionAddress`), never by the author's actor id or the request's host; any other URL on that domain
-names none. It decides before any caller's filter, so a URL that names a local collection names no remote one. No
-function that decides or looks up a local collection takes a request's origin: the instance's domain is a value only
-`configuredDomain` makes.
+collection's id resolves exactly when its owner's actor id does: an account whose actor id does not (restored
+inconsistently, or kept from an earlier domain) has collections no more and no less reachable than itself, and the API
+creates and updates its collections as any owner's. The owner's `featured_collections` lists its local collections
+alone, under its stored actor id, wherever the actor route serves the owner. A link, a Note's tag, a Flag's object and a
+search with `resolve=true` name a collection through one resolver (`namedCollection`): a local collection by its id
+exactly as the surfaces emit it, or, over http or https on the instance's domain, by an address whose GET serves it as
+the routes read it (`servedCollectionAddress`), never by the author's actor id or the request's host; any other URL on
+that domain names none. It decides before any caller's filter, so a URL that names a local collection names no remote
+one, and tags nothing when no status can tag that collection. No function that decides or looks up a local collection
+takes a request's origin: the instance's domain is a value only `configuredDomain` makes.
 
-A local status's ActivityPub forms name each collection it tags by its id alone, so no collection's name, description
-or members travel in the post's activities. That bounds the wire's content, not who learns of the collection: its id
-names the owner, and a fetch of it is judged by R45 for the fetcher, so a server whose user the owner blocks may still
-read it with another key (its instance actor's, unless the owner blocks that account or its domain), or show a copy it
-holds to that user.
+A local status's ActivityPub forms name each collection it tags that a status can tag (`taggableCollections`, as the API
+decides it before R45) by its id alone, so no collection's name, description or members travel in the post's activities.
+That bounds the wire's content, not who learns of the collection: its id names the owner, and a fetch of it is judged by
+R45 for the fetcher, so a server whose user the owner blocks may still read it with another key (its instance actor's,
+unless the owner blocks that account or its domain), or show a copy it holds to that user.
 
 A local account's collections are served over ActivityPub (FEP-7aa9, `src/domain/collection-documents.ts`): the
 `featured_collections` collection and its pages, a `FeaturedCollection`, a `FeaturedItem` and a member's
@@ -937,6 +942,9 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   coverage of the sender, of the status's author and its original's, and of the quoted status's author and its
   original's; the boost a reblog names is the sender's, and the status arm's status is the one the status term reads,
   so neither walks again.
+  The positioned home read (`homeStatus`) defines the coverage of the status's author and its original's once, as
+  columns of a derived table over the status's row (`statusReads`' `hoisted`), which SQLite copies to each place the
+  rule uses them and evaluates there, where it evaluated them before (the cursor rule below).
 - **The domain job and its marks.** A write that moves the hosts a block's domain rules into or out of `suspend`
   coverage resets one `remote_moderation_jobs` row (kind `domain`) in its transaction, freezing the newest follow as its
   bound. Rounds reconcile the domain marks (`suspension_source = 'domain'`) with the live blocks; marks serve the
@@ -1172,6 +1180,8 @@ A domain block is stored normalized (lowercase, punycode, no trailing dot: `bloc
 `src/platform/domain-name.ts`, used by the API and by the cutover converter) and compared as it is with the account's
 normalized domain and actor host, so each check is two seeks of the `(account_id, domain)` index, however many domains
 the viewer blocks.
+A Store converted by an earlier release may hold a block with a trailing dot; migration `0003_domain_block_form` removes
+it, merging a row that then repeats a block of the same account.
 
 ## The architecture test
 

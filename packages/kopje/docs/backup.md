@@ -47,8 +47,9 @@ be complete and still lack originals: `pending` ones are copied by later backups
 
 A video's or an audio file's custom thumbnail is an image upload with its own original, indexed and restored like any
 upload's while current. A backup taken after it was replaced or removed does not index it, so restoring that backup
-does not make it current again; restoring an earlier backup that indexed it does. One a backup indexed is kept in R2
-until that backup has copied it, so the run does not find it `absent`.
+does not make it current again; restoring an earlier backup that indexed it while current does. One a backup indexed
+while current is kept in R2 until that backup has copied it, whatever happens to it meanwhile, so the run does not find
+it `absent`.
 
 The served, re-encoded files (`files/` in R2) are not backed up. A restore puts the originals back, and
 `kopje-admin media-rebuild` re-encodes them into the served files (restore step 6). Link card images have no original
@@ -380,10 +381,11 @@ paths are built only from validated ids. Work in a new, empty directory so nothi
    A video or audio row is handled one per call. Its file is the original itself, checked again by the output verifier
    as it is copied (a file the check refuses is reported as `failed` and never served). A video's still preview is
    made by the media processor when its block is added and `MEDIA_UPLOAD_MONTHLY_JOBS` has a job left this month (one
-   job and three transformations each, after a probe of the processor); otherwise the row is counted as `fallback` and
-   shows the plain video poster. An interrupted run (the CLI stopped) keeps its lease for 10 minutes, so the next run
-   waits for it or reports that another run holds it; one interrupted during the probe leaves stills stopped (`retry`)
-   for an hour. To give stills to such videos later, once the processor is set up, run
+   job and three transformations each; the first call that needs one checks the processor with a short probe clip
+   first); otherwise the row is counted as `fallback` and shows the plain video poster. A still left by an earlier,
+   interrupted run is reused. An interrupted run (the CLI stopped) keeps its lease for 10 minutes, so the next run waits
+   for it or reports that another run holds it; one interrupted during the probe leaves stills stopped (`retry`) for an
+   hour before the probe is tried again. To give stills to such videos later, once the processor is set up, run
    `kopje-admin media-rebuild --stills`.
 
 7. **Publish.** The imported Store stays readonly (it accepts no write and delivers nothing) until you publish it, once
