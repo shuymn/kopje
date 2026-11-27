@@ -354,6 +354,18 @@ describe("scanHtml against a scripting-off parser", () => {
     expect(result.dropped.relMe).toBeGreaterThanOrEqual(1);
   });
 
+  it("notes a rel=me collected after a table, whose order the scan does not model", async () => {
+    const page = "<svg><path/></svg><table><tr><td><a rel=me href=A></td></tr><a rel=me href=B></table>";
+    // Foster parenting moves B before the table in the tree's document order.
+    expect(parse5RelMe(page)).toEqual(["B", "A"]);
+    expect(await scan(page)).toMatchObject({ relMe: ["A", "B"], relMeOrderAfterTable: true });
+    // A rel=me before the table only keeps its order.
+    expect(await scan("<a rel=me href=A></a><table></table>")).toMatchObject({
+      relMe: ["A"],
+      relMeOrderAfterTable: false,
+    });
+  });
+
   it("collects no rel=me after a select start tag", async () => {
     const page =
       "<a rel=me href=before></a><select><a rel=me href=in><link rel=me href=in2></select><a rel=me href=out>";
@@ -731,7 +743,7 @@ describe("scanHtml against a scripting-off parser", () => {
           for (const href of result.relMe) {
             expect(href === null || oracle.includes(href), `${href} in ${JSON.stringify(page)}`).toBe(true);
           }
-          if (result.relMe.length > 0) {
+          if (result.relMe.length > 0 && !result.relMeOrderAfterTable) {
             expect(result.relMe[0], `first in ${JSON.stringify(page)}`).toBe(oracle[0]);
           }
           counts.svgResumed += result.resumed.svg;
@@ -897,6 +909,7 @@ describe("scanHtml bounds", () => {
       relMeAfterForeign: false,
       relMeAfterLongRel: false,
       relMeWithFrameset: false,
+      relMeOrderAfterTable: false,
       resumed: { svg: big, noscript: big },
       links: Array.from({ length: l.links }, () => ({
         rel: Array.from({ length: l.relTokens }, () => ""),

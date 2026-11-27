@@ -63,6 +63,19 @@ const page =
     new Response(body, { headers });
 const relMe = (href: string, tag: "a" | "link" = "a", rel = "me") =>
   page(tag === "a" ? `<a rel="${rel}" href="${href}">me</a>` : `<head><link rel="${rel}" href="${href}"></head>`);
+// The shape of a GitHub profile page read signed out (2026-11-14, #1559): inline SVG icons of <path> elements, one with
+// a <title>, before the two rel="nofollow me" anchors of the profile's links.
+function githubProfile(hrefs: readonly string[]): string {
+  const icon = (i: number) =>
+    `<svg aria-hidden="true" height="16" viewBox="0 0 16 16" version="1.1" width="16" data-view-component="true" ` +
+    `class="octicon octicon-${i}">${i === 0 ? "<title>GitHub</title>" : ""}<path d="M8 0c4.42 0 8 3.58 8 8${i}z">` +
+    `</path>${i % 3 === 0 ? '<path fill-rule="evenodd" d="M0 0h16v16H0z"></path>' : ""}</svg>`;
+  const icons = Array.from({ length: 49 }, (_, i) => `<span>${icon(i)}</span>`).join("\n");
+  const links = hrefs
+    .map((href) => `<li><a class="Link--primary" rel="nofollow me" href="${href}">${href}</a></li>`)
+    .join("");
+  return `<!DOCTYPE html><html lang="en"><head><title>u (U)</title></head><body><header>${icons}</header><ul>${links}</ul></body></html>`;
+}
 const moved =
   (location: string | null, status = 301) =>
   () =>
@@ -228,6 +241,27 @@ describe("field verification witnesses", () => {
       false,
     ],
     ["a rel=me after a select", page(`<select></select><a rel=me href="${LINK_BACK}">`), false],
+    [
+      "a rel=me after a plain inline svg",
+      page(`<svg viewBox="0 0 16 16"><path d="M0 0"></path></svg><a rel="me" href="${LINK_BACK}">`),
+      true,
+    ],
+    [
+      "a rel=me after a plain noscript",
+      page(`<noscript><iframe src="https://tags.example/ns.html"></iframe></noscript><a rel="me" href="${LINK_BACK}">`),
+      true,
+    ],
+    ["a GitHub profile page", page(githubProfile(["https://blog.example/", LINK_BACK])), true],
+    [
+      "a rel=me after an svg holding a foreignObject",
+      page(`<svg><foreignObject></foreignObject></svg><a rel=me href="${LINK_BACK}">`),
+      false,
+    ],
+    [
+      "a rel=me after a direct match in a table",
+      page(`<table><tr><td><a rel=me href="${LINK_BACK}"></td></tr></table>`),
+      true,
+    ],
     ["a rel=me inside svg", page(`<svg><a rel=me href="${LINK_BACK}"></a></svg>`), false],
     ["a rel=me after math", page(`<math></math><a rel=me href="${LINK_BACK}">`), false],
     ["a frameset page", page(`<a rel=me href="${LINK_BACK}"><frameset></frameset>`), false],
@@ -254,6 +288,23 @@ describe("field verification witnesses", () => {
     };
     expect(await verifiedBy(w, routes)).toBe(verified);
     expect(w.requests).toEqual([`GET ${SITE}`, `HEAD ${short}`]);
+  });
+
+  it("sends no HEAD when a rel=me came after a table, whose first rel=me may not be Mastodon's", async () => {
+    const w = await world();
+    const a = "https://short.example/a";
+    // Foster parenting moves B before the table in the tree, so Mastodon HEADs B; the scan streams A first.
+    const body = `<svg><path/></svg><table><tr><td><a rel=me href="${a}"></td></tr><a rel=me href="https://b.example/"></table>`;
+    expect(await verifiedBy(w, { [SITE]: page(body), [a]: moved(LINK_BACK) })).toBe(false);
+    expect(w.requests).toEqual([`GET ${SITE}`]);
+    // A rel=me before the table only is HEADed.
+    const before = await world();
+    const routes = {
+      [SITE]: page(`<a rel=me href="${a}"></a><table><tr><td>x</td></tr></table>`),
+      [a]: moved(LINK_BACK),
+    };
+    expect(await verifiedBy(before, routes)).toBe(true);
+    expect(before.requests).toEqual([`GET ${SITE}`, `HEAD ${a}`]);
   });
 
   it.each([

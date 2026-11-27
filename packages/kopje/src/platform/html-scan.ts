@@ -109,6 +109,9 @@ export type PageScan = {
   // Whether the page has the bytes of a <frameset> start tag anywhere (a <noscript> included), which can replace the
   // body: then no rel=me is returned.
   relMeWithFrameset: boolean;
+  // Whether a rel=me was collected after a <table> start tag (in any namespace): foster parenting can move a rel=me
+  // misplaced in a table before the table in the tree's document order, so relMe's order may not be Mastodon's.
+  relMeOrderAfterTable: boolean;
   // The regions that ended and let rel=me collection resume after them.
   resumed: { svg: number; noscript: number };
   // Every <link>, rel tokens lowercased.
@@ -409,6 +412,7 @@ async function scanPaced(
     relMeAfterForeign: false,
     relMeAfterLongRel: false,
     relMeWithFrameset: false,
+    relMeOrderAfterTable: false,
     resumed: { svg: 0, noscript: 0 },
     links: [],
     metas: [],
@@ -428,6 +432,7 @@ async function scanPaced(
   // The open <noscript> region (header): its raw text, kept up to NOSCRIPT_CHARS.
   let noscriptRegion: { raw: string } | null = null;
   let afterLongRel = false;
+  let afterTable = false;
   let langSeen = false;
   // The first HTML title: its raw text while open, then done.
   let title: { raw: string; overflow: boolean } | null = null;
@@ -490,6 +495,7 @@ async function scanPaced(
     if (refusedContext() || scan.relMe.length >= caps.relMe) {
       scan.dropped.relMe++;
     } else {
+      scan.relMeOrderAfterTable ||= afterTable;
       scan.relMe.push(href !== null && fits(href.length) ? href : null);
     }
   };
@@ -644,6 +650,13 @@ async function scanPaced(
         } else {
           region.raw += chunk.text;
         }
+      }),
+    })
+    .on("table", {
+      // In any namespace: the flag only gives up the order.
+      element: guarded<Element>(() => {
+        scan.work.elements++;
+        afterTable = true;
       }),
     })
     .on("select", {

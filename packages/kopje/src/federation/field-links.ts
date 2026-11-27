@@ -32,8 +32,9 @@ import {
 //      text/html or application/xhtml+xml only, a 1 MiB prefix, scanned for rel=me only); verified when an <a> or
 //      <link> with the rel token "me" has an href equal to the link back ASCII case-insensitively (Mastodon's
 //      href.downcase == link_back.downcase, :31); else, when the first such element has an href, HEADs it without
-//      following and verifies when the raw Location is exactly the link back, whatever the status (:36, :40-48);
-//      then records the outcome under the claim's fence (recordFieldLink), verified or not, so no later claim of the
+//      following and verifies when the raw Location is exactly the link back, whatever the status (:36, :40-48),
+//      but not when a rel=me came after a <table>, where the scan's first may not be Mastodon's (Kopje then HEADs
+//      nothing where Mastodon may HEAD a link, never another link); then records the outcome under the claim's fence (recordFieldLink), verified or not, so no later claim of the
 //      same save checks the value again, and stops at once when the fence is lost; a value whose check ran out of the
 //      round's budget or deadline, or whose domain policy could not be read, is unchecked and records nothing;
 //   3. finishes the claim (finishFieldLinks), which schedules a next check while a candidate is left.
@@ -128,6 +129,10 @@ async function checkLink(
   const back = asciiLower(linkBack);
   if (page.scan.relMe.some((href) => href !== null && asciiLower(href) === back)) {
     return "verified";
+  }
+  // The scan's first rel=me may not be Mastodon's after a table (html-scan.ts relMeOrderAfterTable): no HEAD.
+  if (page.scan.relMeOrderAfterTable) {
+    return "unverified";
   }
   const first = page.scan.relMe[0];
   if (first === undefined || first === null) {
