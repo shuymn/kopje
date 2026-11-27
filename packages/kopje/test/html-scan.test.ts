@@ -406,6 +406,66 @@ describe("scanHtml against a scripting-off parser", () => {
     expect(await scan(page)).toMatchObject({ relMe: [], relMeInTemplate: true });
   });
 
+  it.each([
+    ["<template><col><svg><![CDATA[></template><textarea>]]></svg></template><a rel=me href=x>", []],
+    ["<template><col><svg><![CDATA[><template><col>]]></svg></template><a rel=me href=x>", []],
+    ["<template><col><svg><![CDATA[></template><a rel=me href=A>]]></svg></template><a rel=me href=B>", ["A", "B"]],
+  ])("refuses rel=me after a table-structure tag in a template, an svg CDATA after it: %s", async (page, oracle) => {
+    // The column-group mode ignores the <svg>, so <![CDATA[ is a bogus comment to the spec parser and a CDATA section
+    // to lol-html.
+    expect(parse5RelMe(page)).toEqual(oracle);
+    expect(await scan(page)).toMatchObject({ relMe: [], relMeInTemplate: true });
+  });
+
+  const TABLE_IN_TEMPLATE = ["col", "colgroup", "caption", "table", "tbody", "thead", "tfoot", "tr", "td", "th"];
+  it.each(
+    [
+      "<template><col><svg><![CDATA[></template><textarea>]]></svg></template><a rel=me href=x>",
+      "<template><col><svg><![CDATA[><template><col>]]></svg></template><a rel=me href=x>",
+      "<template><col><svg><![CDATA[></template><a rel=me href=A>]]></svg></template><a rel=me href=B>",
+    ].flatMap((page) => [
+      `<head>${page}`,
+      `<table>${page}`,
+      `<svg><g>${page}`,
+      page.replace("<template><col>", "<template>&#32;<col>"),
+      ...TABLE_IN_TEMPLATE.map((tag) => page.replace("<col>", `<${tag}>`)),
+    ]),
+  )("finds no rel=me the parser does not, first first, after a table-structure tag in a template: %s", async (page) => {
+    const result = await scan(page);
+    const oracle = parse5RelMe(page);
+    for (const href of result.relMe) {
+      expect(oracle).toContain(href);
+    }
+    if (result.relMe.length > 0 && !result.relMeOrderAfterTable) {
+      expect(result.relMe[0]).toBe(oracle[0]);
+    }
+    // The refusal ran wherever a candidate was reported (inside <svg><g> none is: every anchor there is SVG).
+    if (result.dropped.relMe > 0 || oracle.length > 0) {
+      expect(result.relMeInTemplate || result.relMeAfterForeign).toBe(true);
+    }
+  });
+
+  it.each(TABLE_IN_TEMPLATE)("latches rel=me after a <%s> in a template, closed or not", async (tag) => {
+    for (const page of [
+      `<template><${tag}></template><a rel=me href=x>`,
+      `<template><div><${tag}>t</div></template><a rel=me href=x></a><link rel=me href=y>`,
+      `<template><svg><${tag}/></svg></template><a rel=me href=x>`,
+    ]) {
+      const result = await scan(page);
+      expect(result.relMe, page).toEqual([]);
+      expect(result.relMeInTemplate || result.relMeAfterForeign, page).toBe(true);
+    }
+    // Outside a template, the tag does not latch.
+    expect((await scan(`<${tag}></${tag}><a rel=me href=x>`)).relMeInTemplate).toBe(false);
+  });
+
+  it("keeps an svg icon in a template resuming", async () => {
+    const page =
+      '<template><div><svg viewBox="0 0 16 16"><path d="M0 0"></path></svg></div></template><a rel=me href=x>';
+    expect(parse5RelMe(page)).toEqual(["x"]);
+    expect(await scan(page)).toMatchObject({ relMe: ["x"], relMeInTemplate: false, resumed: { svg: 1, template: 1 } });
+  });
+
   const RAW_IN_TEMPLATE = ["style", "script", "title", "textarea", "iframe", "xmp", "noembed", "noframes", "noscript"];
   const PLACES = ["", "<head>", "<body>", "<table>", "<svg><path/></svg>", "<noscript><img></noscript>"];
   it.each(
@@ -434,7 +494,7 @@ describe("scanHtml against a scripting-off parser", () => {
     for (const page of [
       "<template><div>x</div></template><a rel=me href=x>",
       "<svg><path/></svg><template><template></template></template><a rel=me href=x>",
-      "<TEMPLATE><tr><td></TEMPLATE><a rel=me href=x>",
+      "<TEMPLATE><div><span>t</span></div></TEMPLATE><a rel=me href=x>",
     ]) {
       expect(parse5RelMe(page)).toEqual(["x"]);
       expect(await scan(page)).toMatchObject({ relMe: ["x"], relMeInTemplate: false });
@@ -628,6 +688,7 @@ describe("scanHtml against a scripting-off parser", () => {
     "</table>",
     "<caption>",
     "<colgroup>",
+    "<col>",
     "<head>",
     "</head>",
     "<body>",
@@ -785,8 +846,15 @@ describe("scanHtml against a scripting-off parser", () => {
     "<colgroup>",
     "<tr>",
     "<td>",
+    "<th>",
     "<tbody>",
+    "<thead>",
+    "<tfoot>",
+    "<table>",
     "<caption>",
+    "<svg><path/></svg>",
+    "<span><svg><g><path/></g></svg></span>",
+    "<button>",
     "<a rel=me href=ID>",
     "<link rel=me href=ID>",
     "<a href=ID>",
@@ -799,6 +867,9 @@ describe("scanHtml against a scripting-off parser", () => {
       `<${name}>x</${name}>`,
     ]),
     "<plaintext>",
+    "<![CDATA[",
+    "]]>",
+    "<svg><![CDATA[",
     "<template>",
     "</template>",
     "</TEMPLATE>",
@@ -818,7 +889,7 @@ describe("scanHtml against a scripting-off parser", () => {
   const SVG_CLOSE = ["</svg>", "</SVG>"];
   // Soup without the table fragments: a rel=me foster-parented out of a table precedes earlier ones in the spec
   // parser's document order, which the scan does not model (checked apart, by relMeOrderAfterTable).
-  const SOUP = FRAGMENTS.filter((part) => !/^<\/?(table|tr|td|caption|colgroup)>$/.test(part));
+  const SOUP = FRAGMENTS.filter((part) => !/^<\/?(table|tr|td|caption|colgroup|col)>$/.test(part));
   const body = (valid: string[], breakers: string[]) =>
     fc
       .array(fc.oneof({ arbitrary: fc.constantFrom(...valid), weight: 6 }, fc.constantFrom(...breakers)), {
