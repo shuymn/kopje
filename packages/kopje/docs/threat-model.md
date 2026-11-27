@@ -446,8 +446,9 @@ against their own instance. TLS is assumed between all parties.
   `alsoKnownAs`. _Enforced (main):_ `prepare` in `src/federation/inbound.ts`, `move` in `src/domain/inbox.ts`;
   `test/inbox.test.ts` ("ignores a Move whose target does not list the actor"). The stored move
   (`accounts.moved_to_account_id`, shown as `Account#moved`) is the source's own claim as in Mastodon, and changes only
-  its display, whether it may be followed (R21 in `docs/visibility.md`) and whether it is suggested (R39), each counting
-  a move only when the presenter shows its target (`movedTargetShownSql` in `src/domain/audience.ts`): an actor
+  its display, whether it may be followed (R21 in `docs/visibility.md`), whether it is suggested (R39), each counting
+  a move only when the presenter shows its target (`movedTargetShownSql` in `src/domain/audience.ts`), and whether its
+  posts appear in a link timeline (R8, which counts any stored id): an actor
   document's `movedTo` may name any stored account, and a verified `Move` sets it when first processed; followers move
   only on a verified `Move`, each judged by R21, so none moves to a target that has itself moved (`upsertRemoteActor` in
   `src/domain/remote-actors.ts` and `move` in `src/domain/inbox.ts`; `test/inbox.test.ts` ("account moves")). Setting it
