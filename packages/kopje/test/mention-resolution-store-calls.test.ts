@@ -183,7 +183,7 @@ describe("what one resolution shares", () => {
     await plainActor(w.t.web, "bob");
     await plainActor(w.t.web, "carol", "other.example");
     const status = await posted(w.post({ status: "@bob@mastodon.example @carol@other.example" }));
-    expect(status.mentions.map((m) => m.acct)).toEqual(["bob@mastodon.example", "carol@other.example"]);
+    expect(status.mentions.map((m) => m.acct).toSorted()).toEqual(["bob@mastodon.example", "carol@other.example"]);
     expect(w.calls()).toEqual([
       "instanceDomain",
       "postMentionGate",

@@ -1,6 +1,7 @@
 import type { Db } from "../db/sql";
 import { parseAddress } from "../platform/domain-name";
 import type { MaintenanceReason } from "../platform/store-errors";
+import { blocksDomain } from "./audience";
 import { type Authorized, authorize, type UserCredential, type UserViewer } from "./auth";
 import { type FetchPreparation, fetchPreparation } from "./fetch-preparation";
 import { instanceDomainOf } from "./instance-domain";
@@ -122,7 +123,7 @@ export function selectAddresses(db: Db, text: string, accountId: string, domain:
     if (selected.length >= MENTION_ADDRESSES_PER_POST) {
       break;
     }
-    if (held.has(address.key) || authorBlocksDomain(db, accountId, address.domain)) {
+    if (held.has(address.key) || blocksDomain(db, accountId, address.domain)) {
       continue;
     }
     const ticket = ticketFor(db, webfingerUrl(address.username, address.domain));
@@ -131,14 +132,6 @@ export function selectAddresses(db: Db, text: string, accountId: string, domain:
     }
   }
   return selected;
-}
-
-// Whether the author blocks `domain`, a normalized domain, as a domain block matches a stored domain (audience.ts
-// inDomainSql: exactly, without subdomains): one seek of domain_blocks_pair.
-function authorBlocksDomain(db: Db, accountId: string, domain: string): boolean {
-  return (
-    db.first("SELECT 1 AS x FROM domain_blocks WHERE account_id = ?1 AND domain = ?2", accountId, domain) !== undefined
-  );
 }
 
 // The resolution of `addresses`, its first WebFinger prepared (fetch-preparation.ts): the instance actor signs (DATA-7).

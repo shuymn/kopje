@@ -417,9 +417,11 @@ function schedules(scheduledAt: string | undefined, scheduleNow: number): schedu
 // nothing (so a key that reserved a scheduled status is never posted twice, once now and once when it is published).
 // An expired key is taken from the older rows, in this transaction, and posts anew.
 // Then the pair as sent is held to the raw bound, and a blank text takes its warning (convertedPost), whether the post
-// is made now or scheduled. No scheduled_at, or a time not in the future, posts at once; otherwise the post is checked
-// as an immediate one (the status replied to, the media, a blank text), then against ScheduledStatus's validations, and
-// kept with its media held.
+// is made now or scheduled. The accounts the request resolved for the text's unknown addresses (`resolved`,
+// mention-addresses.ts) are stored either way, so a scheduled post's publication finds them by the addresses its params
+// keep. No scheduled_at, or a time not in the future at the request's time (`scheduleNow`), posts at once; otherwise
+// the post is checked as an immediate one (the status replied to, the media, a blank text), then against
+// ScheduledStatus's validations at that time, and kept with its media held.
 export const postStatus = userWriteOperation.atStoreTime("storeNow")<
   ScheduleInput & { storeNow: number },
   ScheduleResult
