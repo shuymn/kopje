@@ -8,8 +8,9 @@ import * as dataUri from "../src/platform/data-uri";
 import { PROFILE_IMAGE_LIMIT } from "../src/platform/images";
 import { restoreMarkerKey } from "../src/platform/media-files";
 import type { StoreStub } from "../src/platform/store-client";
-import { bearer, json, sql } from "./api-helpers";
-import { ANIMATED_GIF, AVIF as AVIF_FIXTURE, GIF, PNG_PLAIN } from "./fixtures/images";
+import { bearer, form, json, sql } from "./api-helpers";
+import { countingStore } from "./app-helpers";
+import { ANIMATED_GIF, AVIF, GIF, PNG_PLAIN } from "./fixtures/images";
 import { bytes, mediaForm, multipartForm, pathOf, r2Keys, TestCodec } from "./media-helpers";
 import { singletonStatistics } from "./plan-audit-store";
 import { aliceWithFollower } from "./profile-fixtures";
@@ -21,8 +22,6 @@ import { csrfOf, ORIGIN, signIn } from "./web-helpers";
 // PATCH /api/v1/accounts/update_credentials with avatar and header files (multipart): the body and file bounds, the
 // token checked before the body is read, Paperclip's validations, one transaction with one Update(Person), and the
 // ownership of the uploads until it commits (mastodon/accounts.ts, mastodon/media.ts storeProfileImage).
-
-const AVIF = new Uint8Array([0, 0, 0, 0x1c, ...new TextEncoder().encode("ftypavif"), 0, 0, 0, 0]);
 
 async function setup(wrapStore?: (store: StoreStub) => StoreStub) {
   const codec = new TestCodec();
@@ -242,7 +241,7 @@ describe("update_credentials: avatar and header", () => {
         },
       },
     });
-    const avif = new File([AVIF], "a.avif", { type: "image/avif" });
+    const avif = new File([bytes(AVIF)], "a.avif", { type: "image/avif" });
     expect(
       await answer(
         await patch(
@@ -264,7 +263,7 @@ describe("update_credentials: avatar and header", () => {
         },
       },
     });
-    // Text that is not a data URI by Paperclip's case-sensitive pattern, which takes no parameter before `;base64,`.
+    // Text that is not a data URI by Paperclip's pattern (its other spellings: test/data-uri.test.ts).
     for (const parts of [
       [["avatar", "x"]],
       [
@@ -272,8 +271,6 @@ describe("update_credentials: avatar and header", () => {
         ["avatar", "x"],
       ],
       [["avatar", `DATA:image/png;base64,${PNG_PLAIN}`]],
-      [["avatar", `data:image/png;BASE64,${PNG_PLAIN}`]],
-      [["header", `data:image/png;charset=utf-8;base64,${PNG_PLAIN}`]],
     ] as [string, string | File][][]) {
       expect(await answer(await patch(h, h.users.alice.token, formOf(parts)))).toEqual({
         status: 400,
@@ -336,15 +333,8 @@ describe("update_credentials: data URIs", () => {
       `/api/v1/accounts/update_credentials${query}`,
       bearer(h.users.alice.token, { ...json(body), method: "PATCH" }),
     );
-  const sendForm = (h: H, body: string) =>
-    h.request(
-      "/api/v1/accounts/update_credentials",
-      bearer(h.users.alice.token, {
-        method: "PATCH",
-        body,
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-      }),
-    );
+  const sendForm = (h: H, body: Record<string, string>) =>
+    h.request("/api/v1/accounts/update_credentials", bearer(h.users.alice.token, form(body, { method: "PATCH" })));
   // The served type of a set image: PNG for a PNG, WebP for the GIF fixture.
   const served = async (h: H, url: string | null | undefined) =>
     (await h.request(pathOf(url ?? null))).headers.get("content-type");
@@ -352,16 +342,9 @@ describe("update_credentials: data URIs", () => {
     sql(store, "SELECT name, value FROM kopje_state WHERE name LIKE 'images_%transforms:%' ORDER BY name");
   // A harness that counts the Store's reservations: one consumes an upload attempt even when it is discarded later.
   const counting = async () => {
-    let reservations = 0;
-    const h = await setup((store) =>
-      storeWith(store, {
-        reserveMedia: (...args: unknown[]) => {
-          reservations++;
-          return (store.reserveMedia as (...a: unknown[]) => Promise<unknown>)(...args);
-        },
-      }),
-    );
-    return { h, reservations: () => reservations };
+    let calls: ReturnType<typeof countingStore> | undefined;
+    const h = await setup((store) => (calls ??= countingStore(store)).stub);
+    return { h, reservations: () => calls!.calls.filter((name) => name === "reserveMedia").length };
   };
 
   it("sets an avatar and a header from data URIs in JSON, urlencoded, multipart and the query", async () => {
@@ -376,7 +359,7 @@ describe("update_credentials: data URIs", () => {
     ]);
     // urlencoded, with spaces inside the payload.
     const spaced = `${PNG_PLAIN.slice(0, 20)} ${PNG_PLAIN.slice(20, 40)}  ${PNG_PLAIN.slice(40)}`;
-    expect((await sendForm(h, `avatar=${encodeURIComponent(uri(spaced))}`)).status).toBe(200);
+    expect((await sendForm(h, { avatar: uri(spaced) })).status).toBe(200);
     const second = await profile(h.store);
     expect(second?.avatar_url).not.toBe(first?.avatar_url);
     expect(await served(h, second?.avatar_url)).toBe("image/png");
@@ -422,10 +405,10 @@ describe("update_credentials: data URIs", () => {
       },
     });
     const sent = [
-      await answer(await sendJson(h, { avatar: uri(AVIF_FIXTURE) })),
+      await answer(await sendJson(h, { avatar: uri(AVIF) })),
       await answer(await sendJson(h, { avatar: uri("@@@@") })),
       await answer(await sendJson(h, { header: uri("") })),
-      await answer(await patch(h, h.users.alice.token, formOf([["header", uri(AVIF_FIXTURE, "image/avif")]]))),
+      await answer(await patch(h, h.users.alice.token, formOf([["header", uri(AVIF, "image/avif")]]))),
     ];
     expect(sent).toEqual([refusal("Avatar"), refusal("Avatar"), refusal("Header"), refusal("Header")]);
     expect(reservations()).toBe(0);

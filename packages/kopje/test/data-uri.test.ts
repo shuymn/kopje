@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { base64DataUriPayload, decodeRubyBase64 } from "../src/platform/data-uri";
+import { toHex } from "../src/platform/hex";
 
 // Paperclip's data URI pattern and Ruby's Base64.decode64 (src/platform/data-uri.ts). Every expected value was printed
 // by Ruby 2.6.10 (`ruby -rbase64`): the pattern's match group 2 and `Base64.decode64(payload).unpack1("H*")`. The
 // decoding's time over a value at the request's text bound: test/param-shapes.test.ts.
-
-const hex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 describe("base64DataUriPayload", () => {
   it.each([
@@ -69,6 +68,6 @@ describe("decodeRubyBase64", () => {
     ["", ""],
     ["/+/+", "ffeffe"],
   ])("decodes %j as Base64.decode64 does", (payload, bytes) => {
-    expect(hex(decodeRubyBase64(`p${payload}`, 1))).toBe(bytes);
+    expect(toHex(decodeRubyBase64(`p${payload}`, 1))).toBe(bytes);
   });
 });
