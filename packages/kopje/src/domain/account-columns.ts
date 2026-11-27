@@ -202,7 +202,7 @@ const MOVED_COLUMN_MAP = {
   emojis: "m.emojis",
   emoji_cache: emojiCacheSql("m.emojis", "m.domain"),
   // The target's own verdict, by its stored domain (presentedMediaRejectedSql).
-  media_rejected: fixedNumeric(presentedMediaRejectedSql("m")),
+  media_rejected: presentedMediaRejectedSql("m"),
 } as const satisfies ColumnMap;
 
 // The most UTF-8 bytes each column of MOVED_COLUMN_MAP reads (0 for a number), which its row heap rests on.
