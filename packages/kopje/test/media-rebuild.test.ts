@@ -438,6 +438,90 @@ describe("media rebuild (MEDIA-2, MEDIA-3)", () => {
     expect(await files(rows[1]!)).toEqual([false, false]);
   });
 
+  it("continues after the time budget until one row has been built", async () => {
+    const h = await setup();
+    await addRow(h.store);
+    const second = await addRow(h.store);
+    let clock = NOW;
+    const codec = new TestCodec();
+    // The first row's info() answers past REBUILD_CALL_BUDGET_MS, and as no image: a failed attempt, not a build.
+    vi.spyOn(codec, "info").mockImplementationOnce(() => {
+      clock += REBUILD_CALL_BUDGET_MS + 10_000;
+      return Promise.resolve({ format: "image/svg+xml" });
+    });
+    const step = await rebuildMedia(
+      {
+        build: BUILD,
+        store: h.store,
+        bucket: env.MEDIA,
+        images: codec,
+        now: () => clock,
+        authority: { ...ACCESS, teamDomain: team.teamDomain },
+        monthlyTransforms: 100,
+      },
+      { after: null, dryRun: false },
+    );
+    expect(step).toMatchObject({ done: true, next: second.id, counts: { failed: 1, built: 1 } });
+    expect(await files(second)).toEqual([true, true]);
+  });
+
+  it("looks at no further row once the budget is spent: no lease renewal, R2 head or info() for it", async () => {
+    const h = await setup();
+    const rows = [await addRow(h.store), await addRow(h.store)];
+    let clock = NOW;
+    const heads: string[] = [];
+    const renewals: string[] = [];
+    const codec = new TestCodec();
+    // The lease and info() calls made by the time the first row's last file is written.
+    let atCutoff = -1;
+    let infoAtCutoff = -1;
+    const bucket = {
+      head: (key: string) => {
+        heads.push(key);
+        return env.MEDIA.head(key);
+      },
+      get: (key: string, options?: R2GetOptions) => env.MEDIA.get(key, options),
+      delete: (keys: string | string[]) => env.MEDIA.delete(keys),
+      put: async (key: string, value: Uint8Array, options?: R2PutOptions) => {
+        const put = await env.MEDIA.put(key, value, options);
+        if (key.endsWith("/small")) {
+          clock += REBUILD_CALL_BUDGET_MS;
+          atCutoff = renewals.length;
+          infoAtCutoff = codec.infoCalls;
+        }
+        return put;
+      },
+    } as unknown as R2Bucket;
+    const store = new Proxy(h.store, {
+      get: (target, property, receiver) =>
+        property === "mediaRebuildLease"
+          ? async (...args: Parameters<StoreStub["mediaRebuildLease"]>) => {
+              renewals.push(args[1].release ? "release" : "renew");
+              return target.mediaRebuildLease(...args);
+            }
+          : (Reflect.get(target, property, receiver) as unknown),
+    });
+    const step = await rebuildMedia(
+      {
+        build: BUILD,
+        store,
+        bucket,
+        images: codec,
+        now: () => clock,
+        authority: { ...ACCESS, teamDomain: team.teamDomain },
+        monthlyTransforms: 100,
+      },
+      { after: null, dryRun: false },
+    );
+    expect(step).toMatchObject({ done: false, stopped: null, next: rows[0]!.id, counts: { built: 1 } });
+    expect(heads.filter((key) => key.includes(rows[1]!.token))).toEqual([]);
+    expect(infoAtCutoff).toBeGreaterThan(0);
+    expect(codec.infoCalls).toBe(infoAtCutoff);
+    // After the first row's last write, only the release: the second row's turn renews nothing.
+    expect(atCutoff).toBeGreaterThan(0);
+    expect(renewals.slice(atCutoff)).toEqual(["release"]);
+  });
+
   it("records the blurhash of the rebuilt preview's RGBA, charged as an upload's three transformations", async () => {
     const codec = new TestCodec();
     const seen = recordRgba(codec);

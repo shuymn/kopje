@@ -7,7 +7,12 @@ import { Db } from "../src/db/sql";
 import { chargeUploadJob } from "../src/domain/media";
 import { REBUILD_LEASE_MS, REBUILD_SETTLE_MS } from "../src/domain/media-rebuild";
 import { stillActivationProbe } from "../src/mastodon/media-activation";
-import { MAX_BUILDS_PER_CALL, rebuildMedia, type RebuildStep } from "../src/mastodon/media-rebuild";
+import {
+  MAX_BUILDS_PER_CALL,
+  REBUILD_CALL_BUDGET_MS,
+  rebuildMedia,
+  type RebuildStep,
+} from "../src/mastodon/media-rebuild";
 import { MAX_AV_BUILDS_PER_CALL, PROBE_RETRY_MS, REBUILD_AV_MS } from "../src/mastodon/media-rebuild-av";
 import type { StillMaker, StillOutcome } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
@@ -17,9 +22,10 @@ import { type AccessTeam, adminTeam, setTeamAccess } from "./access-helpers";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { avFixture, concat } from "./av-helpers";
+import { PNG_PLAIN } from "./fixtures/images";
 import { BUILD, deferred, migratedStore } from "./helpers";
 import { pngOf } from "./local-emoji-helpers";
-import { TestCodec } from "./media-helpers";
+import { bytes, TestCodec } from "./media-helpers";
 import { ACCESS, dumpViaRpc, memoryIO } from "./ops-helpers";
 import { type PlannedStatement, plannedSql } from "./read-helpers";
 import { encodeWebp } from "./webp-fixtures";
@@ -804,6 +810,49 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
       counts: { built: 1 },
     });
     await expectStill(store, second);
+  });
+
+  // A video or audio row built, or a video's fallback (its file copied, its preview cleared), counts as a build for
+  // REBUILD_CALL_BUDGET_MS: past it, the image row after it is not looked at.
+  it.each([
+    ["an audio row built", "audio", { built: 1 }],
+    ["a video's fallback", "video", { fallback: 1 }],
+  ] as const)("ends the call at the time budget after %s", async (_label, kind, counts) => {
+    const store = await setup();
+    const av = await addAv(store, kind);
+    const image = { id: mediaId(), token: randomToken() };
+    await sql(
+      store,
+      `INSERT INTO media_attachments (id, account_id, type, url, preview_url, file_token, content_type, meta, processed)
+			VALUES (?, ?, 'image', ?, ?, ?, 'image/png', '{"original":{"width":1,"height":1}}', 1)`,
+      image.id,
+      ACCOUNT,
+      `${ORIGIN}/media/${image.token}/full.png`,
+      `${ORIGIN}/media/${image.token}/small.png`,
+      image.token,
+    );
+    await env.MEDIA.put(`originals/${image.id}`, bytes(PNG_PLAIN));
+    let clock = NOW;
+    const heads: string[] = [];
+    const recording = recordingBucket((key) => {
+      if (key === `files/${av.token}/full`) {
+        clock += REBUILD_CALL_BUDGET_MS;
+      }
+      return Promise.resolve();
+    });
+    const bucket = new Proxy(recording.bucket, {
+      get: (target, property, receiver) =>
+        property === "head"
+          ? (key: string) => {
+              heads.push(key);
+              return env.MEDIA.head(key);
+            }
+          : (Reflect.get(target, property, receiver) as unknown),
+    });
+    const step = await run(store, { bucket, now: () => clock, ...(kind === "video" ? { stills: null } : {}) });
+    expect(step).toMatchObject({ ok: true, done: false, stopped: null, next: av.id, counts });
+    expect(heads.filter((key) => key.includes(image.token))).toEqual([]);
+    expect(await env.MEDIA.head(`files/${image.token}/full`)).toBeNull();
   });
 
   it("gives up the still at the row's deadline and keeps the lease", async () => {
