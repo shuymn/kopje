@@ -617,12 +617,24 @@ for name, seconds in (("header-short.mp4", 1), ("header-long.mp4", 10)):
     out[i + 20 : i + 24] = struct.pack(">I", seconds * scale)
     open(sys.argv[1].replace("header.mp4", name), "wb").write(out)
 PY
-for case in vfr.mp4 longaudio.mp4 header-short.mp4 header-long.mp4; do
+# Lower-rung planning: rung1.mp4, which the first loop saw encoded at 1080p60 with a roomy work deadline, given
+# LOWER_ENCODE_MS of encode time as lower.mp4, is encoded at 720p30 when only the lower rung's estimate fits.
+cp "$work/fixture/rung1.mp4" "$work/fixture/lower.mp4"
+for case in vfr.mp4 longaudio.mp4 header-short.mp4 header-long.mp4 lower.mp4; do
   cp "$work/fixture/$case" "$work/in/"
-  got="$(normalize "$case" "$case.out")"
+  if [ "$case" = lower.mp4 ]; then
+    got="$(WORK_MS=$((LOWER_ENCODE_MS + 1000)) STILL_MS=1000 normalize "$case" "$case.out")"
+  else
+    got="$(normalize "$case" "$case.out")"
+  fi
   ok=false
   if [ "${got% *}" = 200 ]; then
     ok=true
+    if [ "$case" = lower.mp4 ]; then
+      geometry="$(ffprobe -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "/o/$case.out")"
+      [ "$geometry" = "1280,720,30/1" ] || ok=false
+      got="$got, $geometry (want 1280,720,30/1)"
+    fi
     for stream in v a; do
       want="$(decoded "$work/in" "$case" "$stream")"
       [ "$stream" = v ] && video_length="$want"
@@ -636,29 +648,6 @@ for case in vfr.mp4 longaudio.mp4 header-short.mp4 header-long.mp4; do
   check "$ok" "$case: $got, want 200 with each stream as long as the input's"
   echo "| $case | normalize | $got | | | | | | | | |"
 done
-
-# Lower-rung planning: rung1.mp4, which the loop above saw encoded at 1080p60 with a roomy work deadline, is encoded at
-# 720p30 when only the lower rung's estimate fits, and its output passes the verifier.
-cp "$work/fixture/rung1.mp4" "$work/in/lower.mp4"
-h="$(req lower.normalized -X POST --data-binary @/in/lower.mp4 -H 'Content-Type: application/octet-stream' \
-  "http://127.0.0.1:8080/normalize?work_ms=$((LOWER_ENCODE_MS + 1000))&still_ms=1000")"
-got="$(status "$h") $(header Kopje-Error "$h")"
-ok=false
-if [ "$(status "$h")" = 200 ]; then
-  geometry="$(ffprobe -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 /o/lower.normalized)"
-  got="200, $geometry"
-  [ "$geometry" = "1280,720,30/1" ] && ok=true
-  for stream in v a; do
-    want="$(decoded "$work/in" lower.mp4 "$stream")"
-    [ "$stream" = v ] && video_length="$want"
-    have="$(decoded "$work/out" lower.normalized "$stream")"
-    [ "$(within "$have" "$want" 0.15)" = true ] || ok=false
-    got="$got, $stream $have s (input $want s)"
-  done
-  keep lower.normalized lower.mp4 video/mp4 "$video_length"
-fi
-check "$ok" "lower.mp4: $got, want 200 at 1280,720,30/1 with each stream as long as the input's"
-echo "| lower.mp4 | normalize, encode about $LOWER_ENCODE_MS ms | $got | | | | | | | | $(header Kopje-Estimate-Ms "$h") ms estimated |"
 
 # lie.mp4 and lie-av1.mp4: no frame over the pixel limit is decoded, whatever its headers declared, and the output
 # that would leave is refused as the input's (422 pixels).
