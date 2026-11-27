@@ -333,6 +333,14 @@ describe("what the write judges of the resolved accounts", () => {
     expect(w.t.web.fetched.filter((url) => url === webfinger("ken", "mastodon.example"))).toHaveLength(2);
   });
 
+  it("resolves an address the strict parser reads after a spelling it refuses (T12, plan 14)", async () => {
+    const w = await mentionWorld();
+    await plainActor(w.t.web, "ken");
+    const status = await posted(w.post({ status: "@\u212Aen@mastodon.example @ken@mastodon.example" }));
+    expect(status.mentions.map((m) => m.acct)).toEqual(["ken@mastodon.example"]);
+    expect(w.resolvedSent()).toEqual([["ken@mastodon.example"]]);
+  });
+
   it("resolves the warning a blank text takes, not when a quote keeps it, nor in a text's warning (T13, plan 22)", async () => {
     const w = await mentionWorld();
     await plainActor(w.t.web, "bob");
@@ -389,7 +397,7 @@ describe("a request the write would refuse fetches nothing (T14, plan 16)", () =
     expect(w.t.web.fetched).not.toEqual([]);
   });
 
-  it("for an edit: another user's status, a boost, a status at its edit limit", async () => {
+  it("for an edit: another user's status, a boost, a status at its edit limit, unknown media", async () => {
     const w = await mentionWorld();
     await plainActor(w.t.web, "bob");
     const text = "@bob@mastodon.example";
@@ -411,6 +419,7 @@ describe("a request the write would refuse fetches nothing (T14, plan 16)", () =
       at(NOW),
     );
     await refused(w, () => w.edit(limited.id, { status: text }), 422);
+    await refused(w, () => w.edit(own.id, { status: text, media_ids: ["100000000000000098"] }), 422);
     // Control: an edit of an own status fetches.
     w.reset();
     expect((await w.edit(own.id, { status: text })).status).toBe(200);
