@@ -10,7 +10,7 @@ import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD } from "./helpers";
 import { mastodonActor, serveWebFinger } from "./inbox-helpers";
-import { ALICE, DAVE } from "./inbox-status-helpers";
+import { ALICE, AS, DAVE, mastodonNote, PUBLIC } from "./inbox-status-helpers";
 import { storeClock } from "./media-helpers";
 import {
   accountAt,
@@ -392,6 +392,60 @@ describe("a request the write would refuse fetches nothing (T14, plan 16)", () =
     w.reset();
     expect((await w.edit(own.id, { status: text })).status).toBe(200);
     expect(w.t.web.fetched).not.toEqual([]);
+  });
+});
+
+describe("a quote of an account that moved to the address typed", () => {
+  // bob of old.example, stored as bob@old.example with his public status, which anyone may quote; then old.example names
+  // bob@new.example, which names him.
+  async function movedQuote(w: MentionWorld) {
+    const bob = await mastodonActor(w.t.web, "bob", { origin: "https://old.example" });
+    const note = mastodonNote(bob, { interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } } });
+    w.t.web.serve(note.id, { "@context": AS, ...note });
+    const found = await w.t.api<{ statuses: { id: string }[] }>(
+      `/api/v2/search?resolve=true&q=${encodeURIComponent(note.id)}`,
+    );
+    const quoted = found.body.statuses[0]!.id;
+    expect(await accountAt(w.t.store, "bob", "old.example")).toMatchObject({ uri: bob.uri });
+    serveWebFinger(w.t.web, "acct:bob@old.example", "acct:bob@new.example", bob.uri);
+    serveWebFinger(w.t.web, "acct:bob@new.example", "acct:bob@new.example", bob.uri);
+    w.reset();
+    return { bob, quoted };
+  }
+  const quoteRequests = async (w: MentionWorld) =>
+    (await sql<{ body: string }>(w.t.store, "SELECT body FROM outbound_activities"))
+      .map((row) => JSON.parse(row.body) as { activity: { type: string }; audience?: { accounts: string[] } })
+      .filter((row) => row.activity.type === "QuoteRequest");
+
+  it("lets a direct quote name the quoted author by the address it moved to", async () => {
+    const w = await mentionWorld();
+    const { bob, quoted } = await movedQuote(w);
+    const status = await posted(
+      w.post({ status: "@bob@new.example look", visibility: "direct", quoted_status_id: quoted }),
+    );
+    expect(status.mentions.map((m) => m.acct)).toEqual(["bob@new.example"]);
+    const [create] = (await sql<{ body: string }>(w.t.store, "SELECT body FROM outbound_activities ORDER BY id")).map(
+      (row) => JSON.parse(row.body) as { activity: { type: string; to: string[] } },
+    );
+    expect(create?.activity).toMatchObject({ type: "Create", to: [bob.uri] });
+    const stored = await accountAt(w.t.store, "bob", "new.example");
+    expect((await quoteRequests(w)).map((r) => r.audience?.accounts)).toEqual([[stored!.id]]);
+  });
+
+  it("refuses the quote as R36 does when the account's new domain is blocked while it resolves (R36)", async () => {
+    const w = await mentionWorld();
+    const { bob, quoted } = await movedQuote(w);
+    const held = hold(w, bob.uri);
+    const response = w.post({ status: "@bob@new.example look", visibility: "private", quoted_status_id: quoted });
+    await held.reached;
+    await sql(w.t.store, "INSERT INTO domain_blocks (account_id, domain) VALUES (?, 'new.example')", ALICE);
+    held.release();
+    expect((await response).status).toBe(404);
+    // The guarded branch ran: the account was resolved and stored under its new address.
+    expect(w.resolvedSent()).toEqual([["bob@new.example"]]);
+    expect(await accountAt(w.t.store, "bob", "new.example")).toMatchObject({ uri: bob.uri });
+    expect(await quoteRequests(w)).toEqual([]);
+    expect(await sql(w.t.store, "SELECT count(*) AS n FROM statuses WHERE account_id = ?", ALICE)).toEqual([{ n: 0 }]);
   });
 });
 

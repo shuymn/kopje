@@ -602,6 +602,23 @@ export function preparePost(
     return media;
   }
   storeMentioned(db, resolved, referenceKeys(text), new URL(author.uri).origin, storeNow);
+  // A stored actor may have taken another handle or domain, so the status replied to and the status quoted, whose
+  // judgments read their authors' accounts (canView, R36), are judged again on the accounts as now stored and answered
+  // as they are above.
+  if (resolved.length > 0) {
+    if (input.inReplyToId !== undefined) {
+      parent = replyParent(db, accountId, input.inReplyToId);
+      if (parent === null) {
+        return { status: "reply_not_found" };
+      }
+    }
+    if (input.quotedStatusId !== undefined) {
+      quoted = quotable(db, accountId, input.quotedStatusId);
+      if (quoted === null) {
+        return { status: "quote_not_found" };
+      }
+    }
+  }
   const requested = input.visibility ?? author.default_visibility;
   // PostStatusService#preprocess_attributes!: a quote of a private status (the poster's own: R36) is private.
   const visibility =
