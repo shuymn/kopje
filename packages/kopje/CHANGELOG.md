@@ -28,6 +28,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
+- A post, a scheduled post or an edit that names `@user@host` for an account the instance has not stored resolves the
+  address and mentions the account, as Mastodon does: the account is linked, notified or delivered to, and
+  `allowed_mentions` and the direct quote check count it (an omitted one now answers 422 `unexpected_accounts`). At most
+  4 unknown addresses a request are resolved; the rest stay text. Only the address's own account is mentioned: an
+  alias, a split-domain account's server host or an old domain stays text, where Mastodon mentions the account it
+  names. A scheduled post resolves its addresses when it is scheduled, and its publication fetches nothing
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Posting). A failed resolution leaves the address as text
+  and never fails the post.
 - The first part of video and audio support: the package ships the media processor's container (`container/`, a
   pinned ffmpeg build and a small server with fixed operations), the `MediaProcessor` Durable Object that runs it, and
   `kopje-admin media-processor probe`, which runs the activation probe of `normalize@standard-4` or of
