@@ -1,6 +1,6 @@
 import { FIELD_LINK_HOLD_MS, type FieldLinksClaim, type FieldLinksFence } from "../domain/field-links";
 import { DeadlinePassed, inTime } from "../platform/deadline";
-import { outputMaxUnits, SCAN_LIMITS, type ScanLimits } from "../platform/html-scan";
+import { outputMaxUnits, type PageScan, SCAN_LIMITS, type ScanLimits } from "../platform/html-scan";
 import { PACKAGE_VERSION } from "../platform/package-version";
 import { storeRpc } from "../platform/store-client";
 import { LOCAL_FIELDS, REMOTE_VERIFIED_SHOWN } from "../platform/stored-bounds";
@@ -34,9 +34,10 @@ import {
 //      href.downcase == link_back.downcase, :31); else, when the first such element has an href, HEADs it without
 //      following and verifies when the raw Location is exactly the link back, whatever the status (:36, :40-48),
 //      but not when a rel=me came after a <table>, where the scan's first may not be Mastodon's (Kopje then HEADs
-//      nothing where Mastodon may HEAD a link, never another link); then records the outcome under the claim's fence (recordFieldLink), verified or not, so no later claim of the
-//      same save checks the value again, and stops at once when the fence is lost; a value whose check ran out of the
-//      round's budget or deadline, or whose domain policy could not be read, is unchecked and records nothing;
+//      nothing where Mastodon may HEAD a link, never another link); then records the outcome under the claim's fence
+//      (recordFieldLink), verified or not, so no later claim of the same save checks the value again, and stops at
+//      once when the fence is lost; a value whose check ran out of the round's budget or deadline, or whose domain
+//      policy could not be read, is unchecked and records nothing;
 //   3. finishes the claim (finishFieldLinks), which schedules a next check while a candidate is left.
 // Every hop's domain policy is a Store write, read before and after its DNS check (web-page.ts admittedHops), so no
 // redirect, DNS check or request starts once maintenance is entered.
@@ -48,7 +49,7 @@ import {
 // and one finish (within the round's), each started only before its deadline, given up at it, and its result not
 // used when it arrives at or past it. The scan collects rel=me hrefs, the title and lang only
 // (FIELD_LINK_SCAN): FIELD_LINK_OUTPUT_MAX_UNITS UTF-16 code units at most. Logs carry the event, the sink's failure
-// kind and reason, and the hostname only.
+// kind and reason, the contexts the scan skipped rel=me for and its count of skipped candidates, and the hostname only.
 
 export const FIELD_LINK_ROUND_MS = 60_000;
 const FIELD_LINK_FINISH_MS = 10_000;
@@ -107,6 +108,19 @@ function logged(failure: WebPageFailure, step: "get" | "head"): void {
   });
 }
 
+// The contexts for which the scan refused rel=me candidates, or gave up their order (no HEAD), named for the log.
+function skippedContexts(scan: PageScan): string[] {
+  const contexts: [boolean, string][] = [
+    [scan.relMeAfterNoscript, "noscript"],
+    [scan.relMeAfterSelect, "select"],
+    [scan.relMeAfterForeign, "foreign"],
+    [scan.relMeAfterLongRel, "long_rel"],
+    [scan.relMeWithFrameset, "frameset"],
+    [scan.relMeOrderAfterTable, "table"],
+  ];
+  return contexts.filter(([set]) => set).map(([, name]) => name);
+}
+
 // One value's check within the round's `budget` (its deadline the round's), its hops admitted by `admission` (one per
 // value: a policy RPC error at any hop of its GET or HEAD leaves it unchecked).
 async function checkLink(
@@ -130,20 +144,35 @@ async function checkLink(
   if (page.scan.relMe.some((href) => href !== null && asciiLower(href) === back)) {
     return "verified";
   }
+  // An unverified outcome on a page where the scan skipped candidates for their context tells the operator why: the
+  // final URL's hostname only (DATA-5).
+  const skipped = skippedContexts(page.scan);
+  const unverified = (): Outcome => {
+    if (skipped.length > 0) {
+      console.log({
+        event: "kopje.field_links.rel_me_skipped",
+        host: new URL(page.finalUrl).hostname,
+        contexts: skipped,
+        dropped: page.scan.dropped.relMe,
+      });
+    }
+    return "unverified";
+  };
   // The scan's first rel=me may not be Mastodon's after a table (html-scan.ts relMeOrderAfterTable): no HEAD.
   if (page.scan.relMeOrderAfterTable) {
-    return "unverified";
+    return unverified();
   }
   const first = page.scan.relMe[0];
   if (first === undefined || first === null) {
-    return "unverified";
+    return unverified();
   }
   const probe = await sink.probeRedirect(first, web, { budget });
   if (!probe.ok) {
     logged(probe, "head");
-    return spent(probe);
+    const outcome = spent(probe);
+    return outcome === "unverified" ? unverified() : outcome;
   }
-  return probe.location === linkBack ? "verified" : "unverified";
+  return probe.location === linkBack ? "verified" : unverified();
 }
 
 // One round (above). A Store refusal (maintenance) surfaces as StoreUnavailableError: the claim, open, is claimed

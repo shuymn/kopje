@@ -320,6 +320,54 @@ describe("field verification witnesses", () => {
     expect(w.requests).toEqual([`GET ${SITE}`]);
   });
 
+  it.each([
+    [
+      "a rel=me refused after a noscript",
+      { [SITE]: page(`<noscript><!-- --></noscript><a rel=me href="${LINK_BACK}">`) },
+      [{ host: "site.example", contexts: ["noscript"], dropped: 1 }],
+    ],
+    [
+      "the HEAD skipped after a table",
+      { [SITE]: page(`<table><tr><td><a rel=me href="https://short.example/a"></td></tr></table>`) },
+      [{ host: "site.example", contexts: ["table"], dropped: 0 }],
+    ],
+    [
+      "a HEAD that did not lead back, after a candidate refused for a select",
+      {
+        [SITE]: page(`<a rel=me href="https://short.example/a"></a><select></select><a rel=me href="${LINK_BACK}">`),
+        "https://short.example/a": moved(NOWHERE),
+      },
+      [{ host: "site.example", contexts: ["select"], dropped: 1 }],
+    ],
+    [
+      "a refusal on the page a redirect reached",
+      {
+        [SITE]: moved("https://final.example/p?x=1"),
+        "https://final.example/p?x=1": page(`<svg/><math></math><a rel=me href="${LINK_BACK}">`),
+      },
+      [{ host: "final.example", contexts: ["foreign"], dropped: 1 }],
+    ],
+    ["no refusal", { [SITE]: page(`<a rel=me href="https://short.example/a"></a>`) }, []],
+    [
+      "a verified link despite a refusal",
+      { [SITE]: page(`<a rel=me href="${LINK_BACK}"></a><noscript><!-- --></noscript><a rel=me href=x>`) },
+      [],
+    ],
+  ])("logs the rel=me candidates skipped for their context on %s, with no URL", async (_label, routes, expected) => {
+    const w = await world();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await verifiedBy(w, routes);
+      const events = log.mock.calls
+        .map(([entry]) => entry as Record<string, unknown>)
+        .filter((entry) => entry.event === "kopje.field_links.rel_me_skipped");
+      expect(events).toEqual(expected.map((fields) => ({ event: "kopje.field_links.rel_me_skipped", ...fields })));
+      expect(JSON.stringify(events)).not.toMatch(/https?:|\/@|short\.example|\?x=/);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("never arms or fetches a value that is not a verifiable link", async () => {
     const w = await world();
     for (const value of [
