@@ -186,7 +186,7 @@ describe("the boundary matrix", () => {
     expect(timings(records).join("\n")).not.toContain("h264-50.mp4");
   });
 
-  it("expects of each fixture the verdict plan.go's coefficients (A1, A8) give at each endpoint", () => {
+  it("expects of each fixture the verdict plan.go's coefficients (A1, A8) and ladder give at each endpoint", () => {
     type Fixture = { name: string; codec: string; size: string; seconds: number; transfer: string; rate: string };
     type Matrix = {
       stages: Record<"dispatch" | "start" | "probe" | "still" | "commit" | "input", number>;
@@ -209,17 +209,17 @@ describe("the boundary matrix", () => {
     expect([decode("h264"), decode("hevc"), tonemap, encode, audio, fixed, safety]).toEqual([
       1, 1.5, 11, 21, 40, 1500, 0.7,
     ]);
-    // The ladder (A2) and planNormalize's estimate, for a 30 fps source with audio.
+    // The ladder (A2) and planNormalize's estimate on a rung, for a 30 fps source with audio: the output's even
+    // dimensions, each at least 2.
     const ladder = [
       [120, 1920, 1080, 60],
       [300, 1280, 720, 30],
       [600, 854, 480, 30],
     ] as const;
-    const estimate = (f: Fixture) => {
+    const estimate = (f: Fixture, [, long, short, fps]: (typeof ladder)[number]) => {
       const [w, h] = f.size.split("x").map(Number) as [number, number];
-      const [, long, short, fps] = ladder.find(([upTo]) => f.seconds <= upTo) ?? ladder[2];
       const fit = Math.min(1, long / Math.max(w, h), short / Math.min(w, h));
-      const out = Math.trunc((w * fit) / 2) * 2 * Math.trunc((h * fit) / 2) * 2;
+      const out = Math.max(2, Math.trunc((w * fit) / 2) * 2) * Math.max(2, Math.trunc((h * fit) / 2) * 2);
       const perPixel = decode(f.codec) + (f.transfer === "sdr" ? 0 : tonemap);
       return (
         fixed +
@@ -228,6 +228,11 @@ describe("the boundary matrix", () => {
         f.seconds * audio
       );
     };
+    // Admitted when the estimate fits on the duration's rung or a lower one (planVideo).
+    const admitted = (f: Fixture, encodeMs: number) => {
+      const first = ladder.findIndex(([upTo]) => f.seconds <= upTo);
+      return ladder.slice(first < 0 ? ladder.length - 1 : first).some((r) => estimate(f, r) <= safety * encodeMs);
+    };
     const s = m.stages;
     const stageTimes = s.dispatch + s.start + s.probe + s.still + s.commit;
     for (const f of m.fixtures) {
@@ -235,7 +240,7 @@ describe("the boundary matrix", () => {
         const e = m.endpoints[endpoint];
         expect(e, endpoint).toBeDefined();
         const encodeMs = ((e?.seconds ?? 0) - (e?.ingress ?? 0) - s.input - stageTimes - (e?.reply ?? 0)) * 1000;
-        expect(estimate(f) <= safety * encodeMs ? "admitted" : "refused", `${f.name} at ${endpoint}`).toBe(verdict);
+        expect(admitted(f, encodeMs) ? "admitted" : "refused", `${f.name} at ${endpoint}`).toBe(verdict);
       }
       // Within AV_UPLOAD_LIMIT at the fixture's video bitrate and fixtures.sh's audio (160 kb/s H.264, 128 kb/s HEVC).
       const rate = Number(f.rate.replace("M", "e6")) + (f.codec === "h264" ? 160e3 : 128e3);
