@@ -297,6 +297,35 @@ describe("following a moved account", () => {
     expect((await post(h, `/api/v1/accounts/${b}/follow`)).status).toBe(404);
   });
 
+  // The presenter, R21 and R39 read a move alike (movedTargetShownSql): a target whose domain passes DOMAIN_BYTES is
+  // shown as no `moved`, so it is no move, and its source is followed and suggested; one within it is a move.
+  it("follows and suggests an account whose move names a target it does not show, and not one it shows", async () => {
+    const { h, account, move, shown } = await fixture();
+    const { alice, bob } = h.users;
+    const fits = await account({ domain: `${"d".repeat(DOMAIN_BYTES - 5)}.test` });
+    const long = await account({ domain: `${"d".repeat(DOMAIN_BYTES - 4)}.test` });
+    const b = await account({ ...INBOX, discoverable: 1 });
+    // bob follows alice, who follows b: b is a candidate for bob's suggestions.
+    await sql(
+      h.store,
+      "INSERT INTO follows (account_id, target_account_id, state) VALUES (?1, ?2, 'accepted'), (?2, ?3, 'accepted')",
+      bob.id,
+      alice.id,
+      b,
+    );
+    const suggested = async () =>
+      (await getJson<Account[]>(h, "/api/v1/suggestions", bob.token)).body.map((suggestion) => suggestion.id);
+    await move(b, fits);
+    expect((await shown(b)).moved).toMatchObject({ id: fits });
+    expect(await suggested()).toEqual([]);
+    expect((await post(h, `/api/v1/accounts/${b}/follow`)).status).toBe(403);
+    await move(b, long);
+    expect("moved" in (await shown(b))).toBe(false);
+    expect(await suggested()).toEqual([b]);
+    expect((await post(h, `/api/v1/accounts/${b}/follow`)).status).toBe(200);
+    expect(await followOf(h, b)).toMatchObject({ state: "pending" });
+  });
+
   it("follows an account whose imported move names no stored account", async () => {
     const { h, account, move } = await fixture();
     const b = await account(INBOX);

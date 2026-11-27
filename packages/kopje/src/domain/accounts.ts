@@ -4,7 +4,7 @@ import type { Db } from "../db/sql";
 import { DEFAULT_AVATAR, DEFAULT_HEADER } from "../platform/brand-assets";
 import { normalizeDomain, parseAddress } from "../platform/domain-name";
 import { boundedHref, httpUrl } from "../platform/http-url";
-import { ACTOR_URI_LIMIT, DOMAIN_BYTES, isRemoteUsername, withinIdentityBound } from "../platform/identity-bounds";
+import { ACTOR_URI_LIMIT, isRemoteUsername, withinIdentityBound } from "../platform/identity-bounds";
 import { railsBlank } from "../platform/rails-blank";
 import {
   ACCOUNT_EMOJIS_BYTES,
@@ -53,6 +53,7 @@ import {
   foundSql,
   hidesCollectionsSql,
   isBotActorType,
+  movedTargetShownSql,
   presentedMediaRejectedSql,
   type QuotePolicyName,
   type ViewerContext,
@@ -302,7 +303,8 @@ type MovedRow = Omit<
 };
 
 // The moved-to accounts of `rows` that are available (an unavailable one shows `moved: null`, its target not read),
-// each target read once by its key; a target that is not stored, or whose domain passes DOMAIN_BYTES, is not returned.
+// each target read once by its key; a target that is not stored, or that movedTargetShownSql does not show (its domain
+// past DOMAIN_BYTES), is not returned.
 function movedOf(db: Db, rows: readonly AccountRow[]): ReadonlyMap<string, MovedRow> {
   const targets = [
     ...new Set(
@@ -318,7 +320,7 @@ function movedOf(db: Db, rows: readonly AccountRow[]): ReadonlyMap<string, Moved
         `SELECT ${selectSql(MOVED_ACCOUNT_COLUMNS.columns)} FROM json_each(?1) c
 				CROSS JOIN accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} ON m.id = c.value
 				LEFT JOIN local_accounts ml INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON ml.account_id = m.id
-				WHERE m.domain IS NULL OR length(CAST(m.domain AS BLOB)) <= ${DOMAIN_BYTES}`,
+				WHERE ${movedTargetShownSql("m")}`,
         JSON.stringify(targets),
       )
       .map((row) => [row.id, row]),
