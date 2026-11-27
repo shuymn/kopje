@@ -147,24 +147,21 @@ async function checkLink(
   }
   // An unverified outcome on a page where the scan skipped candidates for their context tells the operator why: the
   // final URL's hostname only (DATA-5).
-  const skipped = skippedContexts(page.scan);
   const unverified = (): Outcome => {
-    if (skipped.length > 0) {
+    const contexts = skippedContexts(page.scan);
+    if (contexts.length > 0) {
       console.log({
         event: "kopje.field_links.rel_me_skipped",
         host: new URL(page.finalUrl).hostname,
-        contexts: skipped,
+        contexts,
         dropped: page.scan.dropped.relMe,
       });
     }
     return "unverified";
   };
-  // The scan's first rel=me may not be Mastodon's after a table (html-scan.ts relMeOrderAfterTable): no HEAD.
-  if (page.scan.relMeOrderAfterTable) {
-    return unverified();
-  }
   const first = page.scan.relMe[0];
-  if (first === undefined || first === null) {
+  // No href to HEAD, or one that may not be Mastodon's first after a table (html-scan.ts relMeOrderAfterTable).
+  if (first === undefined || first === null || page.scan.relMeOrderAfterTable) {
     return unverified();
   }
   const probe = await sink.probeRedirect(first, web, { budget });

@@ -43,8 +43,7 @@ import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 //     that ended otherwise, is refused and latches (relMeInTemplate), and so is any after a table-structure start tag
 //     inside one (TABLE_IN_TEMPLATE, in any namespace), which switches the template's insertion mode to one where the
 //     spec parser ignores or moves tags lol-html honors (<template><col><style></template>…, or an <svg> whose CDATA
-//     section lol-html reads), or after an HTML raw-text, RCDATA or tokenizer-switching start tag inside one
-//     (RAW_IN_TEMPLATE). A rel=me after a template of ordinary elements that ended is kept.
+//     section lol-html reads). A rel=me after a template that ended without one is kept.
 //   - only elements in the HTML namespace count; SVG and MathML elements are skipped, and HTML elements inside an
 //     integration point are HTML; an integration point element itself (an SVG <title>, <desc> or <foreignObject>, a
 //     MathML <mi>) is foreign, as in the spec. Where the foreign-content model differs (above), a foreign <title> can
@@ -157,10 +156,8 @@ export type PageScan = {
 export type ScanFailure = { failed: "ambiguity" | "memory" | "parser" };
 
 const XHTML = "http://www.w3.org/1999/xhtml";
-// The raw-text, RCDATA and tokenizer-switching elements, and the table-structure ones (in any namespace), that latch
-// rel=me inside an open <template> (header).
+// The table-structure elements (in any namespace) that latch rel=me inside an open <template> (header).
 const TABLE_IN_TEMPLATE = "col, colgroup, caption, table, tbody, thead, tfoot, tr, td, th";
-const RAW_IN_TEMPLATE = "style, script, title, textarea, iframe, xmp, noembed, noframes, noscript, plaintext";
 const SVG = "http://www.w3.org/2000/svg";
 // The elements an SVG region may hold, as lol-html reports tagName (lowercased): ordinary elements to the HTML tree
 // builder too, should a </p> or </br> have taken the region out of foreign content.
@@ -712,30 +709,17 @@ async function scanPaced(
       }),
     })
     .on(TABLE_IN_TEMPLATE, {
-      // In an open template, a table-structure start tag switches the template's insertion mode (column group, table,
-      // table body, row, cell), which lol-html does not model: later tags are ignored or honored differently.
-      element: guarded<Element>(() => {
+      // In any namespace. In an open template, a table-structure start tag switches the template's insertion mode
+      // (column group, table, table body, row, cell), which lol-html does not model: later tags are ignored or honored
+      // differently. A <table> anywhere also gives up relMe's order (a refusal or the flag only misses).
+      element: guarded<Element>((element) => {
         scan.work.elements++;
         if (templateDepth > 0) {
           afterTemplate = true;
         }
-      }),
-    })
-    .on(RAW_IN_TEMPLATE, {
-      // In an open template, an HTML raw-text, RCDATA or tokenizer-switching element that a template's insertion mode
-      // can ignore (a <style> after a <col>) makes lol-html and the spec parser end the template at different tags.
-      element: guarded<Element>((element) => {
-        scan.work.elements++;
-        if (templateDepth > 0 && element.namespaceURI === XHTML) {
-          afterTemplate = true;
+        if (element.tagName === "table") {
+          afterTable = true;
         }
-      }),
-    })
-    .on("table", {
-      // In any namespace: the flag only gives up the order.
-      element: guarded<Element>(() => {
-        scan.work.elements++;
-        afterTable = true;
       }),
     })
     .on("select", {

@@ -369,14 +369,13 @@ settings page):
   start tag, after an `<svg>` that holds anything but plain shapes (`<path>`, `<g>`, `<rect>` and the like) and a text
   `<title>` or `<desc>`, or that is not closed by its own `</svg>`, after a `<noscript>` that holds anything but text
   and plainly written images, links, iframes, styles and simple elements (a comment, an unlisted tag, a rel=me link, an
-  unfinished tag, NUL, or more than 4,096 characters), inside a `<template>` or after a template that held one, held
-  a table-structure element (`<col>`, `<tr>`, `<td>` and the like) or a raw-text one (`<style>`, `<script>`,
-  `<title>`, `<textarea>` and the like), or was not closed by its own `</template>`, or at or after an `<a>` or
-  `<link>` whose rel passes 2,048 characters, and none in a page with `<frameset` (`src/platform/html-scan.ts` states
-  the rules); a page with such markup before its rel=me links does not verify where Mastodon's does. The first rel=me
-  is not HEADed when its href
-  is relative or passes 2,048 characters, or when a rel=me came after a `<table>` start tag, where a link misplaced
-  in the table can come first in Mastodon's reading: such a page verifies only by a link back among its rel=me hrefs.
+  unfinished tag, NUL, or more than 4,096 characters), inside a `<template>` or after a template that held one, held a
+  table-structure element (`<col>`, `<tr>`, `<td>` and the like) or was not closed by its own `</template>`, or at or
+  after an `<a>` or `<link>` whose rel passes 2,048 characters, and none in a page with `<frameset`
+  (`src/platform/html-scan.ts` states the rules); a page with such markup before its rel=me links does not verify where
+  Mastodon's does. The first rel=me is not HEADed when its href is relative or passes 2,048 characters, or when a rel=me
+  came after a `<table>` start tag, where a link misplaced in the table can come first in Mastodon's reading: such a
+  page verifies only by a link back among its rel=me hrefs.
 - Converted or imported fields past 16 KiB of JSON or 4 entries are never verified.
 - Remote accounts' fields are checked in the same 5-minute round, after local accounts, not after Mastodon's random
   0–599 s delay; at most one claim per account per 5 minutes. Only the first 4 shown fields whose value is a link are

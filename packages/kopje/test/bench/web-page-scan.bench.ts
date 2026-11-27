@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 
 import { type PageScan, SCAN_LIMITS, scanHtml } from "../../src/platform/html-scan";
+import { fill, MiB, REGION_FLOODS } from "../region-floods";
 
 // The web-page scan benchmark (src/platform/html-scan.ts, NET-3): workerd's HTMLRewriter over 1 MiB pages, a realistic
 // one and hostile ones, each scanned RUNS times; the median wall time is printed with what the scan collected, and each
@@ -9,13 +10,8 @@ import { type PageScan, SCAN_LIMITS, scanHtml } from "../../src/platform/html-sc
 //
 //   pnpm --filter kopje bench:scan          (vitest.scan-bench.config.ts; not part of the migration benchmark)
 
-const MiB = 1024 * 1024;
 const RUNS = 5;
 const UTF8 = { label: "utf-8", bomLength: 0 };
-
-function fill(unit: string, prefix = "", suffix = ""): string {
-  return prefix + unit.repeat(Math.floor((MiB - prefix.length - suffix.length) / unit.length)) + suffix;
-}
 
 // A blog page: a head with the card metadata, a header with rel=me links, then articles of paragraphs, links and
 // inline SVG icons up to 1 MiB.
@@ -62,8 +58,7 @@ const CASES: Record<string, Case> = {
     page: fill("<title>t</title>"),
     check: (scan) => {
       expect(scan.title).toBe("t");
-      // Each <title> runs its own handler and the raw-text-in-template one.
-      expect(scan.work.elements).toBe(2 * Math.floor(MiB / 16));
+      expect(scan.work.elements).toBe(Math.floor(MiB / 16));
     },
   },
   "a reference flood in the title": {
@@ -78,43 +73,7 @@ const CASES: Record<string, Case> = {
     page: fill("x", `<a rel=me href=x${" a=b".repeat(10_000)}>`),
     check: (scan) => expect(scan.relMe).toEqual(["x"]),
   },
-  // The region floods (#1559): rel=me collection resumes after a plain <svg> or <noscript>.
-  "an unclosed svg of <g/>": {
-    page: fill("<g/>", "<svg>", "</p><a rel=me href=x>"),
-    check: (scan) => {
-      expect(scan).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
-      expect(scan.work.elements).toBe(1 + Math.floor((MiB - 5 - 21) / 4) + 2);
-    },
-  },
-  "an svg of nested closed svgs, latched": {
-    page: fill("<svg></svg>", "<svg>", "</svg></p><a rel=me href=x>"),
-    check: (scan) => {
-      expect(scan).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
-      // The outer <svg>, both handlers of every nested one, and the anchor after the outer </svg>.
-      expect(scan.work.elements).toBe(1 + 2 * Math.floor((MiB - 5 - 27) / 11) + 1);
-    },
-  },
-  "repeated closed svg regions": {
-    page: fill('<svg><path d="M0 0"/></svg>', "", "<a rel=me href=x>"),
-    check: (scan) => {
-      expect(scan.relMe).toEqual(["x"]);
-      expect(scan.resumed.svg).toBe(Math.floor((MiB - 17) / 27));
-    },
-  },
-  "repeated noscript regions": {
-    page: fill("<noscript><img src=x></noscript>", "", "<a rel=me href=x>"),
-    check: (scan) => {
-      expect(scan.relMe).toEqual(["x"]);
-      expect(scan.resumed.noscript).toBe(Math.floor((MiB - 17) / 32));
-    },
-  },
-  "one 1 MiB noscript": {
-    page: fill("<img src=x>", "<noscript>", "</noscript><a rel=me href=x>"),
-    check: (scan) => {
-      expect(scan).toMatchObject({ relMe: [], relMeAfterNoscript: true, resumed: { noscript: 0 } });
-      expect(scan.work.textChunks).toBeGreaterThan(0);
-    },
-  },
+  ...REGION_FLOODS,
   "80k metas": {
     page: fill("<meta name=a>"),
     check: (scan) => {

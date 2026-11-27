@@ -15,6 +15,7 @@ import {
   scanHtml,
 } from "../src/platform/html-scan";
 import { runs } from "./policy-world";
+import { fill, MiB, REGION_FLOODS } from "./region-floods";
 
 const UTF8 = { label: "utf-8", bomLength: 0 };
 const encode = (text: string) => new TextEncoder().encode(text);
@@ -386,10 +387,10 @@ describe("scanHtml against a scripting-off parser", () => {
       "B",
       "A",
     ]);
-    // A template that another element's end tag ends in the stream stays open in the tree: B is in its column-group
-    // context, ignored.
-    const page = "<div><template><col></div><a rel=me href=B>";
-    expect(parse5RelMe(page)).toEqual([]);
+    // A template that another element's end tag ends in the stream stays open in the tree, B inside it, where a
+    // template's insertion modes may later drop or move it: refused.
+    const page = "<div><template></div><a rel=me href=B>";
+    expect(parse5RelMe(page)).toEqual(["B"]);
     expect(await scan(page)).toMatchObject({ relMe: [], relMeInTemplate: true, resumed: { template: 0 } });
     expect(await scan("<template><a rel=me href=A></a></template>")).toMatchObject({
       relMe: [],
@@ -400,7 +401,7 @@ describe("scanHtml against a scripting-off parser", () => {
   it.each([
     ["<template><col><style></template><textarea></style></template><a rel=me href=x>", []],
     ["<template><col><style></template><a rel=me href=A></style></template><a rel=me href=B>", ["A", "B"]],
-  ])("refuses rel=me after a raw-text element in a template: %s", async (page, oracle) => {
+  ])("refuses rel=me after a raw-text element after a table-structure tag in a template: %s", async (page, oracle) => {
     // The template's column-group mode ignores the <style>, which lol-html reads as raw text up to </style>.
     expect(parse5RelMe(page)).toEqual(oracle);
     expect(await scan(page)).toMatchObject({ relMe: [], relMeInTemplate: true });
@@ -453,7 +454,7 @@ describe("scanHtml against a scripting-off parser", () => {
     ]) {
       const result = await scan(page);
       expect(result.relMe, page).toEqual([]);
-      expect(result.relMeInTemplate || result.relMeAfterForeign, page).toBe(true);
+      expect(result.relMeInTemplate, page).toBe(true);
     }
     // Outside a template, the tag does not latch.
     expect((await scan(`<${tag}></${tag}><a rel=me href=x>`)).relMeInTemplate).toBe(false);
@@ -466,35 +467,13 @@ describe("scanHtml against a scripting-off parser", () => {
     expect(await scan(page)).toMatchObject({ relMe: ["x"], relMeInTemplate: false, resumed: { svg: 1, template: 1 } });
   });
 
-  const RAW_IN_TEMPLATE = ["style", "script", "title", "textarea", "iframe", "xmp", "noembed", "noframes", "noscript"];
-  const PLACES = ["", "<head>", "<body>", "<table>", "<svg><path/></svg>", "<noscript><img></noscript>"];
-  it.each(
-    [...RAW_IN_TEMPLATE, "plaintext"].flatMap((name) =>
-      PLACES.flatMap((place) => [
-        `${place}<template><col><${name}></template><textarea></${name}></template><a rel=me href=x>`,
-        `${place}<template><col><${name}></template><a rel=me href=A></${name}></template><a rel=me href=B>`,
-        `${place}<template><${name}></template></${name}></template><a rel=me href=C>`,
-        `${place}<template><tr><${name}>x</${name}></template><a rel=me href=D>`,
-      ]),
-    ),
-  )("finds no rel=me the parser does not, first first, after a raw-text element in a template: %s", async (page) => {
-    const result = await scan(page);
-    const oracle = parse5RelMe(page);
-    for (const href of result.relMe) {
-      expect(oracle).toContain(href);
-    }
-    if (result.relMe.length > 0 && !result.relMeOrderAfterTable) {
-      expect(result.relMe[0]).toBe(oracle[0]);
-    }
-    // The refusal ran, but for a <plaintext>, after which neither parser sees an element.
-    expect(result.relMeInTemplate || result.relMeAfterForeign || page.includes("<plaintext>")).toBe(true);
-  });
-
   it("keeps collecting rel=me after a template that ended with its own end tag", async () => {
     for (const page of [
       "<template><div>x</div></template><a rel=me href=x>",
       "<svg><path/></svg><template><template></template></template><a rel=me href=x>",
       "<TEMPLATE><div><span>t</span></div></TEMPLATE><a rel=me href=x>",
+      // Raw text in a template outside the table-structure modes is read alike.
+      "<template><style>a{}</style><script>b</script><title>t</title><textarea>u</textarea></template><a rel=me href=x>",
     ]) {
       expect(parse5RelMe(page)).toEqual(["x"]);
       expect(await scan(page)).toMatchObject({ relMe: ["x"], relMeInTemplate: false });
@@ -1156,13 +1135,9 @@ describe("scanHtml bounds", () => {
 });
 
 describe("scanHtml on hostile 1 MiB pages", () => {
-  const MiB = 1024 * 1024;
-  const fill = (unit: string, prefix = "", suffix = "") =>
-    prefix + unit.repeat(Math.floor((MiB - prefix.length - suffix.length) / unit.length)) + suffix;
-
   // Unclosed elements stay on lol-html's stack of open elements, and a start tag's attributes are charged to the same
   // memory budget (test/html-rewriter-facts.test.ts): past it the scan fails, whole.
-  it.each([
+  it.each<readonly [string, string, "memory" | "scanned" | ((scan: PageScan) => void)]>([
     ["deep nesting", fill("<div>", "", "<a rel=me href=deep>"), "memory"],
     ["150k unclosed rel=me anchors", fill("<a rel=me>"), "memory"],
     ["70k closed rel=me anchors", fill("<a rel=me></a>"), "scanned"],
@@ -1178,11 +1153,7 @@ describe("scanHtml on hostile 1 MiB pages", () => {
     ["80k metas", fill("<meta name=a>"), "scanned"],
     ["many JSON-LD scripts", fill('<script type="application/ld+json">{}</script>'), "scanned"],
     ["many titles", fill("<title>t</title>"), "scanned"],
-    ["an unclosed svg of <g/>", fill("<g/>", "<svg>"), "scanned"],
-    ["an svg of nested closed svgs, latched", fill("<svg></svg>", "<svg>"), "scanned"],
-    ["repeated closed svg regions", fill('<svg><path d="M0 0"/></svg>'), "scanned"],
-    ["repeated noscript regions", fill("<noscript><img src=x></noscript>"), "scanned"],
-    ["one 1 MiB noscript", fill("<img src=x>", "<noscript>", "</noscript>"), "scanned"],
+    ...Object.entries(REGION_FLOODS).map(([label, { page, check }]) => [label, page, check] as const),
   ])("stays within the caps on %s", { timeout: 60_000 }, async (_label, page, outcome) => {
     const bytes = encode(page);
     expect(bytes.byteLength).toBeLessThanOrEqual(MiB);
@@ -1191,7 +1162,11 @@ describe("scanHtml on hostile 1 MiB pages", () => {
       expect(result.failed).toBe(outcome);
       return;
     }
-    expect(outcome).toBe("scanned");
+    expect(outcome).not.toBe("memory");
+    // A region flood also checks the path it ran.
+    if (typeof outcome === "function") {
+      outcome(result);
+    }
     expect(result.relMe.length).toBeLessThanOrEqual(SCAN_LIMITS.relMe);
     expect(result.links.length).toBeLessThanOrEqual(SCAN_LIMITS.links);
     expect(result.metas.length).toBeLessThanOrEqual(SCAN_LIMITS.metas);
@@ -1210,22 +1185,6 @@ describe("scanHtml on hostile 1 MiB pages", () => {
     expect(result.work.elements).toBe(2 * 10_000 - 1);
     expect(result.work.elements).toBeGreaterThan(page.length / 3);
     expect(result).toMatchObject({ resumed: { svg: 0 } });
-  });
-
-  it("runs the region paths on the floods", { timeout: 60_000 }, async () => {
-    const closed = '<svg><path d="M0 0"/></svg>';
-    const svg = await scan(fill(closed));
-    expect(svg.resumed.svg).toBe(Math.floor(MiB / closed.length));
-    const region = "<noscript><img src=x></noscript>";
-    const noscript = await scan(fill(region));
-    expect(noscript.resumed.noscript).toBe(Math.floor(MiB / region.length));
-    // The </p> leaves svg, so the anchor is a candidate, refused inside the open region.
-    const unclosed = await scan(fill("<g/>", "<svg>", "</p><a rel=me href=x>"));
-    expect(unclosed).toMatchObject({ relMe: [], relMeAfterForeign: true, resumed: { svg: 0 } });
-    // The <svg>, every <g/>, and the anchor's two handlers ("svg *" and "a[rel]").
-    expect(unclosed.work.elements).toBe(1 + Math.floor((MiB - 5 - 21) / 4) + 2);
-    const long = await scan(fill("<img src=x>", "<noscript>", "</noscript><a rel=me href=x>"));
-    expect(long).toMatchObject({ relMe: [], relMeAfterNoscript: true, resumed: { noscript: 0 } });
   });
 
   // A tag within the attribute budget observed on this runtime: 32,766 extra attributes plus rel and href (32,768 in
