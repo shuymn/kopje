@@ -288,8 +288,6 @@ export const worldArb: fc.Arbitrary<World> = fc
       maxLength: 10,
     }),
     dismissals: fc.array(fc.record({ owner: fc.nat(), target: fc.nat() }), { maxLength: 3 }),
-    // Last, as above: a remote account's move to another account, half the time.
-    move: fc.option(fc.record({ from: fc.nat(), to: fc.nat() }), { freq: 2 }),
   })
   .map((raw): World => {
     const accounts: WorldAccount[] = [];
@@ -474,10 +472,9 @@ export const worldArb: fc.Arbitrary<World> = fc
         raw.dismissals.map((d) => ({ owner: d.owner % LOCALS, target: d.target % n })),
         (d) => `${d.owner}:${d.target}`,
       ),
-      moves: [raw.move].flatMap((m) => {
-        if (m === null) {
-          return [];
-        }
+      // A remote account's move to another account, drawn from bits already drawn (a new field would change the worlds
+      // the fixed seeds of the other properties give): with an odd number of blocks, from the first block's draw.
+      moves: (raw.blocks.length % 2 === 1 ? raw.blocks.slice(0, 1) : []).flatMap((m) => {
         const from = LOCALS + (m.from % raw.remotes.length);
         const others = accounts.flatMap((_, x) => (x === from ? [] : [x]));
         return [{ from, to: others[m.to % others.length] ?? 0 }];
