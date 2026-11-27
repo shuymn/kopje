@@ -240,11 +240,11 @@ settings page):
   image in another type or not of that shape, it is made again as a still of that shape.
 - For an uploaded header whose served file is animated, `header_static` is a still of at most 640 px on the long edge
   (the upload's preview), where Mastodon's is the GIF's own size, and only for a GIF (a 1200×700 GIF header's is
-  640 px wide here, its height as Images rounds it, and 1200×700 in Mastodon). An animated avatar's `avatar_static` is
-  a 400×400 still, as Mastodon's. Otherwise they equal `avatar` and `header`.
+  at most 640 px wide here, its height as Images rounds it, and 1200×700 in Mastodon). An animated avatar's
+  `avatar_static` is a 400×400 still, as Mastodon's. Otherwise they equal `avatar` and `header`.
 - A local animated WebP stays animated in `avatar` and `header` when the full image Images returns is an animated
-  WebP of its shape, where Mastodon flattens it to one frame. A still WebP of that shape is kept as Images returns it,
-  and output of another type or shape is made again as a still (above). An APNG is served as a still PNG, as Images
+  WebP of its shape, where Mastodon flattens it to one frame. A still WebP of that shape is kept as a still, and
+  output of another type or shape is made again as a still (above). An APNG is served as a still PNG, as Images
   makes animated output only as GIF or WebP.
 - A remote account's `avatar` and `header` are Kopje's cached copy on the instance's own origin (`/media/r/…`) once the
   cron has fetched it, and the remote URL until then or when no copy can be made, where Mastodon shows its own copy or
