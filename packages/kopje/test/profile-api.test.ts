@@ -390,6 +390,16 @@ describe("PATCH and PUT /api/v1/profile", () => {
     expect(sent.body).toMatchObject({ avatar_static: sent.body.avatar, avatar_description: "A cat", header: null });
   });
 
+  // The data URI cases of every body type: test/profile-images.test.ts, "update_credentials: data URIs".
+  it("takes a data URI avatar in a JSON body", async () => {
+    const codec = new TestCodec();
+    const { send } = await setup({ images: () => codec });
+    const sent = await send("PUT", { avatar: `data:image/png;base64,${PNG_PLAIN}`, avatar_description: "A cat" });
+    expect(sent.status).toBe(200);
+    expect(sent.body.avatar).toMatch(/^https:\/\/kopje\.test\/media\/[A-Za-z0-9_-]+\/full\.png$/);
+    expect(sent.body).toMatchObject({ avatar_description: "A cat", header: null });
+  });
+
   it("answers an invalid or under-scoped token without reading a multipart body", async () => {
     const { h } = await setup();
     // A stream that fails the test if the handler pulls it.

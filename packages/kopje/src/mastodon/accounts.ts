@@ -16,6 +16,7 @@ import type { Authorized, UserCredential } from "../domain/auth";
 import { DIRECTORY_DEFAULT_LIMIT, DIRECTORY_MAX_LIMIT } from "../domain/directory";
 import { PROFILE_IMAGES, type ProfileImage } from "../domain/media";
 import { MAX_RAW_LENGTH, noteLength } from "../domain/status-text";
+import { base64DataUriPayload, decodeRubyBase64 } from "../platform/data-uri";
 import { parseAddress } from "../platform/domain-name";
 import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageAccepted, SIGNATURE_BYTES } from "../platform/images";
 import { railsBlank } from "../platform/rails-blank";
@@ -292,20 +293,24 @@ function contentTypeProblems(kind: ProfileImage): Problem[] {
   ];
 }
 
-// The avatar and header files of a credentials form (multipart), checked as Paperclip validates them before anything
-// is reserved, each problem as Paperclip adds it (the content type's, then the size's: attachment_size_validator.rb
-// adds less_than to the image and then to its file size); or 'string' for a file parameter sent as a non-empty text
-// value (Paperclip has no handler for it: 400). An empty value reads as absent. Only a file's first bytes are read.
+// The avatar and header of a credentials form, checked as Paperclip validates them before anything is reserved, each
+// problem as Paperclip adds it (the content type's, then the size's: attachment_size_validator.rb adds less_than to the
+// image and then to its file size). Each is a file part, or a text value that is a base64 data URI, decoded as
+// Paperclip's adapter decodes it (platform/data-uri.ts) within the request's text bound (RES-1); any other non-empty
+// text value is 'string' (Paperclip has no handler for it: 400). An empty value reads as absent. Only a file part's
+// first bytes are read.
 export async function profileFiles(
   p: Params,
 ): Promise<{ images: Partial<Record<ProfileImage, File>>; problems: ImageProblems } | "string"> {
   const images: Partial<Record<ProfileImage, File>> = {};
   const problems: Record<ProfileImage, Problem[]> = { avatar: [], header: [] };
   for (const kind of PROFILE_IMAGES) {
-    if ((p.get(kind) ?? "") !== "") {
+    const text = p.get(kind) ?? "";
+    const payload = text === "" ? undefined : base64DataUriPayload(text);
+    if (text !== "" && payload === undefined) {
       return "string";
     }
-    const file = p.file(kind);
+    const file = payload === undefined ? p.file(kind) : new File([decodeRubyBase64(text, payload)], kind);
     if (file === undefined) {
       continue;
     }

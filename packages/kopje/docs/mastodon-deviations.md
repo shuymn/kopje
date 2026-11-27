@@ -217,10 +217,14 @@ A pull request that fixes a gap removes the exceptions that cite it.
 Profile credentials (`PATCH /api/v1/accounts/update_credentials`, `GET`, `PATCH` and `PUT /api/v1/profile`, the
 settings page):
 
-- `avatar` and `header` are multipart files only: a data URI or any other non-empty text value answers 400 (Paperclip
-  has no handler for it); an empty value reads as absent. Each file must be under 8 MB (8,388,608 bytes is refused)
-  and JPEG, PNG, GIF or WebP by its signature; AVIF is refused. The multipart body may be 17,858,560 bytes (1 MiB of
-  text plus two files and their part headers), its text at most 1 MiB in UTF-8 bytes.
+- `avatar` and `header` are multipart files, or a base64 data URI (`data:<type>;base64,…`) in a JSON, urlencoded,
+  multipart text or query value, decoded as Paperclip decodes it. The data URI is read within the request's 1 MiB of
+  text and answers 413 past it, so its image is at most about 786,000 bytes, where Mastodon takes one under 8 MB; a
+  larger image is sent as a multipart file. Beside a JSON body, a data URI in the query is bounded by Workers' 16 KB URL
+  limit. Any other non-empty text value answers 400 (Paperclip has no handler for it); an empty value reads as absent.
+  Each image must be under 8 MB (8,388,608 bytes is refused) and JPEG, PNG, GIF or WebP by its signature, whatever
+  type a data URI declares; AVIF is refused. The multipart body may be 17,858,560 bytes (1 MiB of text plus two files
+  and their part headers), its text at most 1 MiB in UTF-8 bytes.
 - Images are not cropped to 400×400 or capped at 1500×500; an image past 16,777,216 pixels answers 422, an error of
   `avatar` or `header` (Mastodon keeps the account unchanged and answers 200).
 - For an uploaded image whose served file is animated, `avatar_static` and `header_static` are a still of at most

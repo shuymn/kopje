@@ -184,4 +184,34 @@ describe("parameter shapes at the API's routes", () => {
       ]);
     }
   });
+
+  // A profile image's data URI at the body bound (mastodon/accounts.ts profileFiles, platform/data-uri.ts): a prefix
+  // that fails after a run of type characters, one that fails after the subtype's, and a payload decoded whole, which
+  // is no image.
+  it("recognizes and decodes a data URI at the text bound within its time bound", async () => {
+    const h = await community(["alice"]);
+    // `{"avatar":""}` is 13 bytes.
+    const fill = (prefix: string, unit: string) => `${prefix}${unit.repeat(API_BODY_LIMIT - 13 - prefix.length)}`;
+    const values = [fill("data:", "a"), fill("data:a/", "a"), fill("data:image/png;base64,", "A")];
+    const answers = [];
+    for (const avatar of values) {
+      const body = JSON.stringify({ avatar });
+      const start = performance.now();
+      const answer = await h.request(
+        "/api/v1/accounts/update_credentials",
+        bearer(h.users.alice.token, {
+          method: "PATCH",
+          body,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+      const elapsed = performance.now() - start;
+      answers.push([body.length, answer.status, elapsed < GENEROUS_MS]);
+    }
+    expect(answers).toEqual([
+      [API_BODY_LIMIT, 400, true],
+      [API_BODY_LIMIT, 400, true],
+      [API_BODY_LIMIT, 422, true],
+    ]);
+  });
 });
