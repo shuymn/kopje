@@ -9,7 +9,10 @@ import {
   type CollectionSync,
   MAX_SYNC_ATTEMPTS,
   type MoveOutcome,
-  PART_MOVED,
+  PART_COLLECTIONS,
+  PART_FEATURED,
+  PART_NETWORK,
+  PART_TAGS,
   SYNC_LEASE_MS,
   SYNC_RETRY_MS,
 } from "../src/domain/remote-collections";
@@ -109,13 +112,13 @@ async function claim(t: Setup, now = NOW): Promise<CollectionSync> {
   return sync;
 }
 
-// The read's end of `sync` with `parts` (every other part, by default) read and `move` as the move part's outcome.
+// The read's end of `sync` with `parts` (the four collection parts the Worker reports, by default) read and `move` as the move part's outcome.
 function complete(
   t: Setup,
   sync: CollectionSync,
   move: MoveOutcome | null,
   now = NOW,
-  parts = ALL_PARTS & ~PART_MOVED,
+  parts = PART_FEATURED | PART_NETWORK | PART_TAGS | PART_COLLECTIONS,
 ) {
   return t.store.completeCollectionRead(BUILD, {
     now,
