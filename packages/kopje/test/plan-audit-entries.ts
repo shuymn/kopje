@@ -1235,7 +1235,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     site: "src/domain/oauth.ts#pendingApps < src/domain/oauth.ts#<anonymous> in registerApp",
     disposition: "bounded",
     reason:
-      "the count reads at most PENDING_READ_CAP entries of the partial index (its LIMIT, src/domain/oauth.ts), also over a restored Store with more pending apps",
+      "the count reads at most PENDING_READ_CAP + 1 entries of the partial index (its LIMIT, src/domain/oauth.ts, and the web client's entry, which it passes over) and one settings seek, also over a restored Store with more pending apps",
     witness:
       'test/apps-budget.test.ts ("reads at most PENDING_READ_CAP pending apps and removes at most OAUTH_SWEEP_BATCH from a restored backlog")',
   },

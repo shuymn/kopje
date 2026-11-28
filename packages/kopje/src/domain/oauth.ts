@@ -80,10 +80,12 @@ export type RegisterAppInput = {
 // an app, or the budget could be filled for good. An authorized app is never counted or removed. If nothing can go, the
 // registration is refused (429). The web UI's own client is never counted or removed.
 //
-// A restored Store can hold more pending apps than the budget (a dump taken before 0086 leaves every app pending). One
-// registration removes at most OAUTH_SWEEP_BATCH of them, by both passes together, and reads at most PENDING_READ_CAP
-// pending apps in each count and in its unused pass; it answers 429 while the budget stays full, so the backlog goes
-// over several registrations.
+// A restored Store can hold more pending apps than the budget: upgrading a dump taken before 0086 leaves pending every
+// app that then held no user's code or token, and a later export carries that excess forward. One registration removes
+// at most OAUTH_SWEEP_BATCH of them, by both passes together, and reads at most PENDING_READ_CAP pending apps in each
+// count and in its unused pass; it answers 429 while the budget stays full, so the backlog goes over several
+// registrations. In such a Store the unused pass sees only the oldest PENDING_READ_CAP apps past the day, so eviction
+// can take older token holders before unused apps behind them.
 export const MAX_PENDING_APPS = 500;
 export const UNUSED_APP_TTL_MS = 24 * 60 * 60 * 1000;
 export const EVICTION_GRACE_MS = 60 * 60 * 1000;

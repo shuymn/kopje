@@ -350,8 +350,43 @@ describe("app registration budget (RES-6)", () => {
     },
   );
 
-  // RES-6: an app a user authorized stays registered after every token is gone, as Mastodon never removes one; a
-  // client that kept its client_id signs in with it again, and its statuses keep showing it.
+  // Both passes share one registration's OAUTH_SWEEP_BATCH: 250 unused apps go by the unused pass, and eviction gets
+  // only the 250 left, though 252 more would make room.
+  it("shares the 500-app limit when both passes remove apps", async () => {
+    const h = await apiHarness();
+    await fill(h.store, 250, NOW - 3 * UNUSED_APP_TTL_MS, "unused");
+    await fill(h.store, 751, NOW - 2 * UNUSED_APP_TTL_MS, "held");
+    await sql(
+      h.store,
+      "INSERT INTO oauth_tokens (token_hash, kind, client_id, scopes) SELECT 'a-' || id, 'access', id, 'read' FROM oauth_clients WHERE id LIKE 'held-%'",
+    );
+    expect((await h.request("/api/v1/apps", json(APP))).status).toBe(429);
+    expect(await count(h.store, "id LIKE 'unused-%'")).toBe(0);
+    expect(await count(h.store, "id = 'held-249'")).toBe(0);
+    expect(await count(h.store, "id = 'held-250'")).toBe(1);
+    expect(await count(h.store)).toBe(501);
+  });
+
+  // A restored Store's unused pass looks only at the oldest PENDING_READ_CAP apps past the day: behind 1,000 older token
+  // holders, two unused apps are not seen, and eviction takes the 500 oldest holders first.
+  it("evicts older token holders before unused apps it does not reach in a restored backlog", async () => {
+    const h = await apiHarness();
+    await fill(h.store, PENDING_READ_CAP, NOW - 3 * UNUSED_APP_TTL_MS, "held");
+    await sql(
+      h.store,
+      "INSERT INTO oauth_tokens (token_hash, kind, client_id, scopes) SELECT 'a-' || id, 'access', id, 'read' FROM oauth_clients",
+    );
+    await fill(h.store, 2, NOW - 2 * UNUSED_APP_TTL_MS, "unused");
+    expect((await h.request("/api/v1/apps", json(APP))).status).toBe(429);
+    expect(await count(h.store, "id LIKE 'unused-%'")).toBe(2);
+    expect(await count(h.store, `id = 'held-${OAUTH_SWEEP_BATCH - 1}'`)).toBe(0);
+    expect(await count(h.store, `id = 'held-${OAUTH_SWEEP_BATCH}'`)).toBe(1);
+    expect(await count(h.store, "id LIKE 'held-%'")).toBe(PENDING_READ_CAP - OAUTH_SWEEP_BATCH);
+  });
+
+  // RES-6: an app a user authorized stays registered after every token is gone, as Mastodon v4.7.5's cron removes no
+  // application and its registration evicts none; a client that kept its client_id signs in with it again, and its
+  // statuses keep showing it.
   it("keeps an app whose authorization was revoked past the sweep, and authorizes it again by the same client_id", async () => {
     const h = await apiHarness();
     await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
@@ -526,8 +561,9 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
   });
 
   // A restored Store's backlog of 10 × PENDING_READ_CAP pending apps, every one older than the day and holding an app
-  // token: each count reads up to its cap, the unused pass reads its cap of candidates and removes none, and eviction
-  // removes its OAUTH_SWEEP_BATCH, the registration's whole budget, and refuses. No read grows with the backlog.
+  // token, behind the web client, not yet authorized and the oldest of all, which every walk passes over: each count
+  // reads up to its cap, the unused pass reads its cap of candidates and removes none, and eviction removes its
+  // OAUTH_SWEEP_BATCH, the registration's whole budget, and refuses. No read grows with the backlog.
   it(
     "reads at most PENDING_READ_CAP pending apps and removes at most OAUTH_SWEEP_BATCH from a restored backlog",
     { timeout: 60_000 },
@@ -558,6 +594,11 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
             BACKLOG,
             NOW - 2 * UNUSED_APP_TTL_MS,
           );
+          await fill(h.store, 1, NOW - 3 * UNUSED_APP_TTL_MS, "web");
+          await sql(
+            h.store,
+            "INSERT OR REPLACE INTO instance_settings (name, value) VALUES ('web_client_id', 'web-0')",
+          );
           await sql(
             h.store,
             "INSERT INTO oauth_tokens (token_hash, kind, client_id, scopes) SELECT 'a-' || id, 'access', id, 'read' FROM oauth_clients",
@@ -565,7 +606,8 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
         },
       });
       expect(after.result).toEqual({ status: "over_budget" });
-      expect(await count(h.store)).toBe(BACKLOG - OAUTH_SWEEP_BATCH);
+      expect(await count(h.store, "id = 'web-0'")).toBe(1);
+      expect(await count(h.store)).toBe(BACKLOG + 1 - OAUTH_SWEEP_BATCH);
       expect(await count(h.store, `id = 'backlog-${OAUTH_SWEEP_BATCH - 1}'`)).toBe(0);
       expect(await count(h.store, `id = 'backlog-${OAUTH_SWEEP_BATCH}'`)).toBe(1);
       expectUnusedPassPlan(after.plans);
@@ -577,14 +619,15 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
         expect(statement.plan.join(" | "), statement.query).toMatch(/USING (?:COVERING )?INDEX oauth_clients_pending/);
         expect(scansOf(statement.plan, ["oauth_clients", "oauth_tokens", "u"]), statement.query).toEqual([]);
       }
-      // A count reads its cap of index entries (measured 1,000 each); the unused pass its cap of candidates and one seek
-      // of each one's tokens (2,002); eviction, for each of its OAUTH_SWEEP_BATCH apps, its index entry, its row by key,
-      // its index entries and its one token's row and index entries (5,000).
+      // A count reads its cap of index entries, the web client's besides, and the web client's setting (measured 1,002
+      // each); the unused pass the same entries and one seek of each candidate's tokens (2,004); eviction, for each of
+      // its OAUTH_SWEEP_BATCH apps, its index entry, its row by key, its index entries and its one token's row and index
+      // entries (5,002).
       for (const statement of counts) {
-        expect(statement.rows, statement.query).toBeLessThanOrEqual(PENDING_READ_CAP + 1);
+        expect(statement.rows, statement.query).toBeLessThanOrEqual(PENDING_READ_CAP + 2);
       }
       const [unusedPass, eviction] = deletes;
-      expect(unusedPass!.rows).toBeLessThanOrEqual(2 * PENDING_READ_CAP + 2);
+      expect(unusedPass!.rows).toBeLessThanOrEqual(2 * PENDING_READ_CAP + 4);
       expect(eviction!.rows).toBeLessThanOrEqual(10 * OAUTH_SWEEP_BATCH + 2);
     },
   );
