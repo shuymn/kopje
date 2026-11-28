@@ -1699,7 +1699,8 @@ describe("account moves", () => {
     await t.post(bob, follow(bob, DAVE_URI));
     await updated(t, bob, { ...bob.document, movedTo: carol.uri }, 1);
     expect(await movedTo(t.store, bob.uri)).toBe(carol.uri);
-    // Kopje does not fetch an unknown account to resolve it (Mastodon does).
+    // One naming an account Kopje does not hold clears it at once; the collection sync may fetch that account later
+    // (test/collection-move-fetch.test.ts).
     await updated(t, bob, { ...bob.document, movedTo: `${MASTODON}/users/unknown` }, 2);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
     await updated(t, bob, { ...bob.document, movedTo: bob.uri }, 3);

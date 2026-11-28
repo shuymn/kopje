@@ -444,7 +444,7 @@ describe("following an account while its move is being resolved", () => {
 
   it.each([
     ["the destination answers 404", 404],
-    ["the read is given up after MAX_SYNC_ATTEMPTS transient claims", 503],
+    ["the read is given up after transient failures exhaust the sync", 503],
   ] as const)("judges the follow as for any account once %s", async (_name, status) => {
     const { t, bobId, follow, edge, follows, settle } = await heldBob();
     t.web.fail(DEST, status);

@@ -22,9 +22,10 @@ import { readOperation, writeOperation } from "./operation";
 //   ends the hold.
 // - Eligibility, read live: both accounts available (R1), the remote account's inbox as a Follow or Accept selects it
 //   (enqueueActivity: its shared inbox, else its personal one, '' read as none) passes isDeliverableInbox and its host
-//   is not covered (inboxCovered), and the follow API's rule for a Follow (followableBySql) or inbound acceptance's
-//   for an Accept (the local account blocks neither the follower nor its domain; inbox.ts follow, unlock-accepts.ts).
-//   An ineligible hold is moved to the next check (HANDSHAKE_RECHECK_MS) and kept.
+//   is not covered (inboxCovered), and the follow API's rule for a Follow (followableBySql, and the target's move not
+//   being resolved, accounts.move_pending) or inbound acceptance's for an Accept (the local account blocks neither the
+//   follower nor its domain; inbox.ts follow, unlock-accepts.ts). An ineligible hold is moved to the next check
+//   (HANDSHAKE_RECHECK_MS) and kept.
 // - The handshake is recorded (recordOutbound); the hold ends only when that call inserted an intent with a target,
 //   and is otherwise moved to the next check as an ineligible one.
 //
