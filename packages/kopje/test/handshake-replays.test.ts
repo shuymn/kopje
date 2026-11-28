@@ -207,20 +207,42 @@ describe("a Follow refused at its claim (#1422)", () => {
     expect(sent.map((s) => [s.type, s.id])).toEqual([["Follow", uri]]);
   });
 
-  // R21 (followableBySql): a target that has moved since is not followed, so its hold waits as under a block.
-  it("is deferred while its target has moved, and sent once it has not", async () => {
+  // R21 (followableBySql): a target that has moved since is not followed, so its hold waits as under a block. A
+  // target whose move is being resolved (accounts.move_pending) is held as a moved one is, and sent once its move
+  // settles with nothing (its collection sync's final failure or give-up clears the bit and writes no move).
+  type TargetState = { set: () => Promise<unknown>; clear: () => Promise<unknown> };
+  it.each([
+    [
+      "its target has moved, and sent once it has not",
+      async (w: World, r: string): Promise<TargetState> => {
+        const c = await remoteAccount(w.h.store, "c", "remote.example");
+        return {
+          set: () => sql(w.h.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", c, r),
+          clear: () => sql(w.h.store, "UPDATE accounts SET moved_to_account_id = NULL WHERE id = ?", r),
+        };
+      },
+    ],
+    [
+      "its target's move is being resolved, and sent once it settles with nothing",
+      (w: World, r: string): Promise<TargetState> =>
+        Promise.resolve({
+          set: () => sql(w.h.store, "UPDATE accounts SET move_pending = 1 WHERE id = ?", r),
+          clear: () => sql(w.h.store, "UPDATE accounts SET move_pending = 0 WHERE id = ?", r),
+        }),
+    ],
+  ] as const)("is deferred while %s", async (_name, state) => {
     const w = await world();
     const { r, id, uri } = await aliceFollowsR(w);
-    const c = await remoteAccount(w.h.store, "c", "remote.example");
+    const target = await state(w, r);
     await suspend(w, r);
     expect(await drain(w.h.store)).toEqual([]);
     await lift(w, r);
-    await sql(w.h.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", c, r);
+    await target.set();
     expect(await replays(w.h.store, NOW + RECHECK)).toEqual({ pending: false, delivers: false });
     expect(await holds(w.h.store)).toEqual([{ follow_id: id, check_at: NOW + 2 * RECHECK, attempts: 0 }]);
     expect(await edge(w.h.store, w.alice.id, r)).toMatchObject({ state: "pending", uri });
     expect(await intents(w.h.store, "Follow")).toEqual([]);
-    await sql(w.h.store, "UPDATE accounts SET moved_to_account_id = NULL WHERE id = ?", r);
+    await target.clear();
     const at = NOW + 2 * RECHECK;
     expect(await replays(w.h.store, at)).toEqual({ pending: false, delivers: true });
     expect(await holds(w.h.store)).toEqual([]);
@@ -228,26 +250,6 @@ describe("a Follow refused at its claim (#1422)", () => {
     expect((await drain(w.h.store, at)).map((s) => [s.type, s.id])).toEqual([["Follow", uri]]);
     expect(await replays(w.h.store, at + RECHECK)).toEqual({ pending: false, delivers: false });
     expect(await drain(w.h.store, at + RECHECK)).toEqual([]);
-  });
-
-  // A target whose move is being resolved (accounts.move_pending) is held as a moved one is, and sent once its move
-  // settles with nothing (its collection sync's final failure or give-up clears the bit and writes no move).
-  it("is deferred while its target's move is being resolved, and sent once it settles with nothing", async () => {
-    const w = await world();
-    const { r, id, uri } = await aliceFollowsR(w);
-    await suspend(w, r);
-    expect(await drain(w.h.store)).toEqual([]);
-    await lift(w, r);
-    await sql(w.h.store, "UPDATE accounts SET move_pending = 1 WHERE id = ?", r);
-    expect(await replays(w.h.store, NOW + RECHECK)).toEqual({ pending: false, delivers: false });
-    expect(await holds(w.h.store)).toEqual([{ follow_id: id, check_at: NOW + 2 * RECHECK, attempts: 0 }]);
-    expect(await edge(w.h.store, w.alice.id, r)).toMatchObject({ state: "pending", uri });
-    expect(await intents(w.h.store, "Follow")).toEqual([]);
-    await sql(w.h.store, "UPDATE accounts SET move_pending = 0 WHERE id = ?", r);
-    const at = NOW + 2 * RECHECK;
-    expect(await replays(w.h.store, at)).toEqual({ pending: false, delivers: true });
-    expect(await holds(w.h.store)).toEqual([]);
-    expect((await drain(w.h.store, at)).map((s) => [s.type, s.id])).toEqual([["Follow", uri]]);
   });
 
   it("ends with an unfollow while the account is suspended: the Undo goes, and nothing is replayed (W5)", async () => {
