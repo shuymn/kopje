@@ -242,9 +242,7 @@ describe("arming remote field links at a store", () => {
           storeNow: NOW,
           origin: ORIGIN,
           actorUri: URI,
-          actor: actor([property(link(A))], {
-            raw: JSON.stringify({ id: URI, attachment: [property(link(A))], movedTo: target }),
-          }),
+          actor: actor([property(link(A))]),
           actorRevision: actorState(new Db(state.storage.sql), URI).revision,
           activity: {
             type: "Move",

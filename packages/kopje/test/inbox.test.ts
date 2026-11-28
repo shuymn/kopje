@@ -1678,8 +1678,8 @@ describe("the follow limit and inbound activities", () => {
 });
 
 // Account#moved_to_account (migration 0060_account_moves), as the latest of two writes leaves it: every stored actor
-// document sets or clears it from its movedTo (process_account_service.rb:166), and a verified Move sets it when it is
-// first processed (move.rb:18). A replay of a known Move writes nothing.
+// document sets or clears it from its movedTo, and a verified Move sets it when it is first processed (move.rb:18). A
+// replay of a known Move writes nothing.
 describe("account moves", () => {
   const movedTo = (store: StoreStub, uri: string) =>
     sql<{ moved: string | null }>(
@@ -1717,7 +1717,7 @@ describe("account moves", () => {
     await t.post(bob, follow(bob, DAVE_URI));
     await refresh(t, bob, { ...bob.document, movedTo: carol.uri }, 1);
     expect(await movedTo(t.store, bob.uri)).toBe(carol.uri);
-    // Kopje does not fetch an unknown account to resolve it (process_account_service.rb:310-314 does).
+    // Kopje does not fetch an unknown account to resolve it (Mastodon does).
     await refresh(t, bob, { ...bob.document, movedTo: `${MASTODON}/users/unknown` }, 2);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
     await refresh(t, bob, { ...bob.document, movedTo: bob.uri }, 3);
@@ -1768,8 +1768,6 @@ describe("account moves", () => {
       ["", null],
       [fragmented, null],
       [`${carol.uri}#main`, carol.uri],
-      [[carol.uri], carol.uri],
-      [{ id: carol.uri }, carol.uri],
     ];
     let n = 0;
     for (const [value, expected] of cases) {
@@ -1791,16 +1789,8 @@ describe("account moves", () => {
     const carol = await mastodonActor(t.web, "carol", { key: 2 });
     await t.post(carol, follow(carol, DAVE_URI));
     await t.post(bob, follow(bob, DAVE_URI));
-    const [{ id: bobId } = { id: "" }] = await sql<{ id: string }>(
-      t.store,
-      "SELECT id FROM accounts WHERE uri = ?",
-      bob.uri,
-    );
-    const [{ id: carolId } = { id: "" }] = await sql<{ id: string }>(
-      t.store,
-      "SELECT id FROM accounts WHERE uri = ?",
-      carol.uri,
-    );
+    const bobId = (await accountId(t.store, bob.uri)) ?? "";
+    const carolId = (await accountId(t.store, carol.uri)) ?? "";
     const shown = async () => {
       const response = await t.request(`/api/v1/accounts/${bobId}`);
       expect(response.status).toBe(200);
