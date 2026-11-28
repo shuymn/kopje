@@ -389,6 +389,9 @@ const SAFE_INTERPOLATIONS = new Set([
   "filterTextBoundSql",
   "followableBySql",
   "followListsShownSql",
+  // R21 for a Move's transfer, whether its target has moved or has a move being resolved: a predicate
+  // (domain/audience.ts).
+  "moveTargetHeldSql",
   // R1's account reads, whether the account is found: a predicate (domain/audience.ts).
   "foundSql",
   "hidesCollectionsSql",

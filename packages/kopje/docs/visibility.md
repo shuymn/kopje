@@ -1106,9 +1106,10 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   `Follow`'s id is `follows.uri`, an `Accept`'s derives from the `Follow` it answers, or from the follow's id without
   one) only when, read live, both accounts are available (R1), the inbox an activity without `to` selects (the shared
   inbox, else the personal one, `''` read as none) is a deliverable URL whose host no block covers, and the follow API's
-  rule (`followableBySql`, and no move of the target being resolved) holds for a `Follow`, or inbound acceptance's (the local account blocks neither the follower
-  nor its domain) for an `Accept`. The hold ends only once that recording inserted an intent with a target; otherwise it
-  moves to its next check. A replayed `Accept` is the pair's current answer (NET-2).
+  rule (`followableBySql`, and no move of the target being resolved) holds for a `Follow`, or inbound acceptance's (the
+  local account blocks neither the follower nor its domain) for an `Accept`. The hold ends only once that recording
+  inserted an intent with a target; otherwise it moves to its next check. A replayed `Accept` is the pair's current
+  answer (NET-2).
 - **The boundary.** No `Follow`, `Accept`, or `Reject` of a request that withdraws nothing is confirmed for sending
   while its recipient is unavailable (a retraction, a `Reject` that withdraws an accepted follow included, is exempt);
   a POST confirmed before an unavailability commits may still finish, as for any row. Once its replay records it, a
