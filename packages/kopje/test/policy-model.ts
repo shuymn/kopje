@@ -143,12 +143,6 @@ export class PolicyModel {
     return this.world.moves.some((m) => m.from === x);
   }
 
-  // Whether x's move is being resolved (accounts.move_pending), which only R39 reads among the world's rules: the
-  // follow API holds such a follow apart from R21 (test/account-moved.test.ts).
-  pending(x: number): boolean {
-    return this.world.pending.includes(x);
-  }
-
   // R1's account reads: an account is found by id or address unless it is a remote account whose deletion has started;
   // a suspended or covered account is found (and shown redacted).
   accountFound(x: number): boolean {
@@ -294,7 +288,9 @@ export class PolicyModel {
       x !== viewer &&
       discoverable(x) &&
       !this.moved(x) &&
-      !this.pending(x) &&
+      // A move being resolved (accounts.move_pending), which only R39 reads among the world's rules: the follow API
+      // holds such a follow apart from R21 (test/account-moved.test.ts).
+      !this.world.pending.includes(x) &&
       !this.world.follows.some((f) => f.from === viewer && f.to === x) &&
       !this.world.dismissals.some((d) => d.owner === viewer && d.target === x) &&
       this.listedFor(x, viewer);
