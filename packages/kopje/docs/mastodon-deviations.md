@@ -1736,10 +1736,12 @@ Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, a
 - In a status's, an account's or a moved-to account's snapshot, only the first 16 snapshot positions with a valid
   cached pair show their cached copy; an entry at a later position, or with no valid pair, keeps its remote URLs.
   Reading more with each row would pass the Store's memory bound for a page.
-- A snapshot is presented in its stored order. Each entry's URL is normalized again, and an entry whose URL no longer
-  passes is dropped. A moved-to account keeps only the entries its display name, cut at 100 code points, references.
+- A snapshot is presented in its stored order. Each entry considered has its URL normalized again, and an entry whose
+  URL no longer passes is dropped. A moved-to account keeps only the entries its display name, cut at 100 code points, references.
   An entry at one of the first 16 positions with a valid cached pair takes its cached URLs. The entries are then shown
-  up to the first whose JSON, measured with the URLs it shows, would pass the presenter's byte bound, and at most 64.
+  until adding the next, measured with the URLs it shows, would take the array past the presenter's byte bound, and at
+  most 64. A poll shows those of the status's presented entries its options reference, so an entry past the status's
+  cut is missing from the poll even when it alone would fit.
   The bound is 12,288 bytes for a status, its poll and an edit-history version, 6,144 for an account and 2,048 for a
   moved-to account. Mastodon lists the emoji it resolves, each with its own copy, with no byte bound.
 - A stored snapshot can show fewer entries than it holds: once its emoji are cached, where the cached URLs are longer
