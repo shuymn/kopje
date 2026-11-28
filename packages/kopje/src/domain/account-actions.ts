@@ -478,8 +478,7 @@ export const answerFollowRequest = userWriteOperation<
 });
 
 // The answer to one pending follow of `viewerId` by `requesterId`, as POST /api/v1/follow_requests/:id/authorize and
-// /reject run it, and as the unlock job (unlock-accepts.ts) authorizes each request. It writes no follow
-// notification: answerFollowRequest does, and the unlock job writes none, as Mastodon's AuthorizeFollowWorker.
+// /reject run it, and as the unlock job (unlock-accepts.ts) authorizes each request.
 export function answerPendingFollow(
   db: Db,
   viewerId: string,

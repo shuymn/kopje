@@ -15,11 +15,9 @@ import { writeOperation } from "./operation";
 // - Each step is its own write transaction (Store.runUnlockAccepts runs UNLOCK_ACCEPTS_PER_ROUND of them per round): it
 //   reads the job and the next pending request past the cursor, advances the cursor past it, and authorizes it through
 //   answerPendingFollow, the answer POST /api/v1/follow_requests/:id/authorize gives, with its cost, delivery
-//   admission and counter recount but without that route's follow notification (AuthorizeFollowWorker writes none,
-//   app/workers/authorize_follow_worker.rb), in its own savepoint (isolated): an authorization that
-//   throws is rolled back alone and logged (kopje.jobs.step.failed), and its request stays pending, which the account
-//   can still authorize by hand, while the cursor's advance commits. Every step that reads makes progress: it advances
-//   or clears the cursor.
+//   admission and counter recount, in its own savepoint (isolated): an authorization that throws is rolled back alone
+//   and logged (kopje.jobs.step.failed), and its request stays pending, which the account can still authorize by hand,
+//   while the cursor's advance commits. Every step that reads makes progress: it advances or clears the cursor.
 // - An unavailable requester (R1) or one the account blocks, or whose domain it blocks (R21, blockedSql's terms), is
 //   passed over and stays pending.
 // - The cursor is compared and advanced in SQL (ids read as text and bound back with CAST), never through a JS number.
@@ -72,7 +70,8 @@ export const unlockAcceptStep = writeOperation<{ now: number }, UnlockStep>((db,
   }
   const remote = db.first("SELECT 1 AS remote FROM accounts WHERE id = ? AND domain IS NOT NULL", request.requester);
   // The cursor's advance above commits whatever the authorization does: one that throws is rolled back alone and
-  // passed over, its request left pending for the account to answer (RES-5).
+  // passed over, its request left pending for the account to answer (RES-5). It writes no follow notification, which
+  // the authorize route adds: Mastodon's AuthorizeFollowWorker writes none (app/workers/authorize_follow_worker.rb).
   const answered = isolated(db, () => answerPendingFollow(db, job.account_id, request.requester, "authorize", now));
   if (!answered.ok) {
     console.error({ event: "kopje.jobs.step.failed", family: "unlock_accepts", ...errorFields(answered.error) });
