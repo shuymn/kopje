@@ -1005,6 +1005,18 @@ describe("POST /authorize_interaction (look-up)", () => {
     expect(t.jobs).toHaveBeenCalledTimes(1);
   });
 
+  it("asks for a jobs round at once for a status's author it leaves with a pending move", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    t.web.serve(t.bob.uri, { ...t.bob.document, movedTo: "https://other.example/users/dest" });
+    const note = servedNote(t);
+    expect((await lookUp(t, browser, note.id)).html).toContain("the note");
+    expect(await sql(t.store, "SELECT move_pending FROM accounts WHERE uri = ?", t.bob.uri)).toEqual([
+      { move_pending: 1 },
+    ]);
+    expect(t.jobs).toHaveBeenCalledTimes(1);
+  });
+
   // ID-7: the look-up's fetch of a status Kopje stores is applied as its author's Update, as search resolution's
   // (storeResolved; test/search-refetch.test.ts), Mastodon's ResolveURLService serving both.
   it("applies a newer version of a stored status it finds again", async () => {

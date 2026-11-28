@@ -75,6 +75,55 @@ describe("the doorbell for a pending move", () => {
     expect(rang(t)).toBe(moved);
   });
 
+  // The sender's key misses, so its fresh document is stored (pending) by the first Store call, which asks for the
+  // boosted note; the next call, under the revision read before that store, uses the stored sender. The ring the
+  // first call asked for is kept.
+  it("rings for the sender a first Store call left pending, after a later call that rings for none", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const rotated = await mastodonActor(t.web, "bob", { key: 2 });
+    t.web.serve(rotated.uri, { ...rotated.document, movedTo: DEST });
+    const carol = await actor(t, "carol", 3, false);
+    const note = mastodonNote(carol);
+    t.web.serve(note.id, { "@context": AS, ...note });
+    t.queue.pending.length = 0;
+    expect(await t.post(rotated, announce(rotated, note.id))).toBe(202);
+    expect(await pending(t, bob.uri)).toBe(1);
+    expect(rang(t)).toBe(true);
+  });
+
+  // A stale pending author is refetched: one whose refetch answers 404 stores nothing, so nothing rings; the control
+  // stores it again, still pending.
+  it.each([
+    ["rings for none when the refetch stores nothing", 404],
+    ["rings when the refetch stores it", 200],
+  ] as const)("the inbox's stale pending author %s", async (_name, status) => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const carol = await actor(t, "carol", 2, true);
+    await t.post(carol, {
+      "@context": AS,
+      id: `${carol.uri}#follows/1`,
+      type: "Follow",
+      actor: carol.uri,
+      object: DAVE_URI,
+    });
+    expect(await pending(t, carol.uri)).toBe(1);
+    await sql(t.store, "UPDATE accounts SET fetched_at = '2000-01-01T00:00:00.000Z' WHERE uri = ?", carol.uri);
+    const note = mastodonNote(carol);
+    t.web.serve(note.id, { "@context": AS, ...note });
+    if (status === 404) {
+      t.web.fail(carol.uri, 404);
+    }
+    t.queue.pending.length = 0;
+    const from = t.web.fetched.length;
+    expect(await t.post(bob, announce(bob, note.id))).toBe(202);
+    expect(t.web.fetched.slice(from)).toContain(carol.uri);
+    expect(rang(t)).toBe(status === 200);
+  });
+
   it.each([
     ["rings for a pending target", true],
     ["rings for none otherwise", false],

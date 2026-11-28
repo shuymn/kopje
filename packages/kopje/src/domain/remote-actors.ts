@@ -654,7 +654,7 @@ export function staleAccount(db: Db, id: string, now: number): boolean {
 // when the refetch was decided (DocumentRevision), and a superseded one stores nothing ('current', the stored row).
 // While it is stale:
 //   - a usable document of this actor (ok) is stored (upsertRemoteActor) while `expected` holds: 'refreshed', frozen if
-//     it stored nothing;
+//     it stored nothing, movePending as the store left it (StoredActor);
 //   - 'gone' (404 or 410) writes nothing, and nothing is stored under the account ('refused'), as for an author that
 //     cannot be fetched;
 //   - any other failure (null: unusable, another id, or one that may pass, budget and deadline included) stamps
@@ -668,8 +668,10 @@ export function applyRefresh(
   origin: string,
   now: number,
   expected: DocumentRevision,
-): { kind: "current" | "refreshed" | "stamped"; author: RemoteRow; frozen: boolean } | { kind: "refused" } {
-  const current = { kind: "current", author, frozen: false } as const;
+):
+  | { kind: "current" | "refreshed" | "stamped"; author: RemoteRow; frozen: boolean; movePending: boolean }
+  | { kind: "refused" } {
+  const current = { kind: "current", author, frozen: false, movePending: false } as const;
   if (!staleAccount(db, author.id, now)) {
     return current;
   }
@@ -682,11 +684,13 @@ export function applyRefresh(
       author.id,
       new Date(now).toISOString(),
     );
-    return { kind: "stamped", author, frozen: false };
+    return { kind: "stamped", author, frozen: false, movePending: false };
   }
   const stored = upsertRemoteActor(db, document, origin, now, expected);
   if (stored === "superseded") {
     return current;
   }
-  return stored === undefined ? { kind: "refused" } : { kind: "refreshed", author: stored, frozen: stored.frozen };
+  return stored === undefined
+    ? { kind: "refused" }
+    : { kind: "refreshed", author: stored, frozen: stored.frozen, movePending: stored.movePending };
 }

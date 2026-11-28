@@ -1224,11 +1224,12 @@ type Application = {
 async function apply(deps: InboundDeps, application: Application): Promise<InboxOutcome> {
   const { target, actorUri, actor, origin, loaders, state, budget, states } = application;
   const activity = application.activity;
-  // Whether a deletion a 410 started (actor-gone.ts) left its purge a batch: the answer asks for a round.
-  let goneJobs = false;
+  // Whether a deletion a 410 started (actor-gone.ts) left its purge a batch, or a Store call's answer asked for a round
+  // (jobsPending, kept from a call that committed whatever a later one answers): the answer asks for a round.
+  let jobsDue = false;
   const settle: SettleGone = async (fetched, uri, revision) => {
     const gone = await application.settle(fetched, uri, revision);
-    goneJobs ||= gone.jobsPending;
+    jobsDue ||= gone.jobsPending;
     return gone;
   };
   const ready = await prepare(activity, target, actorUri, origin, loaders, states.target, deps.domain, settle);
@@ -1270,6 +1271,7 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
         prefetched,
       }),
     );
+    jobsDue ||= result.jobsPending;
     const need = result.need;
     if (need === undefined) {
       break;
@@ -1307,7 +1309,7 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
     );
     rethrowStoreError(state);
     if (fetched === "transient" && !(need.kind === "actor" && need.refresh === true)) {
-      return { status: 503, reason: "object-unavailable", jobsPending: goneJobs };
+      return { status: 503, reason: "object-unavailable", jobsPending: jobsDue };
     }
     if (need.kind === "status") {
       prefetched.statuses[need.uri] = fetched as Prefetched["statuses"][string];
@@ -1322,15 +1324,15 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
     result = undefined;
   }
   if (result === undefined) {
-    return { status: 202, reason: "too-many-fetches", jobsPending: goneJobs };
+    return { status: 202, reason: "too-many-fetches", jobsPending: jobsDue };
   }
   if (result.retry === true) {
-    return { status: 503, reason: result.reason, jobsPending: goneJobs };
+    return { status: 503, reason: result.reason, jobsPending: jobsDue };
   }
   return {
     status: 202,
     reason: result.reason,
-    jobsPending: goneJobs || result.jobsPending,
+    jobsPending: jobsDue,
     delivers: result.delivers === true,
   };
 }
