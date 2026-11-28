@@ -1975,9 +1975,9 @@ describe("account moves", () => {
   });
 
   // Move admission (moveTargetHeldSql): a target that has itself moved, or whose move is being resolved
-  // (accounts.move_pending: its fresh document names, as its movedTo, an account Kopje does not hold), is held, so the
-  // job covers no follower (bound '0'), not only R21's refusal of each: the follower keeps the source and its lists and
-  // nothing is sent (Mastodon's UnfollowFollowWorker rescues FollowService's NotPermittedError; the pending transfer
+  // (accounts.move_pending: its fresh document names, as its movedTo, a fetchable account Kopje does not hold), is held,
+  // so the job covers no follower (bound '0'), not only R21's refusal of each: the follower keeps the source and its
+  // lists and no Follow or Undo(Follow) is sent (Mastodon's UnfollowFollowWorker rescues FollowService's NotPermittedError; the pending transfer
   // cannot wait for the collection sync that resolves it). The source's move is set and blocks and mutes are carried
   // in every case (move_worker.rb:21-22). The Move stores the target's fetched document first, so whether the target
   // has moved is its literal movedTo's reading (collection-requests.ts namedMove): a relative one names no account,
@@ -2130,7 +2130,9 @@ describe("account moves", () => {
     expect((await follows(t.store)).filter((f) => f.account_id === ALICE)).toEqual([
       { account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null },
     ]);
-    expect(await sql(t.store, "SELECT 1 FROM inbound_jobs WHERE kind = 'move' AND done_at IS NULL")).toEqual([]);
+    expect(
+      await sql(t.store, "SELECT bound, done_at IS NOT NULL AS done FROM inbound_jobs WHERE kind = 'move'"),
+    ).toEqual([{ bound: "0", done: 1 }]);
   });
 
   it("names no account being purged, by a document or by a Move", async () => {

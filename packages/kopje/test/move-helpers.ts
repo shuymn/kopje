@@ -26,8 +26,9 @@ export function moveState(t: Setup, uri: string): Promise<MoveState | undefined>
   ).then((rows) => rows[0]);
 }
 
-// Bob, stored (followed by alice, who signs his collections) with a document whose movedTo names DEST; and the
-// destination served. Bob's collections answer 404, so his other parts read through at once.
+// Bob, stored (followed by alice, who signs his collections) with a document whose movedTo names DEST unless the
+// caller names another; and the destination served. By default Bob's collections answer 404, so his other parts read
+// through at once.
 export async function pendingBob(
   t: Setup,
   options: { movedTo?: string; extra?: Record<string, unknown> } = {},
