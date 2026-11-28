@@ -11,7 +11,7 @@ catalog:
   blurhash: 2.0.5
   entities: 9.0.0
   es-toolkit: 1.53.2
-  hono: 4.13.21
+  hono: 4.13.22
   htmlparser2: 12.0.0
   jose: 6.2.18
   linkify-it: 6.1.0
@@ -40,7 +40,7 @@ catalog:
   # Tests: the runner, its coverage provider and its vite, property tests, the browser job, image fixtures, the HTML,
   # CSS and source scans, the Markdown the docs checks read, and the canonicalization Mastodon's signature fixtures hash
   # (jsonld: the copy @fedify/fedify resolves).
-  "@axe-core/playwright": 4.14.0
+  "@axe-core/playwright": 4.14.1
   "@jsquash/webp": 1.5.0
   "@playwright/test": 1.65.1
   "@vitest/coverage-v8": 5.1.1
@@ -67,7 +67,7 @@ catalog:
 
   # TypeScript and type packages.
   "@types/css-tree": 3.2.0
-  "@types/node": 26.6.6
+  "@types/node": 26.6.7
   "@types/sanitize-html": 2.16.2
   typescript: 7.0.2
 
