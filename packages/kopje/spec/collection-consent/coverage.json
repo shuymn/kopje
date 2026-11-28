@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "c02dfedb078d84f3ca5214b6a5bde32dfb8b957b",
+  "confirmed": "3c04e2a658ed684248f65167b76ce3fa6c2859d7",
   "files": [
     {
       "path": "src/store.ts",
@@ -57,7 +57,7 @@
       "path": "src/domain/remote-collections.ts",
       "functions": ["claimCollectionSync", "endRound", "roundAccount", "completeCollectionRead"],
       "spec": "CollectionConsent.tla KClaim, KApply, KLease and KStale: a read's claim (a new token; the request kept until a completion reads it through), its completion, its outdated check and its claim token, which only a new claim replaces (a lease's end alone fences nothing)",
-      "blob": "36680f11ab2a105066d5eb524000bc14ea22b671"
+      "blob": "de75712609c74980eaf1f48c30cf2a654109b4ce"
     },
     {
       "path": "src/federation/collections.ts",
