@@ -10,15 +10,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
-- A status text search with `account_id` (`GET /api/v2/search?type=statuses&account_id=`) of another account now
-  returns only its statuses the viewer boosted, favourited, bookmarked, voted in or is mentioned in, and its public
-  statuses when the account is indexable, as Mastodon's search does. The viewer's own interactions with that account
-  are found among the viewer's newest 2,500 of each kind even when they are older than the account's newest 2,500
-  posts. For an account that is not indexable, the same request returns fewer statuses than before: no public,
-  unlisted or private status outside the viewer's interactions, and none the viewer is only addressed in. For an
-  indexable account, it returns no unlisted or private status outside them. A client paging by the returned ids can
-  stop before a public status of an indexable account that it reached before, when the account's 2,500 posts in
-  between hold no match it may search. A status the request finds can also lie past the offset of 10,000 a client may
+- A status text search with `account_id` (`GET /api/v2/search?type=statuses&account_id=`) of another account now returns
+  only its statuses the viewer boosted, favourited, bookmarked, voted in or is mentioned in, and its public statuses
+  when the account is indexable, as Mastodon's search does. The viewer's own interactions with that account are found
+  among the viewer's newest 2,500 of each kind even when they are older than the account's newest 2,500 posts. For an
+  account that is not indexable, the same request returns fewer statuses than before: no public, unlisted or private
+  status outside the viewer's interactions, and none the viewer is only addressed in. For an indexable account, it
+  returns no unlisted or private status outside them. When 2,500 newer matching posts of an indexable account that the
+  viewer may see but never interacted with fill the account's window, a request can return only an older status the
+  viewer interacted with, and paging by its id passes a public status between them that a client reached before by
+  paging through those newer posts. A status the request finds can also lie past the offset of 10,000 a client may
   request. A search of the viewer's own account, a search without `account_id`, and URL resolution are unchanged
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials).
 
