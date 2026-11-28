@@ -493,6 +493,43 @@ describe("the proof round (need proof)", () => {
   });
 });
 
+// The sender's key misses, so the first Store call stores its fresh document, which leaves its move pending, and asks
+// for the proof; the proof's fetch of that document then fails for now (the Store's answer names a signer here, so the
+// proof is fetched with loaders of its own rather than from the request's memo). The 503 still asks for the jobs round
+// the committed store needs.
+describe("the jobs round a proof that cannot be verified now leaves", () => {
+  it("is asked for when the first Store call stored the sender with a pending move", async () => {
+    const w = await world();
+    const { o } = await boosted(w);
+    const stub = new Proxy(w.t.store, {
+      get: (target, name) => {
+        const value = Reflect.get(target, name) as unknown;
+        if (name !== "receiveActivity" || typeof value !== "function") {
+          return value;
+        }
+        return async (...args: Parameters<StoreStub["receiveActivity"]>) => {
+          const answer = await target.receiveActivity(...args);
+          return answer.need?.kind === "proof" ? { ...answer, need: { ...answer.need, signer: "instance" } } : answer;
+        };
+      },
+    });
+    const h = harness(stub, {}, undefined, { keygen: fixtureKeyGen, loader: w.t.web.loader }, () => w.clock.now);
+    const rotated = await mastodonActor(w.t.web, "bob", { key: 2 });
+    w.t.web.serve(rotated.uri, { ...rotated.document, movedTo: `${OTHER}/users/dest` });
+    const body = await ldSigned(deletion(rotated, o.uri), rotated);
+    const gate = w.t.web.hold(rotated.uri, { snapshot: true });
+    const posted = h.request("/inbox", await signedInit(rotated, "/inbox", body, { at: w.clock.now }));
+    await gate.reached;
+    w.t.web.fail(rotated.uri, 503);
+    gate.release();
+    expect((await posted).status).toBe(503);
+    expect(await sql(w.t.store, "SELECT move_pending FROM accounts WHERE uri = ?", rotated.uri)).toEqual([
+      { move_pending: 1 },
+    ]);
+    expect(h.queue.pending.some((message) => (message.body as { kind?: string }).kind === "inbound-jobs")).toBe(true);
+  });
+});
+
 // An imported local boost by alice of bob's boost `uri` (Kopje writes none: #1247), kept and public.
 async function importedBoostOf(w: World, uri: string): Promise<void> {
   await sql(
