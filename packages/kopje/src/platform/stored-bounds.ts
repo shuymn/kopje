@@ -1097,8 +1097,9 @@ export const MOVED_TO_INDEX = "accounts_moved_to";
 
 // ---- Pending moves: migration 0125_account_move_pending
 
-// accounts.move_pending: 1 while a remote account's stored document names, as its movedTo, a destination Kopje has
-// neither stored nor settled, which its collection sync fetches (domain/remote-collections.ts), else 0. True when `NEW`
+// accounts.move_pending: 1 while a remote account's move is work left to its collection sync: its stored document
+// names, as its movedTo, a destination Kopje did not hold when the document was stored, which the sync's next read
+// claim takes with no fetch if it was stored since, else fetches (domain/remote-collections.ts); else 0. True when `NEW`
 // holds anything else, judged in order: the storage class, the value, then the row (1 only on a remote row whose
 // moved_to_account_id is NULL).
 export function movePendingPastBoundSql(row: string): string {

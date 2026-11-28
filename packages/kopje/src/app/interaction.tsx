@@ -163,7 +163,7 @@ export function interactionRoutes(deps: InteractionDeps): Hono<WebEnv> {
     }
     // The stored status's quote is verified by the job rounds (federation/quotes.ts), and a pending move resolved by the
     // account's collection sync, as after search resolution.
-    if (result.value.quotesDue || result.value.movePending === true) {
+    if (result.value.jobsPending) {
       requestJobsSoon(c, deps);
     }
     const found = result.value.target;
@@ -194,9 +194,9 @@ export function interactionRoutes(deps: InteractionDeps): Hono<WebEnv> {
     if (result.status !== "ok") {
       return toLogin(c, target, result.status);
     }
-    const { outcome, account } = result.value;
+    const { outcome, account, jobsPending } = result.value;
     // The account's move is resolved by its collection sync in a jobs round, as after the follow API's 503.
-    if (outcome === "pending") {
+    if (jobsPending) {
       requestJobsSoon(c, deps);
     }
     // A follow or request may have recorded a Follow to deliver: ring once it has committed, as app.ts does after an

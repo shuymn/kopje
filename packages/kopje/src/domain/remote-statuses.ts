@@ -1047,14 +1047,13 @@ export type ResolveInput = {
   present: PresentInput;
 };
 
-// quotesDue: the status found has a quote whose verification is due; movePending: the account resolved, or the status's
-// author, is left with a pending move (remote-collections.ts). Either way the Worker asks the Queue for a job round.
+// jobsPending: the status found has a quote whose verification is due, or the account resolved, or the status's author,
+// is left with a pending move (remote-collections.ts): the Worker asks the Queue for a job round.
 export type ResolveResult = {
   accounts: Account[];
   statuses: Status[];
   collections: Collection[];
-  quotesDue?: boolean;
-  movePending?: boolean;
+  jobsPending?: boolean;
 };
 
 // What a resolution stored, by id: the account, status or remote collection the query names, or nothing. quotesDue: the
@@ -1335,9 +1334,9 @@ export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveI
       : fetched;
   switch (stored.kind) {
     case "account":
-      return { ...account(stored.id), movePending: stored.movePending === true };
+      return { ...account(stored.id), jobsPending: stored.movePending === true };
     case "status":
-      return { ...status(stored.id), quotesDue: stored.quotesDue, movePending: stored.movePending === true };
+      return { ...status(stored.id), jobsPending: stored.quotesDue || stored.movePending === true };
     case "collection": {
       const shown = shownCollection(db, stored.id, accountId, input.present.origin);
       return { accounts: [], statuses: [], collections: shown === null ? [] : [shown] };

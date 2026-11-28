@@ -10,6 +10,7 @@ import {
   type MoveOutcome,
   PART_COLLECTIONS,
   PART_FEATURED,
+  moveOpened,
   PART_MOVED,
   PART_NETWORK,
   PART_TAGS,
@@ -409,9 +410,9 @@ const PART_READS: [
   number,
   (sync: CollectionSync, origin: string | null, loaders: ReadLoaders, out: ReadOut) => Promise<void>,
 ][] = [
-  // The move part, first in the generation's first claim and last in every other (readCollections): four parts that
-  // keep failing never take every claim before it, and it takes no first turn from them after. With nothing to fetch
-  // it costs nothing. Its bit is the Store's (move_pending), never set here.
+  // The move part, first in the claim it opens and last in every other (readCollections): four parts that keep failing
+  // never take every claim before it, and it takes no first turn from them. With nothing to fetch it costs nothing. Its
+  // bit is the Store's (move_pending), never set here.
   [
     PART_MOVED,
     async (sync, _origin, loaders, out) => {
@@ -471,8 +472,9 @@ const PART_READS: [
 // starting from the one the round's attempt names. A round after one without progress starts
 // with the next unread part, so each gets a round where it goes first with the whole budget (a part that keeps failing
 // does not spend every round's budget before a healthy one) before MAX_SYNC_ATTEMPTS gives the read up. The move part
-// is outside that rotation: it goes first in the generation's first claim (its first attempt, with no other part read
-// through yet) and last in every other, so the other parts keep the first turns a read without a move gives them.
+// is outside that rotation: the streak it opens (moveOpened: pending, nothing else read through) has one claim more,
+// whose first turn is the move part's; the attempts after it rotate the other parts as a read without a move does,
+// with the move part last, so every other part keeps the full-budget first turns it has without a move.
 async function readCollections(sync: CollectionSync, loaders: ReadLoaders): Promise<ReadOut> {
   const origin = originOf(sync.accountUri);
   const out: ReadOut = {
@@ -489,10 +491,11 @@ async function readCollections(sync: CollectionSync, loaders: ReadLoaders): Prom
   );
   const move = unread.filter(([part]) => part === PART_MOVED);
   const others = unread.filter(([part]) => part !== PART_MOVED);
-  const first = others.length === 0 ? 0 : (Math.max(sync.attempt, 1) - 1) % others.length;
+  // The attempt among the other parts' own: 0 for the claim the move part opens.
+  const attempt = Math.max(sync.attempt, 1) - (moveOpened(sync.parts) ? 1 : 0);
+  const first = others.length === 0 ? 0 : (Math.max(attempt, 1) - 1) % others.length;
   const rotated = [...others.slice(first), ...others.slice(0, first)];
-  const opening = sync.attempt <= 1 && (sync.parts & ~PART_MOVED) === 0;
-  for (const [, read] of opening ? [...move, ...rotated] : [...rotated, ...move]) {
+  for (const [, read] of attempt === 0 ? [...move, ...rotated] : [...rotated, ...move]) {
     await read(sync, origin, loaders, out);
   }
   return out;

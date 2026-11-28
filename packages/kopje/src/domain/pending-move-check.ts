@@ -1,6 +1,6 @@
 import { bindAll } from "../platform/dump-literals";
 import type { RowCheck } from "../platform/store-dump";
-import { fetchableMove } from "./collection-requests";
+import { fetchableMove, namedMove } from "./collection-requests";
 import { actorUriSql } from "./profile-bounds";
 
 // A pending move (accounts.move_pending, 0125_account_move_pending) that the Store's writers never leave, refused at an
@@ -32,7 +32,7 @@ export function pendingMoveCheck(sql: SqlStorage, domain: string | null): RowChe
       account.unread === 1 &&
       typeof account.uri === "string" &&
       typeof account.raw === "string" &&
-      fetchableMove(account.raw, account.uri, origin) !== null;
+      fetchableMove(namedMove(account.raw, account.uri), origin) !== null;
     return fetchable
       ? null
       : `move-pending-invalid: accounts ${literal} has a pending move without an unread collection sync or a movedTo the sync may fetch, which Kopje never stores; this dump cannot be restored`;

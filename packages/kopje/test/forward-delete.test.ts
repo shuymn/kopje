@@ -66,6 +66,7 @@ import {
 } from "./inbox-status-helpers";
 import { storeReceive, writtenBy } from "./inbox-store-helpers";
 import { ML_DSA_44_MULTIBASE } from "./key-forms-helpers";
+import { jobsRung } from "./move-helpers";
 import { contexts, deliveryDeps, quoteAccept } from "./quote-helpers";
 import { type PlannedStatement, plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { seedReceipts } from "./status-helpers";
@@ -490,6 +491,43 @@ describe("the proof round (need proof)", () => {
     expect(await w.post(w.bob, body)).toBe(202);
     expect(proofRounds(w)).toBe(2);
     expect(await forwards(w.t.store, o.uri)).toHaveLength(1);
+  });
+});
+
+// The sender's key misses, so the first Store call stores its fresh document, which leaves its move pending, and asks
+// for the proof; the proof's fetch of that document then fails for now (the Store's answer names a signer here, so the
+// proof is fetched with loaders of its own rather than from the request's memo). The 503 still asks for the jobs round
+// the committed store needs.
+describe("the jobs round a proof that cannot be verified now leaves", () => {
+  it("is asked for when the first Store call stored the sender with a pending move", async () => {
+    const w = await world();
+    const { o } = await boosted(w);
+    const stub = new Proxy(w.t.store, {
+      get: (target, name) => {
+        const value = Reflect.get(target, name) as unknown;
+        if (name !== "receiveActivity" || typeof value !== "function") {
+          return value;
+        }
+        return async (...args: Parameters<StoreStub["receiveActivity"]>) => {
+          const answer = await target.receiveActivity(...args);
+          return answer.need?.kind === "proof" ? { ...answer, need: { ...answer.need, signer: "instance" } } : answer;
+        };
+      },
+    });
+    const h = harness(stub, {}, undefined, { keygen: fixtureKeyGen, loader: w.t.web.loader }, () => w.clock.now);
+    const rotated = await mastodonActor(w.t.web, "bob", { key: 2 });
+    w.t.web.serve(rotated.uri, { ...rotated.document, movedTo: `${OTHER}/users/dest` });
+    const body = await ldSigned(deletion(rotated, o.uri), rotated);
+    const gate = w.t.web.hold(rotated.uri, { snapshot: true });
+    const posted = h.request("/inbox", await signedInit(rotated, "/inbox", body, { at: w.clock.now }));
+    await gate.reached;
+    w.t.web.fail(rotated.uri, 503);
+    gate.release();
+    expect((await posted).status).toBe(503);
+    expect(await sql(w.t.store, "SELECT move_pending FROM accounts WHERE uri = ?", rotated.uri)).toEqual([
+      { move_pending: 1 },
+    ]);
+    expect(jobsRung(h.queue)).toBe(true);
   });
 });
 

@@ -1291,7 +1291,7 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
       );
       rethrowStoreError(state);
       if (proof === "transient") {
-        return { status: 503, reason: "proof-unavailable" };
+        return { status: 503, reason: "proof-unavailable", jobsPending: jobsDue };
       }
       prepared = proof ? { ...prepared, proven: application.body } : { ...prepared, signed: false };
       result = undefined;

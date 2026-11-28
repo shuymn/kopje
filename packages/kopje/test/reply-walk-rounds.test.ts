@@ -54,6 +54,7 @@ import {
   walkRow,
   withReplies,
 } from "./reply-walk-helpers";
+import { generationRequests, NETWORK_READ } from "./sync-generation-helpers";
 
 // Walks of remote replies collections end to end (federation/replies.ts, domain/reply-walks.ts): the replies family's
 // job rounds over Mastodon-shaped threads served by a synthetic remote web. The Store's clock is the faked Date.
@@ -985,10 +986,18 @@ describe("a walk's ceilings of follow-on work (RES-6)", () => {
     expect(await quoteOf(t, w.id)).toEqual({ state: "accepted", hops: QUOTE_HOPS - 1 });
     expect(await quoteOf(t, q.id)).toBeUndefined();
     // The walk's ceilings from that per-reply figure: each of WALK_STATUSES nodes stores at most one author and one
-    // reply, whose one quote applies at most QUOTE_AUTHOR_FETCHES author documents.
+    // reply, whose one quote applies at most QUOTE_AUTHOR_FETCHES author documents; each author document's sync may
+    // store one destination of a pending move, whose own generation doubles them (RES-6, each at most the requests of
+    // one generation: sync-generation-helpers.ts).
     const documents = WALK_STATUSES * (1 + QUOTE_AUTHOR_FETCHES);
-    expect(documents).toBe(1_400);
-    expect(documents * MAX_REMOTE_PINS).toBe(28_000);
+    const syncs = documents * 2;
+    const { perGeneration } = generationRequests(NETWORK_READ);
+    expect({ documents, syncs, requests: syncs * perGeneration, pins: syncs * MAX_REMOTE_PINS }).toEqual({
+      documents: 1_400,
+      syncs: 2_800,
+      requests: 1_769_600,
+      pins: 56_000,
+    });
   });
 });
 

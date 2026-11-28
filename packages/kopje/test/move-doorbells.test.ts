@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { sql } from "./api-helpers";
 import { mastodonActor, type TestActor } from "./inbox-helpers";
 import { announce, AS, DAVE_URI, followed, mastodonNote, OTHER, type Setup, setup } from "./inbox-status-helpers";
+import { jobsRung, moveActivity } from "./move-helpers";
 
 // A store that leaves a move pending (accounts.move_pending) rings the jobs queue, so the collection sync that resolves
 // it runs at once rather than at the next cron: the inbox's Move target and fetched author, and search resolution's
@@ -10,9 +11,6 @@ import { announce, AS, DAVE_URI, followed, mastodonNote, OTHER, type Setup, setu
 // actor names no destination, which rings nothing.
 
 const DEST = `${OTHER}/users/dest`;
-
-const rang = (t: Setup) =>
-  t.queue.pending.some((message) => (message.body as { kind?: string }).kind === "inbound-jobs");
 
 const pending = (t: Setup, uri: string) =>
   sql<{ pending: number }>(t.store, "SELECT move_pending AS pending FROM accounts WHERE uri = ?", uri).then(
@@ -40,7 +38,7 @@ describe("the doorbell for a pending move", () => {
     );
     expect(found.body.accounts).toHaveLength(1);
     expect(await pending(t, carol.uri)).toBe(moved ? 1 : 0);
-    expect(rang(t)).toBe(moved);
+    expect(jobsRung(t.queue)).toBe(moved);
   });
 
   it.each([
@@ -56,7 +54,7 @@ describe("the doorbell for a pending move", () => {
     );
     expect(found.body.statuses).toHaveLength(1);
     expect(await pending(t, carol.uri)).toBe(moved ? 1 : 0);
-    expect(rang(t)).toBe(moved);
+    expect(jobsRung(t.queue)).toBe(moved);
   });
 
   it.each([
@@ -72,7 +70,7 @@ describe("the doorbell for a pending move", () => {
     t.queue.pending.length = 0;
     expect(await t.post(bob, announce(bob, note.id))).toBe(202);
     expect(await pending(t, carol.uri)).toBe(moved ? 1 : 0);
-    expect(rang(t)).toBe(moved);
+    expect(jobsRung(t.queue)).toBe(moved);
   });
 
   // The sender's key misses, so its fresh document is stored (pending) by the first Store call, which asks for the
@@ -90,7 +88,7 @@ describe("the doorbell for a pending move", () => {
     t.queue.pending.length = 0;
     expect(await t.post(rotated, announce(rotated, note.id))).toBe(202);
     expect(await pending(t, bob.uri)).toBe(1);
-    expect(rang(t)).toBe(true);
+    expect(jobsRung(t.queue)).toBe(true);
   });
 
   // A stale pending author is refetched: one whose refetch answers 404 stores nothing, so nothing rings; the control
@@ -121,7 +119,7 @@ describe("the doorbell for a pending move", () => {
     const from = t.web.fetched.length;
     expect(await t.post(bob, announce(bob, note.id))).toBe(202);
     expect(t.web.fetched.slice(from)).toContain(carol.uri);
-    expect(rang(t)).toBe(status === 200);
+    expect(jobsRung(t.queue)).toBe(status === 200);
   });
 
   it.each([
@@ -134,16 +132,9 @@ describe("the doorbell for a pending move", () => {
     const bob2 = await mastodonActor(t.web, "bob2", { key: 2 });
     t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri], ...(moved ? { movedTo: DEST } : {}) });
     t.queue.pending.length = 0;
-    const move = {
-      "@context": AS,
-      id: `${bob.uri}#moves/1`,
-      type: "Move",
-      actor: bob.uri,
-      object: bob.uri,
-      target: bob2.uri,
-    };
+    const move = moveActivity(bob, bob2.uri);
     expect(await t.post(bob, move)).toBe(202);
     expect(await pending(t, bob2.uri)).toBe(moved ? 1 : 0);
-    expect(rang(t)).toBe(moved);
+    expect(jobsRung(t.queue)).toBe(moved);
   });
 });

@@ -69,6 +69,37 @@ export const MAX_SYNC_ATTEMPTS = 3;
 export const SYNC_LEASE_MS = 10 * 60 * 1000;
 export const SYNC_RETRY_MS = 15 * 60 * 1000;
 
+// Whether a read claim of these parts (CollectionSync.parts) is in the streak the move part opens: the move is pending
+// and nothing else is read through yet, so no claim of the streak has progressed. That streak has one claim more than
+// MAX_SYNC_ATTEMPTS, its first, where the move part goes first (federation/collections.ts readCollections); the other
+// parts then have MAX_SYNC_ATTEMPTS claims of their own and the rotation a read without a move gives them.
+export function moveOpened(parts: number): boolean {
+  return parts === 0;
+}
+
+// The claims a read streak of these parts has before the read is given up.
+function readAttempts(parts: number): number {
+  return MAX_SYNC_ATTEMPTS + (moveOpened(parts) ? 1 : 0);
+}
+
+// Run just before a writer clears the account's pending bit while its read may be under way (the claim's
+// reconciliation, a verified Move): the claim the move part opened, once charged, is counted off, so the claims left
+// are exactly a read's without a move (moveOpened): the streak is still the opened one while nothing else is read
+// through and the bit is set. Only an integer count is lowered: an edited dump may hold a fractional one, which
+// collection_syncs' CHECK takes and the lowered value would not pass. Returns whether one was counted off. The read's end settles the bit as progress, which
+// starts the count again, so it needs none.
+export function countOffMoveClaim(db: Db, accountId: string): boolean {
+  return (
+    db.run(
+      `UPDATE collection_syncs SET attempts = attempts - 1
+			WHERE account_id = ?1 AND typeof(attempts) = 'integer' AND attempts > 0 AND refresh = 0
+				AND generation > read_through AND parts_read = 0
+				AND collections_read = 0 AND (SELECT move_pending FROM accounts WHERE id = ?1) = 1`,
+      accountId,
+    ) > 0
+  );
+}
+
 // The parts of a read (phase 1), each read and applied on its own and recorded once it is, so a round that reads one
 // part makes progress whatever the others cost, and a later round reads only the rest: the featured collection (pins),
 // the followers, following and outbox collections (hide_collections and the counts), the featuredTags collection
@@ -331,7 +362,7 @@ function giveUpMove(db: Db, accountId: string): void {
 // The sync due first, claimed for SYNC_LEASE_MS (due again when the lease ends): phase document while a refresh is
 // asked for an account whose handle is invalidated (a refresh of another account, or one out of attempts, is given up),
 // else phase read while a request has not been read through, else phase pins while statuses are pending. One claimed
-// MAX_SYNC_ATTEMPTS times without progress, of an account that is no longer an available remote account
+// MAX_SYNC_ATTEMPTS times without progress (a read in the streak the move part opens, once more: moveOpened), of an account that is no longer an available remote account
 // (ProcessAccountService schedules none for a suspended account, and the services return for one), or with nothing left
 // to do, is dropped instead, and the next is taken; at most MAX_SYNC_ATTEMPTS + 1 rows are read. 'more': that many were
 // dropped and another is due, for the next claim; null: none is due.
@@ -364,13 +395,18 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
     let read = row.unread === 1;
     // The account's pending move, reconciled by a claim that reads or gives the read up (never by one of the document
     // part, D3), so a destination stored since the last attempt becomes the move with no further fetch.
-    const pending =
+    const reconciled =
       read && !refresh && account !== undefined && account.move_pending === 1
         ? pendingMove(db, row.account_id, account)
-        : null;
+        : { movedTo: null, countedOff: false };
+    const pending = reconciled.movedTo;
+    row.attempts -= reconciled.countedOff ? 1 : 0;
+    const parts = row.parts_read | (row.collections_read << 3) | (pending === null ? PART_MOVED : 0);
+    let limit = read ? readAttempts(parts) : MAX_SYNC_ATTEMPTS;
     // A read that ran out of attempts with rows left to fetch gives way to them: the read is given up, the rows get
-    // attempts of their own.
-    if (read && row.attempts >= MAX_SYNC_ATTEMPTS && pendingUris(db, row.account_id).length > 0) {
+    // attempts of their own (those rows: the writes below touch only the sync and the account).
+    const left = read && row.attempts >= limit ? pendingUris(db, row.account_id) : [];
+    if (left.length > 0) {
       db.run(
         `UPDATE collection_syncs SET read_through = generation, parts_read = 0, collections_read = 0, attempts = 0
 				WHERE account_id = ?`,
@@ -379,9 +415,10 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       giveUpMove(db, row.account_id);
       read = false;
       row.attempts = 0;
+      limit = MAX_SYNC_ATTEMPTS;
     }
-    const uris = read || refresh ? [] : pendingUris(db, row.account_id);
-    if (account === undefined || row.attempts >= MAX_SYNC_ATTEMPTS || (!refresh && !read && uris.length === 0)) {
+    const uris = read || refresh ? [] : left.length > 0 ? left : pendingUris(db, row.account_id);
+    if (account === undefined || row.attempts >= limit || (!refresh && !read && uris.length === 0)) {
       dropSync(db, row.account_id);
       continue;
     }
@@ -401,7 +438,7 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       token,
       phase: refresh ? "document" : read ? "read" : "pins",
       state: refresh ? actorState(db, account.uri) : NO_ACTOR_STATE,
-      parts: row.parts_read | (row.collections_read << 3) | (movedTo === null ? PART_MOVED : 0),
+      parts: parts | (movedTo === null ? PART_MOVED : 0),
       movedTo,
       sourceRevision: movedTo === null ? null : account.revision,
       attempt: row.attempts + 1,
@@ -416,20 +453,27 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
 
 // The destination of the account's pending move for the round to fetch, or null once the move is ended here: one the
 // account's document names that was stored since (moveTarget) becomes its move, and one the sync may not fetch (only an
-// edited dump holds one) ends with nothing, each with the bit in one statement.
-function pendingMove(db: Db, accountId: string, account: { uri: string; raw: string | null }): string | null {
+// edited dump holds one) ends with nothing, each with the bit in one statement, the claim the move opened counted off
+// first (countOffMoveClaim).
+function pendingMove(
+  db: Db,
+  accountId: string,
+  account: { uri: string; raw: string | null },
+): { movedTo: string | null; countedOff: boolean } {
   const domain = instanceDomainOf(db);
-  const fetchable = fetchableMove(account.raw, account.uri, domain === null ? "" : `https://${domain}`);
-  const target = moveTarget(db, namedMove(account.raw, account.uri), accountId);
+  const named = namedMove(account.raw, account.uri);
+  const fetchable = fetchableMove(named, domain === null ? "" : `https://${domain}`);
+  const target = moveTarget(db, named, accountId);
   if (fetchable !== null && target === null) {
-    return fetchable;
+    return { movedTo: fetchable, countedOff: false };
   }
+  const countedOff = countOffMoveClaim(db, accountId);
   db.run(
     "UPDATE accounts SET moved_to_account_id = ?2, move_pending = 0 WHERE id = ?1 AND move_pending = 1",
     accountId,
     target,
   );
-  return null;
+  return { movedTo: null, countedOff };
 }
 
 // The end of a round of the account's sync: kept while a request is not read through or statuses are pending, due at
@@ -614,7 +658,7 @@ function settleMove(
   db: Db,
   accountId: string,
   input: CollectionReadInput,
-): { settled: boolean; store: { document: RemoteActorInput; movedTo: string } | null } {
+): { settled: boolean; store: RemoteActorInput | null } {
   const { move, movedTo, sourceRevision } = input;
   if (move === undefined || move === null || movedTo === undefined || movedTo === null || sourceRevision == null) {
     return { settled: false, store: null };
@@ -632,24 +676,18 @@ function settleMove(
       target,
       sourceRevision,
     ) > 0;
-  return { settled, store: settled && fetched !== null ? { document: fetched, movedTo } : null };
+  return { settled, store: settled ? fetched : null };
 }
 
-// A fetched destination stored as any new remote actor is (upsertRemoteActor under the expectation that no row of it
+// A fetched destination (its id the claim's movedTo, settleMove) stored as any new remote actor is (upsertRemoteActor under the expectation that no row of it
 // is stored, ID-1), and then the source's move to it, or to the row stored by another path since ('superseded');
 // nothing when it stores none (a deleted actor, a host or domain an instance suspend block covers, checked here, or a
 // handle WebFinger did not confirm). The source's document already names the destination: no revision is issued.
 // Stored after the parts are recorded: storing it may invalidate a handle the source holds, which asks for a new
 // generation of the source's sync, whose parts start over.
-function storeDestination(
-  db: Db,
-  accountId: string,
-  fetched: { document: RemoteActorInput; movedTo: string },
-  origin: string,
-  now: number,
-): void {
-  upsertRemoteActor(db, fetched.document, origin, now, null);
-  const target = moveTarget(db, fetched.movedTo, accountId);
+function storeDestination(db: Db, accountId: string, document: RemoteActorInput, origin: string, now: number): void {
+  upsertRemoteActor(db, document, origin, now, null);
+  const target = moveTarget(db, document.uri, accountId);
   if (target !== null) {
     db.run(
       `UPDATE accounts SET moved_to_account_id = ?2

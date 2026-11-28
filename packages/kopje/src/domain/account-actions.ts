@@ -273,8 +273,11 @@ export type FollowInput = {
 };
 
 // pending: the target's move is being resolved (accounts.move_pending, 0125_account_move_pending), answered 503 until
-// the collection sync settles it.
-export type FollowResult = RelationshipResult | { status: "invalid"; errors: string[] } | { status: "pending" };
+// the collection sync settles it; jobsPending asks for the jobs round that runs that sync.
+export type FollowResult =
+  | RelationshipResult
+  | { status: "invalid"; errors: string[] }
+  | { status: "pending"; jobsPending: true };
 
 // The validator's error for a new follow or request past the limit, or null while under it. It applies where Mastodon
 // creates a Follow or FollowRequest without bypass_limit: the follow API only. Authorizing a request (local or a remote
@@ -338,7 +341,7 @@ export function followAccount(db: Db, input: FollowInput, viewerId: string): Fol
     return { status: "forbidden" };
   }
   if (target.pending === 1) {
-    return { status: "pending" };
+    return { status: "pending", jobsPending: true };
   }
   // undefined keeps the current filter; null or an empty list means every language (no filter).
   const languages =

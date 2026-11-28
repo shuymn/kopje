@@ -25,7 +25,6 @@ import { webfingerUrl } from "../src/domain/remote-statuses";
 import { suspendRemote } from "../src/domain/remote-suspension";
 import {
   COLLECTION_SYNCS_PER_ROUND,
-  COLLECTIONS_CAPS,
   MAX_FEATURED_TAG_PAGES,
   NETWORK_CAPS,
   PART_DOCUMENTS,
@@ -68,6 +67,7 @@ import {
 } from "./inbox-status-helpers";
 import { storeReceive } from "./inbox-store-helpers";
 import { quoting, serveFeatured, serveStamp } from "./quote-helpers";
+import { generationRequests, NETWORK_READ } from "./sync-generation-helpers";
 
 // A remote account's pinned statuses, featured hashtags and hide_collections (Mastodon 4.5's ActivityPub::Activity::Add
 // and Remove, FetchFeaturedCollectionService, FetchFeaturedTagsCollectionService and
@@ -2529,48 +2529,20 @@ describe("the network part within one round", () => {
 // fetched one per MAX_SYNC_ATTEMPTS claims, each round its whole budget. A call (COLLECTION_SYNCS_PER_ROUND claims)
 // may run two rounds of one generation.
 describe("the requests of one generation", () => {
-  // Each read claim spends at most one round's budget; a generation has the document part's claims (a refresh asked
-  // with it, before its read), MAX_SYNC_ATTEMPTS per read part (each claim after one without progress starts with
-  // another part), and MAX_SYNC_ATTEMPTS per pin row.
-  function worstCase(network: { documents: number; redirects: number }, sends = 1) {
-    const parts = [
-      PART_DOCUMENTS.moved * (1 + MAX_REDIRECTS) * sends,
-      PART_DOCUMENTS.featured * (1 + MAX_REDIRECTS) * sends,
-      network.documents * (1 + network.redirects) * sends,
-      PART_DOCUMENTS.tags * (1 + MAX_REDIRECTS) * sends,
-      PART_DOCUMENTS.collections * (1 + COLLECTIONS_CAPS.maxRedirects) * sends,
-    ];
-    const documentClaims = MAX_SYNC_ATTEMPTS;
-    const readClaims = parts.length * MAX_SYNC_ATTEMPTS;
-    const readRound = Math.min(
-      REQUEST_MAX_FETCHES,
-      parts.reduce((sum, n) => sum + n, 0),
-    );
-    const pinClaims = MAX_REMOTE_PINS * MAX_SYNC_ATTEMPTS;
-    return {
-      readClaims,
-      networkPerRound: Math.min(REQUEST_MAX_FETCHES, parts[2]!),
-      networkPerGeneration: readClaims * Math.min(REQUEST_MAX_FETCHES, parts[2]!),
-      networkHealthy: network.documents,
-      perCall: COLLECTION_SYNCS_PER_ROUND * REQUEST_MAX_FETCHES,
-      perGeneration: (documentClaims + readClaims) * readRound + pinClaims * REQUEST_MAX_FETCHES,
-    };
-  }
-
   it("bounds them before and after the network part reads the outbox", () => {
-    const before = worstCase({ documents: 2, redirects: MAX_REDIRECTS });
-    const network = { documents: PART_DOCUMENTS.network, redirects: NETWORK_CAPS.maxRedirects };
-    const after = worstCase(network);
+    const before = generationRequests({ documents: 2, redirects: MAX_REDIRECTS });
+    const network = NETWORK_READ;
+    const after = generationRequests(network);
     // Every hop answered 400 or 401 to draft-cavage and sent again with RFC 9421 (loader.ts RETRY_STATUSES).
-    const retried = worstCase(network, 2);
+    const retried = generationRequests(network, 2);
     console.info(
       `Requests of one generation: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}, retried ${JSON.stringify(retried)}`,
     );
-    const figures = { readClaims: 15, perCall: 16, perGeneration: 624 };
+    const figures = { readClaims: 16, perCall: 16, perGeneration: 632 };
     expect({ before, after, retried }).toEqual({
-      before: { ...figures, networkPerRound: 8, networkPerGeneration: 120, networkHealthy: 2 },
-      after: { ...figures, networkPerRound: 6, networkPerGeneration: 90, networkHealthy: 3 },
-      retried: { ...figures, networkPerRound: 8, networkPerGeneration: 120, networkHealthy: 3 },
+      before: { ...figures, networkPerRound: 8, networkPerGeneration: 128, networkHealthy: 2 },
+      after: { ...figures, networkPerRound: 6, networkPerGeneration: 96, networkHealthy: 3 },
+      retried: { ...figures, networkPerRound: 8, networkPerGeneration: 128, networkHealthy: 3 },
     });
   });
 
@@ -2581,13 +2553,13 @@ describe("the requests of one generation", () => {
   it("bounds the quote chain's author documents with their destinations", () => {
     const documents = 1 + QUOTE_HOPS * QUOTE_AUTHOR_FETCHES;
     const generations = documents * 2;
-    const { perGeneration } = worstCase({ documents: PART_DOCUMENTS.network, redirects: NETWORK_CAPS.maxRedirects });
+    const { perGeneration } = generationRequests(NETWORK_READ);
     expect({
       documents,
       generations,
       requests: generations * perGeneration,
       pins: generations * MAX_REMOTE_PINS,
-    }).toEqual({ documents: 13, generations: 26, requests: 16_224, pins: 520 });
+    }).toEqual({ documents: 13, generations: 26, requests: 16_432, pins: 520 });
   });
 
   // The pin phase at its worst, through the real Worker and Store: MAX_REMOTE_PINS + 5 statuses listed on the origin
