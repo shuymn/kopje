@@ -1255,7 +1255,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `suggestionSourceSql` and `suggestionCandidateSql` in `src/domain/audience.ts`, `suggestions` in
   `src/domain/suggestions.ts`; `test/suggestions.test.ts`, `test/policy-endpoints.test.ts`.
 - **VIS-9: only the followed side accepts.** A pending follow of a local account becomes `accepted` only by that
-  account's own authorize call; a pending remote follow only by an `Accept` that passes ID-6. _Enforced (main):_
+  account's own authorize call, or by the unlock job its own unlocking starts (`unlock-accepts.ts`); a pending remote
+  follow only by an `Accept` that passes ID-6. _Enforced (main):_
   `answerFollowRequest` in `src/domain/account-actions.ts` (`POST /api/v1/follow_requests/:id/authorize` and
   `/reject`, the viewer from the credential; a remote requester gets the Accept or Reject at its shared inbox, or its
   personal inbox without one), and the inbound `Accept`, matched first by the `follows.uri` of our Follow;
@@ -1277,7 +1278,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the reverse order does not;
   `test/inbox-reactions.test.ts` ("VIS-10: the favourite notification follows the aggregate"). _Enforced (main):_
   `notify` in `src/domain/notifications.ts`; `test/statuses.test.ts` ("a retry has no second side effect"),
-  `test/timelines.test.ts` ("notifies followers who asked to be notified, once"); the update fan-out: `notifyEdited` in
+  `test/timelines.test.ts` ("notifies followers who asked to be notified, once"), `test/follow-answers.test.ts`
+  ("authorizing a request through the API notifies the new follower"); the update fan-out: `notifyEdited` in
   `src/domain/update-fan-out.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new
   push", "…but not a kept one: the same row, no new push", "a local quote's stamp Delete fans out its status once; a
   repeated Delete none", "an approval Update notifies when the round accepts the quote, not before", "a new stamp on

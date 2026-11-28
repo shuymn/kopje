@@ -14,8 +14,9 @@ import { writeOperation } from "./operation";
 //   does a suspension, in its transaction (suspension.ts suspendLocal), so an unsuspension does not resume it.
 // - Each step is its own write transaction (Store.runUnlockAccepts runs UNLOCK_ACCEPTS_PER_ROUND of them per round): it
 //   reads the job and the next pending request past the cursor, advances the cursor past it, and authorizes it through
-//   answerPendingFollow, the operation POST /api/v1/follow_requests/:id/authorize runs, with that operation's cost,
-//   delivery admission, counter recount and push cascade, in its own savepoint (isolated): an authorization that
+//   answerPendingFollow, the answer POST /api/v1/follow_requests/:id/authorize gives, with its cost, delivery
+//   admission and counter recount but without that route's follow notification (AuthorizeFollowWorker writes none,
+//   app/workers/authorize_follow_worker.rb), in its own savepoint (isolated): an authorization that
 //   throws is rolled back alone and logged (kopje.jobs.step.failed), and its request stays pending, which the account
 //   can still authorize by hand, while the cursor's advance commits. Every step that reads makes progress: it advances
 //   or clears the cursor.

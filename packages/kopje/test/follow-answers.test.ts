@@ -20,7 +20,7 @@ import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import { deliveryRound } from "../src/jobs/deliver";
 import { ACTIVITY_ID_LIMIT } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";
-import { bearer, json, settle, sql } from "./api-helpers";
+import { bearer, json, settle, sql, userToken } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { LEGACY, signAsLegacy } from "./federation-helpers";
 import { BUILD, claimAndSettle, runStoreJobs, deferred, drainDeliveries } from "./helpers";
@@ -1768,4 +1768,109 @@ describe("the follow-answer check leaves other superseded activities alone", () 
     },
     60_000,
   );
+});
+
+// Authorizing a request through the API writes the follow notification Mastodon's controller queues
+// (follow_requests_controller.rb:16), with its stream event and its push (VIS-10, PUSH-3), unless the requester blocks
+// alice (the notification rule; docs/mastodon-deviations.md). The unlock job writes none (unlock-accepts.test.ts).
+describe("authorizing a request through the API notifies the new follower", () => {
+  // alice locked, with a user:notification stream and two push subscriptions: one wants follow alerts from a follower,
+  // one wants none. Registered after the request, so only the authorization's rows are counted.
+  async function subscribed(t: T) {
+    await userToken(t.w.h, "alice@example.com", "read write follow push");
+    await sql(
+      t.store,
+      "INSERT INTO stream_subscriptions (account_id, stream_key, sockets) VALUES (?, 'user:notification', 1)",
+      t.w.alice.id,
+    );
+    for (const [alerts, policy] of [
+      ['{"follow":true}', "follower"],
+      ['{"follow":false,"follow_request":true}', "all"],
+    ] as const) {
+      await sql(
+        t.store,
+        `INSERT INTO push_subscriptions (token_hash, endpoint, key_p256dh, key_auth, alerts, policy)
+				SELECT token_hash, 'https://push.example/' || ?3, 'p', 'a', ?2, ?3 FROM oauth_tokens
+				WHERE account_id = ?1 AND kind = 'access' AND token_hash NOT IN (SELECT token_hash FROM push_subscriptions)
+				ORDER BY token_hash LIMIT 1`,
+        t.w.alice.id,
+        alerts,
+        policy,
+      );
+    }
+    expect(await sql(t.store, "SELECT count(*) AS n FROM push_subscriptions")).toEqual([{ n: 2 }]);
+  }
+
+  async function written(t: T, from: string) {
+    const rows = await sql<{ id: string; type: string; filtered: number }>(
+      t.store,
+      "SELECT CAST(id AS TEXT) AS id, type, filtered FROM notifications WHERE account_id = ? AND from_account_id = ?",
+      t.w.alice.id,
+      from,
+    );
+    const events = await sql<{ subject: string }>(
+      t.store,
+      "SELECT subject FROM stream_events WHERE kind = 'notification'",
+    );
+    const pushes = await sql<{ notification: string; alerts: string }>(
+      t.store,
+      `SELECT CAST(d.notification_id AS TEXT) AS notification, p.alerts FROM push_deliveries d
+			JOIN push_subscriptions p ON p.id = d.subscription_id`,
+    );
+    const response = await t.w.h.request("/api/v1/notifications?types[]=follow", bearer(t.w.alice.token));
+    expect(response.status).toBe(200);
+    const listed = (await response.json<{ id: string; type: string; account: { id: string } }[]>()).map((n) => ({
+      id: n.id,
+      type: n.type,
+      from: n.account.id,
+    }));
+    return { rows, events: events.map((e) => e.subject), pushes, listed };
+  }
+
+  async function requested(remote: boolean) {
+    const t = await setup({ locked: true });
+    if (remote) {
+      expect((await followFrom(t)).result).toMatchObject({ reason: "follow-requested" });
+      return { t, from: t.r };
+    }
+    const bob = t.w.bob;
+    const response = await t.w.h.request(`/api/v1/accounts/${t.w.alice.id}/follow`, bearer(bob.token, json({})));
+    expect(await response.json()).toMatchObject({ requested: true });
+    return { t, from: bob.id };
+  }
+
+  it.each([
+    ["a remote", true],
+    ["a local", false],
+  ])("%s requester: one follow, listed, streamed, pushed to the subscription that wants it", async (_, remote) => {
+    const { t, from } = await requested(remote);
+    expect((await written(t, from)).rows.map((n) => n.type)).toEqual(["follow_request"]);
+    await subscribed(t);
+    await api(t, `/api/v1/follow_requests/${from}/authorize`);
+    const after = await written(t, from);
+    expect(after.rows).toEqual([{ id: expect.any(String), type: "follow", filtered: 0 }]);
+    const id = after.rows[0]!.id;
+    expect(after.listed).toEqual([{ id, type: "follow", from }]);
+    expect(after.events).toEqual([id]);
+    // The follower policy admits the requester only once it follows: the notification was written after the answer.
+    expect(after.pushes).toEqual([{ notification: id, alerts: '{"follow":true}' }]);
+  });
+
+  it("writes nothing while the requester blocks alice; the block reached the request", async () => {
+    const t = await setup({ locked: true });
+    expect((await followFrom(t)).result).toMatchObject({ reason: "follow-requested" });
+    const block = await receive(t.store, t.rUri, {
+      id: `${REMOTE}/blocks/${++sequence}`,
+      type: "Block",
+      object: t.aliceUri,
+    });
+    expect(block).toMatchObject({ applied: true, reason: "blocked" });
+    await subscribed(t);
+    await api(t, `/api/v1/follow_requests/${t.r}/authorize`);
+    // The authorization applied: r follows alice.
+    expect(
+      await sql(t.store, "SELECT state FROM follows WHERE account_id = ? AND target_account_id = ?", t.r, t.w.alice.id),
+    ).toEqual([{ state: "accepted" }]);
+    expect(await written(t, t.r)).toEqual({ rows: [], events: [], pushes: [], listed: [] });
+  });
 });

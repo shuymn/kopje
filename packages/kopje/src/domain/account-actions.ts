@@ -455,9 +455,10 @@ function recountFollows(db: Db, viewerId: string, target: Pick<TargetRow, "id" |
 }
 
 // Authorizes or rejects a pending follow of the viewer. A remote requester gets the Accept or Reject at its personal
-// inbox, named after its Follow (followAnswerActivity). The follow_request notification goes either way. An
-// unavailable requester (R1, R38) is not found, read in this transaction: a request authorized after its requester's
-// suspension would leave a follower its suspension never severed.
+// inbox, named after its Follow (followAnswerActivity). The follow_request notification goes either way, and
+// authorizing writes the follow notification, as Mastodon's controller queues it (follow_requests_controller.rb:16).
+// An unavailable requester (R1, R38) is not found, read in this transaction: a request authorized after its
+// requester's suspension would leave a follower its suspension never severed.
 export const answerFollowRequest = userWriteOperation<
   { account: string; decision: "authorize" | "reject"; now: number },
   RelationshipResult
@@ -467,11 +468,18 @@ export const answerFollowRequest = userWriteOperation<
     return { status: "not_found" };
   }
   const answered = answerPendingFollow(db, viewerId, requesterId, decision, now);
-  return answered === "ok" ? relationshipResult(db, viewerId, requesterId, now) : { status: answered };
+  if (answered !== "ok") {
+    return { status: answered };
+  }
+  if (decision === "authorize") {
+    notify(db, { recipientId: viewerId, type: "follow", fromId: requesterId, statusId: null, now });
+  }
+  return relationshipResult(db, viewerId, requesterId, now);
 });
 
 // The answer to one pending follow of `viewerId` by `requesterId`, as POST /api/v1/follow_requests/:id/authorize and
-// /reject run it, and as the unlock job (unlock-accepts.ts) authorizes each request.
+// /reject run it, and as the unlock job (unlock-accepts.ts) authorizes each request. It writes no follow
+// notification: answerFollowRequest does, and the unlock job writes none, as Mastodon's AuthorizeFollowWorker.
 export function answerPendingFollow(
   db: Db,
   viewerId: string,

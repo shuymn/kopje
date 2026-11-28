@@ -8,6 +8,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Fixed
+
+- Authorizing a follow request through the API (`POST /api/v1/follow_requests/:id/authorize`) writes a `follow`
+  notification from the new follower, pushed and streamed as any other, as Mastodon does. Unlocking the account still
+  writes none.
+
 ## [0.9.0] - 2026-11-28
 
 A minor release, published under the npm dist-tag `latest`. A remote account that has moved is shown as moved once a

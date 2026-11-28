@@ -562,7 +562,18 @@ export class Policy {
     return 200;
   }
 
+  // POST /api/v1/follow_requests/:id/authorize: the answer, then the follow notification Mastodon's controller queues
+  // (follow_requests_controller.rb:16), under the inbound Follow's rule (none while R blocks L).
   authorize(now: number): number {
+    const status = this.acceptRequest(now);
+    if (status === 200 && this.blockRL === null) {
+      this.notifications.add("follow");
+    }
+    return status;
+  }
+
+  // The answer the authorize API and the unlock job share (answerPendingFollow).
+  private acceptRequest(now: number): number {
     if (this.rl?.state !== "pending") {
       return 404;
     }
@@ -635,7 +646,8 @@ export class Policy {
     return 200;
   }
 
-  // One round of the unlock acceptance: it authorizes the pending request, as the authorize API does, and ends.
+  // One round of the unlock acceptance: it accepts the pending request as the authorize API does, but writes no
+  // notification, as Mastodon's AuthorizeFollowWorker, and ends.
   unlockRound(now: number): boolean {
     if (!this.unlockJob) {
       return false;
@@ -644,7 +656,7 @@ export class Policy {
     if (this.locked || this.rl?.state !== "pending") {
       return false;
     }
-    this.authorize(now);
+    this.acceptRequest(now);
     return true;
   }
 
