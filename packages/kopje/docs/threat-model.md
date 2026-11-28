@@ -5330,8 +5330,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   following up to `MAX_REDIRECTS`, share the round's 8 fetches, 2 MiB and deadline. Accepted: a destination whose
   WebFinger answers redirect several times, together pass the bytes left, or whose document names contexts that are not
   preloaded spends the round as a failure that may pass, and is given up with the read. A destination it stores names
-  no move of its own, so it asks for one generation of its own and nothing chains: each stored source document leads
-  to at most 2 generations, 1,248 requests and 40 pins. A destination confirming a handle another account holds
+  no move of its own, so a stored destination with collections requests its own generation (one naming none requests
+  none) and nothing chains: each stored source document leads to at most 2 generations, 1,248 requests and 40 pins. A
+  destination confirming a handle another account holds
   invalidates that account, whose refresh is bounded as every invalidation is (once per `ACCOUNT_STALE_MS`) and is not
   counted here. The pin claims fetch every status the
   featured collection lists on the account's origin, stored or not (Mastodon's `FetchFeaturedCollectionService`): a
@@ -5597,8 +5598,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   from its attempts: at most `QUOTE_AUTHOR_FETCHES` (6) a work, whose renewal starts the count again, and an author
   stage with none left fetches nothing and ends the work, so a work whose rounds die after the author stage, reclaimed
   once the author is stale again, still applies at most 6 author documents (the column's CHECK holds the same bound).
-  Each author document stored requests one collection sync generation, and may store one destination of a pending move,
-  which requests one more (at most 2 generations and 1,248 requests, above). So a status arriving from outside at
+  Each author document stored with collections requests one collection sync generation, and may store one destination
+  of a pending move; a stored destination with collections requests its own generation (at most 2 generations and
+  1,248 requests, above). So a status arriving from outside at
   `QUOTE_HOPS` (2) leads to at most 3 statuses of its quote chain, at most 1 + 2 × 6 = 13 author documents and 26 direct
   source and destination sync generations (at most 16,224 requests) and 26 × `MAX_REMOTE_PINS` = 520 pins, a subtotal
   that leaves handle invalidation out, and to nothing further but the create walk of its replies (Replies walks, below)
