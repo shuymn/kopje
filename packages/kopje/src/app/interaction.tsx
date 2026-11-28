@@ -162,7 +162,7 @@ export function interactionRoutes(deps: InteractionDeps): Hono<WebEnv> {
     }
     // The stored status's quote is verified by the job rounds (federation/quotes.ts), and a pending move resolved by the
     // account's collection sync, as after search resolution.
-    if (result.value.quotesDue || result.value.movePending === true) {
+    if (result.value.jobsPending) {
       requestJobsSoon(c, deps);
     }
     const found = result.value.target;
