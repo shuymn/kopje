@@ -1860,7 +1860,7 @@ describe("authorizing a request through the API notifies the new follower", () =
   );
 
   // for_not_followers judges the follow's age from the authorization, as Mastodon's new Follow is created then
-  // (follow_request.rb:34-45, notify_service.rb:51-54): a request older than three days is no older follow. Kopje keeps
+  // (follow_request.rb:34-45, notify_service.rb:45-48): a request older than three days is no older follow. Kopje keeps
   // the request's time on the follow (audience.ts notFollowerSql), so the request is aged to show the rule ran.
   it.each([
     ["filter", "a fresh", false],
