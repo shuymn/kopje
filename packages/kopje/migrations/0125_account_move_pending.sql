@@ -1,8 +1,9 @@
 -- Kopje Store schema 0125: a remote account's pending move (#1561). Never edit after release (checksummed).
 --
---   accounts.move_pending          1 while the account's stored actor document names, as its movedTo, a fetchable
---                                  destination Kopje has neither stored nor settled, which the account's collection
---                                  sync fetches one hop (src/domain/remote-collections.ts, the move part), else 0.
+--   accounts.move_pending          1 while the account's move is work left to its collection sync: its stored actor
+--                                  document names, as its movedTo, a fetchable destination Kopje did not hold when the
+--                                  document was stored, which the sync's next read claim takes if stored since, else
+--                                  fetches one hop (src/domain/remote-collections.ts, the move part); else 0.
 --                                  Written by the store of the account's document, a verified Move, the sync's claim
 --                                  and completion, and the start of the account's deletion; 0 for every row the
 --                                  upgrade carries, until its document is stored again.

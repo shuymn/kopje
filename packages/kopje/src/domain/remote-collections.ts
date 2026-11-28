@@ -239,13 +239,15 @@ export function unfeatureRemote(db: Db, accountId: string, name: string): boolea
 //      is never read again for them.
 // A round makes progress when it reads a part not read before, settles a pending move, or the rows shrink;
 // MAX_SYNC_ATTEMPTS claims without progress give up the read (its rows are still fetched) or drop the sync.
-// The move part (PART_MOVED) runs while the account's move_pending is 1: its stored document's movedTo names a
-// destination Kopje neither stores nor has settled (remote-actors.ts storeActor). The claim first resolves one stored
-// since (moveTarget), and otherwise hands the id over with the account's document revision; the round fetches it one
+// The move part (PART_MOVED) runs while the account's move_pending is 1: work left to the sync, as its stored
+// document's movedTo named a destination Kopje did not hold when the document was stored (remote-actors.ts storeActor),
+// and may have stored by another path since. A claim that reads or gives the read up (never one of the document part)
+// first resolves one stored since (moveTarget), and otherwise hands the id over with the account's document revision; the round fetches it one
 // hop as the instance actor (federation/collections.ts), and the read's end settles the bit, writing the move, only
 // while the claim's token, that revision and the bit all still hold: a store of the account's document since, or a
 // verified Move, leaves the outcome unused. A request that did not store the document leaves the bit, and its fetch
-// is still valid. Giving the read up, or dropping the sync, ends the move with nothing (giveUpMove).
+// is still valid. Giving the read up, or dropping the sync, ends the move with nothing (giveUpMove), once the claim has
+// taken a destination stored since.
 // A sync asked for with refresh (an invalidated account, remote-actors.ts) first runs a document part (D9, Mastodon's
 // AccountRefreshWorker): a round refetches the account's document and confirms its claim (federation/collections.ts),
 // and completeDocumentRefresh stores it under the revision the claim read, as any store of the actor; that store's own
@@ -360,6 +362,12 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       row.attempts = 0;
     }
     let read = row.unread === 1;
+    // The account's pending move, reconciled by a claim that reads or gives the read up (never by one of the document
+    // part, D3), so a destination stored since the last attempt becomes the move with no further fetch.
+    const pending =
+      read && !refresh && account !== undefined && account.move_pending === 1
+        ? pendingMove(db, row.account_id, account)
+        : null;
     // A read that ran out of attempts with rows left to fetch gives way to them: the read is given up, the rows get
     // attempts of their own.
     if (read && row.attempts >= MAX_SYNC_ATTEMPTS && pendingUris(db, row.account_id).length > 0) {
@@ -377,7 +385,7 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       dropSync(db, row.account_id);
       continue;
     }
-    const movedTo = read && account.move_pending === 1 ? pendingMove(db, row.account_id, account) : null;
+    const movedTo = read ? pending : null;
     const token = crypto.randomUUID();
     // The round reads what the remote serves from now on: no change of the collections is after its read yet.
     db.run(

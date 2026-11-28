@@ -413,6 +413,54 @@ describe("the move part and a destination stored by another path", () => {
     expect(fetchesOf(t, DEST, from)).toBe(0);
   });
 
+  // The read out of attempts is given up (the sync dropped, or given way to the pins it left), but a destination
+  // stored since the last attempt still becomes the move, with no further fetch.
+  it.each([
+    ["drops the sync", false],
+    ["gives the read up to the pins it left", true],
+  ])("reconciles, with no fetch, a destination stored before a claim that %s", async (_name, pins) => {
+    const t = await setup();
+    const { bob, bobId, dest } = await pendingBob(t);
+    expect(await t.post(dest, follow(dest, 1))).toBe(202);
+    await sql(
+      t.store,
+      "UPDATE collection_syncs SET attempts = ?, due_at = ? WHERE account_id = ?",
+      MAX_SYNC_ATTEMPTS,
+      NOW - 1,
+      bobId,
+    );
+    if (pins) {
+      await sql(
+        t.store,
+        "INSERT INTO collection_pins_pending (account_id, uri, pinned_at) VALUES (?, ?, ?)",
+        bobId,
+        `${bob.uri}/statuses/1`,
+        new Date(NOW).toISOString(),
+      );
+    }
+    const from = t.web.fetched.length;
+    const claimed = await t.store.claimCollectionSync(BUILD, { now: NOW });
+    if (pins) {
+      expect(claimed).toMatchObject({ phase: "pins", accountUri: bob.uri, movedTo: null });
+    } else {
+      expect(claimed === null || claimed === "more" ? claimed : claimed.accountUri).not.toBe(bob.uri);
+    }
+    expect(await moveState(t, bob.uri)).toMatchObject({ moved: DEST, pending: 0 });
+    expect(fetchesOf(t, DEST, from)).toBe(0);
+  });
+
+  // D3: the move is reconciled by a read; a claim of the document part (a refresh of the source's invalidated handle)
+  // leaves it to the read after it.
+  it("leaves a destination stored before it to the read after a claim of the document part", async () => {
+    const t = await setup();
+    const { bob, bobId, dest } = await pendingBob(t);
+    expect(await t.post(dest, follow(dest, 1))).toBe(202);
+    await sql(t.store, "UPDATE accounts SET username = '! ' || username WHERE id = ?", bobId);
+    await sql(t.store, "UPDATE collection_syncs SET refresh = 1, due_at = ? WHERE account_id = ?", NOW - 1, bobId);
+    expect(await claim(t)).toMatchObject({ phase: "document", accountUri: bob.uri });
+    expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 1 });
+  });
+
   it.each([
     ["a successful fetch", 200],
     ["a fetch answering 503", 503],
