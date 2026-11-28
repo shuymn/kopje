@@ -1112,10 +1112,10 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/peers/search
   identifier (RFC 6749 §2.2).
 - A registration's `scopes` that is empty once trimmed (a space) takes the default, `read`; Mastodon takes the default
   for an absent one only (`Api::V1::AppsController#app_scopes_or_default`). Accepted, 2026-11-18.
-- `usage.users.active_month` counts the available local accounts with an authenticated API or web request on one of the
-  last 29 UTC days, today included. Each account's day is recorded at most once a day, after the response, and a
-  request made while a dump holds the Store may go unrecorded. Mastodon 4.7.5 counts logins over the same days,
-  suspended users included.
+- `usage.users.active_month`, and NodeInfo's `activeMonth` and `activeHalfyear`, count the available local accounts with
+  an authenticated API or web request on one of the last 29 and 169 UTC days, today included. Each account's day is
+  recorded at most once a day, after the response, and a request made while a dump holds the Store may go unrecorded.
+  Mastodon 4.7.5 counts logins over the same days, suspended users included.
 - `stats.domain_count` of `/api/v1/instance` is the count of distinct remote account domains the 5-minute cron last
   kept (Mastodon keeps it in a cache as well: `Rails.cache.fetch('distinct_domain_count')`), at most 10 minutes old;
   past that, counted on request. A request counts it itself, and keeps nothing, whenever no kept count is that fresh:

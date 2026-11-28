@@ -20,6 +20,7 @@ import {
 } from "./federation-helpers";
 import { BUILD, migratedStore } from "./helpers";
 import { contexts } from "./quote-helpers";
+import { ACTIVE_EDGES, ACTIVE_EDGES_DAY, activeAccounts } from "./read-helpers";
 
 // Identity goldens: every expected value is a literal. The domain is fixed at /setup ('social.example'), where the
 // requests go (WEB-6).
@@ -50,7 +51,7 @@ function expectInteractionLinks(body: { links?: { rel: string }[] }) {
   ]);
 }
 
-async function instance(options: { kek?: string } = {}) {
+async function instance(options: { kek?: string; now?: () => number } = {}) {
   const store = await migratedStore();
   await setDomain(store, DOMAIN);
   await seedLocalAccount(store, DOMAIN, { id: ALICE, username: "Alice", displayName: "Alice A", note: "<p>hi</p>" });
@@ -61,7 +62,7 @@ async function instance(options: { kek?: string } = {}) {
     return fixtureKeyGen();
   };
   const loader = { fetch: () => Promise.reject(new Error("offline")), checkHost: () => Promise.resolve() };
-  const h = harness(store, { USER_KEK: options.kek ?? KEK }, undefined, { keygen, loader }, undefined, DOMAIN);
+  const h = harness(store, { USER_KEK: options.kek ?? KEK }, undefined, { keygen, loader }, options.now, DOMAIN);
   const json = async (path: string, init: RequestInit = AP) => {
     const response = await h.request(path, init);
     return {
@@ -627,6 +628,7 @@ describe("NodeInfo", () => {
         `INSERT INTO statuses (id, uri, account_id, visibility, published_at) VALUES
 				('333333333333333333', 'https://social.example/ap/o/1', '${ALICE}', 'public', '2026-10-05T00:00:00.000Z')`,
       );
+      state.storage.sql.exec(`UPDATE local_accounts SET active_on = '2026-10-05' WHERE account_id = '${ALICE}'`);
     });
     return i;
   }
@@ -660,6 +662,21 @@ describe("NodeInfo", () => {
       usage: { users: { total: 1, activeMonth: 1, activeHalfyear: 1 }, localPosts: 1, localComments: 0 },
       metadata: {},
     });
+  });
+
+  // Two fresh origin responses on the same UTC day and account state (a cached response of an earlier day may differ):
+  // both count the available local accounts with active_on in the 29 UTC days ending today, at the clock both requests
+  // read, ACTIVE_EDGES_DAY: Alice (never active) and the window edges of ACTIVE_EDGES.
+  it("answers activeMonth as a fresh /api/v2/instance of the same day answers active_month", async () => {
+    const { json, store } = await instance({ now: () => Date.parse(`${ACTIVE_EDGES_DAY}T00:00:00.000Z`) });
+    await activeAccounts(store, ACTIVE_EDGES, 500000000000000000n);
+    const nodeInfo = (await json("/nodeinfo/2.1")).body as { usage: { users: Record<string, number> } };
+    expect(nodeInfo.usage.users).toEqual({ total: 7, activeMonth: 2, activeHalfyear: 4 });
+    const instanceV2 = await json("/api/v2/instance", {});
+    expect(instanceV2.status).toBe(200);
+    expect((instanceV2.body as { usage: { users: { active_month: number } } }).usage.users.active_month).toBe(
+      nodeInfo.usage.users.activeMonth,
+    );
   });
 
   it("serves 2.0 without the 2.1-only software fields", async () => {

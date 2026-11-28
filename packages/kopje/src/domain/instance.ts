@@ -75,9 +75,11 @@ export type InstanceV2 = InstanceUsage & { wrapstodon: number | null };
 // so it lags the remote accounts by up to one cron period.
 export type InstanceInfo = InstanceUsage & { userCount: number; statusCount: number; domainCount: number };
 
-// Mastodon 4.5.21's active_user_count(4) sums the days from 28 days ago through today (instance_presenter.rb:57-58,
-// activity_tracker.rb:41-42): 29 UTC days, today included.
+// Mastodon 4.7.5's active_user_count(n) sums the UTC days from n weeks ago through today, both included
+// (instance_presenter.rb:57-59, activity_tracker.rb:41-42; mastodon#40193): 29 days for 4 weeks, 169 for 24. The
+// instance API's active_month and NodeInfo's activeMonth and activeHalfyear (actors.ts nodeInfoUsageOf) count them.
 const ACTIVE_DAYS = 29;
+export const ACTIVE_HALFYEAR_DAYS = 169;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // The about page's settings: the extended description as stored (at most INSTANCE_DOCUMENT_BYTES), which the page
@@ -149,15 +151,20 @@ const FRESH_DOMAIN_COUNT_SQL = `SELECT json_extract(value, '$.n') AS n FROM kopj
 	AND json_extract(value, '$.n') >= 0 AND json_type(value, '$.at') = 'integer'
 	AND json_extract(value, '$.at') BETWEEN ?1 AND ?2`;
 
-// The users count and the active ones in the one scan of local_accounts the count needs: active_on between the
-// window's first day (?1) and today (?2), so an imported later day never counts (active_on is a CHECKed YYYY-MM-DD, so
-// text order is date order). The local statuses are summed over the local accounts' range of accounts_domain_username
-// (domain IS NULL, pinned: RES-7), never over the remote accounts. The two statements differ only in the peer domain
-// count.
+// The available local accounts `l` active between the first day and today, both bound by the caller: active_on is a
+// CHECKed YYYY-MM-DD (migration 0059), so text order is date order, and an imported later day never counts.
+export function activeCountSql(first: string, today: string): string {
+  return `COUNT(CASE WHEN l.active_on BETWEEN ${first} AND ${today} THEN 1 END)`;
+}
+
+// The users count and the active ones in the one scan of local_accounts the count needs, active between the window's
+// first day (?1) and today (?2) (activeCountSql). The local statuses are summed over the local accounts' range of
+// accounts_domain_username (domain IS NULL, pinned: RES-7), never over the remote accounts. The two statements differ
+// only in the peer domain count.
 const USERS_COUNT_SQL = `SELECT u.users, u.active,
 	(SELECT SUM(${presentedCountSql("statuses_count")}) FROM accounts INDEXED BY accounts_domain_username
 		WHERE domain IS NULL) AS statuses`;
-const LOCAL_COUNT_FROM_SQL = `FROM (SELECT COUNT(*) AS users, COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
+const LOCAL_COUNT_FROM_SQL = `FROM (SELECT COUNT(*) AS users, ${activeCountSql("?1", "?2")} AS active
 	FROM local_accounts l WHERE ${availableLocalSql("l")}) u`;
 const KEPT_COUNT_SQL = `SELECT json_extract(value, '$.n') FROM kopje_state WHERE name = '${DOMAIN_COUNT_STATE}'`;
 
@@ -168,15 +175,12 @@ const INSTANCE_COUNTS_KEPT_SQL = `${USERS_COUNT_SQL}, (${KEPT_COUNT_SQL}) AS dom
 export const INSTANCE_COUNTS_SQL = `${USERS_COUNT_SQL}, (${DOMAIN_COUNT_SQL}) AS domains ${LOCAL_COUNT_FROM_SQL}`;
 
 // What /api/v2/instance presents of the counts: the active users alone.
-const INSTANCE_ACTIVE_SQL = `SELECT COUNT(CASE WHEN l.active_on BETWEEN ?1 AND ?2 THEN 1 END) AS active
+const INSTANCE_ACTIVE_SQL = `SELECT ${activeCountSql("?1", "?2")} AS active
 	FROM local_accounts l WHERE ${availableLocalSql("l")}`;
 
-// The active window's first day and today, as the two statements bind them.
-function activeWindow(now: number): [string, string] {
-  return [
-    new Date(now - (ACTIVE_DAYS - 1) * DAY_MS).toISOString().slice(0, 10),
-    new Date(now).toISOString().slice(0, 10),
-  ];
+// The active window of `days` UTC days ending today: its first day and today, as YYYY-MM-DD.
+export function activeWindow(now: number, days = ACTIVE_DAYS): [string, string] {
+  return [new Date(now - (days - 1) * DAY_MS).toISOString().slice(0, 10), new Date(now).toISOString().slice(0, 10)];
 }
 
 // /api/v1/instance: the settings and every count it presents.

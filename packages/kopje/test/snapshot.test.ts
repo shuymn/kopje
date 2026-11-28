@@ -1,14 +1,18 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MIGRATIONS } from "../src/db/migrations";
+import { saveSnapshot } from "../src/domain/snapshot";
 import { createSnapshotSaver, SNAPSHOT_SAVE_INTERVAL_MS } from "../src/federation/snapshot";
 import type { StoreStub } from "../src/platform/store-client";
 import { storeMaintenanceError } from "../src/platform/store-errors";
 import { SNAPSHOT_MAX_BODY_BYTES } from "../src/platform/store-kernel";
+import { bearer, sql } from "./api-helpers";
 import { harness, NOW } from "./app-helpers";
 import { fixtureKeyGen, LEGACY, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, freshStore, migratedStore, testKernel } from "./helpers";
+import { type PlannedStatement, plannedRun, seedStatuses } from "./read-helpers";
+import { community, seedStatus } from "./status-helpers";
 
 const DOMAIN = "social.example";
 const STATIC = { kind: "static" } as const;
@@ -208,37 +212,134 @@ describe("snapshots of a suspended actor", () => {
   });
 });
 
+// saveSnapshot's input for a NodeInfo usage rendered at `now`, serialized once for the body and its source.
+function nodeInfoSnapshot(now: number, usage: unknown) {
+  const body = JSON.stringify(usage);
+  return {
+    key: "path:/nodeinfo/2.1",
+    contentType: "application/json",
+    body,
+    renderedAt: now,
+    source: { kind: "nodeinfo", now, rendered: body } as const,
+  };
+}
+
 describe("snapshot render order", () => {
   it("refuses a NodeInfo rendered before the kept one, though its own source still recomputes the same", async () => {
     const { store } = await healthyInstance();
     const day = 24 * 60 * 60 * 1000;
     // After the render time of the snapshot healthyInstance kept (NOW), so only the two renders below compete.
-    const posted = NOW;
+    const active = NOW;
     await runInDurableObject(store, (_instance, state) => {
       state.storage.sql.exec(
-        `INSERT INTO statuses (id, uri, account_id, visibility, published_at) VALUES
-				('333333333333333333', 'https://social.example/ap/o/1', '111111111111111111', 'public', ?)`,
-        new Date(posted).toISOString(),
+        "UPDATE local_accounts SET active_on = ? WHERE account_id = '111111111111111111'",
+        new Date(active).toISOString().slice(0, 10),
       );
     });
-    const render = async (now: number) => {
-      const usage = await store.nodeInfoUsage(BUILD, { now });
-      return {
-        key: "path:/nodeinfo/2.1",
-        contentType: "application/json",
-        body: JSON.stringify(usage),
-        source: { kind: "nodeinfo", now, rendered: JSON.stringify(usage) } as const,
-        renderedAt: now,
-      };
-    };
-    const early = await render(posted + 29 * day); // the post still counts as active this month
-    const late = await render(posted + 31 * day); // it has aged out
+    const render = async (now: number) => nodeInfoSnapshot(now, await store.nodeInfoUsage(BUILD, { now }));
+    const early = await render(active + 28 * day); // the day is still in the month's window
+    const late = await render(active + 31 * day); // it has aged out
     expect(early.body).not.toBe(late.body);
 
     expect(await store.saveSnapshot(BUILD, late)).toBe(true);
     expect(await store.saveSnapshot(BUILD, early)).toBe(false);
     expect((await store.rescueSnapshot(BUILD, "path:/nodeinfo/2.1"))?.body).toBe(late.body);
   });
+});
+
+// A NodeInfo rendered a second before UTC midnight and saved after it, once a sign-in has moved Alice's active_on to
+// the new day: the count at the render's `now` leaves the new day out, and the count at the Store's own time, which the
+// save also takes, matches the render. Alice is active on 2026-06-01 and posted on 2026-05-31. The Worker's clock is
+// the harness's `now`, and the Store's clock the faked Date.
+describe("a NodeInfo saved after UTC midnight", () => {
+  const BEFORE = Date.parse("2026-06-01T23:59:59Z");
+  const AFTER = BEFORE + 1_000;
+  // The statements of NodeInfo's usage: localPosts' walk of the post history, and the user counts.
+  const POSTS_OR_ACCOUNTS = /statuses_account_originals|AS halfyear/;
+  const counted = (plans: readonly PlannedStatement[]) => ({
+    posts: plans.filter(({ query }) => query.includes("statuses_account_originals")).length,
+    accounts: plans.filter(({ query }) => query.includes("AS halfyear")).length,
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function rendered() {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(BEFORE);
+    const h = await community(["alice"]);
+    h.now.mockReturnValue(BEFORE);
+    await sql(h.store, "UPDATE local_accounts SET active_on = '2026-06-01' WHERE account_id = ?", h.users.alice.id);
+    const status = await seedStatus(h.store, {
+      accountId: h.users.alice.id,
+      visibility: "public",
+      published: Date.parse("2026-05-31T00:00:00Z"),
+    });
+    const usage = await h.store.nodeInfoUsage(BUILD, { now: BEFORE });
+    expect(usage).toEqual({ users: 1, activeMonth: 1, activeHalfyear: 1, localPosts: 1 });
+    const snapshot = nodeInfoSnapshot(BEFORE, usage);
+    // After midnight, Alice's authenticated request records the new day.
+    vi.setSystemTime(AFTER);
+    h.now.mockReturnValue(AFTER);
+    expect((await h.request("/api/v1/preferences", bearer(h.users.alice.token))).status).toBe(200);
+    expect(await sql(h.store, "SELECT active_on FROM local_accounts")).toEqual([{ active_on: "2026-06-02" }]);
+    // The count at the render's `now` no longer matches.
+    expect(await h.store.nodeInfoUsage(BUILD, { now: BEFORE })).toMatchObject({ activeMonth: 0, activeHalfyear: 0 });
+    const save = () => h.store.saveSnapshot(BUILD, snapshot);
+    return { h, status, usage, snapshot, save };
+  }
+
+  it("keeps the render when the usage at the Store's time still matches it", async () => {
+    const { h, usage, snapshot, save } = await rendered();
+    expect(await h.store.nodeInfoUsage(BUILD, { now: AFTER })).toEqual(usage);
+    expect(await save()).toBe(true);
+    expect((await h.store.rescueSnapshot(BUILD, snapshot.key))?.body).toBe(snapshot.body);
+  });
+
+  it("refuses the render when the usage matches it at neither time", async () => {
+    const { h, status, snapshot, save } = await rendered();
+    await sql(h.store, "DELETE FROM statuses WHERE id = ?", status);
+    expect(await h.store.nodeInfoUsage(BUILD, { now: AFTER })).toEqual({
+      users: 1,
+      activeMonth: 1,
+      activeHalfyear: 1,
+      localPosts: 0,
+    });
+    expect(await save()).toBe(false);
+    expect(await h.store.rescueSnapshot(BUILD, snapshot.key)).toBeNull();
+  });
+
+  // The re-check counts the post history once on either day: across midnight the user counts are counted again at the
+  // Store's time beside the same localPosts, and on the render's own day nothing is counted again.
+  it("counts the post history once when it checks a render across midnight", async () => {
+    for (const drop of [false, true]) {
+      const { h, status, snapshot } = await rendered();
+      if (drop) {
+        await sql(h.store, "DELETE FROM statuses WHERE id = ?", status);
+      }
+      // With the Store's time the kernel fills.
+      const input = { ...snapshot, storeNow: AFTER };
+      const { result, plans } = await plannedRun(h, POSTS_OR_ACCOUNTS, saveSnapshot, input, true);
+      expect({ result, ...counted(plans) }, `status deleted: ${drop}`).toEqual({
+        result: !drop,
+        posts: 1,
+        accounts: 2,
+      });
+    }
+  });
+
+  it("counts the post history once when it refuses a stale render of the same day", async () => {
+    const h = await community(["alice"]);
+    const renderedAt = Date.parse("2026-06-01T12:00:00Z");
+    const posted = "2026-05-31T00:00:00.000Z";
+    await seedStatuses(h.store, h.users.alice.id, 5_000, 700000000000000001n, posted);
+    const snapshot = nodeInfoSnapshot(renderedAt, await h.store.nodeInfoUsage(BUILD, { now: renderedAt }));
+    await seedStatuses(h.store, h.users.alice.id, 1, 700000000000005001n, posted);
+    const input = { ...snapshot, storeNow: renderedAt + 1_000 };
+    const { result, plans } = await plannedRun(h, POSTS_OR_ACCOUNTS, saveSnapshot, input, true);
+    expect({ result, ...counted(plans) }).toEqual({ result: false, posts: 1, accounts: 1 });
+  }, 30_000);
 });
 
 describe("snapshot caps", () => {

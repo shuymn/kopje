@@ -337,6 +337,8 @@ type Finding = { path: string; line: number; read: string; key?: string };
 // value it bounds itself (cutSql); none passes a bounded column through. Any other interpolation there is a finding,
 // so a raw column cannot hide behind one (an import alias of a helper included), unless ALLOWED names it.
 const SAFE_INTERPOLATIONS = new Set([
+  // The count of local accounts active in a window: a number over active_on, a CHECKed date (domain/instance.ts).
+  "activeCountSql",
   // The inbox an activity without `to` goes to: an inbox column, none bounded here (domain/audience.ts).
   "addressedInboxSql",
   // A follower's or voter's inbox, an inbox column within its own byte bound (domain/audience.ts).
