@@ -732,7 +732,7 @@ Accounts (the `Account` and credential account entities):
   Mastodon 4.7.5 counts up to 40 requests of accounts that are neither suspended (`suspended_at`) nor pending deletion
   (`requested_deletion_at`) among all of them (`credential_account_serializer.rb:17`, `account/suspensions.rb:7-9`). The
   counts differ in two ways.
-  - **The window.** When more than 80 of the newest 120 requesters are unavailable, Kopje's count is lower. An
+  - **The window.** When more than 80 of the newest 120 requesters are unavailable, Kopje's count can be lower. An
     individual suspension keeps a requester's request pending, while a `suspend` block and a deleted account's purge
     remove it. Counting among all of them would let the stored requests of suspended accounts make every
     `verify_credentials` read grow without a bound (RES-7).
@@ -1999,10 +1999,10 @@ Streaming (`status.update` and `delete`; Mastodon's `FanOutOnWriteService`, `Rem
   Accepted, 2026-11-16.
 - A status deletion streams `delete` for at most 40 boosts of that status per listening viewer on `user` and list
   streams (those by the viewer and the accounts it follows; `CAPTURE_LIMITS.boosts`, R32 in
-  [visibility.md](visibility.md)). Mastodon v4.7.5 removes every reblog of a deleted status without a cap
-  (`app/services/remove_status_service.rb:109-117`), and for each reblog publishes a `delete` event to a home or list
-  stream only when `remove_from_feed` removes it from that feed (which returns false when an aggregated reblog is not in
-  the feed; `app/lib/feed_manager.rb:85-95,112-122,585-592`). Accepted, 2026-10-16.
+  [visibility.md](visibility.md)). Mastodon v4.7.5 processes eligible reblogs of a deleted status without a cap
+  (`app/services/remove_status_service.rb:109-117`, excluding those discarded earlier), and for each reblog publishes a
+  `delete` event to a home or list stream only when `remove_from_feed` removes it from that feed (which returns false
+  when an aggregated reblog is not in the feed; `app/lib/feed_manager.rb:85-95,112-122,585-592`). Accepted, 2026-10-16.
 - Purging a deleted account sends no streaming `delete` event (R32 in [visibility.md](visibility.md)). Mastodon v4.7.5's
   `DeleteAccountService#purge_statuses!` (`app/services/delete_account_service.rb:165-171`) keeps statuses referenced by
   unresolved reports out of the batch (marking them `deleted_at` instead) and passes the rest to
