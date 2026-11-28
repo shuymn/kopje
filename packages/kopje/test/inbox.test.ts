@@ -1975,14 +1975,14 @@ describe("account moves", () => {
   });
 
   // Move admission (moveTargetHeldSql): a target that has itself moved, or whose move is being resolved
-  // (accounts.move_pending: its fresh document names, as its movedTo, a fetchable account Kopje does not hold), is held,
-  // so the job covers no follower (bound '0'), not only R21's refusal of each: the follower keeps the source and its
-  // lists and no Follow or Undo(Follow) is sent (Mastodon's UnfollowFollowWorker rescues FollowService's NotPermittedError; the pending transfer
-  // cannot wait for the collection sync that resolves it). The source's move is set and blocks and mutes are carried
-  // in every case (move_worker.rb:21-22). The Move stores the target's fetched document first, so whether the target
-  // has moved is its literal movedTo's reading (collection-requests.ts namedMove): a relative one names no account,
-  // though carol is stored where it would resolve against the target's id, and one with a fragment names carol. The
-  // control is the target naming no destination.
+  // (accounts.move_pending: its fresh document names, as its movedTo, a fetchable account Kopje does not hold), is
+  // held, so the job covers no follower (bound '0'), not only R21's refusal of each: the follower keeps the source and
+  // its lists and no Follow or Undo(Follow) is sent (Mastodon's UnfollowFollowWorker rescues FollowService's
+  // NotPermittedError; the pending transfer cannot wait for the collection sync that resolves it). The source's move is
+  // set and blocks and mutes are carried in every case (move_worker.rb:21-22). The Move stores the target's fetched
+  // document first, so whether the target has moved is its literal movedTo's reading (collection-requests.ts
+  // namedMove): a relative one names no account, though carol is stored where it would resolve against the target's id,
+  // and one with a fragment names carol. The control is the target naming no destination.
   it("holds the followers of the source when the Move's target has moved or its move is being resolved", async () => {
     const CAROL = "https://new.example/users/carol";
     const cases: [string, Record<string, unknown>, { moved: string | null; pending: number }][] = [

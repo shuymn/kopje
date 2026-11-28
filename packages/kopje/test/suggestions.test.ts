@@ -210,10 +210,10 @@ describe("suggestions", () => {
   });
 
   // R39 (FriendsOfFriendsSource: accounts.moved_to_account_id IS NULL): a move counts when it names a stored account
-  // the presenter shows, as R21 reads it, so an imported id naming none leaves the account listed. An account whose move is being resolved
-  // (accounts.move_pending) is left out until its collection sync settles it: once it settles with nothing (the bit
-  // cleared, no move written), it is listed again. The move is cleared before the bit is set, as the account holds
-  // one or the other (0125_account_move_pending).
+  // the presenter shows, as R21 reads it, so an imported id naming none leaves the account listed. An account whose
+  // move is being resolved (accounts.move_pending) is left out until its collection sync settles it: once it settles
+  // with nothing (the bit cleared, no move written), it is listed again. The move is cleared before the bit is set, as
+  // the account holds one or the other (0125_account_move_pending).
   it("leaves out a moved account or one whose move is being resolved, and lists one whose move names none", async () => {
     const { h, alice, dave, r0, r1, r2 } = await world();
     const all = [r0, r2, r1, dave.id];
