@@ -11,7 +11,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 ## [0.9.0] - 2026-11-28
 
 A minor release, published under the npm dist-tag `latest`. A remote account that has moved is shown as moved once a
-background sync has fetched a new account Kopje did not know, and it can no longer be followed or suggested, nor take a
+background sync has resolved a new account Kopje did not know, and it can no longer be followed or suggested, nor take a
 `Move`'s followers; while its move is being resolved, following it answers 503
 ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). A post can mention an account the instance has
 not stored, and a domain block with `reject_media` withholds that domain's media from what the instance serves. It adds
@@ -65,7 +65,9 @@ two Store migrations. Upgrading is recommended.
 ### Fixed
 
 - When a remote profile's `movedTo` names an account Kopje does not know yet, the background collection sync fetches
-  that account, signed as the instance actor, and shows the move unless that account has moved too.
+  that account, signed as the instance actor, unless it was stored meanwhile, and shows the move once the account's
+  document and handle are confirmed and it has not moved too; a destination that is gone or cannot be confirmed shows
+  no move.
 - Following an account that has moved answers 403, as Mastodon does, also to change the options of an existing follow;
   a held follow request to it is not sent, and a `Move` keeps the followers of an account whose target has itself
   moved. Follow suggestions leave out accounts that have moved.
