@@ -60,7 +60,7 @@ import { community, post } from "./status-helpers";
 // target row and the fresh index's empty range, as a miss reads at claim (no status read: the eligibility is judged
 // only for a candidate); with CARD_DONOR_CANDIDATES unusable ones, those donors too (their images' key seeks find no
 // row, and no candidate reaches the eligibility; a 9th is past the candidates); with a usable one among them, its
-// status's eligibility as well.
+// target status's eligibility as well.
 const EMPTY_RANGE_ROWS = 4;
 const EIGHT_UNUSABLE_ROWS = EMPTY_RANGE_ROWS + CARD_DONOR_CANDIDATES - 1;
 const HIT_ROWS = EIGHT_UNUSABLE_ROWS + 4;
@@ -252,7 +252,7 @@ async function expiredRows(w: Awaited<ReturnType<typeof world>>, count: number, 
   );
 }
 
-// `count` public statuses of alice's, ids `prefix` then i (1 to count) padded to 18 digits.
+// `count` public statuses of alice's, ids `prefix` (one digit) then i (1 to count) zero-padded to 17 digits.
 function prefixedStatuses(w: Awaited<ReturnType<typeof world>>, prefix: string, count: number) {
   return sql(
     w.h.store,
