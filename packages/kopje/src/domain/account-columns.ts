@@ -146,6 +146,13 @@ export const ACCOUNT_COLUMN_MAP = {
 // whatever the Store's statistics say (RES-7).
 export const LOCAL_ROW_JOIN = `LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id`;
 
+// The creation day of the stored time `column` (YYYY-MM-DD), which an Account's created_at and a local actor's published
+// present at its midnight UTC as Mastodon's serializers do (created_at.midnight), else NULL: the value is judged whole
+// (isoTimeSql, its length first), so one that is not a stored time is presented as it is today.
+export function createdDaySql(column: string): string {
+  return `CASE WHEN ${isoTimeSql(column)} IS NOT NULL THEN substr(${column}, 1, 10) END`;
+}
+
 // The date of the account `a`'s newest status its followers reach.
 function lastStatusAtSql(a: string): string {
   return `(SELECT substr(${statusPublishedSql("s")}, 1, 10) FROM statuses s

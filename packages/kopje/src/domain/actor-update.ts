@@ -13,7 +13,7 @@ import {
 } from "../platform/stored-bounds";
 import { fieldSources } from "./accounts";
 import { featuredUri, followersUri, recordOutbound } from "./activities";
-import { ACTOR_ROW_COLUMN_MAP, type ActorRow } from "./actor-row";
+import { ACTOR_ROW_COLUMN_MAP, actorPublished, type ActorRow } from "./actor-row";
 import { PUBLIC_COLLECTION } from "./audience";
 import { actorCollectionTerms, INTERACTION_POLICIES_TERMS } from "./collection-documents";
 import { localEmojiTags } from "./custom-emojis";
@@ -101,7 +101,7 @@ function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
     featuredTags: `${row.uri}/collections/tags`,
     endpoints: { sharedInbox: `${origin}/inbox` },
     publicKey: { id: `${row.uri}#main-key`, owner: row.uri, publicKeyPem: row.pubkey },
-    published: row.created_at,
+    published: actorPublished(row),
     ...(suspended
       ? { manuallyApprovesFollowers: false, discoverable: false, indexable: false, suspended: true }
       : {

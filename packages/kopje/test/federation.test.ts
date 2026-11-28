@@ -106,6 +106,17 @@ describe("actor document", () => {
     expect(pemBody(publicKeyPem)).toBe(pemBody(LEGACY.pubkey));
   });
 
+  // ActivityPub::ActorSerializer#published: the creation day's midnight UTC (created_at.midnight.iso8601).
+  it("publishes the creation day's midnight for a creation time past it", async () => {
+    const { json, store } = await instance();
+    await runInDurableObject(store, (_instance, state) => {
+      state.storage.sql.exec("UPDATE accounts SET created_at = '2026-10-12T13:14:15.678Z' WHERE id = ?", ALICE);
+    });
+    const { status, body } = await json("/ap/users/Alice");
+    expect(status).toBe(200);
+    expect((body as { published: unknown }).published).toBe("2026-10-12T00:00:00Z");
+  });
+
   // HTML-3: a stored avatar or header that is not an http(s) URL is left out of the actor.
   it.each(["javascript:alert(1)", "JAVASCRIPT:alert(1)", "data:image/png;base64,AAAA", "/a.png"])(
     "leaves out an icon and image stored as %j",

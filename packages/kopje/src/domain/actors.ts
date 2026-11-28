@@ -11,7 +11,7 @@ import {
 } from "../platform/stored-bounds";
 import { base64ToBytes, bytesToBase64 } from "../security/key-wrap";
 import { type FieldSource, fieldSources } from "./accounts";
-import { ACTOR_ROW_COLUMN_MAP, type ActorRow } from "./actor-row";
+import { ACTOR_ROW_COLUMN_MAP, actorPublished, type ActorRow } from "./actor-row";
 import { accessAdminRefusal } from "./admin-authority";
 import { availableLocalSql, availableSql, followListsShownSql } from "./audience";
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
@@ -52,6 +52,7 @@ export type LocalActor = {
   // The Emoji tags of the profile's local emoji snapshot (custom-emojis.ts localEmojiTags); none while suspended.
   emojis: EmojiTag[];
   pubkey: string;
+  // The actor's `published` (actor-row.ts actorPublished).
   createdAt: string;
 };
 
@@ -95,7 +96,7 @@ export function localActorOf(db: Db, username: string): LocalActor | null {
     emojis:
       row.suspended_at === null ? localEmojiTags(db, row.emojis, new URL(row.uri).origin, ACCOUNT_EMOJIS_BYTES) : [],
     pubkey: row.pubkey,
-    createdAt: row.created_at,
+    createdAt: actorPublished(row),
   };
 }
 
