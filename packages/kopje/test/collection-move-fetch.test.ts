@@ -247,6 +247,25 @@ describe("the move part", () => {
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: DEST, pending: 0 });
   });
 
+  // A collection of `items` that needs a whole round's budget: it and its first page each behind three redirects.
+  function wholeRound(t: Setup, url: string, items: unknown[]): void {
+    const behind = (at: string, body: Record<string, unknown>) => {
+      const hop = (n: number) => (n === 0 ? at : `${at}${at.includes("?") ? "&" : "?"}hop=${n}`);
+      for (let n = 0; n < 3; n++) {
+        t.web.redirect(hop(n), hop(n + 1));
+      }
+      t.web.serve(hop(3), body);
+    };
+    expect(2 * 4).toBe(REQUEST_MAX_FETCHES);
+    behind(url, { "@context": AS, id: url, type: "OrderedCollection", first: `${url}?page=1` });
+    behind(`${url}?page=1`, {
+      "@context": AS,
+      id: `${url}?page=1`,
+      type: "OrderedCollectionPage",
+      orderedItems: items,
+    });
+  }
+
   // Bob's every part answering 503 (a featuredCollections collection included, so the first claim makes no progress).
   async function failingBob(t: Setup) {
     const collections = `${MASTODON}/users/bob/collections/collections`;
@@ -294,25 +313,95 @@ describe("the move part", () => {
     const { bob, bobId } = await failingBob(t);
     const note = mastodonNote(bob);
     t.web.serve(note.id, { "@context": AS, ...note });
-    const featured = `${bob.uri}/collections/featured`;
-    const behind = (url: string, body: Record<string, unknown>) => {
-      const hop = (n: number) => (n === 0 ? url : `${url}${url.includes("?") ? "&" : "?"}hop=${n}`);
-      for (let n = 0; n < 3; n++) {
-        t.web.redirect(hop(n), hop(n + 1));
-      }
-      t.web.serve(hop(3), body);
-    };
-    behind(featured, { "@context": AS, id: featured, type: "OrderedCollection", first: `${featured}?page=1` });
-    behind(`${featured}?page=1`, {
-      "@context": AS,
-      id: `${featured}?page=1`,
-      type: "OrderedCollectionPage",
-      orderedItems: [note.id],
-    });
-    expect(2 * 4).toBe(REQUEST_MAX_FETCHES);
+    wholeRound(t, `${bob.uri}/collections/featured`, [note.id]);
     await syncUntilDone(t);
     const pinned = await t.api<{ uri: string }[]>(`/api/v1/accounts/${bobId}/statuses?pinned=true`, null);
     expect(pinned.body.map((status) => status.uri)).toEqual([note.id]);
+  });
+
+  // The bit cleared mid-read, by the claim's reconciliation of a destination stored since or by a verified Move, counts
+  // off the claim the move opened, so the claims left are exactly a read's without a move: a part that needs a whole
+  // round keeps its full-budget first turn, the featured collection's right after the opening claim and the
+  // featuredTags collection's, the last, after MAX_SYNC_ATTEMPTS claims.
+  it.each([
+    ["after the opening claim, by the claim's reconciliation", 1, "reconcile"],
+    ["after the opening claim, by a verified Move", 1, "move"],
+    ["before the last turn, by the claim's reconciliation", MAX_SYNC_ATTEMPTS, "reconcile"],
+    ["before the last turn, by a verified Move", MAX_SYNC_ATTEMPTS, "move"],
+  ] as const)("keeps the turns of a read without a move when the bit clears %s", async (_name, claims, clear) => {
+    const t = await setup();
+    const { bob, bobId, dest } = await failingBob(t);
+    const note = mastodonNote(bob);
+    t.web.serve(note.id, { "@context": AS, ...note });
+    if (claims === 1) {
+      wholeRound(t, `${bob.uri}/collections/featured`, [note.id]);
+    } else {
+      wholeRound(t, `${bob.uri}/collections/tags`, [{ type: "Hashtag", href: `${MASTODON}/tags/kept`, name: "#kept" }]);
+    }
+    let now = NOW;
+    for (let round = 0; round < claims; round++) {
+      await syncCollections(t.env, at(t, now));
+      now += SYNC_RETRY_MS;
+    }
+    expect(await sql(t.store, "SELECT attempts FROM collection_syncs WHERE account_id = ?", bobId)).toEqual([
+      { attempts: claims },
+    ]);
+    if (clear === "reconcile") {
+      t.web.serve(DEST, dest.document);
+      expect(await t.post(dest, follow(dest, 1))).toBe(202);
+    } else {
+      const d = await mastodonActor(t.web, "d", { key: 4 });
+      t.web.serve(d.uri, { ...d.document, alsoKnownAs: [bob.uri] });
+      const move = {
+        "@context": AS,
+        id: `${bob.uri}#moves/1`,
+        type: "Move",
+        actor: bob.uri,
+        object: bob.uri,
+        target: d.uri,
+      };
+      expect(await t.post(bob, move)).toBe(202);
+      expect(await moveState(t, bob.uri)).toMatchObject({ moved: d.uri, pending: 0 });
+    }
+    for (let round = 0; round < 6; round++) {
+      await syncCollections(t.env, at(t, now));
+      now += SYNC_RETRY_MS;
+    }
+    expect(await moveState(t, bob.uri)).toMatchObject({ pending: 0 });
+    if (claims === 1) {
+      expect(await sql(t.store, "SELECT s.uri FROM statuses s JOIN status_pins p ON p.status_id = s.id")).toEqual([
+        { uri: note.id },
+      ]);
+    } else {
+      expect(await sql(t.store, "SELECT name FROM featured_tags WHERE account_id = ?", bobId)).toEqual([
+        { name: "kept" },
+      ]);
+    }
+  });
+
+  // A streak the move did not open (a part read through, or the document part's) counts nothing off.
+  it.each([
+    ["a part is read through", "parts_read = 1"],
+    ["the claims are the document part's", "refresh = 1"],
+  ])("counts no claim off when the bit clears after %s", async (_name, set) => {
+    const t = await setup();
+    const { bob, bobId } = await pendingBob(t);
+    await sql(t.store, `UPDATE collection_syncs SET attempts = 2, ${set} WHERE account_id = ?`, bobId);
+    const d = await mastodonActor(t.web, "d", { key: 4 });
+    t.web.serve(d.uri, { ...d.document, alsoKnownAs: [bob.uri] });
+    const move = {
+      "@context": AS,
+      id: `${bob.uri}#moves/1`,
+      type: "Move",
+      actor: bob.uri,
+      object: bob.uri,
+      target: d.uri,
+    };
+    expect(await t.post(bob, move)).toBe(202);
+    expect(await moveState(t, bob.uri)).toMatchObject({ moved: d.uri, pending: 0 });
+    expect(await sql(t.store, "SELECT attempts FROM collection_syncs WHERE account_id = ?", bobId)).toEqual([
+      { attempts: 2 },
+    ]);
   });
 
   // Mastodon takes the destination only when the document's literal id is the URL it fetched (json_ld_helper.rb
@@ -459,8 +548,9 @@ describe("the move part and a destination stored by another path", () => {
     expect(fetchesOf(t, DEST, from)).toBe(0);
   });
 
-  // The read out of attempts is given up (the sync dropped, or given way to the pins it left), but a destination
-  // stored since the last attempt still becomes the move, with no further fetch.
+  // The read out of attempts (the streak the move opened, all its claims charged) is given up (the sync dropped, or
+  // given way to the pins it left), but a destination stored since the last attempt still becomes the move, with no
+  // further fetch.
   it.each([
     ["drops the sync", false],
     ["gives the read up to the pins it left", true],
@@ -471,7 +561,7 @@ describe("the move part and a destination stored by another path", () => {
     await sql(
       t.store,
       "UPDATE collection_syncs SET attempts = ?, due_at = ? WHERE account_id = ?",
-      MAX_SYNC_ATTEMPTS,
+      MAX_SYNC_ATTEMPTS + 1,
       NOW - 1,
       bobId,
     );

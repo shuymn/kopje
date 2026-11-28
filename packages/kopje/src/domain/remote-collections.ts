@@ -82,6 +82,22 @@ function readAttempts(parts: number): number {
   return MAX_SYNC_ATTEMPTS + (moveOpened(parts) ? 1 : 0);
 }
 
+// Run just before a writer clears the account's pending bit while its read may be under way (the claim's
+// reconciliation, a verified Move): the claim the move part opened, once charged, is counted off, so the claims left
+// are exactly a read's without a move (moveOpened): the streak is still the opened one while nothing else is read
+// through and the bit is set. Returns whether one was counted off. The read's end settles the bit as progress, which
+// starts the count again, so it needs none.
+export function countOffMoveClaim(db: Db, accountId: string): boolean {
+  return (
+    db.run(
+      `UPDATE collection_syncs SET attempts = attempts - 1
+			WHERE account_id = ?1 AND attempts > 0 AND refresh = 0 AND generation > read_through AND parts_read = 0
+				AND collections_read = 0 AND (SELECT move_pending FROM accounts WHERE id = ?1) = 1`,
+      accountId,
+    ) > 0
+  );
+}
+
 // The parts of a read (phase 1), each read and applied on its own and recorded once it is, so a round that reads one
 // part makes progress whatever the others cost, and a later round reads only the rest: the featured collection (pins),
 // the followers, following and outbox collections (hide_collections and the counts), the featuredTags collection
@@ -377,10 +393,12 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
     let read = row.unread === 1;
     // The account's pending move, reconciled by a claim that reads or gives the read up (never by one of the document
     // part, D3), so a destination stored since the last attempt becomes the move with no further fetch.
-    const pending =
+    const reconciled =
       read && !refresh && account !== undefined && account.move_pending === 1
         ? pendingMove(db, row.account_id, account)
-        : null;
+        : { movedTo: null, countedOff: false };
+    const pending = reconciled.movedTo;
+    row.attempts -= reconciled.countedOff ? 1 : 0;
     const parts = row.parts_read | (row.collections_read << 3) | (pending === null ? PART_MOVED : 0);
     let limit = read ? readAttempts(parts) : MAX_SYNC_ATTEMPTS;
     // A read that ran out of attempts with rows left to fetch gives way to them: the read is given up, the rows get
@@ -432,20 +450,26 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
 
 // The destination of the account's pending move for the round to fetch, or null once the move is ended here: one the
 // account's document names that was stored since (moveTarget) becomes its move, and one the sync may not fetch (only an
-// edited dump holds one) ends with nothing, each with the bit in one statement.
-function pendingMove(db: Db, accountId: string, account: { uri: string; raw: string | null }): string | null {
+// edited dump holds one) ends with nothing, each with the bit in one statement, the claim the move opened counted off
+// first (countOffMoveClaim).
+function pendingMove(
+  db: Db,
+  accountId: string,
+  account: { uri: string; raw: string | null },
+): { movedTo: string | null; countedOff: boolean } {
   const domain = instanceDomainOf(db);
   const fetchable = fetchableMove(account.raw, account.uri, domain === null ? "" : `https://${domain}`);
   const target = moveTarget(db, namedMove(account.raw, account.uri), accountId);
   if (fetchable !== null && target === null) {
-    return fetchable;
+    return { movedTo: fetchable, countedOff: false };
   }
+  const countedOff = countOffMoveClaim(db, accountId);
   db.run(
     "UPDATE accounts SET moved_to_account_id = ?2, move_pending = 0 WHERE id = ?1 AND move_pending = 1",
     accountId,
     target,
   );
-  return null;
+  return { movedTo: null, countedOff };
 }
 
 // The end of a round of the account's sync: kept while a request is not read through or statuses are pending, due at

@@ -119,7 +119,14 @@ import {
   revisionHolds,
   refreshRouting,
 } from "./remote-actors";
-import { collectionOf, featureRemote, pinRemote, unfeatureRemote, unpinRemote } from "./remote-collections";
+import {
+  collectionOf,
+  countOffMoveClaim,
+  featureRemote,
+  pinRemote,
+  unfeatureRemote,
+  unpinRemote,
+} from "./remote-collections";
 import {
   applyFeaturedCollection,
   applyFeaturedItem,
@@ -1309,7 +1316,9 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
   // Move writes nothing, and a later document of the source sets or clears it again (upsertRemoteActor). It issues a
   // new revision of the source (DocumentRevision), so a document of it fetched before the Move never clears it (ID-4),
   // and ends a move its document left pending (move_pending, which the bound of 0125_account_move_pending requires 0
-  // beside a move): the collection sync never resolves the older declaration.
+  // beside a move): the collection sync never resolves the older declaration; the claim the pending move opened is
+  // counted off first (countOffMoveClaim).
+  countOffMoveClaim(db, actor.id);
   db.run(
     `UPDATE accounts SET moved_to_account_id = ?2, move_pending = 0,
 			document_revision = ${nextDocumentRevisionSql("document_revision")}

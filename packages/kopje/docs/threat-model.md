@@ -5326,15 +5326,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches. The move part (`PART_MOVED`) has a claim of its
   own: while it is pending and nothing else is read through (`moveOpened`), the read's streak has one claim more than
   `MAX_SYNC_ATTEMPTS`, whose first turn is the move part's, and the claims after it rotate the other parts as a read
-  without a move does, the move part last (`readCollections`), so every other part keeps the full-budget first turns
-  it has without a move. It costs nothing when no move is pending; when one is, it loads the destination once a read
-  claim, as the instance actor (DATA-7), with no redirect (`MOVED_CAPS`) and the loader's 1 MiB body limit, and its
-  WebFinger answers, each following up to `MAX_REDIRECTS`, share the round's 8 fetches, 2 MiB and deadline. Accepted: a
-  destination whose WebFinger answers redirect several times, together pass the bytes left, or whose document names
-  contexts that are not preloaded spends the round as a failure that may pass, and is given up with the read. A
-  destination it stores names no move of its own, so a stored destination with collections requests its own generation
-  (one naming none requests none) and nothing chains: each stored source document leads to at most 2 generations, 1,264
-  requests and 40 pins. A destination confirming a handle another account holds
+  without a move does, the move part last (`readCollections`), so every other part keeps the full-budget first turns it
+  has without a move; a writer that clears the bit mid-read (the claim reconciling a destination stored since, a
+  verified `Move`) counts that claim off first (`countOffMoveClaim`), so the claims left are those. It costs nothing
+  when no move is pending; when one is, it loads the destination once a read claim, as the instance actor (DATA-7), with
+  no redirect (`MOVED_CAPS`) and the loader's 1 MiB body limit, and its WebFinger answers, each following up to
+  `MAX_REDIRECTS`, share the round's 8 fetches, 2 MiB and deadline. Accepted: a destination whose WebFinger answers
+  redirect several times, together pass the bytes left, or whose document names contexts that are not preloaded spends
+  the round as a failure that may pass, and is given up with the read. A destination it stores names no move of its own,
+  so a stored destination with collections requests its own generation (one naming none requests none) and nothing
+  chains: each stored source document leads to at most 2 generations, 1,264 requests and 40 pins. A destination
+  confirming a handle another account holds
   invalidates that account, whose refresh is bounded as every invalidation is (once per `ACCOUNT_STALE_MS`) and is not
   counted here. The pin claims fetch every status the
   featured collection lists on the account's origin, stored or not (Mastodon's `FetchFeaturedCollectionService`): a
