@@ -384,8 +384,9 @@ describe("the Featured tab’s hashtags", () => {
     }
     const html = await (await h.request("/@alice/featured")).text();
     const page = shown(html);
+    // Ten, Mastodon's limit, written out so that a change of MAX_FEATURED_TAGS fails here.
     expect(page.tags).toEqual(
-      rows.slice(0, MAX_FEATURED_TAGS).map((row) => ({
+      rows.slice(0, 10).map((row) => ({
         name: `#${row.display}`,
         href: `/@alice/tagged/${row.name}`,
         count: STRINGS.featured.posts(row.count),
@@ -397,7 +398,7 @@ describe("the Featured tab’s hashtags", () => {
       await h.request(`/api/v1/accounts/${alice.id}/featured_tags`)
     ).json<{ name: string; statuses_count: string; url: string; last_status_at: string | null }[]>();
     expect(api.map((tag) => tag.name)).toEqual(rows.map((row) => row.display));
-    expect(api.slice(0, MAX_FEATURED_TAGS).map((tag) => STRINGS.featured.posts(Number(tag.statuses_count)))).toEqual(
+    expect(api.slice(0, 10).map((tag) => STRINGS.featured.posts(Number(tag.statuses_count)))).toEqual(
       page.tags.map((tag) => tag.count),
     );
     expect(api[0]).toEqual({

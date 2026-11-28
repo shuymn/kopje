@@ -73,7 +73,8 @@ describe("featured hashtags", () => {
       400,
       { error: "param is missing or the value is empty: name" },
     ]);
-    for (let i = 0; i < MAX_FEATURED_TAGS; i++) {
+    // Ten, Mastodon's limit (FeaturedTag::LIMIT), written out so that a change of MAX_FEATURED_TAGS fails here.
+    for (let i = 0; i < 10; i++) {
       expect((await feature(h, alice, `t${i}`)).status).toBe(200);
     }
     const over = await feature(h, alice, "cats");
