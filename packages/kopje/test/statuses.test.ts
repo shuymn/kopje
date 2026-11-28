@@ -1652,6 +1652,40 @@ describe("review regressions", () => {
     ]);
   });
 
+  // C4.5 (#1565): an edit that changes only a focus is an edit, and its Update carries the new focalPoint (read after
+  // the edit's write) with an updated later than the last edit's, which Mastodon applies as an explicit update
+  // (process_status_update_service.rb:30).
+  it("sends an Update with the new focalPoint when an edit changes only a focus", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await remoteFollows(h.store, await remoteAccount(h.store, "fan", "fans.example"), alice.id);
+    await sql(
+      h.store,
+      "INSERT INTO media_attachments (id, account_id, type, url) VALUES ('100000000000000001', ?, 'image', 'https://kopje.test/m.png')",
+      alice.id,
+    );
+    const media = { media_ids: ["100000000000000001"] };
+    const status = await post(h, alice, { status: "pic", ...media });
+    await createsInFlight(h.store);
+    h.now.mockReturnValue(NOW + 60_000);
+    expect((await put(h, alice.token, status.id, { status: "pic, edited", ...media })).status).toBe(200);
+    h.now.mockReturnValue(NOW + 120_000);
+    const refocused = await put(h, alice.token, status.id, {
+      status: "pic, edited",
+      ...media,
+      media_attributes: [{ id: "100000000000000001", focus: "-0.5,0.5" }],
+    });
+    expect(refocused.status).toBe(200);
+    expect(await refocused.json()).toMatchObject({ media_attachments: [{ meta: { focus: { x: -0.5, y: 0.5 } } }] });
+    const updates = (await outbound(h.store))
+      .filter((o) => o.activity.type === "Update")
+      .map((o) => o.activity.object as { updated: string; attachment: Record<string, unknown>[] });
+    expect(updates.map((object) => [object.updated, object.attachment[0]?.focalPoint])).toEqual([
+      [new Date(NOW + 60_000).toISOString(), undefined],
+      [new Date(NOW + 120_000).toISOString(), [-0.5, 0.5]],
+    ]);
+  });
+
   // MediaAttachment::MAX_DESCRIPTION_LENGTH in code points on an edit's media_attributes: four descriptions of that
   // many four-byte code points fit API_BODY_LIMIT even sent with every character `\u`-escaped (a surrogate pair, 12
   // bytes), beside the text at its raw bound escaped the same; one code point more is refused and changes nothing.

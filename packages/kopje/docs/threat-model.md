@@ -4244,8 +4244,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/statuses.ts`, `writeMedia` in `src/domain/remote-statuses.ts`, the cutover's conversion) store 0, 1 or
   the value already stored, so a write never fails on it, and the reads use it only inside the SQL that decides whether
   a focus shows
-  (`focusShownSql` in `src/domain/status-rows.ts`), so a status read takes no more columns (`test/migrations.test.ts`
-  ("media_focus_given"), `test/dump-import.test.ts` ("round-trips media focus_given")).
+  (`focusShownSql` in `src/domain/status-rows.ts`), the REST presenter and the Note's `Document` (`statusFacts` in
+  `src/domain/activities.ts`) alike, so a status read takes no more columns (`test/migrations.test.ts`
+  ("media_focus_given"), `test/dump-import.test.ts` ("round-trips media focus_given"), `test/media.test.ts` ("writes a
+  %s's size, duration and focus: given, given 0,0, none, and a legacy point")).
   _Enforced (main)_ for static images: `accounts.avatar_static_url` and `header_static_url` hold NULL or text of at
   most 512 bytes without NUL, on a local row whose image is set; the triggers `accounts_static_images_insert` and
   `accounts_static_images_update` of migration `0061_account_static_images` refuse any other value, imports included,
@@ -6300,8 +6302,8 @@ logs (6.01 MB escaped, 4.64 MB raw, the fill of the largest SQLite read) are mea
 | A moderation_warning notification, its local account at bounds   | 134,442           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,442           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 7,319,647         | 5,769,491       | 5,788,421         | 2,163     | 6,786 | 69.0%          |
-| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,821,604         | 4,278,825       |                   | 1,343     | 3,208 | 51.0%          |
-| Its Create (the Note and its addressing again)                   |                   | 6,335,409       |                   |           |       | 75.5%          |
+| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,821,668         | 4,279,101       |                   | 1,343     | 3,212 | 51.0%          |
+| Its Create (the Note and its addressing again)                   |                   | 6,335,745       |                   |           |       | 75.5%          |
 | Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
 | Trending hashtag (Tag with history), derived from its caps       |                   | 4,508           | 4,572             |           |       | 0.1%           |
@@ -6429,7 +6431,10 @@ fill: their url is the actor id, else a url derived from it, each within the sto
 
 A Note shows what the Status entity shows: its hashtags and mentions are read through the same projections, its text
 and attachments as stored, and its card as a `Link` where the API shows the card (`statusFacts` in
-`src/domain/activities.ts`), so a converted row's hashtag past its bound is left out of both. The card's URL is at most
+`src/domain/activities.ts`), so a converted row's hashtag past its bound is left out of both. Each attachment's
+`Document` adds its `focalPoint` (two numbers, at most 67 bytes with its name) and its `width` and `height` up to
+100,000 (`DOCUMENT_DIMENSION_MAX`), and the context gains the `focalPoint` term once (60 bytes, 97 when it brings
+`toot`). The card's URL is at most
 2,048 bytes of printable ASCII, which JSON does not escape (`cardUrlPastSql`), so the `Link` adds at most 2,074 bytes
 with its frame. The collections it tags are `FeaturedCollection` tags of their ids alone, at most four, each at most
 38 bytes and its id of `COLLECTION_URI_BYTES` JSON-escaped (16,452 bytes for four ids of `"`), and its context gains

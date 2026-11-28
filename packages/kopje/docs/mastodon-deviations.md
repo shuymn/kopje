@@ -1845,6 +1845,10 @@ Media (the `MediaAttachment` entity):
   An upload stored by an earlier release keeps null; the media rebuild computes one for each row it makes again, and
   keeps the stored one when the RGBA output fails. A Note's `Document` carries `blurhash` only when the attachment has
   one, where Mastodon writes null.
+- A local status's Note gives an attachment's `width` and `height` only as whole numbers from 1 to 100,000, the values
+  Kopje's receiver accepts. Mastodon writes any value its `meta.original` holds. Only a converted or imported row holds
+  another value (a fraction, or past 100,000); its dimension is left out. `duration` is given where it is a valid
+  duration. Accepted, 2026-11-29.
 - A remote attachment's `blurhash` is the value it was sent with when it is base83 with at most 5 by 5 components and
   the length they give, as Mastodon's `supported_blurhash?`; Kopje checks the whole string, where Mastodon's character
   check is line-anchored and keeps a valid first line followed by anything. Mastodon reassigns it, none included, on

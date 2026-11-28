@@ -590,6 +590,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   'src/domain/activities.ts interpolation thumbnailOfSql("m", "preview_url")': { count: 1, reason: ACTIVITYPUB },
   'src/domain/activities.ts interpolation thumbnailOfSql("m", "content_type")': { count: 1, reason: ACTIVITYPUB },
   'src/domain/activities.ts interpolation thumbnailOfSql("m", "blurhash")': { count: 1, reason: ACTIVITYPUB },
+  // The Note's Document facts (status-presenter.ts documentFacts): the meta within its stored bound, and the focus as
+  // REST shows it (focusShownSql).
+  'src/domain/activities.ts interpolation mediaMetaSql("m.meta")': { count: 1, reason: ACTIVITYPUB },
+  "src/domain/activities.ts interpolation MEDIA_COLUMN_MAP.focus_x": { count: 1, reason: ACTIVITYPUB },
   "src/domain/media-processing.ts interpolation MEDIA_COLUMN_MAP.thumbnail_preview": { count: 1, reason: LOCAL },
   "src/domain/media-processing.ts interpolation MEDIA_COLUMN_MAP.thumbnail_meta": { count: 1, reason: LOCAL },
   "src/domain/media-processing.ts interpolation MEDIA_COLUMN_MAP.thumbnail_blurhash": { count: 1, reason: LOCAL },

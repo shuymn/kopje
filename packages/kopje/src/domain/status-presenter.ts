@@ -3,6 +3,7 @@ import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX, POLLS_STATUS_INDEX, STATUSES_ID_INDE
 import { type Db, RowCapExceeded, RowMeter } from "../db/sql";
 import { AUDIO_DURATION_LIMIT, isEdge, isFrameRate } from "../platform/av-bytes";
 import { VIDEO_POSTER } from "../platform/brand-assets";
+import { isDocumentDimension } from "../platform/document-dimension";
 import { boundedHref } from "../platform/http-url";
 import { FILE_TOKEN, mediaUrl } from "../platform/media-files";
 import { railsBlank } from "../platform/rails-blank";
@@ -1411,25 +1412,26 @@ function isDuration(value: unknown): value is number {
   return typeof value === "number" && value >= SHORTEST_DURATION && value <= AUDIO_DURATION_LIMIT;
 }
 
-// What a local video or audio Document carries of its stored meta (activities.ts), as ActivityPub::NoteSerializer's
-// MediaAttachmentSerializer writes it (Mastodon v4.7.5): the width and the height each where meta.original has it (a
-// video's; an audio file's verified facts have none), and the duration as ISO 8601 (ActiveSupport::Duration#iso8601 of
-// the stored seconds, a Float in Mastodon, so 8 is "PT8.0S"). Each only as the verifier states it (isEdge,
-// isDuration). The duration is written to the millisecond (isoSeconds): a stored audio duration is the computed
-// samples / rate with up to seventeen digits, and Fedify's parse (Temporal) refuses more than nine fractional digits.
-export type PlayableDocument = { width?: number; height?: number; duration?: string };
+// What a local attachment's Document carries of its stored meta and focus (activities.ts), whatever its type, as
+// ActivityPub::NoteSerializer's MediaAttachmentSerializer writes it (Mastodon v4.7.5, note_serializer.rb:292-330), each
+// on its own: the width and the height where meta.original has it, each only as a Document dimension
+// (isDocumentDimension, the rule Kopje's receiver reads by; docs/mastodon-deviations.md, "Media"); the duration as
+// ISO 8601 (ActiveSupport::Duration#iso8601 of the stored seconds, a Float in Mastodon, so 8 is "PT8.0S") within the
+// verifier's range (isDuration), to the millisecond (isoSeconds): a stored audio duration is the computed samples / rate
+// with up to seventeen digits, and Fedify's parse (Temporal) refuses more than nine fractional digits; and focalPoint
+// as [x, y] when the attachment shows a focus (focusX not null: status-rows.ts MEDIA_COLUMN_MAP.focus_x). `meta` is
+// read as mediaMetaSql bounds it; any other value of it gives no size and no duration.
+export type DocumentFacts = { width?: number; height?: number; duration?: string; focalPoint?: [number, number] };
 
-export function playableDocumentFacts(type: string, meta: string | null): PlayableDocument {
-  if (type !== "video" && type !== "audio") {
-    return {};
-  }
+export function documentFacts(meta: string | null, focusX: number | null, focusY: number): DocumentFacts {
   const original = storedMeta(meta).original;
   const { width, height, duration } =
     typeof original === "object" && original !== null ? (original as Record<string, unknown>) : {};
   return {
-    ...(isEdge(width) ? { width } : {}),
-    ...(isEdge(height) ? { height } : {}),
+    ...(isDocumentDimension(width) ? { width } : {}),
+    ...(isDocumentDimension(height) ? { height } : {}),
     ...(isDuration(duration) ? { duration: `PT${isoSeconds(duration)}S` } : {}),
+    ...(focusX === null ? {} : { focalPoint: [focusX, focusY] }),
   };
 }
 

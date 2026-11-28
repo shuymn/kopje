@@ -3,6 +3,7 @@ import type { Db } from "../db/sql";
 import { httpUrl } from "../platform/http-url";
 import { sha256Hex } from "../platform/sha256";
 import {
+  mediaMetaSql,
   presentedContent,
   presentedSpoiler,
   spoilerReadSql,
@@ -41,13 +42,13 @@ import {
   tagNameSql,
 } from "./status-bounds";
 import {
-  type PlayableDocument,
-  playableDocumentFacts,
+  type DocumentFacts,
+  documentFacts,
   presentedMediaDescription,
   shownCardUrl,
   thumbnailShown,
 } from "./status-presenter";
-import { CARD_COLUMN_MAP } from "./status-rows";
+import { CARD_COLUMN_MAP, MEDIA_COLUMN_MAP } from "./status-rows";
 
 // Outbound intents. A local change that federates records the ActivityPub activity it means and the audience it is
 // for in outbound_activities, in the transaction of the change. Nothing is delivered here: the delivery rounds
@@ -116,14 +117,23 @@ const EMOJI_TERMS = { toot: "http://joinmastodon.org/ns#", Emoji: "toot:Emoji" }
 // shows has a blurhash.
 const BLURHASH_TERMS = { toot: "http://joinmastodon.org/ns#", blurhash: "toot:blurhash" } as const;
 
+// Mastodon's focalPoint term (context_helper.rb:22, note_serializer.rb:264), added only when an attachment the Note
+// shows has a focalPoint. The list container keeps the two coordinates in order through a JSON-LD expansion.
+const FOCAL_POINT_TERMS = {
+  toot: "http://joinmastodon.org/ns#",
+  focalPoint: { "@container": "@list", "@id": "toot:focalPoint" },
+} as const;
+
 export function contextOf(facts: StatusFacts): readonly [string, Record<string, unknown>] {
   const [as, terms] = facts.poll === null ? NOTE_CONTEXT : POLL_CONTEXT;
+  const attachments = attachmentsOf(facts);
   return [
     as,
     {
       ...terms,
       ...(facts.emojis.length === 0 ? {} : EMOJI_TERMS),
-      ...(attachmentsOf(facts).some((document) => "blurhash" in document) ? BLURHASH_TERMS : {}),
+      ...(attachments.some((document) => "blurhash" in document) ? BLURHASH_TERMS : {}),
+      ...(attachments.some((document) => "focalPoint" in document) ? FOCAL_POINT_TERMS : {}),
       ...(facts.collections.length === 0 ? {} : FEATURED_COLLECTIONS_TERMS),
     },
   ];
@@ -178,15 +188,15 @@ export type StatusFacts = {
   quotePolicy: number;
   quote: NoteQuote | null;
   tags: { name: string; href: string }[];
-  // blurhash: as storedBlurhash keeps it. playable: a video's or audio file's width, height and duration
-  // (status-presenter.ts playableDocumentFacts), {} for any other. icon: a local video or audio upload's current
+  // blurhash: as storedBlurhash keeps it. facts: its width, height, duration and focalPoint, each where it has one
+  // (status-presenter.ts documentFacts). icon: a local video or audio upload's current
   // thumbnail as status-presenter.ts thumbnailShown accepts it (#1828 PR6), whose blurhash is then the attachment's.
   media: {
     url: string | null;
     content_type: string | null;
     description: string;
     blurhash: string | null;
-    playable: PlayableDocument;
+    facts: DocumentFacts;
     icon: { url: string; mediaType: string | null } | null;
   }[];
   // The Mention tags (href, name) the Note shows.
@@ -313,11 +323,14 @@ export function statusFacts(
     blurhash: SqlStorageValue;
     type: string;
     meta: string | null;
+    focus_x: number | null;
+    focus_y: number;
     thumbnail_preview: string | null;
     thumbnail_type: string | null;
     thumbnail_blurhash: SqlStorageValue;
   }>(
-    `SELECT m.url, m.content_type, m.description, m.blurhash, m.type, m.meta,
+    `SELECT m.url, m.content_type, m.description, m.blurhash, m.type, ${mediaMetaSql("m.meta")} AS meta,
+			${MEDIA_COLUMN_MAP.focus_x} AS focus_x, m.focus_y,
 			${thumbnailOfSql("m", "preview_url")} AS thumbnail_preview,
 			${thumbnailOfSql("m", "content_type")} AS thumbnail_type,
 			${thumbnailOfSql("m", "blurhash")} AS thumbnail_blurhash
@@ -361,15 +374,17 @@ export function statusFacts(
     recipients: mentioned.map((m) => ({ accountId: m.account_id, uri: m.uri, silent: m.silent === 1 })),
     reached,
     tags: tags.map((t) => ({ name: t.name, href: `${origin}/tags/${encodeURIComponent(t.name)}` })),
-    media: media.map(({ type, meta, thumbnail_preview, thumbnail_type, thumbnail_blurhash, ...m }) => {
-      const icon = type === "video" || type === "audio" ? thumbnailShown(thumbnail_preview, m.url) : null;
-      return {
-        ...m,
-        blurhash: storedBlurhash(icon === null ? m.blurhash : thumbnail_blurhash),
-        playable: playableDocumentFacts(type, meta),
-        icon: icon === null ? null : { url: icon, mediaType: thumbnail_type },
-      };
-    }),
+    media: media.map(
+      ({ type, meta, focus_x, focus_y, thumbnail_preview, thumbnail_type, thumbnail_blurhash, ...m }) => {
+        const icon = type === "video" || type === "audio" ? thumbnailShown(thumbnail_preview, m.url) : null;
+        return {
+          ...m,
+          blurhash: storedBlurhash(icon === null ? m.blurhash : thumbnail_blurhash),
+          facts: documentFacts(meta, focus_x, focus_y),
+          icon: icon === null ? null : { url: icon, mediaType: thumbnail_type },
+        };
+      },
+    ),
     mentions: mentionTags.map((m) => ({ href: m.uri, name: `@${m.username}@${m.domain ?? host}` })),
     emojis: localEmojiTags(db, row.emojis, origin, STATUS_EMOJIS_BYTES),
     poll: pollFacts(db, statusId),
@@ -399,8 +414,9 @@ function questionOf(poll: PollFacts): Record<string, unknown> {
 }
 
 // The Note's attachments: only http(s) URLs are published (HTML-3), and a blurhash only when there is one, where
-// Mastodon writes null (docs/mastodon-deviations.md, "Media"); a video's width and height and a video's or audio
-// file's duration as Mastodon writes them (an image's are not written); then the card the status shows as a FEP-8967 Link
+// Mastodon writes null (docs/mastodon-deviations.md, "Media"); each one's width, height, duration and focalPoint as
+// Mastodon's MediaAttachmentSerializer writes them, whatever its type (status-presenter.ts documentFacts; the focus
+// read only through focusShownSql, RES-2); then the card the status shows as a FEP-8967 Link
 // (ActivityPub::NoteSerializer#virtual_attachments, note_serializer.rb:137-139, :251-261).
 function attachmentsOf(facts: StatusFacts): Record<string, unknown>[] {
   const media = facts.media.flatMap((m) => {
@@ -414,7 +430,7 @@ function attachmentsOf(facts: StatusFacts): Record<string, unknown>[] {
             url: url.href,
             name: presentedMediaDescription(m.description),
             ...(m.blurhash === null ? {} : { blurhash: m.blurhash }),
-            ...m.playable,
+            ...m.facts,
             // Mastodon's ImageSerializer of the thumbnail (note_serializer.rb has_one :icon).
             ...(m.icon === null ? {} : { icon: { type: "Image", mediaType: m.icon.mediaType, url: m.icon.url } }),
           },

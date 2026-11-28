@@ -38,6 +38,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Authorizing a follow request through the API (`POST /api/v1/follow_requests/:id/authorize`) writes a `follow`
   notification from the new follower, pushed and streamed as any other, as Mastodon does. Unlocking the account still
   writes none.
+- A local status's Note gives each attachment's `focalPoint` when a focus was set (`0,0` included), with the
+  `focalPoint` term in its context, so other servers crop thumbnails around the focus. It also gives each attachment's
+  `width`, `height` and `duration`, whatever its type, as Mastodon does. A dimension is given only as a whole number of
+  pixels up to 100,000.
 
 ## [0.9.0] - 2026-11-28
 
