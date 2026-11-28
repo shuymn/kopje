@@ -154,9 +154,20 @@ export const accountFeaturedTags = readOperation<
 // (ACCOUNT_FEATURED_SQL). With `limit` (a public page's MAX_FEATURED_TAGS, within which every writer keeps an account),
 // the first `limit` rows only: at most `limit`, and no more rows read, whatever an import holds.
 export function accountFeaturedTagsOf(db: Db, accountId: string, origin: string, limit = -1): FeaturedTag[] {
-  return listedFeatured(db.all<FeaturedRow>(ACCOUNT_FEATURED_SQL, accountId, limit)).map((row) =>
-    presentFeatured(row, origin),
-  );
+  return accountFeaturedKeysOf(db, accountId, origin, limit).map(({ featured }) => featured);
+}
+
+// The same featured hashtags, each with its stored key decoded (featured_tags.name), the name that builds its url.
+export function accountFeaturedKeysOf(
+  db: Db,
+  accountId: string,
+  origin: string,
+  limit = -1,
+): { featured: FeaturedTag; key: string }[] {
+  return listedFeatured(db.all<FeaturedRow>(ACCOUNT_FEATURED_SQL, accountId, limit)).map((row) => ({
+    featured: presentFeatured(row, origin),
+    key: row.name,
+  }));
 }
 
 export type FeatureResult =

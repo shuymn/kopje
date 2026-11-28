@@ -38,6 +38,11 @@ export type ProfileView = {
   shell: boolean;
 };
 
+// The path of a local account's posts with the hashtag `tag`, the path of featured-tags.ts taggedUrl.
+export function taggedPath(username: string, tag: string): string {
+  return `/@${username}/tagged/${encodeURIComponent(tag)}`;
+}
+
 // The cursor-less path of a profile tab.
 function tabPath(username: string, tab: ProfileTab): string {
   const profile = `/@${username}`;
@@ -49,7 +54,7 @@ function tabPath(username: string, tab: ProfileTab): string {
     case "media":
       return `${profile}/media`;
     case "tagged":
-      return `${profile}/tagged/${encodeURIComponent(tab.tag)}`;
+      return taggedPath(username, tab.tag);
   }
 }
 

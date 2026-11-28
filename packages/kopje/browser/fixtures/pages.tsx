@@ -500,17 +500,17 @@ const ELEMENTS: Record<PageName, Child> = {
             statuses_count: "12",
             last_status_at: "2026-10-20",
           },
-          tag: "walks",
+          key: "walks",
         },
         {
           featured: {
             id: "2",
             name: "a-b",
-            url: `${ORIGIN}/@alice/tagged/ab`,
+            url: `${ORIGIN}/@alice/tagged/a-b`,
             statuses_count: "1",
             last_status_at: null,
           },
-          tag: null,
+          key: null,
         },
       ]}
       accounts={[

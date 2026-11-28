@@ -8,6 +8,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Fixed
+
+- The hashtags of a profile's Featured tab (`/@user/featured`) link to the account's posts with the hashtag
+  (`/@user/tagged/:name`), the page the API's featured tag `url` names, as Mastodon's web app does. A featured hashtag
+  whose stored name that page does not serve is shown without a link.
+
 ## [0.9.0] - 2026-11-28
 
 A minor release, published under the npm dist-tag `latest`. A remote account that has moved is shown as moved once a

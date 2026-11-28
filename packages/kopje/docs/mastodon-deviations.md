@@ -1386,8 +1386,8 @@ Hashtags (the `Tag` entity):
 - `/@user/featured` (the Featured tab of Mastodon's web app, which serves its single-page app there) is an HTML page of
   a local account's featured hashtags and the accounts it endorses, as `GET /api/v1/accounts/:id/featured_tags` and
   `/endorsements` list them to an anonymous client, the endorsements paged by account id. A featured hashtag links to
-  the instance's hashtag page (`/tags/:name`), not to the account's posts with it (`/@user/tagged/:tag`), and shows at
-  most ten hashtags, the first by id, though an import may hold more.
+  the page its `url` names, the account's posts with it, and has no link when that page does not serve its stored name.
+  The tab shows at most ten hashtags, the first by id, though an import may hold more.
 
 Admin account actions (`POST /api/v1/admin/accounts/:account_id/action`):
 

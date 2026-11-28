@@ -15,8 +15,7 @@ import { accountView, authorView, displayName } from "../view/account";
 import { emojiAllowance } from "../view/emoji";
 import { newestFirstPager } from "../view/pager";
 import { accountTarget } from "../view/remote";
-import { featuredPath, profileTabs } from "./profile";
-import { tagPath } from "./tag";
+import { featuredPath, profileTabs, taggedPath } from "./profile";
 
 export type FeaturedView = {
   account: Account;
@@ -65,9 +64,9 @@ export const FeaturedPage: FC<FeaturedView> = ({ account, tags, accounts, cursor
             <p class="muted">{m.featured.noHashtags}</p>
           ) : (
             <FeaturedTags
-              tags={tags.map(({ featured, tag }) => ({
+              tags={tags.map(({ featured, key }) => ({
                 name: featured.name,
-                href: tag === null ? null : tagPath(tag),
+                href: key === null ? null : taggedPath(account.username, key),
                 count: Number(featured.statuses_count),
               }))}
             />
