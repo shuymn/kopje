@@ -8,13 +8,24 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-28
+
+A minor release, published under the npm dist-tag `latest`. A remote account that has moved is shown as moved even when
+Kopje did not know its new account, and following it, suggesting it or moving followers to it behaves as Mastodon's
+does; a post can mention an account the instance has not stored; a domain block with `reject_media` hides that domain's
+media. It adds two Store migrations. Upgrading is recommended.
+
 ### Instance changes
 
-- Store schema: adds two migrations, applied on the first request after the deploy, so the release is a minor
-  version: 0124, an index, and 0125, `accounts.move_pending`, a column with a constant default and its triggers, which
-  reads and rewrites no row. Until they are applied the Store refuses every request, and it stays readonly until they
-  are verified ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an earlier
-  version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md).
+- Store schema: adds two migrations (0124, 0125), applied on the first request after the deploy. Until they are
+  applied the Store refuses every request, and it stays readonly until they are verified
+  ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an earlier version needs
+  the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the representative store defined in
+  `test/bench/migration-cost.ts` the two took 14–15 ms together (median 14 ms) in three runs of the migration bench
+  workflow on a GitHub-hosted runner, in workerd's local Durable Object SQLite. Migration `0124_reject_media_blocks`
+  adds a partial index on `instance_domain_blocks` (the blocks with `reject_media`), built by one pass over that table;
+  it rewrites no row and changes no trigger. Migration `0125_account_move_pending` adds `accounts.move_pending`, a
+  column with a constant default, and two triggers; it reads and rewrites no row, and the column is in a dump.
 - `wrangler.jsonc`: no change.
 
 ### Added
