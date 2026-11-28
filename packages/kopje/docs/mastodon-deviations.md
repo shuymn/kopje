@@ -628,16 +628,17 @@ Accounts (the `Account` and credential account entities):
   processes the account (`process_account_service.rb:516-519`): until a round runs, `moved` is absent. Only an `https:`
   id on a public host, with no fragment and not on this instance, is fetched. The fetch is signed as the instance actor,
   as Mastodon's `FetchRemoteAccountService` signs it, follows no redirect, and takes the account only when its document
-  has exactly that id, names no `movedTo` of its own (Rails' `present?`, `fetch_remote_actor_service.rb:33`) and
-  WebFinger confirms its handle; a destination that cannot be fetched for now is loaded once per read claim until the
-  read is given up, and one refused or gone leaves `moved` absent until the source's document is stored again. An
-  account stored by an earlier release resolves its destination only when its document is next stored. Mastodon
-  processes a `Move` once per source account for 7 days (`move.rb:38`), Kopje once per activity id while its job is kept
-  (30 days). Mastodon refreshes an account on a signature only after verification with the stored key fails
-  (`signature_verification.rb:59-61`), and `possibly_stale?` chooses a full refresh or one of the key alone, which
-  leaves `movedTo` as it was (`signature_verification.rb:123-127`, `process_account_service.rb:103`); Kopje stores every
-  fresh document it fetches, its `movedTo` included, unless a newer store superseded it (below). A local account never
-  has one: Kopje sends no `Move`. Followers move only on a verified `Move` whose target lists the source.
+  spells its `id` exactly as that URL (`json['id'] == uri`, `json_ld_helper.rb:242-252`), names no `movedTo` of its own
+  (Rails' `present?`, `fetch_remote_actor_service.rb:33`) and WebFinger confirms its handle; a destination that cannot
+  be fetched for now is loaded once per read claim until the read is given up, and one refused or gone leaves `moved`
+  absent until the source's document is stored again. An account stored by an earlier release resolves its destination
+  only when its document is next stored. Mastodon processes a `Move` once per source account for 7 days (`move.rb:38`),
+  Kopje once per activity id while its job is kept (30 days). Mastodon refreshes an account on a signature only after
+  verification with the stored key fails (`signature_verification.rb:59-61`), and `possibly_stale?` chooses a full
+  refresh or one of the key alone, which leaves `movedTo` as it was (`signature_verification.rb:123-127`,
+  `process_account_service.rb:103`); Kopje stores every fresh document it fetches, its `movedTo` included, unless a
+  newer store superseded it (below). A local account never has one: Kopje sends no `Move`. Followers move only on a
+  verified `Move` whose target lists the source.
 - An account that has moved cannot be followed: the follow API answers 403 `This action is not allowed`, also to change
   the options of an existing follow, after the 404 of an unavailable account, as Mastodon's `FollowService` does
   (`follow_service.rb:23-24,57`), and `/authorize_interaction` shows the follow refused. A move counts when `moved`

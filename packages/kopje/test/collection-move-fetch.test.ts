@@ -269,6 +269,17 @@ describe("the move part", () => {
     expect(firsts).toEqual([DEST, `${bob.uri}/following`, `${bob.uri}/collections/tags`]);
   });
 
+  // Mastodon takes the destination only when the document's literal id is the URL it fetched (json_ld_helper.rb
+  // fetch_resource: json['id'] == uri), so one naming the same URL in another spelling is refused.
+  it("refuses a destination whose document spells its id otherwise than the URL fetched", async () => {
+    const t = await setup();
+    const { bob, dest } = await pendingBob(t);
+    t.web.serve(DEST, { ...dest.document, id: "https://OTHER.example:443/users/dest" });
+    await syncUntilDone(t);
+    expect(await storedUri(t, DEST)).toBeUndefined();
+    expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 0 });
+  });
+
   it("follows no redirect: a destination that redirects settles with nothing", async () => {
     const t = await setup();
     const { bob, dest } = await pendingBob(t);

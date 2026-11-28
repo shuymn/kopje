@@ -373,16 +373,21 @@ type ReadLoaders = {
 };
 
 // ProcessAccountService#moved_account's fetch (FetchRemoteAccountService with break_on_redirect, one hop): the
-// destination's document by its id, without a redirect, which must name no movedTo of its own
-// (fetch_remote_actor_service.rb:33, Rails' present?), and its claim confirmed by WebFinger (resolve.ts
-// confirmedInput; no row of it is stored). A 404 or 410 deletes nothing: the fetch was made for another account.
+// destination's document by its id, without a redirect, whose literal id must be that URL as fetched (Mastodon's
+// fetch_resource with id: true, json_ld_helper.rb:242-252: json['id'] == uri; readActor's parsed check, ID-2, holds as
+// well) and which must name no movedTo of its own (fetch_remote_actor_service.rb:33, Rails' present?), and its claim
+// confirmed by WebFinger (resolve.ts confirmedInput; no row of it is stored). A 404 or 410 deletes nothing: the fetch was made for another account.
 async function readMoved(movedTo: string, loaders: RemoteLoaders, instanceDomain: string): Promise<MoveOutcome> {
   const final = { kind: "failed", final: true } as const;
   const fetched = await fetchActor(movedTo, loaders.capped(MOVED_CAPS), loaders.context);
   if (fetched.kind === "transient") {
     return { kind: "failed", final: false };
   }
-  if (fetched.kind !== "ok" || fetched.input === null || railsPresent(literalMovedTo(fetched.input.raw))) {
+  if (fetched.kind !== "ok" || fetched.input === null) {
+    return final;
+  }
+  const literal = literalMembers(fetched.input.raw);
+  if (literal.id !== movedTo || railsPresent(literal.movedTo)) {
     return final;
   }
   const checked = await confirmedInput(loaders, fetched.input, null, instanceDomain);
@@ -392,10 +397,11 @@ async function readMoved(movedTo: string, loaders: RemoteLoaders, instanceDomain
   return checked.outcome === "confirmed" ? { kind: "moved", document: checked.input } : final;
 }
 
-// The literal movedTo member of a fetched actor document, as Mastodon reads `@json['movedTo']`.
-function literalMovedTo(raw: string): unknown {
+// The members of a fetched actor document by their literal spelling, as Mastodon reads `json['id']` and
+// `@json['movedTo']`.
+function literalMembers(raw: string): Record<string, unknown> {
   const parsed = JSON.parse(raw) as unknown;
-  return isObject(parsed) ? parsed.movedTo : undefined;
+  return isObject(parsed) ? parsed : {};
 }
 
 // Each part's read, which records in `out` what it read through.
