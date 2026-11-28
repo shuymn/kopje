@@ -1,10 +1,10 @@
 import { selectSql } from "../db/columns";
-import { ACCOUNTS_ID_INDEX, POLL_VOTES_KEY_INDEX, POLLS_STATUS_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, POLLS_STATUS_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { emojiCacheSql, STATUS_EMOJIS_BYTES } from "../platform/stored-bounds";
 import { presentedMediaRejectedSql } from "./audience";
 import { type CustomEmoji, emojiCacheOf, pollEmojis, presentEmojis } from "./custom-emojis";
-import { OWN_VOTE_COLUMNS, POLL_COLUMN_MAP } from "./status-rows";
+import { currentVotesSql, OWN_VOTE_COLUMNS, POLL_COLUMN_MAP } from "./status-rows";
 
 // Polls as status-presenter.ts and polls.ts present them: only counts and the viewer's own votes (R27), never who
 // voted.
@@ -90,7 +90,7 @@ export function presentPolls(
     for (const vote of db.all<{ poll_id: string; choice: number }>(
       `SELECT ${selectSql(OWN_VOTE_COLUMNS.columns)} FROM json_each(?2) j
 				CROSS JOIN polls p INDEXED BY ${POLLS_STATUS_INDEX} ON p.status_id = j.value
-				CROSS JOIN poll_votes v INDEXED BY ${POLL_VOTES_KEY_INDEX} ON v.poll_id = p.status_id AND v.generation = p.generation AND v.account_id = ?1
+				CROSS JOIN ${currentVotesSql("?1")}
 			ORDER BY v.id`,
       viewerId,
       JSON.stringify(rows.map((row) => row.status_id)),
