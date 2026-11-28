@@ -4735,9 +4735,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a
-  permanent answer (Mastodon's rule: 4xx except 401, 408 and 429, and 501), judged on the RFC 9421 retry's answer when
-  the draft-cavage POST is answered 400 or 401 (a retry the deadline leaves no room for fails as transient; NET-2;
-  `test/delivery-post.test.ts` ("settles by the second answer", "knocks again on the next attempt")), and are listed and
+  permanent answer (Mastodon's general rule: 4xx except 401, 408 and 429, and 501; Mastodon also treats 401 as permanent
+  for a permanently unavailable sender), judged on the RFC 9421 retry's answer when the draft-cavage POST is answered
+  400 or 401 (a retry the deadline leaves no room for fails as transient; NET-2; `test/delivery-post.test.ts` ("settles
+  by the second answer", "knocks again on the next attempt")), except that a shared-inbox 404, 405 or 410 (from either
+  the first POST or the RFC 9421 retry) still retries immediately at an eligible personal inbox on the same origin while
+  attempts remain (`personalFallback` and `forwardFallback` in `src/domain/deliveries.ts`, NET-2), and are listed and
   retried through
   `/admin/deliveries` and `kopje-admin deliveries`; in maintenance nothing is claimed, so no attempt is counted. An
   activity a later one about the same object follows (an `Undo`, `Delete` or `Update`) is superseded and never sent
@@ -5224,8 +5227,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   is unattached and swept after its grace. S10's decision stands whether or not its answer is sent: one decided just
   before the give-up leaves a completed upload unattached until the sweep, as W11 lets a decided answer cross a restore.
   `V1_TIME_MS` is a compiled constant, 480 s, set from measured browser waits (`docs/media-processor.md`); these
-  clauses are _Enforced (main)_ for the cases the route tests cover, the staging gates of #1828 PR4-4 pending.
-  `test/media-av-upload.test.ts` ("the v1
+  clauses are _Enforced (main)_ for the cases the route tests cover. `test/media-av-upload.test.ts` ("the v1
   wait (P8, H1, C2-M3, r4 H1, M5, W5)", "Images and the active path (Q1, route side)"), `test/media.test.ts` ("the
   upload route with video and audio active (P1, Q1, C2-M6)"), `test/media-av-budget.test.ts` ("the upload budget
   (P15)"), `test/media-processing-precedence.test.ts` ("S3 charges one unit on the queue and none on its repeat
