@@ -117,6 +117,17 @@ describe("actor document", () => {
     expect((body as { published: unknown }).published).toBe("2026-10-12T00:00:00Z");
   });
 
+  // An imported time with an offset names the instant 2026-10-11T23:15:00Z, so the UTC day 2026-10-11 (Fedify's parse).
+  it("publishes the UTC day's midnight for a creation time with an offset", async () => {
+    const { json, store } = await instance();
+    await runInDurableObject(store, (_instance, state) => {
+      state.storage.sql.exec("UPDATE accounts SET created_at = '2026-10-12T00:15:00+01:00' WHERE id = ?", ALICE);
+    });
+    const { status, body } = await json("/ap/users/Alice");
+    expect(status).toBe(200);
+    expect((body as { published: unknown }).published).toBe("2026-10-11T00:00:00Z");
+  });
+
   // HTML-3: a stored avatar or header that is not an http(s) URL is left out of the actor.
   it.each(["javascript:alert(1)", "JAVASCRIPT:alert(1)", "data:image/png;base64,AAAA", "/a.png"])(
     "leaves out an icon and image stored as %j",

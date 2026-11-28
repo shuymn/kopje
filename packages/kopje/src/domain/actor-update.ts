@@ -101,7 +101,7 @@ function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
     featuredTags: `${row.uri}/collections/tags`,
     endpoints: { sharedInbox: `${origin}/inbox` },
     publicKey: { id: `${row.uri}#main-key`, owner: row.uri, publicKeyPem: row.pubkey },
-    published: actorPublished(row),
+    published: actorPublished(row.created_at),
     ...(suspended
       ? { manuallyApprovesFollowers: false, discoverable: false, indexable: false, suspended: true }
       : {

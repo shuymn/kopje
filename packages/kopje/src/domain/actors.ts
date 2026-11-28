@@ -96,7 +96,7 @@ export function localActorOf(db: Db, username: string): LocalActor | null {
     emojis:
       row.suspended_at === null ? localEmojiTags(db, row.emojis, new URL(row.uri).origin, ACCOUNT_EMOJIS_BYTES) : [],
     pubkey: row.pubkey,
-    createdAt: actorPublished(row),
+    createdAt: actorPublished(row.created_at),
   };
 }
 

@@ -1,5 +1,6 @@
+import { Temporal } from "temporal-polyfill";
+
 import { attributionDomainsSql, displayNameReadSql, presentedLocalFieldsSql } from "../platform/stored-bounds";
-import { createdDaySql } from "./account-columns";
 
 // A local actor's row as ACTOR_ROW_COLUMN_MAP selects it, from accounts a and local_accounts l: what the actor endpoint
 // (actors.ts localActorOf) and the profile Update (actor-update.ts) render. attribution_domains is read within
@@ -30,7 +31,6 @@ export type ActorRow = {
   suspended_at: string | null;
   pubkey: string;
   created_at: string;
-  created_day: string | null;
   emojis: string | null;
 };
 
@@ -56,12 +56,26 @@ export const ACTOR_ROW_COLUMN_MAP = {
   suspended_at: "l.suspended_at",
   pubkey: "l.pubkey",
   created_at: "a.created_at",
-  created_day: createdDaySql("a.created_at"),
   emojis: "a.emojis",
 } as const satisfies Record<keyof ActorRow, string>;
 
-// The actor's `published`, as ActivityPub::ActorSerializer#published writes it (created_at.midnight.iso8601): the
-// creation day's midnight UTC, or the stored value when it is not a stored time (createdDaySql).
-export function actorPublished(row: Pick<ActorRow, "created_at" | "created_day">): string {
-  return row.created_day === null ? row.created_at : `${row.created_day}T00:00:00Z`;
+// The midnight UTC of the day the time `value` names, as ActivityPub::ActorSerializer#published writes an actor's
+// creation (created_at.midnight.iso8601), or null when `value` is not an instant as a whole: Temporal.Instant.from,
+// as Fedify reads the published it is given, so an offset names its UTC day and an hour or a day that does not exist
+// names none. The one judgment of the endpoint and every Update (actorPublished) and of the rescue path's kept
+// documents (federation/snapshot.ts).
+export function publishedDay(value: string): string | null {
+  let instant: string;
+  try {
+    instant = Temporal.Instant.from(value).toString();
+  } catch {
+    return null;
+  }
+  return `${instant.slice(0, instant.indexOf("T"))}T00:00:00Z`;
+}
+
+// The actor's `published`: its creation day's midnight UTC (publishedDay), or the stored value when it is not an
+// instant, as before #1564.
+export function actorPublished(createdAt: string): string {
+  return publishedDay(createdAt) ?? createdAt;
 }
