@@ -16,6 +16,7 @@ import {
 } from "../src/platform/stored-bounds";
 import { bearer, json, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { PUBLISHED_DAY, storeCreatedAt } from "./created-at-fixtures";
 import { LEGACY } from "./federation-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
 import { bytes, mediaForm, TestCodec } from "./media-helpers";
@@ -28,14 +29,12 @@ import { csrfOf, ORIGIN, signIn } from "./web-helpers";
 // Profile changes reach other servers as Update(Person) through outbound delivery (VIS-3's "changes reach only the
 // original audience" for an actor: its followers), and a later Update supersedes an earlier one.
 
-const CREATED_AT = "2026-10-12T13:14:15.678Z";
-
 async function setup() {
   const codec = new TestCodec();
   const h = await community(["alice"], "read write follow", { images: () => codec });
   await sql(h.store, "UPDATE local_accounts SET pubkey = ?", LEGACY.pubkey);
   // A creation time past midnight, so that a renderer publishing it instead of the day's midnight differs.
-  await sql(h.store, "UPDATE accounts SET created_at = ? WHERE id = ?", CREATED_AT, h.users.alice.id);
+  await storeCreatedAt(h.store, h.users.alice.id);
   const fan = await remoteAccount(h.store, "fan", "fans.example");
   await remoteFollows(h.store, fan, h.users.alice.id);
   return h;
@@ -163,7 +162,7 @@ describe("Update(Person)", () => {
       await h.request("/ap/users/alice", { headers: { accept: "application/activity+json" } })
     ).json<Record<string, unknown>>();
     expect(comparable(latest?.object ?? {})).toEqual(comparable(actor));
-    expect([latest?.object.published, actor.published]).toEqual(["2026-10-12T00:00:00Z", "2026-10-12T00:00:00Z"]);
+    expect([latest?.object.published, actor.published]).toEqual([PUBLISHED_DAY, PUBLISHED_DAY]);
   });
 
   it("sends nothing when the published profile does not change", async () => {

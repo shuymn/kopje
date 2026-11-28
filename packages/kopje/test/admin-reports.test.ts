@@ -32,6 +32,7 @@ import {
   ORIGIN,
   statusBudgetEdge,
 } from "./budget-helpers";
+import { CREATED_AT, CREATED_DAY, storeCreatedAt } from "./created-at-fixtures";
 import { migratedStore } from "./helpers";
 import { ACCESS, ADMIN_EMAIL } from "./ops-helpers";
 import { observedSql, plannedRun } from "./read-helpers";
@@ -221,13 +222,8 @@ describe("GET /api/v1/admin/reports/:id", () => {
       comment: "spam",
       rule_ids: ["2"],
     });
-    // A creation time past midnight: the admin entity shows it exactly, its nested account the day's midnight.
-    await sql(h.store, "UPDATE accounts SET created_at = '2026-10-12T13:14:15.678Z' WHERE id = ?", carol);
+    await storeCreatedAt(h.store, carol);
     const body = await reportOf(h, id, admin);
-    expect([
-      body.target_account.created_at,
-      (body.target_account.account as { created_at: string }).created_at,
-    ]).toEqual(["2026-10-12T13:14:15.678Z", "2026-10-12T00:00:00.000Z"]);
     expect(Object.keys(body)).toEqual([
       "id",
       "action_taken",
@@ -301,6 +297,7 @@ describe("GET /api/v1/admin/reports/:id", () => {
       id: carol,
       username: "carol",
       domain: "remote.example",
+      created_at: CREATED_AT,
       email: null,
       confirmed: null,
       suspended: false,
@@ -308,7 +305,7 @@ describe("GET /api/v1/admin/reports/:id", () => {
       approved: null,
       locale: null,
       ips: [],
-      account: { id: carol, acct: "carol@remote.example" },
+      account: { id: carol, acct: "carol@remote.example", created_at: CREATED_DAY },
       role: null,
     });
     // Assigned to the admin: the admin's account shows the Owner role with the permissions served.
