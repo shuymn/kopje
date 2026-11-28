@@ -26,6 +26,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   paging through those newer posts. A status the request finds can also lie past the offset of 10,000 a client may
   request. A search of the viewer's own account, a search without `account_id`, and URL resolution are unchanged
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials).
+- An account's `created_at` is midnight UTC of its creation day, and a local account's actor publishes that midnight as
+  `published`, as Mastodon does. The admin API's own `created_at` stays exact.
 
 ### Fixed
 

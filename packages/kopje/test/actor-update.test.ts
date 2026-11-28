@@ -16,6 +16,7 @@ import {
 } from "../src/platform/stored-bounds";
 import { bearer, json, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { PUBLISHED_DAY, storeCreatedAt } from "./created-at-fixtures";
 import { LEGACY } from "./federation-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
 import { bytes, mediaForm, TestCodec } from "./media-helpers";
@@ -32,6 +33,8 @@ async function setup() {
   const codec = new TestCodec();
   const h = await community(["alice"], "read write follow", { images: () => codec });
   await sql(h.store, "UPDATE local_accounts SET pubkey = ?", LEGACY.pubkey);
+  // A creation time past midnight, so that a renderer publishing it instead of the day's midnight differs.
+  await storeCreatedAt(h.store, h.users.alice.id);
   const fan = await remoteAccount(h.store, "fan", "fans.example");
   await remoteFollows(h.store, fan, h.users.alice.id);
   return h;
@@ -39,17 +42,15 @@ async function setup() {
 
 // An actor document with every key kept, in the form the Update's object and the actor endpoint agree on. The
 // endpoint's is compacted JSON-LD from Fedify: a one-element array is its element and an empty one is left out, the
-// key is re-exported as PEM with line breaks, `published` carries milliseconds, and its key is typed CryptographicKey
-// (which Mastodon's PublicKeySerializer, and so the Update, leaves out). Its own @context is not part of the object.
+// key is re-exported as PEM with line breaks, and its key is typed CryptographicKey (which Mastodon's
+// PublicKeySerializer, and so the Update, leaves out). Its own @context is not part of the object. `published` is
+// compared as written: both write the creation day's midnight as `…T00:00:00Z` (actor-row.ts actorPublished).
 function comparable(value: unknown, key = ""): unknown {
   if (Array.isArray(value)) {
     return value.length === 1 ? comparable(value[0], key) : value.map((item) => comparable(item, key));
   }
   if (typeof value === "string") {
-    if (key === "publicKeyPem") {
-      return value.replaceAll(/\s/g, "");
-    }
-    return key === "published" ? new Date(value).toISOString() : value;
+    return key === "publicKeyPem" ? value.replaceAll(/\s/g, "") : value;
   }
   if (typeof value !== "object" || value === null) {
     return value;
@@ -89,20 +90,22 @@ describe("the parity comparison", () => {
     const pem = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n";
     expect(
       comparable({
-        published: "2026-11-14T00:00:00.000Z",
         alsoKnownAs: [],
         attachment: { type: "PropertyValue" },
         publicKey: { id: "k", type: "CryptographicKey", publicKeyPem: pem },
       }),
     ).toEqual(
       comparable({
-        published: "2026-11-14T00:00:00Z",
         attachment: [{ type: "PropertyValue" }],
         publicKey: { id: "k", publicKeyPem: pem.replaceAll("\n", "") },
       }),
     );
-    // A time-shaped value of another key, and a key typed other than CryptographicKey, still differ.
-    expect(comparable({ name: "2026-11-14T00:00:00Z" })).not.toEqual(comparable({ name: "2026-11-14T00:00:00.000Z" }));
+    // Two spellings of one time, `published`'s included, and a key typed other than CryptographicKey, still differ.
+    for (const key of ["name", "published"]) {
+      expect(comparable({ [key]: "2026-11-14T00:00:00Z" })).not.toEqual(
+        comparable({ [key]: "2026-11-14T00:00:00.000Z" }),
+      );
+    }
     expect(comparable({ publicKey: { id: "k", type: "Person" } })).not.toEqual(comparable({ publicKey: { id: "k" } }));
   });
 });
@@ -159,6 +162,7 @@ describe("Update(Person)", () => {
       await h.request("/ap/users/alice", { headers: { accept: "application/activity+json" } })
     ).json<Record<string, unknown>>();
     expect(comparable(latest?.object ?? {})).toEqual(comparable(actor));
+    expect([latest?.object.published, actor.published]).toEqual([PUBLISHED_DAY, PUBLISHED_DAY]);
   });
 
   it("sends nothing when the published profile does not change", async () => {

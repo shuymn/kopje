@@ -1,4 +1,4 @@
-import { type ColumnMap, fixedColumns, fixedNumeric } from "../db/columns";
+import { type ColumnMap, fixedColumns, fixedNumeric, sameBytesAs } from "../db/columns";
 import { LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import { DOMAIN_BYTES } from "../platform/identity-bounds";
 import {
@@ -127,7 +127,8 @@ export const ACCOUNT_COLUMN_MAP = {
   followers_count: presentedCountSql("a.followers_count"),
   following_count: presentedCountSql("a.following_count"),
   statuses_count: presentedCountSql("a.statuses_count"),
-  created_at: "a.created_at",
+  // The row heap estimate measures the stored column (sameBytesAs).
+  created_at: sameBytesAs(createdAtSql("a.created_at"), "a.created_at"),
   available: availableJoinedSql("a", "l"),
   last_status_at: lastStatusAtSql("a"),
   local_fields: presentedLocalFieldsSql("l.fields"),
@@ -145,6 +146,25 @@ export const ACCOUNT_COLUMN_MAP = {
 // The local_accounts row `l` of the account `a` that ACCOUNT_COLUMN_MAP and availableJoinedSql read, sought by its key
 // whatever the Store's statistics say (RES-7).
 export const LOCAL_ROW_JOIN = `LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id`;
+
+// The stored time `column` when it is one as a whole (isoTimeSql), else NULL. Its bytes are judged first, from the
+// record header (octet_length), so a longer imported value is never loaded to be judged (RES-3).
+export function storedTimeSql(column: string): string {
+  return `CASE WHEN octet_length(${column}) = 24 THEN ${isoTimeSql(column)} END`;
+}
+
+// The creation day of the stored time `column` (YYYY-MM-DD), which an Account's created_at and a local actor's published
+// present at its midnight UTC as Mastodon's serializers do (created_at.midnight), else NULL, so a value that is not a
+// stored time is presented as it is today.
+function createdDaySql(column: string): string {
+  return `substr(${storedTimeSql(column)}, 1, 10)`;
+}
+
+// An Account's created_at (REST::AccountSerializer#created_at): the creation day's midnight UTC (createdDaySql), else
+// the stored value. Both are 24 bytes for a stored time, so it has the stored column's bytes.
+function createdAtSql(column: string): string {
+  return `COALESCE(${createdDaySql(column)} || 'T00:00:00.000Z', ${column})`;
+}
 
 // The date of the account `a`'s newest status its followers reach.
 function lastStatusAtSql(a: string): string {
@@ -195,7 +215,8 @@ const MOVED_COLUMN_MAP = {
   followers_count: presentedCountSql("m.followers_count"),
   following_count: presentedCountSql("m.following_count"),
   statuses_count: presentedCountSql("m.statuses_count"),
-  created_at: textCut("m.created_at", POINT_BYTES * MOVED_CREATED_AT_LIMIT),
+  // Judged on the stored value, before the cut: a value the cut would make a stored time is not one.
+  created_at: textCut(createdAtSql("m.created_at"), POINT_BYTES * MOVED_CREATED_AT_LIMIT),
   available: availableJoinedSql("m", "ml"),
   last_status_at: byteCut(lastStatusAtSql("m"), POINT_BYTES * MOVED_LAST_STATUS_AT_LIMIT),
   hide_collections: movedFlag("COALESCE(ml.hide_collections, m.hide_collections)"),

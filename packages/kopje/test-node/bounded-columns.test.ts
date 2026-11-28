@@ -402,6 +402,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "featureApprovalSql",
   // A stored time read as its 24-byte ISO form, or NULL (platform/stored-bounds.ts).
   "isoTimeSql",
+  // A stored time read as itself when its 24 bytes are one, or NULL (domain/account-columns.ts).
+  "storedTimeSql",
   // A status's publication and edit times read as 24-byte ISO times (platform/stored-bounds.ts).
   "statusEditedSql",
   "statusPublishedSql",

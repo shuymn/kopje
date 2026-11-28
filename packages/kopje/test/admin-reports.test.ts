@@ -32,6 +32,7 @@ import {
   ORIGIN,
   statusBudgetEdge,
 } from "./budget-helpers";
+import { CREATED_AT, CREATED_DAY, storeCreatedAt } from "./created-at-fixtures";
 import { migratedStore } from "./helpers";
 import { ACCESS, ADMIN_EMAIL } from "./ops-helpers";
 import { observedSql, plannedRun } from "./read-helpers";
@@ -221,6 +222,7 @@ describe("GET /api/v1/admin/reports/:id", () => {
       comment: "spam",
       rule_ids: ["2"],
     });
+    await storeCreatedAt(h.store, carol);
     const body = await reportOf(h, id, admin);
     expect(Object.keys(body)).toEqual([
       "id",
@@ -295,6 +297,7 @@ describe("GET /api/v1/admin/reports/:id", () => {
       id: carol,
       username: "carol",
       domain: "remote.example",
+      created_at: CREATED_AT,
       email: null,
       confirmed: null,
       suspended: false,
@@ -302,7 +305,7 @@ describe("GET /api/v1/admin/reports/:id", () => {
       approved: null,
       locale: null,
       ips: [],
-      account: { id: carol, acct: "carol@remote.example" },
+      account: { id: carol, acct: "carol@remote.example", created_at: CREATED_DAY },
       role: null,
     });
     // Assigned to the admin: the admin's account shows the Owner role with the permissions served.

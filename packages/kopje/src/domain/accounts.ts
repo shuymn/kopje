@@ -254,6 +254,8 @@ export type AccountRow = {
   followers_count: number;
   following_count: number;
   statuses_count: number;
+  // The creation day's midnight UTC when the stored value is a stored time, else as stored (account-columns.ts
+  // createdAtSql).
   created_at: string;
   // R1, read live in the query that reads the row (availableJoinedSql): 0 for an unavailable account.
   available: number;

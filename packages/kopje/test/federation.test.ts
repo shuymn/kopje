@@ -8,6 +8,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import { base64ToBytes } from "../src/security/key-wrap";
 import { checkKey } from "../src/security/keyring";
 import { harness } from "./app-helpers";
+import { PUBLISHED_DAY, storeCreatedAt } from "./created-at-fixtures";
 import {
   fixtureKeyGen,
   LEGACY,
@@ -104,6 +105,25 @@ describe("actor document", () => {
     // The same key as local_accounts.pubkey (Fedify re-wraps the base64 at 64 columns).
     const { publicKeyPem } = (body as { publicKey: { publicKeyPem: string } }).publicKey;
     expect(pemBody(publicKeyPem)).toBe(pemBody(LEGACY.pubkey));
+  });
+
+  // ActivityPub::ActorSerializer#published: the creation day's midnight UTC (created_at.midnight.iso8601).
+  it("publishes the creation day's midnight for a creation time past it", async () => {
+    const { json, store } = await instance();
+    await storeCreatedAt(store, ALICE);
+    const { status, body } = await json("/ap/users/Alice");
+    expect(status).toBe(200);
+    expect((body as { published: unknown }).published).toBe(PUBLISHED_DAY);
+  });
+
+  // An imported time in another form than Kopje's writers store is published as before #1564 (Fedify's reading of it),
+  // as the Account shows it as stored (account-created-at.test.ts).
+  it("publishes a creation time with an offset as it did before", async () => {
+    const { json, store } = await instance();
+    await storeCreatedAt(store, ALICE, "2026-10-12T00:15:00+01:00");
+    const { status, body } = await json("/ap/users/Alice");
+    expect(status).toBe(200);
+    expect((body as { published: unknown }).published).toBe("2026-10-11T23:15:00Z");
   });
 
   // HTML-3: a stored avatar or header that is not an http(s) URL is left out of the actor.

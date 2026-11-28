@@ -15,6 +15,7 @@ import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, form, login, registerApp, seedAccount, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { CREATED_AT, CREATED_DAY, storeCreatedAt } from "./created-at-fixtures";
 import { longestString, observedSql } from "./read-helpers";
 import { storeWith } from "./setup-helpers";
 import { community } from "./status-helpers";
@@ -198,11 +199,12 @@ describe("the admin account entity (REST::Admin::AccountSerializer)", () => {
   it("shows a local account's email and role, a remote account's nulls, and an unavailable one as suspended", async () => {
     const { h, ids, admin } = await world();
     const show = async (id: string) => (await call(h, `/api/v1/admin/accounts/${id}`, admin)).body as AdminAccountBody;
+    await storeCreatedAt(h.store, ids.alice);
     expect(await show(ids.alice)).toEqual({
       id: ids.alice,
       username: "alice",
       domain: null,
-      created_at: expect.any(String),
+      created_at: CREATED_AT,
       email: "alice@example.com",
       ip: null,
       confirmed: true,
@@ -214,7 +216,12 @@ describe("the admin account entity (REST::Admin::AccountSerializer)", () => {
       locale: null,
       invite_request: null,
       ips: [],
-      account: expect.objectContaining({ id: ids.alice, username: "alice", acct: "alice" }),
+      account: expect.objectContaining({
+        id: ids.alice,
+        username: "alice",
+        acct: "alice",
+        created_at: CREATED_DAY,
+      }),
       role: { id: "-99", name: "", permissions: "0", color: "", highlighted: false, collection_limit: 10 },
     });
     expect((await show(ids.owner)).role).toEqual({
