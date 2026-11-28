@@ -166,10 +166,10 @@ export function imagesCodec(binding: ImagesBinding, { input = "stream" }: { inpu
   };
 }
 
-// Mastodon's byte limit for images: 16 MB (MediaAttachment::IMAGE_LIMIT). Workers accept request bodies up to 100 MB
-// and have 128 MB of memory; one upload holds the body, the file, two outputs and the preview's RGBA (at most
-// PREVIEW_RGBA_LIMIT bytes, its blurhash's fit at most 40,000), so 16 MB stays well inside both. No test models an
-// upload's peak (the card image's is test/cron-memory.test.ts).
+// Mastodon's byte limit for images: 16 MB (MediaAttachment::IMAGE_LIMIT). Workers accept request bodies up to 100 MiB
+// (104,857,600 bytes) and have 128 MB of memory; one upload holds the body, the file, two outputs and the preview's
+// RGBA (at most PREVIEW_RGBA_LIMIT bytes, its blurhash's fit at most 40,000), so 16 MB stays well inside both. No test
+// models an upload's peak (the card image's is test/cron-memory.test.ts).
 export const IMAGE_SIZE_LIMIT = 16 * 1024 * 1024;
 // The most pixels a local image may hold, judged from Images' info() before any output and advertised as
 // image_matrix_limit: Mastodon's MAX_MATRIX_LIMIT since v4.2 (app/models/concerns/attachmentable.rb:8, v4.7.5).
