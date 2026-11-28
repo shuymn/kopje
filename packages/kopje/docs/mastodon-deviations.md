@@ -327,8 +327,20 @@ settings page):
 - Images uploaded before still renditions were made keep `avatar_static` and `header_static` equal to the image until
   they are replaced, unless `kopje-admin media-rebuild` makes their missing files, which sets an animated one's still.
 - The `preview_url` of an animated upload (status media included) is a still.
-- `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
-  and interactions, or one account's posts the viewer may see, never a public index.
+- `indexable` decides whether a status text search with `account_id` reaches the account's public statuses outside the
+  viewer's own posts and interactions, as Mastodon's public index does; the interactions are those of Mastodon's
+  `searchable_by` (kept boosts, favourites, bookmarks, active mentions, and votes in the poll's current generation). A
+  search with `account_id` of another account takes as candidates, per request, the account's newest 2,500 originals
+  and the viewer's newest 2,500 boosts, favourites, bookmarks and mentions, each within the request's `max_id` and
+  `min_id`, and the polls of the viewer's newest 2,500 vote rows, taken before `max_id` and `min_id` apply; it keeps
+  those the viewer may search and pages them by offset. Two limits remain where Mastodon's index finds more. First, a
+  status outside every candidate window of the requests a client makes is not found: when an indexable account's 2,500
+  posts between two hits hold no match the viewer may search, a client that pages by the ids it receives can stop
+  before a public status that Mastodon's index returns. Second, a candidate can lie past the pages a client may
+  request, beyond an offset of 10,000; 10,001 eligible hits alone lose nothing, since an offset of 10,000 still returns
+  up to `limit` of them. A search without `account_id` reads the viewer's own posts and interactions only, never the
+  public statuses of indexable accounts. It includes statuses the viewer is only addressed in (silent mentions), which
+  Mastodon leaves out, and it does not include polls the viewer voted in, which Mastodon includes.
 - An attribution domain (`attribution_domains[]`) whose written form passes 1,020 UTF-8 bytes is refused as not a valid
   domain name. As in Mastodon, a label of 64 or more characters as written is refused, even of characters IDNA ignores
   (U+00AD), so only a host padded in many labels is that long; Mastodon accepts such a host up to about 128 labels of

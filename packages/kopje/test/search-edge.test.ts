@@ -101,6 +101,55 @@ describe("library cursors reach past each source window", () => {
   }
 });
 
+// A status search with account_id of another account (#1564, D7): a status the viewer's own interactions nominate is a
+// candidate though it is past the account's newest originals, and the vote window's cursors apply outside its LIMIT.
+describe("account_id candidates reach past the account's window", () => {
+  // `count` public statuses by bob matching "filler", the oldest first; carol is the viewer.
+  async function scoped(count: number) {
+    const { h, search } = await fixture();
+    const { bob, carol } = h.users;
+    await fillerStatuses(h, bob.id, count, 300000000000000000n);
+    const id = (i: number) => String(300000000000000000n + BigInt(i));
+    const poll = async (i: number) => {
+      await sql(h.store, `INSERT INTO polls (status_id, options, tallies) VALUES (?, '["a","b"]', '[0,0]')`, id(i));
+      await sql(h.store, "INSERT INTO poll_votes (poll_id, account_id, choice) VALUES (?, ?, 0)", id(i), carol.id);
+    };
+    const ids = async (extra = "") =>
+      (await search("filler", `&type=statuses&account_id=${bob.id}${extra}`, carol.token)).statuses.map((s) => s.id);
+    return { h, id, poll, ids };
+  }
+
+  it("returns the one status the viewer favourited or voted in, past the account's newest 2,500 (P6.5)", async () => {
+    const count = LIBRARY_SOURCE_LIMIT + 1;
+    const none = await scoped(count);
+    expect(await none.ids()).toEqual([]);
+    const favourited = await scoped(count);
+    await sql(
+      favourited.h.store,
+      "INSERT INTO favourites (account_id, status_id) VALUES (?, ?)",
+      favourited.h.users.carol.id,
+      favourited.id(0),
+    );
+    expect(await favourited.ids()).toEqual([favourited.id(0)]);
+    const voted = await scoped(count);
+    await voted.poll(0);
+    expect(await voted.ids()).toEqual([voted.id(0)]);
+  }, 60_000);
+
+  it("applies max_id and min_id to the polls of the viewer's votes", async () => {
+    const { id, poll, ids } = await scoped(LIBRARY_SOURCE_LIMIT + 1);
+    // Votes in three polls of bob's, V1 < V2 < V3, V1 past his newest 2,500.
+    for (const i of [0, 1, 2]) {
+      await poll(i);
+    }
+    expect(await ids(`&max_id=${id(1)}`)).toEqual([id(0)]);
+    expect(await ids(`&min_id=${id(1)}`)).toEqual([id(2)]);
+    expect(await ids(`&max_id=${BigInt(id(0)) - 1n}`)).toEqual([]);
+    // The control: without a cursor, all three.
+    expect(await ids()).toEqual([id(2), id(1), id(0)]);
+  }, 60_000);
+});
+
 // Runs the search operation over a SqlStorage that counts the rows each statement reads.
 async function rowsRead(
   h: Awaited<ReturnType<typeof fixture>>["h"],
@@ -535,6 +584,122 @@ describe("ranking queries with stale statistics (RES-7)", () => {
     expect(scansOf(plan, ["s", "statuses"])).toEqual([]);
     expect(rows).toBe(before.plans[0]!.rows);
   }, 60_000);
+
+  // The account_id statement (#1564, D7): every window by its index, the vote window in its rowid order with no sort,
+  // and each candidate's interactions probed by key, as the account's boosts, others' statuses and the viewer's older
+  // votes grow after ANALYZE.
+  it("walks an account's originals and the viewer's newest votes by their indexes, and probes by key", async () => {
+    const { h } = await fixture();
+    const { alice, bob, carol } = h.users;
+    const originals = LIBRARY_SOURCE_LIMIT + 500;
+    await fillerStatuses(h, bob.id, originals, 300000000000000000n);
+    // A poll on each of bob's statuses, and alice's vote in each, with rowids above every vote grown later.
+    await sql(
+      h.store,
+      `INSERT INTO polls (status_id, options, tallies) SELECT id, '["a","b"]', '[0,0]' FROM statuses WHERE account_id = ?`,
+      bob.id,
+    );
+    await sql(
+      h.store,
+      `INSERT INTO poll_votes (id, poll_id, account_id, choice)
+				SELECT 1000000 + row_number() OVER (ORDER BY id), id, ?, 0 FROM statuses WHERE account_id = ?`,
+      alice.id,
+      bob.id,
+    );
+    // alice's library: some of bob's statuses favourited, bookmarked, boosted and mentioning her.
+    const some = `SELECT id FROM statuses WHERE account_id = '${bob.id}' AND CAST(id AS INTEGER) % 7 = 0`;
+    await sql(h.store, `INSERT INTO favourites (account_id, status_id) SELECT ?, id FROM (${some})`, alice.id);
+    await sql(h.store, `INSERT INTO bookmarks (account_id, status_id) SELECT ?, id FROM (${some})`, alice.id);
+    await sql(h.store, `INSERT INTO status_mentions (status_id, account_id) SELECT id, ? FROM (${some})`, alice.id);
+    await sql(
+      h.store,
+      `INSERT INTO statuses (id, uri, account_id, reblog_of_id, visibility, published_at)
+				SELECT CAST(CAST(id AS INTEGER) + 50000000000000000 AS TEXT), uri || '/boost', ?, id, 'public', published_at
+				FROM (${some.replace("SELECT id", "SELECT id, uri, published_at")})`,
+      alice.id,
+    );
+    const maxId = "900000000000000000";
+    const run = (extra: { maxId?: string }) =>
+      planned(h, /^WITH library\(id\)/, {
+        query: "filler",
+        types: ["statuses"],
+        following: false,
+        accountId: bob.id,
+        limit: 40,
+        ...extra,
+      });
+    const both = async () => [await run({}), await run({ maxId })];
+    const { before, after } = await staleStatistics(h, {
+      capture: both,
+      grow: async () => {
+        // carol's statuses above every original, and bob's boosts of them above those; alice's older votes, under
+        // her key with rowids below the window's (past generations of one poll).
+        await fillerStatuses(h, carol.id, 20_000, 400000000000000000n);
+        await sql(
+          h.store,
+          `INSERT INTO statuses (id, uri, account_id, reblog_of_id, visibility, published_at)
+						SELECT CAST(CAST(id AS INTEGER) + 100000000000000000 AS TEXT), uri || '/boost', ?, id, 'public', published_at
+						FROM statuses WHERE account_id = ?`,
+          bob.id,
+          carol.id,
+        );
+        await sql(
+          h.store,
+          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20000)
+						INSERT INTO poll_votes (id, poll_id, account_id, choice, generation) SELECT i, ?, ?, 0, i FROM n`,
+          "300000000000000000",
+          alice.id,
+        );
+      },
+    });
+    const grown = await sql<{ boosts: number; votes: number }>(
+      h.store,
+      `SELECT (SELECT count(*) FROM statuses WHERE account_id = ?1 AND reblog_of_id IS NOT NULL) AS boosts,
+				(SELECT count(*) FROM poll_votes WHERE account_id = ?2) AS votes`,
+      bob.id,
+      alice.id,
+    );
+    expect(grown).toEqual([{ boosts: 20_000, votes: originals + 20_000 }]);
+    for (const [i, { value, plans }] of after.entries()) {
+      // The statuses alice interacted with among bob's newest, and those of her newest votes: the newest 40.
+      expect(value.statuses.map((s) => s.id)).toEqual(before[i]!.value.statuses.map((s) => s.id));
+      expect(value.statuses).toHaveLength(40);
+      expect(plans).toHaveLength(1);
+      const { plan, rows } = plans[0]!;
+      const author = i === 0 ? "(account_id=?)" : "(account_id=? AND id<?)";
+      expect(
+        plan.filter((detail) => /^SEARCH statuses USING (COVERING )?INDEX statuses_account_originals /.test(detail)),
+      ).toEqual([expect.stringMatching(new RegExp(` ${author.replace(/[()?]/g, "\\$&")}$`))]);
+      const votes = plan.findIndex((detail) =>
+        /^SEARCH poll_votes USING (COVERING )?INDEX poll_votes_account \(account_id=\?\)$/.test(detail),
+      );
+      expect(votes).toBeGreaterThan(-1);
+      expect(plan[votes + 1]).not.toMatch(/TEMP B-TREE FOR .*ORDER BY/);
+      for (const window of [
+        "statuses USING COVERING INDEX statuses_account_reblogs_kept (account_id=?",
+        "favourites USING COVERING INDEX favourites_account_status (account_id=?",
+        "bookmarks USING COVERING INDEX bookmarks_account_status (account_id=?",
+        "status_mentions USING COVERING INDEX status_mentions_account (account_id=?",
+      ]) {
+        expect(plan.some((detail) => detail.startsWith(`SEARCH ${window}`))).toBe(true);
+      }
+      for (const probe of [
+        "SEARCH favourites USING COVERING INDEX favourites_pair (status_id=? AND account_id=?)",
+        "SEARCH bookmarks USING COVERING INDEX bookmarks_pair (status_id=? AND account_id=?)",
+        "SEARCH statuses USING COVERING INDEX statuses_account_reblogs_kept (account_id=? AND reblog_of_id=?)",
+        "SEARCH status_mentions USING PRIMARY KEY (status_id=? AND account_id=?)",
+        "SEARCH p USING INDEX sqlite_autoindex_polls_1 (status_id=?)",
+        "SEARCH v USING COVERING INDEX sqlite_autoindex_poll_votes_1 (poll_id=? AND generation=? AND account_id=?)",
+      ]) {
+        expect(plan).toContain(probe);
+      }
+      expect(
+        scansOf(plan, ["s", "statuses", "favourites", "bookmarks", "status_mentions", "poll_votes", "p", "v"]),
+      ).toEqual([]);
+      // The same rows read as before the growth: no window walks what grew.
+      expect(rows).toBe(before[i]!.plans[0]!.rows);
+    }
+  }, 120_000);
 
   it("seeks the candidate accounts by id and the username prefix by its index, past the newest window", async () => {
     const { h } = await fixture();

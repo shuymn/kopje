@@ -793,6 +793,24 @@ export function hasPollVotes(db: Db, by: { statusId?: string; accountId?: string
   );
 }
 
+// ---- The viewer's own votes as a status search reads them (search.ts, with account_id). Both read only `viewer`'s
+// rows and give a status id, never a voter or a choice (R27).
+
+// Whether `viewer` voted in the current generation of the poll of `status` (the poll not removed): one key seek of
+// polls and one prefix seek of the vote key, which EXISTS stops at.
+export function ownVotedSql(status: string, viewer: string): string {
+  return `EXISTS (SELECT 1 FROM polls p INDEXED BY ${POLLS_STATUS_INDEX} CROSS JOIN poll_votes v INDEXED BY ${POLL_VOTES_KEY_INDEX}
+		ON v.poll_id = p.status_id AND v.generation = p.generation AND v.account_id = ${viewer}
+		WHERE p.status_id = ${status} AND p.removed = 0)`;
+}
+
+// The polls (status ids, as `id`) of `viewer`'s newest `limit` vote rows, walked backwards in the index's rowid order
+// with no sort. The cap counts vote rows of any generation and choice; a caller's id bounds apply outside it.
+export function ownVotedPollsSql(viewer: string, limit: string): string {
+  return `SELECT poll_id AS id FROM (SELECT poll_id FROM poll_votes INDEXED BY poll_votes_account WHERE account_id = ${viewer}
+		ORDER BY id DESC LIMIT ${limit})`;
+}
+
 // ---- The cron's rounds (jobs/scheduled.ts).
 
 function recordPollUpdate(db: Db, statusId: string, authorId: string, now: number): void {

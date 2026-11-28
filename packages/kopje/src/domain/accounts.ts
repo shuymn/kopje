@@ -117,7 +117,7 @@ export type Account = {
   locked: boolean;
   bot: boolean;
   discoverable: boolean | null;
-  // Account#indexable is stored, presented and federated. Kopje has no public status-search index.
+  // Account#indexable is stored, presented, federated, and read by a status search with account_id (search.ts).
   indexable: boolean;
   group: boolean;
   created_at: string;
