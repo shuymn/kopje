@@ -4,8 +4,7 @@ import { presentedCountSql, statusPublishedSql } from "../platform/stored-bounds
 import {
   PIN_LIMIT,
   statusFacts,
-  contextOf,
-  noteOf,
+  noteDocument,
   SERVABLE,
   announceActivity,
   boostAnnounce,
@@ -29,7 +28,7 @@ export const getLocalNote = readOperation<{ uri: string }, string | null>((db, {
     uri,
   );
   const facts = row === undefined ? null : statusFacts(db, row.id, noteQuote, { reached: false });
-  return facts === null ? null : JSON.stringify({ "@context": contextOf(facts), ...noteOf(facts) });
+  return facts === null ? null : JSON.stringify(noteDocument(facts));
 });
 
 const OUTBOX_PAGE_SIZE = 20;
@@ -191,7 +190,7 @@ export const getFeatured = readOperation<{ username: string }, FeaturedItem[] | 
   let full = false;
   return rows.map((row) => {
     const facts = row.servable === 1 && !full ? statusFacts(db, row.id, noteQuote, { reached: false }) : null;
-    const note = facts === null ? null : JSON.stringify({ "@context": contextOf(facts), ...noteOf(facts) });
+    const note = facts === null ? null : JSON.stringify(noteDocument(facts));
     const size = note === null ? 0 : utf8Length(note) + 1;
     if (note !== null && bytes > 0 && bytes + size > OUTBOX_BYTES) {
       full = true;

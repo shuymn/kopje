@@ -16,7 +16,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("a playable file's Document (P16)", () => {
+describe("a local attachment's Document (P16, #1565)", () => {
   it("writes Mastodon's width, height and duration for the fixture's video and audio meta", () => {
     expect(documentFacts(JSON.stringify(avMeta.video.meta), null, 0)).toEqual(avMeta.video.document);
     expect(documentFacts(JSON.stringify(avMeta.audio.meta), null, 0)).toEqual(avMeta.audio.document);
@@ -103,7 +103,7 @@ describe("a playable file's Document (P16)", () => {
     expect(note.attachment.map((a) => a.duration)).toEqual(["PT29.964S"]);
   });
 
-  it("publishes a completed video's and audio file's facts in the Note, and an image's Document as before", async () => {
+  it("publishes a completed video's and audio file's facts in the Note, and none for an image without stored dimensions", async () => {
     const w = await avWorld();
     await remoteFollows(w.store, await remoteAccount(w.store, "fan"), w.h.users.alice.id);
     const video = await completed(w);

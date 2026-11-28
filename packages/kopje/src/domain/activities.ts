@@ -124,9 +124,13 @@ const FOCAL_POINT_TERMS = {
   focalPoint: { "@container": "@list", "@id": "toot:focalPoint" },
 } as const;
 
-export function contextOf(facts: StatusFacts): readonly [string, Record<string, unknown>] {
+// The Note's context, its terms chosen by what the Note shows: `attachments` is the Note's own attachment list
+// (attachmentsOf), read once for both.
+function contextOf(
+  facts: StatusFacts,
+  attachments: readonly Record<string, unknown>[],
+): readonly [string, Record<string, unknown>] {
   const [as, terms] = facts.poll === null ? NOTE_CONTEXT : POLL_CONTEXT;
-  const attachments = attachmentsOf(facts);
   return [
     as,
     {
@@ -315,13 +319,13 @@ export function statusFacts(
 			LIMIT ${MAX_PRESENTED_TAGS}) n WHERE n.name IS NOT NULL`,
     statusId,
   );
-  // A local video or audio attachment's current thumbnail (media-thumbnails.ts thumbnailOfSql), one seek apiece.
+  // A local video or audio attachment's current thumbnail (media-thumbnails.ts thumbnailOfSql, NULL for any other
+  // attachment), one seek apiece.
   const media = db.all<{
     url: string | null;
     content_type: string | null;
     description: string;
     blurhash: SqlStorageValue;
-    type: string;
     meta: string | null;
     focus_x: number | null;
     focus_y: number;
@@ -329,7 +333,7 @@ export function statusFacts(
     thumbnail_type: string | null;
     thumbnail_blurhash: SqlStorageValue;
   }>(
-    `SELECT m.url, m.content_type, m.description, m.blurhash, m.type, ${mediaMetaSql("m.meta")} AS meta,
+    `SELECT m.url, m.content_type, m.description, m.blurhash, ${mediaMetaSql("m.meta")} AS meta,
 			${MEDIA_COLUMN_MAP.focus_x} AS focus_x, m.focus_y,
 			${thumbnailOfSql("m", "preview_url")} AS thumbnail_preview,
 			${thumbnailOfSql("m", "content_type")} AS thumbnail_type,
@@ -374,17 +378,15 @@ export function statusFacts(
     recipients: mentioned.map((m) => ({ accountId: m.account_id, uri: m.uri, silent: m.silent === 1 })),
     reached,
     tags: tags.map((t) => ({ name: t.name, href: `${origin}/tags/${encodeURIComponent(t.name)}` })),
-    media: media.map(
-      ({ type, meta, focus_x, focus_y, thumbnail_preview, thumbnail_type, thumbnail_blurhash, ...m }) => {
-        const icon = type === "video" || type === "audio" ? thumbnailShown(thumbnail_preview, m.url) : null;
-        return {
-          ...m,
-          blurhash: storedBlurhash(icon === null ? m.blurhash : thumbnail_blurhash),
-          facts: documentFacts(meta, focus_x, focus_y),
-          icon: icon === null ? null : { url: icon, mediaType: thumbnail_type },
-        };
-      },
-    ),
+    media: media.map(({ meta, focus_x, focus_y, thumbnail_preview, thumbnail_type, thumbnail_blurhash, ...m }) => {
+      const icon = thumbnailShown(thumbnail_preview, m.url);
+      return {
+        ...m,
+        blurhash: storedBlurhash(icon === null ? m.blurhash : thumbnail_blurhash),
+        facts: documentFacts(meta, focus_x, focus_y),
+        icon: icon === null ? null : { url: icon, mediaType: thumbnail_type },
+      };
+    }),
     mentions: mentionTags.map((m) => ({ href: m.uri, name: `@${m.username}@${m.domain ?? host}` })),
     emojis: localEmojiTags(db, row.emojis, origin, STATUS_EMOJIS_BYTES),
     poll: pollFacts(db, statusId),
@@ -439,7 +441,7 @@ function attachmentsOf(facts: StatusFacts): Record<string, unknown>[] {
   return facts.cardUrl === null ? media : [...media, { type: "Link", href: facts.cardUrl }];
 }
 
-export function noteOf(facts: StatusFacts): Record<string, unknown> {
+export function noteOf(facts: StatusFacts, attachments = attachmentsOf(facts)): Record<string, unknown> {
   const { to, cc } = addressingOf(facts.visibility, followersUri(facts.actorUri), facts.recipients);
   return {
     id: facts.uri,
@@ -455,7 +457,7 @@ export function noteOf(facts: StatusFacts): Record<string, unknown> {
     sensitive: facts.sensitive,
     content: facts.content,
     ...(facts.language === null ? {} : { contentMap: { [facts.language]: facts.content } }),
-    attachment: attachmentsOf(facts),
+    attachment: attachments,
     tag: [
       ...facts.mentions.map((m) => ({ type: "Mention", href: m.href, name: m.name })),
       ...facts.tags.map((t) => ({ type: "Hashtag", href: t.href, name: `#${t.name}` })),
@@ -515,11 +517,18 @@ export function statusReach(db: Db, statusId: string, readQuote: QuoteReader): R
     : { owner: owner.account_id, object: facts.uri, audience: statusAudience(facts) };
 }
 
+// A local status's Note as the object endpoint and the featured collection serve it, with its context.
+export function noteDocument(facts: StatusFacts): Record<string, unknown> {
+  const attachments = attachmentsOf(facts);
+  return { "@context": contextOf(facts, attachments), ...noteOf(facts, attachments) };
+}
+
 export function createActivity(facts: StatusFacts): OutboundEnvelope {
-  const note = noteOf(facts);
+  const attachments = attachmentsOf(facts);
+  const note = noteOf(facts, attachments);
   return {
     activity: {
-      "@context": contextOf(facts),
+      "@context": contextOf(facts, attachments),
       id: `${facts.uri}/activity`,
       type: "Create",
       actor: facts.actorUri,
@@ -534,11 +543,12 @@ export function createActivity(facts: StatusFacts): OutboundEnvelope {
 
 // Named after the edit's history entry, so two edits in the same millisecond are distinct activities.
 export function updateActivity(facts: StatusFacts, editId: string): OutboundEnvelope {
-  const note = noteOf(facts);
+  const attachments = attachmentsOf(facts);
+  const note = noteOf(facts, attachments);
   const at = facts.editedAt ?? facts.publishedAt;
   return {
     activity: {
-      "@context": contextOf(facts),
+      "@context": contextOf(facts, attachments),
       id: `${facts.uri}#updates/${editId}`,
       type: "Update",
       actor: facts.actorUri,
@@ -948,7 +958,8 @@ export type QuoteRequestRef = {
 // (quoteRequestUri), which an Accept or Reject names, is also its delivery subject (deliveries.ts subjectOf), so an
 // edit or the status's Delete cannot drop it while it waits (test/quote-authoring.test.ts concurrency table, row 5).
 export function quoteRequestActivity(facts: StatusFacts, quoted: { uri: string; authorId: string }): OutboundEnvelope {
-  const [as, terms] = contextOf(facts);
+  const attachments = attachmentsOf(facts);
+  const [as, terms] = contextOf(facts, attachments);
   return {
     activity: {
       "@context": [as, { ...terms, QuoteRequest: "https://w3id.org/fep/044f#QuoteRequest" }],
@@ -956,7 +967,7 @@ export function quoteRequestActivity(facts: StatusFacts, quoted: { uri: string; 
       type: "QuoteRequest",
       actor: facts.actorUri,
       object: quoted.uri,
-      instrument: noteOf(facts),
+      instrument: noteOf(facts, attachments),
     },
     audience: { followers: false, accounts: [quoted.authorId] },
   };

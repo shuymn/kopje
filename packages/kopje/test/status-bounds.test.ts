@@ -575,18 +575,19 @@ const padded = (base: Record<string, unknown>) =>
 // their size and aspect too: a width of 24 characters (17 significant digits below 1e-5), a height of 23 (with an
 // exponent) and so an aspect of 23 (code review r2 M2). A playable file's are whole pixels within 65,535 (isEdgeSize),
 // shorter, and its facts add less than these take, so the REST maxima's media have an image's geometry: of type
-// 'unknown' (an import keeps it; its name is two bytes past 'image', the most JSON), but images in the raw fill, whose
-// cached files read the most from SQLite (their tokens).
+// 'unknown' (an import keeps it; its name is two bytes past 'image', the most JSON), but videos with a thumbnail in the
+// raw fill, whose cached files read the most from SQLite (their tokens).
 const LONGEST_SIZE = { width: 0.0000012345678901234567, height: 1.2345678901234567e100 };
 const MAX_META = padded({ original: LONGEST_SIZE, small: LONGEST_SIZE });
 
-// The most a video's Document carries of its meta (status-presenter.ts documentFacts, which reads nothing else of it):
-// width and height at DOCUMENT_DIMENSION_MAX and the longest duration it writes, to the millisecond within the
-// verifier's range (below AUDIO_DURATION_LIMIT's 1,200 s), with the longest focus a REAL in -1 to 1 writes in JSON (25
-// bytes), given. The Note's maxima's media are these.
-const MAX_AV_META = padded({
+// The most a Document carries of its meta (status-presenter.ts documentFacts, which reads nothing else of it): width
+// and height at DOCUMENT_DIMENSION_MAX and the longest duration it writes, to the millisecond within the verifier's
+// range (below AUDIO_DURATION_LIMIT's 1,200 s). The Note's maxima's media are these.
+const MAX_NOTE_META = padded({
   original: { width: DOCUMENT_DIMENSION_MAX, height: DOCUMENT_DIMENSION_MAX, duration: 1199.999 },
 });
+// The longest focus coordinate, given, from the focus_x and focus_y columns: a REAL in -1 to 1 at its longest in JSON
+// (25 bytes).
 const LONGEST_FOCUS = -0.0000012345678901234567;
 
 // A media URL of MEDIA_URL_LIMIT bytes that JSON escapes the most: a query of backslashes, which URL parsing keeps as
@@ -635,9 +636,9 @@ async function maximalParts(t: Setup, fill: Fill, kind: "rest" | "note" = "rest"
     content,
     source: content,
     spoiler: fill === "raw" ? "x".repeat(SPOILER_BYTES - 2) : C.repeat(Math.floor((SPOILER_BYTES - 2) / 6)),
-    // Files of an image's geometry at the longest presented meta (MAX_META: 'unknown', or images in the raw fill), or
-    // for a Note MP4 videos with their facts (MAX_AV_META: the cutover may keep four in one status, and the Document
-    // writes its mediaType), URLs at their byte bound, of ASCII (raw) or of backslashes JSON escapes (the others); a
+    // Files of an image's geometry at the longest presented meta (MAX_META: 'unknown', or videos in the raw fill), or
+    // for a Note MP4 videos with their facts and focus (MAX_NOTE_META: the cutover may keep four in one status, and the
+    // Document writes its mediaType), URLs at their byte bound, of ASCII (raw) or of backslashes JSON escapes (the others); a
     // 5x5 blurhash.
     media: Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => ({
       type: kind === "note" || fill === "raw" ? "video" : "unknown",
@@ -647,7 +648,7 @@ async function maximalParts(t: Setup, fill: Fill, kind: "rest" | "note" = "rest"
       preview:
         fill === "raw" ? atLimit(`https://${HOST}/p/${i}/`, MEDIA_URL_LIMIT) : escapingUrl(`https://p.example/${i}/?`),
       description: counted.repeat(MAX_MEDIA_DESCRIPTION_LENGTH),
-      meta: kind === "note" ? MAX_AV_META : MAX_META,
+      meta: kind === "note" ? MAX_NOTE_META : MAX_META,
       ...(kind === "note" ? { focus: [LONGEST_FOCUS, LONGEST_FOCUS, 1] as [number, number, 1] } : {}),
       blurhash: blurhashOf(5, 5, "~"),
       // A Note's videos, and the raw fill's, each have a thumbnail at its bounds (#1828 PR6), which the Document writes
@@ -3609,12 +3610,13 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
         });
         const facts = statusFacts(new Db(counting), ids[0]!, noteQuote, { reached: false })!;
         const note = noteOf(facts);
+        const create = createActivity(facts).activity;
         return {
           sqlite,
           rows,
           nodes: nodes(note),
           note: jsonBytes(note),
-          create: jsonBytes(createActivity(facts).activity),
+          create: jsonBytes(create),
           tags: facts.tags.length,
           longest: Math.max(...facts.tags.map((tag) => [...tag.name].length)),
           mentions: facts.mentions.length,
@@ -3628,7 +3630,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
               a.width === DOCUMENT_DIMENSION_MAX &&
               a.height === DOCUMENT_DIMENSION_MAX,
           ).length,
-          focalTerm: (createActivity(facts).activity["@context"] as [string, Record<string, unknown>])[1].focalPoint,
+          focalTerm: (create["@context"] as [string, Record<string, unknown>])[1].focalPoint,
           emojis: facts.emojis.length,
           emojiTags: jsonBytes(facts.emojis),
           collections: facts.collections.length,

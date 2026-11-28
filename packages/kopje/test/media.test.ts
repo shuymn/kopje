@@ -97,6 +97,33 @@ async function users(names: readonly string[] = ["alice", "bob"], codec = new Te
   return { ...h, codec };
 }
 
+type ServedNote = { id: string; attachment: unknown[]; "@context": [string, Record<string, unknown>] };
+
+// A status's Note as the object endpoint, the outbox's first page (its Create's context, with the object) and the
+// featured collection (once alice pins it) serve it.
+async function servedNotes(
+  h: Awaited<ReturnType<typeof users>>,
+  status: Status,
+): Promise<[ServedNote, ServedNote | undefined, ServedNote | undefined]> {
+  const AP = { headers: { accept: "application/activity+json" } };
+  const served = await (await h.request(new URL(status.uri as string).pathname, AP)).json<ServedNote>();
+  const outbox = await (await h.request("/ap/users/alice/outbox", AP)).json<{ first: string }>();
+  const first = new URL(outbox.first);
+  const page = await (
+    await h.request(first.pathname + first.search, AP)
+  ).json<{ orderedItems: { "@context": ServedNote["@context"]; object: ServedNote }[] }>();
+  const listed = page.orderedItems.find((item) => item.object.id === status.uri);
+  await h.request(`/api/v1/statuses/${status.id}/pin`, bearer(h.users.alice.token, { method: "POST" }));
+  const featured = await (
+    await h.request("/ap/users/alice/collections/featured", AP)
+  ).json<{ orderedItems: ServedNote[] }>();
+  return [
+    served,
+    listed === undefined ? undefined : { ...listed.object, "@context": listed["@context"] },
+    featured.orderedItems.find((item) => item.id === status.uri),
+  ];
+}
+
 function sweep(h: { store: Parameters<typeof sql>[0] }, at: number) {
   return atStoreTime(at, () => sweepMedia(env, { build: () => env.CF_VERSION_METADATA.id, store: () => h.store }));
 }
@@ -1303,31 +1330,15 @@ describe("media lifecycle", () => {
       toot: "http://joinmastodon.org/ns#",
       focalPoint: { "@container": "@list", "@id": "toot:focalPoint" },
     };
-    type Served = { id: string; attachment: unknown[]; "@context": [string, Record<string, unknown>] };
     const [create] = await outbound(h.store);
-    expect((create!.activity.object as Served).attachment).toEqual([document]);
-    expect((create!.activity["@context"] as Served["@context"])[1]).toMatchObject(TERM);
-    const AP = { headers: { accept: "application/activity+json" } };
-    const served = await (await h.request(new URL(status.uri as string).pathname, AP)).json<Served>();
-    const outbox = await (await h.request("/ap/users/alice/outbox", AP)).json<{ first: string }>();
-    const first = new URL(outbox.first);
-    const page = await (
-      await h.request(first.pathname + first.search, AP)
-    ).json<{ orderedItems: { "@context": Served["@context"]; object: Served }[] }>();
-    const listed = page.orderedItems.find((item) => item.object.id === status.uri);
-    await h.request(`/api/v1/statuses/${status.id}/pin`, bearer(alice.token, { method: "POST" }));
-    const featured = await (
-      await h.request("/ap/users/alice/collections/featured", AP)
-    ).json<{ orderedItems: Served[] }>();
-    const pinned = featured.orderedItems.find((item) => item.id === status.uri);
-    for (const [attachment, context] of [
-      [served.attachment, served["@context"]],
-      [listed?.object.attachment, listed?.["@context"]],
-      [pinned?.attachment, pinned?.["@context"]],
-    ]) {
-      expect(attachment).toEqual([document]);
-      expect((context as Served["@context"])[1]).toMatchObject(TERM);
+    expect((create!.activity.object as ServedNote).attachment).toEqual([document]);
+    expect((create!.activity["@context"] as ServedNote["@context"])[1]).toMatchObject(TERM);
+    const notes = await servedNotes(h, status);
+    for (const note of notes) {
+      expect(note?.attachment).toEqual([document]);
+      expect(note?.["@context"][1]).toMatchObject(TERM);
     }
+    const [served] = notes;
     // Kopje's parser (federation/remote-status.ts mediaOf) reads back the same focus and each edge.
     expect(parseRemoteStatus(served)?.media).toEqual([
       expect.objectContaining({ focus: { x: 0.5, y: -0.25 }, width, height }),
@@ -1453,42 +1464,25 @@ describe("the media facts of a local status's Note (#1565)", () => {
       original: { width: 640, height: 480 },
       x: "x".repeat(MEDIA_META_BYTES),
     });
+    // The other shapes a meta may hold (NULL, not an object, an edge of another kind) are documentFacts' own cases
+    // (activities.test.ts); these show the byte bound in SQL and each edge on its own through the endpoint.
     const metas = [
-      null,
       oversized,
-      "[]",
-      '{"original":3}',
-      ...["640", 0, 1.5, 100_001].map((width) => JSON.stringify({ original: { width, height: 480 } })),
+      ...[1.5, 100_001].map((width) => JSON.stringify({ original: { width, height: 480 } })),
       JSON.stringify({ original: { width: 640 } }),
-      '{"original":{"width":1e400,"height":480}}',
     ];
-    const expected = [
-      {},
-      {},
-      {},
-      {},
-      ...Array.from({ length: 4 }, () => ({ height: 480 })),
-      { width: 640 },
-      {
-        height: 480,
-      },
-    ];
-    const documents: unknown[] = [];
-    for (let i = 0; i < metas.length; i += 4) {
-      const { served } = await noteWith(
-        h,
-        metas.slice(i, i + 4).map((meta) => ({ type: "image", meta, focus: [0, 0, 0] })),
-      );
-      documents.push(...served.attachment);
-    }
+    const expected = [{}, { height: 480 }, { height: 480 }, { width: 640 }];
+    const { served } = await noteWith(
+      h,
+      metas.map((meta) => ({ type: "image", meta, focus: [0, 0, 0] })),
+    );
     expect(
       (
         await sql<{ n: number }>(h.store, "SELECT length(meta) AS n FROM media_attachments WHERE meta = ?", oversized)
       )[0]?.n,
     ).toBeGreaterThan(MEDIA_META_BYTES);
     expect(
-      documents.map((document) => {
-        const { width, height } = document as Record<string, unknown>;
+      served.attachment.map(({ width, height }) => {
         return { ...(width === undefined ? {} : { width }), ...(height === undefined ? {} : { height }) };
       }),
     ).toEqual(expected);
@@ -1498,7 +1492,6 @@ describe("the media facts of a local status's Note (#1565)", () => {
 // The blurhash of a local upload (platform/images.ts processImage): its preview's, stored, presented and published in
 // the Note's Document with Mastodon's toot:blurhash term; any failure of the RGBA output keeps the upload without one.
 describe("the blurhash of a local upload", () => {
-  const AP = { headers: { accept: "application/activity+json" } };
   const formats = (codec: TestCodec) => codec.outputs.map((call) => call.options.format);
 
   async function storedBlurhash(h: { store: Parameters<typeof sql>[0] }, id: string): Promise<unknown> {
@@ -1639,33 +1632,14 @@ describe("the blurhash of a local upload", () => {
     // The object endpoint, the outbox and the featured collection read the Note again through Fedify, which serves the
     // JSON-LD it read: each keeps the blurhash and the term.
     const TERM = { toot: "http://joinmastodon.org/ns#", blurhash: "toot:blurhash" };
-    type Served = Note & { id: string; "@context": [string, Record<string, unknown>] };
     const expected = [
       expect.objectContaining({ url: hashed.url, blurhash: hashed.blurhash }),
       expect.not.objectContaining({ blurhash: expect.anything() }),
     ];
-    const served = await (await h.request(new URL(both.uri as string).pathname, AP)).json<Served>();
-    expect(served.attachment).toEqual(expected);
-    expect(served["@context"][1]).toMatchObject(TERM);
-    const outbox = await (await h.request("/ap/users/alice/outbox", AP)).json<{ first: string }>();
-    const first = new URL(outbox.first);
-    const page = await (
-      await h.request(first.pathname + first.search, AP)
-    ).json<{
-      orderedItems: { "@context": [string, Record<string, unknown>]; object: Served }[];
-    }>();
-    const listed = page.orderedItems.find((item) => item.object.id === both.uri);
-    expect(listed?.object.attachment).toEqual(expected);
-    expect(listed?.["@context"][1]).toMatchObject(TERM);
-    await h.request(`/api/v1/statuses/${both.id}/pin`, bearer(alice.token, { method: "POST" }));
-    const featured = await (
-      await h.request("/ap/users/alice/collections/featured", AP)
-    ).json<{
-      orderedItems: Served[];
-    }>();
-    const pinned = featured.orderedItems.find((item) => item.id === both.uri);
-    expect(pinned?.attachment).toEqual(expected);
-    expect(pinned?.["@context"][1]).toMatchObject(TERM);
+    for (const note of await servedNotes(h, both)) {
+      expect(note?.attachment).toEqual(expected);
+      expect(note?.["@context"][1]).toMatchObject(TERM);
+    }
   });
 });
 

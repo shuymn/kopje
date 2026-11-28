@@ -6303,7 +6303,7 @@ logs (6.01 MB escaped, 4.64 MB raw, the fill of the largest SQLite read) are mea
 | A moderation_warning notification, its local account at bounds   | 134,442           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,442           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 7,319,647         | 5,769,491       | 5,788,421         | 2,163     | 6,786 | 69.0%          |
-| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,821,668         | 4,279,101       |                   | 1,343     | 3,212 | 51.0%          |
+| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,821,648         | 4,279,101       |                   | 1,343     | 3,212 | 51.0%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,335,745       |                   |           |       | 75.5%          |
 | Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
