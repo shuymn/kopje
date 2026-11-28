@@ -601,7 +601,7 @@ Accounts (the `Account` and credential account entities):
   whether it is a stored actor's id, and resolves such a URL as that actor; the 410 of any other URL's probe, a
   status's included, deletes nothing.
 - `last_status_at` is the publication date of the newest stored status that reaches followers, computed when read:
-  deleting that status moves it back, where Mastodon 4.6 keeps the newest it counted (`account/counters.rb:53-75`).
+  deleting that status moves it back, where Mastodon 4.7.5 keeps the newest it counted (`account/counters.rb:53-75`).
 - `moved` is the latest of two writes: every stored actor document sets it from its `movedTo` or clears it, and a
   verified `Move` sets it when Kopje first processes it; a replay of a known `Move` writes nothing. The member is read
   by its literal spelling, as Mastodon reads `@json['movedTo']` (`process_account_service.rb:293`), with no JSON-LD
@@ -729,15 +729,17 @@ Accounts (the `Account` and credential account entities):
   checks the account when it fetches them. Search always fetches the account.
 - `source.follow_requests_count` counts, among the account's newest 120 pending follow requests, those of available
   accounts (R1 in `docs/visibility.md`), at most 40, as the first page of `GET /api/v1/follow_requests` lists them.
-  Mastodon 4.5.21 counts up to 40 requests of accounts that are not suspended (`suspended_at`) among all of them
-  (`credential_account_serializer.rb:17`). The counts differ in two ways.
-  - **The window.** When more than 80 of the newest 120 requesters are unavailable, Kopje's count is lower. An
+  Mastodon 4.7.5 counts up to 40 requests of accounts that are neither suspended (`suspended_at`) nor pending deletion
+  (`requested_deletion_at`) among all of them (`credential_account_serializer.rb:17`, `account/suspensions.rb:7-9`). The
+  counts differ in two ways.
+  - **The window.** When more than 80 of the newest 120 requesters are unavailable, Kopje's count can be lower. An
     individual suspension keeps a requester's request pending, while a `suspend` block and a deleted account's purge
     remove it. Counting among all of them would let the stored requests of suspended accounts make every
     `verify_credentials` read grow without a bound (RES-7).
   - **What unavailable means.** Kopje also leaves out a requester whose deletion has started or that a `suspend` block
-    covers, from that moment. Mastodon counts it until its purge removes the request, or until the block's suspension
-    of the domain's accounts reaches it.
+    covers, from that moment. Mastodon already leaves out an account marked pending deletion (`requested_deletion_at`),
+    and otherwise counts a requester until its purge removes the request or until the block's suspension of the domain's
+    accounts reaches it.
 
   Accepted, 2026-11-15.
 
@@ -796,8 +798,9 @@ Followers synchronisation (Mastodon's `Collection-Synchronization` header and
 `/users/:username/followers_synchronization`):
 
 - Kopje neither sends nor reads the header and serves no partial followers collection. A follow one side lost is not
-  repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.6
-  also stopped sending it from 25,000 followers (`mastodon#37302`). Accepted, 2026-11-15.
+  repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.7.5
+  does not send it from 25,000 followers (`app/workers/activitypub/distribution_worker.rb:7,39`, `mastodon#37302`).
+  Accepted, 2026-11-15.
 
 Replies collections (the context's refresh, `GET /api/v1_alpha/async_refreshes/:id` and the replies a created status
 lists; Mastodon's `ContextsController#show`, `FetchAllRepliesWorker`, `AsyncRefresh` and `Create#fetch_replies`; RES-6
@@ -1091,7 +1094,7 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/peers/search
   for an absent one only (`Api::V1::AppsController#app_scopes_or_default`). Accepted, 2026-11-18.
 - `usage.users.active_month` counts the available local accounts with an authenticated API or web request on one of the
   last 29 UTC days, today included. Each account's day is recorded at most once a day, after the response, and a
-  request made while a dump holds the Store may go unrecorded. Mastodon 4.5.21 counts logins over the same days,
+  request made while a dump holds the Store may go unrecorded. Mastodon 4.7.5 counts logins over the same days,
   suspended users included.
 - `stats.domain_count` of `/api/v1/instance` is the count of distinct remote account domains the 5-minute cron last
   kept (Mastodon keeps it in a cache as well: `Rails.cache.fetch('distinct_domain_count')`), at most 10 minutes old;
@@ -1106,7 +1109,7 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/peers/search
   hours of a signed-in user's requests, at each sign-in and at the new user's preparation.
 - The activity answer is kept for the UTC day it was made (or until `activity_api_enabled` changes, or an import is
   verified or published); Mastodon keeps its answer 24 hours from the first request.
-- The activity's weeks are Mastodon 4.5.21's, 7 UTC days each. Its logins are exact distinct accounts (Mastodon's are
+- The activity's weeks are Mastodon 4.7.5's, 7 UTC days each. Its logins are exact distinct accounts (Mastodon's are
   a HyperLogLog estimate), counted among a week's first 700 login rows by day and account, so a week with more than
   700 login days (one per account and day) may count fewer accounts than logged in. A day's statuses and registrations
   stop at 10^12 each. Week 0 holds today only and never reads a later day, which an import may hold; Mastodon names the
@@ -1205,7 +1208,7 @@ Remote interaction (`/authorize_interaction`, the subscribe template and the FEP
   Mastodon's web client asks the named server, from the browser, for its WebFinger answer (by handle, by URL, or
   `https://<server>` for a server name) and opens the FEP-3b86 intent of the action (`Follow`, `Announce`, `Like`;
   `Object` for a reply or a vote), else `Object`, else the subscribe template, else `/authorize_interaction?uri={uri}`
-  (Mastodon 4.6 and later). Kopje's pages work without script and fetch nothing: the dialog's form names the server to a
+  (Mastodon 4.7.5). Kopje's pages work without script and fetch nothing: the dialog's form names the server to a
   handoff page here, which links to `https://<server>/authorize_interaction?uri=<uri>` and shows the handle or URL to
   paste into that server's search, for a server whose template is another path. The server is accepted only as a bounded
   DNS name.
@@ -1411,7 +1414,7 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
 
 - A `suspend` block deletes no content of the accounts it covers: they are unavailable while it lasts, and their
   statuses and profiles show again once it is lifted. Mastodon's `BlockDomainService#suspend_accounts!` runs
-  `DeleteAccountService`, which keeps only the statuses its unresolved reports name, discarded since Mastodon 4.5.21
+  `DeleteAccountService`, which keeps only the statuses its unresolved reports name, discarded in Mastodon 4.7.5
   (`deleted_at` set, for its moderators alone).
 - A child `noop` block exempts the accounts of its subdomains from a parent's `suspend`; Mastodon suspends
   `Account.by_domain_and_subdomains` of the suspending block.
@@ -1445,7 +1448,7 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
   `created_at`, so there an individual suspension with any other timestamp survives the unblock, as Kopje's
   individual suspension does (`account` wins), and one with that timestamp does not.
 
-Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackConcern`):
+Notification fallbacks (`supported_types`, Mastodon 4.7.5's `NotificationFallbackConcern`):
 
 - The summary of an `admin.report`, a `moderation_warning` and a collection notification is `You're on an app that does
   not support the most recent version of Mastodon. Visit <domain>.`, the link to the instance's front page. Mastodon's
@@ -1702,7 +1705,7 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
 - `start_at` and `end_at` (of measures and of retention) are read as ISO 8601 only, and only when both the date
   written and the UTC instant lie from 1583-01-01 to 9998-12-31; any other value answers 422 `Invalid date
   supplied` to the OAuth admin, as an unreadable date does. The bound keeps every date of the answer in
-  four-digit years. Mastodon's measures read any date `DateTime.parse` reads, and Mastodon 4.5.21's retention any
+  four-digit years. Mastodon's measures read any date `DateTime.parse` reads, and Mastodon 4.7.5's retention any
   date `Date.parse` reads, such as `October 1, 2026`, or `2026-10-01T25:00:00Z` read as its date.
 - A measure's `start_at` or `end_at` of JavaScript's white space alone (U+FEFF included) is absent, and one of U+0085
   alone is a date that does not parse (422). Mastodon's `String#to_datetime` reads a value blank to Rails (U+0085
@@ -1710,12 +1713,12 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
   `params.require` does (blank to Rails is missing). Accepted, 2026-11-18.
 - The previous window (`previous_total`) can still reach before the Gregorian reform. Kopje counts it in the proleptic
   Gregorian calendar, while Ruby's `Date` is Julian before 1582-10-15, so `previous_total` can differ there: for the
-  period 1583-01-01 to 1584-01-01, Kopje's previous window starts on 1581-12-31 and Mastodon 4.5.21's on
+  period 1583-01-01 to 1584-01-01, Kopje's previous window starts on 1581-12-31 and Mastodon 4.7.5's on
   1581-12-21. The axis, `total` and the series are not affected.
 - A measure past the bounds of its walk or its request ([docs/visibility.md](visibility.md), the admin measures)
   answers 422 and no count, never an undercount; pending requests and accounts being deleted count toward the walk's.
   So does a stored time that is not the ISO form Kopje writes (an import's). Mastodon sets no bound on the walk. Of
-  the range, Mastodon 4.5.21 clamps a `start_at` more than two years before `end_at` to two years before it and
+  the range, Mastodon 4.7.5 clamps a `start_at` more than two years before `end_at` to two years before it and
   answers for those two years; Kopje refuses a range past 366 days, so it answers no range the clamp would move.
 - `instance_follows` and `instance_followers` date an accepted request by the request; Mastodon by its acceptance.
 - Each request reads the Store; Mastodon caches each measure for 5 minutes.
@@ -1982,8 +1985,8 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   (`app/services/update_status_service.rb:121`, `:124`, `:174-176` in v4.7.5), so it snapshots a version (`:31`,
   `:170-172`) and sets `edited_at` (`:126`). Accepted, 2026-11-15.
 
-Streaming (`status.update`; Mastodon's `FanOutOnWriteService` with `update: true`; VIS-26 in
-[threat-model.md](threat-model.md)):
+Streaming (`status.update` and `delete`; Mastodon's `FanOutOnWriteService`, `RemoveStatusService` and
+`BatchedRemoveStatusService`; VIS-26 in [threat-model.md](threat-model.md)):
 
 - A quote's state change sends `status.update` for the quoting status whatever made it. Kopje verifies a received quote
   after storing the status, so its decision streams the state a Mastodon client got in the status's first event:
@@ -1994,6 +1997,20 @@ Streaming (`status.update`; Mastodon's `FanOutOnWriteService` with `update: true
   one. A repeated `QuoteRequest` of a quote already accepted sends none, where Mastodon broadcasts again
   (`activity/quote_request.rb:41`). Each event reaches only the listeners REST would show the status to (R33).
   Accepted, 2026-11-16.
+- A status deletion streams `delete` for at most 40 boosts of that status per listening viewer on `user` and list
+  streams (those by the viewer and the accounts it follows; `CAPTURE_LIMITS.boosts`, R32 in
+  [visibility.md](visibility.md)). Mastodon v4.7.5 processes eligible reblogs of a deleted status without a cap
+  (`app/services/remove_status_service.rb:109-117`, excluding reblogs discarded separately), and for each reblog
+  publishes a `delete` event to a home or list stream only when `remove_from_feed` removes it from that feed (which
+  returns false when an aggregated reblog is not in the feed; `app/lib/feed_manager.rb:85-95,112-122,585-592`).
+  Accepted, 2026-10-16.
+- Purging a deleted account sends no streaming `delete` event (R32 in [visibility.md](visibility.md)). Mastodon v4.7.5's
+  `DeleteAccountService#purge_statuses!` (`app/services/delete_account_service.rb:165-171`) keeps statuses referenced by
+  unresolved reports out of the batch (marking them `deleted_at` instead) and passes the rest to
+  `BatchedRemoveStatusService` (`app/services/batched_remove_status_service.rb:35-102`), which removes those statuses
+  and their reblogs and, unless `skip_side_effects` is set, publishes `delete` events on home and list streams when
+  `remove_from_feed` removes each from that feed, and on public and hashtag streams for public statuses passed to the
+  batch from the last two weeks. Accepted, 2026-10-16.
 
 Pinned statuses (`StatusPin`, the actor's `featured` collection):
 
@@ -2487,7 +2504,7 @@ Quote approvals (a local account's quote of a remote status; Mastodon's `Activit
 `docs/threat-model.md`):
 
 - A Mastodon author may revoke a local account's quote while it is still pending there, which sends the stamp's
-  `Delete` (`revoke_quote_service.rb:42` in v4.5.11), and their server then accepts the quote's first `QuoteRequest`
+  `Delete` (`revoke_quote_service.rb:42` in v4.7.5), and their server then accepts the quote's first `QuoteRequest`
   under that same stamp (`quote_request.rb:31-32` accepts a quote in any state). When the `Delete` reaches Kopje first,
   Kopje records the stamp as retracted and refuses an `Accept` naming it while the retraction lasts (30 days, ID-7), so
   it keeps the quote pending while the quoted server holds it accepted and serves its stamp; a Mastodon quoter applies
