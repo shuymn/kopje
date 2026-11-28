@@ -9,35 +9,9 @@ import { remoteActorInput } from "../src/federation/remote-actor";
 import { bearer, login, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { tagHistoryOf } from "./read-helpers";
-import { act, block, community, follow, mute, post, remoteAccount, seedStatus } from "./status-helpers";
+import { fillerStatuses, searchFixture as fixture } from "./search-helpers";
+import { act, block, follow, mute, post, remoteAccount, seedStatus } from "./status-helpers";
 import { ORIGIN } from "./web-helpers";
-
-type Results = {
-  accounts: { id: string; acct: string }[];
-  statuses: { id: string; content: string }[];
-  hashtags: {
-    name: string;
-    url: string;
-    history: { day: string; uses: string; accounts: string }[];
-    following?: boolean;
-    featuring?: boolean;
-  }[];
-  collections: { id: string; uri: string; url: string }[];
-};
-
-async function fixture() {
-  const h = await community(["alice", "bob", "carol"]);
-  const search = async (q: string, extra = "", token = h.users.alice.token) => {
-    const response = await h.request(`/api/v2/search?q=${encodeURIComponent(q)}${extra}`, bearer(token));
-    if (response.status !== 200) {
-      throw new Error(`search: ${response.status} ${await response.text()}`);
-    }
-    return response.json<Results>();
-  };
-  const statusIds = async (q: string, extra = "", token?: string) =>
-    (await search(q, `&type=statuses${extra}`, token)).statuses.map((s) => s.id);
-  return { h, search, statusIds };
-}
 
 describe("GET /api/v2/search", () => {
   it("refuses unauthenticated search and tokens without read:search", async () => {
@@ -363,15 +337,7 @@ describe("GET /api/v2/search", () => {
     const { alice } = h.users;
     const old = await post(h, alice, { status: "window oldest" });
     // Newer library rows than the window holds push the oldest out of a search without max_id.
-    await sql(
-      h.store,
-      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, search_text)
-			SELECT CAST(900000000000000000 + i AS TEXT), 'https://kopje.test/ap/o/w' || i, ?, 'public', '', '2026-10-12T00:00:00.000Z', 'filler'
-			FROM n`,
-      LIBRARY_SOURCE_LIMIT,
-      alice.id,
-    );
+    await fillerStatuses(h, alice.id, LIBRARY_SOURCE_LIMIT, 900000000000000001n);
     expect(await statusIds("window")).toEqual([]);
     expect(await statusIds("window", "&max_id=900000000000000000")).toEqual([old.id]);
   });
@@ -433,7 +399,9 @@ describe("GET /api/v2/search with account_id", () => {
     await sql(h.store, "UPDATE accounts SET indexable = 0 WHERE id = ?", bob.id);
     expect(await scoped()).toEqual(found);
     // The guarded branches ran: every status left out matches and is one carol may see, and bob finds them all.
-    expect(await statusIds("scoped", "", carol.token)).toContain(elsewhere.id);
+    // Without account_id, the library holds both the other author's favourite and the status carol is only addressed
+    // in (P6.7: silent mentions are a source there).
+    expect(await statusIds("scoped", "", carol.token)).toEqual(expect.arrayContaining([elsewhere.id, addressed]));
     for (const id of [withdrawn.id, addressed, reset.id, control.id, unsaved.id]) {
       expect(await statusIds("scoped", `&account_id=${bob.id}`, bob.token)).toContain(id);
       expect((await h.request(`/api/v1/statuses/${id}`, bearer(carol.token))).status).toBe(200);
@@ -450,15 +418,7 @@ describe("GET /api/v2/search with account_id", () => {
     await act(h, carol, `/api/v1/statuses/${old.id}/favourite`);
     // LIBRARY_SOURCE_LIMIT newer favourites of carol's, of alice's statuses: bob's status is outside her favourites'
     // window, and within bob's newest originals.
-    await sql(
-      h.store,
-      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, search_text)
-			SELECT CAST(900000000000000000 + i AS TEXT), 'https://kopje.test/ap/o/p' || i, ?, 'public', '', '2026-10-12T00:00:00.000Z', 'filler'
-			FROM n`,
-      LIBRARY_SOURCE_LIMIT,
-      alice.id,
-    );
+    await fillerStatuses(h, alice.id, LIBRARY_SOURCE_LIMIT, 900000000000000001n);
     await sql(
       h.store,
       "INSERT INTO favourites (account_id, status_id) SELECT ?, id FROM statuses WHERE account_id = ? AND id >= '900000000000000000'",
@@ -500,7 +460,7 @@ describe("GET /api/v2/search with account_id", () => {
 
   it("returns every status of the viewer's own account whatever its indexable (P6.3)", async () => {
     const { h, statusIds } = await fixture();
-    const { bob, carol } = h.users;
+    const { carol } = h.users;
     const own = [
       await post(h, carol, { status: "mine public" }),
       await post(h, carol, { status: "mine unlisted", visibility: "unlisted" }),
@@ -511,7 +471,6 @@ describe("GET /api/v2/search with account_id", () => {
       await sql(h.store, "UPDATE accounts SET indexable = ? WHERE id = ?", indexable, carol.id);
       expect(await statusIds("mine", `&account_id=${carol.id}`, carol.token)).toEqual(descending(own));
     }
-    void bob;
   });
 
   it("stops returning a remote account's public statuses once it is stored without indexable (P6.4)", async () => {
@@ -549,19 +508,6 @@ describe("GET /api/v2/search with account_id", () => {
     expect(await scoped()).toEqual([]);
   });
 
-  it("counts a status the viewer is only addressed in for a search without account_id only (P6.7)", async () => {
-    const { h, statusIds } = await fixture();
-    const { bob, carol } = h.users;
-    const addressed = await seedStatus(h.store, {
-      accountId: bob.id,
-      visibility: "public",
-      content: "<p>addressed only</p>",
-      mentions: [{ accountId: carol.id, silent: true }],
-    });
-    expect(await statusIds("addressed", "", carol.token)).toEqual([addressed]);
-    expect(await statusIds("addressed", `&account_id=${bob.id}`, carol.token)).toEqual([]);
-  });
-
   it("drops an indexable account's public status once the viewer mutes it (VIS-5)", async () => {
     const { h, statusIds } = await fixture();
     const { bob, carol } = h.users;
@@ -579,15 +525,7 @@ describe("GET /api/v2/search with account_id", () => {
     const { bob, carol } = h.users;
     const target = await post(h, bob, { status: "nominated public", poll: { options: ["a", "b"], expires_in: 3600 } });
     // LIBRARY_SOURCE_LIMIT newer originals of bob's, none matching: the status is past bob's window.
-    await sql(
-      h.store,
-      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, search_text)
-			SELECT CAST(900000000000000000 + i AS TEXT), 'https://kopje.test/ap/o/n' || i, ?, 'public', '', '2026-10-12T00:00:00.000Z', 'filler'
-			FROM n`,
-      LIBRARY_SOURCE_LIMIT,
-      bob.id,
-    );
+    await fillerStatuses(h, bob.id, LIBRARY_SOURCE_LIMIT, 900000000000000001n);
     await sql(h.store, "UPDATE accounts SET indexable = 1 WHERE id = ?", bob.id);
     const scoped = () => statusIds("nominated", `&account_id=${bob.id}`, carol.token);
     // Nothing names it: not a candidate.

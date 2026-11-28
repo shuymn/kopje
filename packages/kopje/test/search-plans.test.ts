@@ -4,9 +4,10 @@ import { describe, expect, it } from "vitest";
 import { search, type SearchRequest, type SearchType } from "../src/domain/search";
 import { NOW } from "./app-helpers";
 import { migratedStore } from "./helpers";
+import { HIGH, LOW, seedViewerBetween, VIEWER } from "./plan-accounts";
 import { statementId } from "./plan-audit";
 import { singletonStatistics } from "./plan-audit-store";
-import { type PlannedStatement, plannedSql } from "./read-helpers";
+import { observedSql, type PlannedStatement, plannedSql } from "./read-helpers";
 import { normalized } from "./sql-text";
 
 // RES-7 witness of the library windows pinned to the index each walks (#1564, D7: LIBRARY in src/domain/search.ts):
@@ -19,10 +20,6 @@ import { normalized } from "./sql-text";
 // accounts on either side of it; each is counted by its own predicate and asserted to grow. Import-shaped rows: one
 // status in several sources at once, a silent mention (a recipient the API does not show), and search text with NUL;
 // ids are unique, so the order has no ties.
-
-const VIEWER = "600000000000000001";
-const LOW = "500000000000000001";
-const HIGH = "700000000000000001";
 
 const PINNED = {
   own: " INDEXED BY statuses_account_originals",
@@ -65,20 +62,6 @@ const unpinned = (text: string, pins: readonly string[]) =>
 type Shape = { own: number; library: number; others: number };
 const BASE: Shape = { own: 40, library: 40, others: 40 };
 
-function local(sql: SqlStorage, id: string, name: string) {
-  sql.exec(
-    "INSERT INTO accounts (id, uri, username) VALUES (?, ?, ?)",
-    id,
-    `https://kopje.test/ap/users/${name}`,
-    name,
-  );
-  sql.exec(
-    "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, ?, X'00', X'00', 'k')",
-    id,
-    `${name}@example.com`,
-  );
-}
-
 let next = 100000000000000000n;
 function status(sql: SqlStorage, account: string, text: string, extra: { reblogOf?: string; tag?: string } = {}) {
   const id = String(next++);
@@ -100,22 +83,13 @@ function status(sql: SqlStorage, account: string, text: string, extra: { reblogO
 
 function shaped(sql: SqlStorage, shape: Shape) {
   next = 100000000000000000n;
-  local(sql, LOW, "low");
-  local(sql, VIEWER, "viewer");
-  local(sql, HIGH, "high");
-  sql.exec(
-    "INSERT INTO oauth_clients (id, secret, name, redirect_uris, scopes) VALUES ('app', 's', 'app', 'urn:ietf:wg:oauth:2.0:oob', 'read write')",
-  );
-  sql.exec(
-    "INSERT INTO oauth_tokens (token_hash, kind, client_id, account_id, scopes) VALUES ('viewer', 'access', 'app', ?, 'read write')",
-    VIEWER,
-  );
+  seedViewerBetween(sql);
   for (let i = 0; i < shape.own; i++) {
     status(sql, VIEWER, i % 5 === 0 ? `needle own ${i}` : `own ${i}`, { tag: `nee${i % 3}` });
   }
   for (let i = 0; i < shape.library; i++) {
     const target = status(sql, HIGH, i % 4 === 0 ? `needle\u0000nul ${i}` : `needle ${i}`, { tag: `nee${i % 4}` });
-    // One status in several sources at once, and each source on its own.
+    // One status in several sources at once.
     if (i % 5 !== 1) {
       sql.exec("INSERT INTO favourites (account_id, status_id) VALUES (?, ?)", VIEWER, target);
     }
@@ -158,7 +132,10 @@ const POPULATIONS = Object.fromEntries(
 );
 
 type Side = { rows: unknown[]; read: number };
-type Measured = { query: string; pins: string[]; mine: Side; main: Side; populations: Record<string, number> };
+type Measured = { main: string; pins: string[]; mine: Side; base: Side; populations: Record<string, number> };
+
+// The statement each flow witnesses.
+const STATEMENT = /^WITH (?:candidates|library)\(id\)/;
 
 // The flow's production statement and main's beside it, on a world of `shape` under `statistics`.
 async function measured(statistics: "singleton" | "analyzed", flow: Flow, shape: Shape): Promise<Measured> {
@@ -175,8 +152,14 @@ async function measured(statistics: "singleton" | "analyzed", flow: Flow, shape:
       sql.exec("ANALYZE");
     }
     const plans: PlannedStatement[] = [];
+    let rows: unknown[] = [];
+    const observed = observedSql(sql, (seen, query) => {
+      if (STATEMENT.test(query)) {
+        rows = [...seen];
+      }
+    });
     const result = search.run(
-      plannedSql(sql, /^WITH (?:candidates|library)\(id\)/, plans),
+      plannedSql(observed, STATEMENT, plans),
       {
         credential: { tokenHash: "viewer", scope: "read:search", now: NOW },
         ...FLOWS[flow].request,
@@ -190,20 +173,30 @@ async function measured(statistics: "singleton" | "analyzed", flow: Flow, shape:
     );
     expect(result.status).toBe("ok");
     expect(plans).toHaveLength(1);
-    const { query, params } = plans[0]!;
-    const side = (text: string): Side => {
-      const cursor = sql.exec(text, ...params);
-      const rows = cursor.toArray();
-      return { rows, read: cursor.rowsRead };
-    };
+    const { query, params, rows: read } = plans[0]!;
+    const main = unpinned(query, FLOWS[flow].pins);
+    const cursor = sql.exec(main, ...params);
+    const mainRows = cursor.toArray();
     const pins = FLOWS[flow].pins.filter((pin) => query.includes(pin));
-    return { query, pins, mine: side(query), main: side(unpinned(query, FLOWS[flow].pins)), populations };
+    return { main, pins, mine: { rows, read }, base: { rows: mainRows, read: cursor.rowsRead }, populations };
   });
 }
 
-const GROWTHS: Record<string, { shape: Shape; population: string }> = {
-  "the viewer's library": { shape: { ...BASE, own: 400, library: 400 }, population: "own" },
-  "the accounts on either side": { shape: { ...BASE, others: 400 }, population: "sides" },
+// Each growth, and the rows a flow's statement may read more per row its population gains (main's as well): each
+// window row of the viewer's, its status by key with listableSql's seeks, and for hashtags each status's tags; the
+// accounts on either side reach only the hashtag search's public window (the newest HASHTAG_PUBLIC_WINDOW public
+// statuses, theirs included), so the status searches read no more as they grow.
+const GROWTHS: Record<string, { shape: Shape; population: string; walks: Record<Flow, number> }> = {
+  "the viewer's library": {
+    shape: { ...BASE, own: 400, library: 400 },
+    population: "own",
+    walks: { library: 4, self: 1, hashtags: 7 },
+  },
+  "the accounts on either side": {
+    shape: { ...BASE, others: 400 },
+    population: "sides",
+    walks: { library: 0, self: 0, hashtags: 2 },
+  },
 };
 
 describe("the library windows beside main's (RES-7)", () => {
@@ -218,14 +211,20 @@ describe("the library windows beside main's (RES-7)", () => {
     async (statistics, flow, name) => {
       const growth = GROWTHS[name]!;
       const runs = [await measured(statistics, flow, BASE), await measured(statistics, flow, growth.shape)];
-      expect(runs[1]!.populations[growth.population]).toBeGreaterThan(runs[0]!.populations[growth.population]!);
+      const [before, after] = runs as [Measured, Measured];
+      const gained = after.populations[growth.population]! - before.populations[growth.population]!;
+      expect(gained).toBeGreaterThan(0);
       for (const run of runs) {
         expect(run.pins).toEqual(FLOWS[flow].pins);
-        expect(await statementId(unpinned(run.query, FLOWS[flow].pins))).toBe(FLOWS[flow].main);
+        expect(await statementId(run.main)).toBe(FLOWS[flow].main);
         expect(run.mine.rows.length).toBeGreaterThan(0);
-        expect(run.mine.rows).toEqual(run.main.rows);
-        expect(run.mine.read).toBeLessThanOrEqual(run.main.read);
+        expect(run.mine.rows).toEqual(run.base.rows);
+        expect(run.mine.read).toBeLessThanOrEqual(run.base.read);
       }
+      // The rewrite's reads grow by at most its walks per row gained, and not at all with the other keys.
+      const grew = after.mine.read - before.mine.read;
+      expect(grew).toBeGreaterThanOrEqual(0);
+      expect(grew).toBeLessThanOrEqual(growth.walks[flow] * gained);
     },
     300_000,
   );
