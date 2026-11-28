@@ -388,7 +388,7 @@ export const featuredTagsOfActor = readOperation<
 
 export type NodeInfoUsage = { users: number; activeMonth: number; activeHalfyear: number; localPosts: number };
 
-export type NodeInfoAccounts = Omit<NodeInfoUsage, "localPosts">;
+type NodeInfoAccounts = Omit<NodeInfoUsage, "localPosts">;
 
 // NodeInfo's user counts, in one walk of the local accounts (operator-sized, a deployment assumption of the threat
 // model). users and the active counts are the available local accounts (availableLocalSql), so neither active count
@@ -396,12 +396,14 @@ export type NodeInfoAccounts = Omit<NodeInfoUsage, "localPosts">;
 // days ending today, as /api/v2/instance's active_month counts them (instance.ts activeCountSql), so they change with
 // `now`'s UTC day alone; no status is read for them.
 export function nodeInfoAccountsOf(db: Db, now: number): NodeInfoAccounts {
+  const [monthStart, today] = activeWindow(now);
+  const [halfyearStart] = activeWindow(now, ACTIVE_HALFYEAR_DAYS);
   const accounts = db.first<{ users: number; month: number; halfyear: number }>(
     `SELECT COUNT(*) AS users, ${activeCountSql("?1", "?3")} AS month, ${activeCountSql("?2", "?3")} AS halfyear
 			FROM local_accounts l WHERE ${availableLocalSql("l")}`,
-    activeWindow(now)[0],
-    activeWindow(now, ACTIVE_HALFYEAR_DAYS)[0],
-    activeWindow(now)[1],
+    monthStart,
+    halfyearStart,
+    today,
   );
   return {
     users: accounts?.users ?? 0,

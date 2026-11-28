@@ -11,7 +11,7 @@ import { bearer, sql } from "./api-helpers";
 import { harness, NOW } from "./app-helpers";
 import { fixtureKeyGen, LEGACY, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, freshStore, migratedStore, testKernel } from "./helpers";
-import { type PlannedStatement, plannedRun } from "./read-helpers";
+import { type PlannedStatement, plannedRun, seedStatuses } from "./read-helpers";
 import { community, seedStatus } from "./status-helpers";
 
 const DOMAIN = "social.example";
@@ -212,6 +212,18 @@ describe("snapshots of a suspended actor", () => {
   });
 });
 
+// saveSnapshot's input for a NodeInfo usage rendered at `now`, serialized once for the body and its source.
+function nodeInfoSnapshot(now: number, usage: unknown) {
+  const body = JSON.stringify(usage);
+  return {
+    key: "path:/nodeinfo/2.1",
+    contentType: "application/json",
+    body,
+    renderedAt: now,
+    source: { kind: "nodeinfo", now, rendered: body } as const,
+  };
+}
+
 describe("snapshot render order", () => {
   it("refuses a NodeInfo rendered before the kept one, though its own source still recomputes the same", async () => {
     const { store } = await healthyInstance();
@@ -224,16 +236,7 @@ describe("snapshot render order", () => {
         new Date(active).toISOString().slice(0, 10),
       );
     });
-    const render = async (now: number) => {
-      const usage = await store.nodeInfoUsage(BUILD, { now });
-      return {
-        key: "path:/nodeinfo/2.1",
-        contentType: "application/json",
-        body: JSON.stringify(usage),
-        source: { kind: "nodeinfo", now, rendered: JSON.stringify(usage) } as const,
-        renderedAt: now,
-      };
-    };
+    const render = async (now: number) => nodeInfoSnapshot(now, await store.nodeInfoUsage(BUILD, { now }));
     const early = await render(active + 28 * day); // the day is still in the month's window
     const late = await render(active + 31 * day); // it has aged out
     expect(early.body).not.toBe(late.body);
@@ -251,22 +254,11 @@ describe("snapshot render order", () => {
 describe("a NodeInfo saved after UTC midnight", () => {
   const BEFORE = Date.parse("2026-06-01T23:59:59Z");
   const AFTER = BEFORE + 1_000;
-  const KEY = "path:/nodeinfo/2.1";
   // The statements of NodeInfo's usage: localPosts' walk of the post history, and the user counts.
   const POSTS_OR_ACCOUNTS = /statuses_account_originals|AS halfyear/;
   const counted = (plans: readonly PlannedStatement[]) => ({
     posts: plans.filter(({ query }) => query.includes("statuses_account_originals")).length,
     accounts: plans.filter(({ query }) => query.includes("AS halfyear")).length,
-  });
-  const nodeInfoSource = (now: number, body: string) => ({ kind: "nodeinfo", now, rendered: body }) as const;
-  // saveSnapshot's input with the Store's time the kernel would fill.
-  const nodeInfoSave = (body: string, storeNow: number) => ({
-    key: KEY,
-    contentType: "application/json",
-    body,
-    renderedAt: BEFORE,
-    source: nodeInfoSource(BEFORE, body),
-    storeNow,
   });
 
   afterEach(() => {
@@ -286,7 +278,7 @@ describe("a NodeInfo saved after UTC midnight", () => {
     });
     const usage = await h.store.nodeInfoUsage(BUILD, { now: BEFORE });
     expect(usage).toEqual({ users: 1, activeMonth: 1, activeHalfyear: 1, localPosts: 1 });
-    const body = JSON.stringify(usage);
+    const snapshot = nodeInfoSnapshot(BEFORE, usage);
     // After midnight, Alice's authenticated request records the new day.
     vi.setSystemTime(AFTER);
     h.now.mockReturnValue(AFTER);
@@ -294,26 +286,19 @@ describe("a NodeInfo saved after UTC midnight", () => {
     expect(await sql(h.store, "SELECT active_on FROM local_accounts")).toEqual([{ active_on: "2026-06-02" }]);
     // The count at the render's `now` no longer matches.
     expect(await h.store.nodeInfoUsage(BUILD, { now: BEFORE })).toMatchObject({ activeMonth: 0, activeHalfyear: 0 });
-    const save = () =>
-      h.store.saveSnapshot(BUILD, {
-        key: KEY,
-        contentType: "application/json",
-        body,
-        renderedAt: BEFORE,
-        source: { kind: "nodeinfo", now: BEFORE, rendered: body },
-      });
-    return { h, status, usage, body, save };
+    const save = () => h.store.saveSnapshot(BUILD, snapshot);
+    return { h, status, usage, snapshot, save };
   }
 
   it("keeps the render when the usage at the Store's time still matches it", async () => {
-    const { h, usage, body, save } = await rendered();
+    const { h, usage, snapshot, save } = await rendered();
     expect(await h.store.nodeInfoUsage(BUILD, { now: AFTER })).toEqual(usage);
     expect(await save()).toBe(true);
-    expect((await h.store.rescueSnapshot(BUILD, KEY))?.body).toBe(body);
+    expect((await h.store.rescueSnapshot(BUILD, snapshot.key))?.body).toBe(snapshot.body);
   });
 
   it("refuses the render when the usage matches it at neither time", async () => {
-    const { h, status, save } = await rendered();
+    const { h, status, snapshot, save } = await rendered();
     await sql(h.store, "DELETE FROM statuses WHERE id = ?", status);
     expect(await h.store.nodeInfoUsage(BUILD, { now: AFTER })).toEqual({
       users: 1,
@@ -322,18 +307,20 @@ describe("a NodeInfo saved after UTC midnight", () => {
       localPosts: 0,
     });
     expect(await save()).toBe(false);
-    expect(await h.store.rescueSnapshot(BUILD, KEY)).toBeNull();
+    expect(await h.store.rescueSnapshot(BUILD, snapshot.key)).toBeNull();
   });
 
   // The re-check counts the post history once on either day: across midnight the user counts are counted again at the
   // Store's time beside the same localPosts, and on the render's own day nothing is counted again.
   it("counts the post history once when it checks a render across midnight", async () => {
     for (const drop of [false, true]) {
-      const { h, status, body } = await rendered();
+      const { h, status, snapshot } = await rendered();
       if (drop) {
         await sql(h.store, "DELETE FROM statuses WHERE id = ?", status);
       }
-      const { result, plans } = await plannedRun(h, POSTS_OR_ACCOUNTS, saveSnapshot, nodeInfoSave(body, AFTER), true);
+      // With the Store's time the kernel fills.
+      const input = { ...snapshot, storeNow: AFTER };
+      const { result, plans } = await plannedRun(h, POSTS_OR_ACCOUNTS, saveSnapshot, input, true);
       expect({ result, ...counted(plans) }, `status deleted: ${drop}`).toEqual({
         result: !drop,
         posts: 1,
@@ -345,22 +332,11 @@ describe("a NodeInfo saved after UTC midnight", () => {
   it("counts the post history once when it refuses a stale render of the same day", async () => {
     const h = await community(["alice"]);
     const renderedAt = Date.parse("2026-06-01T12:00:00Z");
-    const grow = (first: number, last: number) =>
-      sql(
-        h.store,
-        `WITH RECURSIVE n(i) AS (VALUES (CAST(?1 AS INTEGER)) UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
-				INSERT INTO statuses (id, uri, account_id, visibility, published_at)
-				SELECT CAST(700000000000000000 + i AS TEXT), 'https://kopje.test/ap/o/p' || i, ?3, 'public',
-					'2026-05-31T00:00:00.000Z'
-				FROM n`,
-        first,
-        last,
-        h.users.alice.id,
-      );
-    await grow(1, 5_000);
-    const body = JSON.stringify(await h.store.nodeInfoUsage(BUILD, { now: renderedAt }));
-    await grow(5_001, 5_001);
-    const input = { ...nodeInfoSave(body, renderedAt + 1_000), renderedAt, source: nodeInfoSource(renderedAt, body) };
+    const posted = "2026-05-31T00:00:00.000Z";
+    await seedStatuses(h.store, h.users.alice.id, 5_000, 700000000000000001n, posted);
+    const snapshot = nodeInfoSnapshot(renderedAt, await h.store.nodeInfoUsage(BUILD, { now: renderedAt }));
+    await seedStatuses(h.store, h.users.alice.id, 1, 700000000000005001n, posted);
+    const input = { ...snapshot, storeNow: renderedAt + 1_000 };
     const { result, plans } = await plannedRun(h, POSTS_OR_ACCOUNTS, saveSnapshot, input, true);
     expect({ result, ...counted(plans) }).toEqual({ result: false, posts: 1, accounts: 1 });
   }, 30_000);

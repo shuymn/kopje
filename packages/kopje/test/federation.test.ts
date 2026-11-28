@@ -20,6 +20,7 @@ import {
 } from "./federation-helpers";
 import { BUILD, migratedStore } from "./helpers";
 import { contexts } from "./quote-helpers";
+import { ACTIVE_EDGES, ACTIVE_EDGES_DAY, activeAccounts } from "./read-helpers";
 
 // Identity goldens: every expected value is a literal. The domain is fixed at /setup ('social.example'), where the
 // requests go (WEB-6).
@@ -50,7 +51,7 @@ function expectInteractionLinks(body: { links?: { rel: string }[] }) {
   ]);
 }
 
-async function instance(options: { kek?: string } = {}) {
+async function instance(options: { kek?: string; now?: () => number } = {}) {
   const store = await migratedStore();
   await setDomain(store, DOMAIN);
   await seedLocalAccount(store, DOMAIN, { id: ALICE, username: "Alice", displayName: "Alice A", note: "<p>hi</p>" });
@@ -61,7 +62,7 @@ async function instance(options: { kek?: string } = {}) {
     return fixtureKeyGen();
   };
   const loader = { fetch: () => Promise.reject(new Error("offline")), checkHost: () => Promise.resolve() };
-  const h = harness(store, { USER_KEK: options.kek ?? KEK }, undefined, { keygen, loader }, undefined, DOMAIN);
+  const h = harness(store, { USER_KEK: options.kek ?? KEK }, undefined, { keygen, loader }, options.now, DOMAIN);
   const json = async (path: string, init: RequestInit = AP) => {
     const response = await h.request(path, init);
     return {
@@ -665,43 +666,17 @@ describe("NodeInfo", () => {
 
   // Two fresh origin responses on the same UTC day and account state (a cached response of an earlier day may differ):
   // both count the available local accounts with active_on in the 29 UTC days ending today, at the clock both requests
-  // read (the harness's NOW, 2026-10-12): Alice (never active), and one each on the window's first day and the day
-  // before it, today, half a year ago, tomorrow (an imported later day), and today but suspended (twice, one empty).
+  // read, ACTIVE_EDGES_DAY: Alice (never active) and the window edges of ACTIVE_EDGES.
   it("answers activeMonth as a fresh /api/v2/instance of the same day answers active_month", async () => {
-    const { json, store } = await instance();
-    await runInDurableObject(store, (_instance, state) => {
-      for (const [i, [activeOn, suspendedAt]] of [
-        ["2026-10-12", null],
-        ["2026-09-14", null],
-        ["2026-09-13", null],
-        ["2026-04-27", null],
-        ["2026-04-26", null],
-        ["2026-10-13", null],
-        ["2026-10-12", "2026-10-01T00:00:00.000Z"],
-        ["2026-10-12", ""],
-      ].entries()) {
-        const id = String(500000000000000000n + BigInt(i));
-        state.storage.sql.exec(
-          "INSERT INTO accounts (id, uri, username) VALUES (?1, 'https://social.example/ap/users/u' || ?2, 'u' || ?2)",
-          id,
-          i,
-        );
-        state.storage.sql.exec(
-          `INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey, active_on, suspended_at)
-					VALUES (?1, ?1 || '@mail.example', X'00', X'00', 'k', ?2, ?3)`,
-          id,
-          activeOn,
-          suspendedAt,
-        );
-      }
-    });
-    const { body } = await json("/nodeinfo/2.1");
+    const { json, store } = await instance({ now: () => Date.parse(`${ACTIVE_EDGES_DAY}T00:00:00.000Z`) });
+    await activeAccounts(store, ACTIVE_EDGES, 500000000000000000n);
+    const nodeInfo = (await json("/nodeinfo/2.1")).body as { usage: { users: Record<string, number> } };
+    expect(nodeInfo.usage.users).toEqual({ total: 7, activeMonth: 2, activeHalfyear: 4 });
     const instanceV2 = await json("/api/v2/instance", {});
     expect(instanceV2.status).toBe(200);
-    expect((body as { usage: unknown }).usage).toMatchObject({
-      users: { total: 7, activeMonth: 2, activeHalfyear: 4 },
-    });
-    expect((instanceV2.body as { usage: { users: { active_month: number } } }).usage.users.active_month).toBe(2);
+    expect((instanceV2.body as { usage: { users: { active_month: number } } }).usage.users.active_month).toBe(
+      nodeInfo.usage.users.activeMonth,
+    );
   });
 
   it("serves 2.0 without the 2.1-only software fields", async () => {

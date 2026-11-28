@@ -188,6 +188,51 @@ export async function localAccounts(h: Pick<ApiHarness, "store">, count: number,
   );
 }
 
+// `count` public statuses of `account`, ids from `base`, published at `at`.
+export const seedStatuses = (store: StoreStub, account: string, count: number, base: bigint, at: string) =>
+  sql(
+    store,
+    `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+		INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+		SELECT CAST(?2 + i AS TEXT), 'https://kopje.test/ap/o/h' || ?2 || '-' || i, ?3, 'public', ?4
+		FROM n`,
+    count,
+    String(base),
+    account,
+    at,
+  );
+
+export type ActiveAccount = { activeOn: string | null; suspendedAt?: string };
+
+// Local accounts (localAccounts) from `base` up, each with its active_on and suspended_at.
+export async function activeAccounts(store: StoreStub, rows: readonly ActiveAccount[], base = 600000000000000000n) {
+  await localAccounts({ store }, rows.length, base);
+  for (const [i, { activeOn, suspendedAt }] of rows.entries()) {
+    await sql(
+      store,
+      "UPDATE local_accounts SET active_on = ?1, suspended_at = ?2 WHERE account_id = ?3",
+      activeOn,
+      suspendedAt ?? null,
+      String(base + BigInt(i)),
+    );
+  }
+}
+
+// NodeInfo's active windows on ACTIVE_EDGES_DAY: one account each today, on the month's first day and the day before
+// it, on the half-year's first day and the day before it, tomorrow (an imported later day), and today but suspended
+// (suspended_at set, and empty). Users 6, activeMonth 2, activeHalfyear 4.
+export const ACTIVE_EDGES_DAY = "2026-06-01";
+export const ACTIVE_EDGES: readonly ActiveAccount[] = [
+  { activeOn: "2026-06-01" },
+  { activeOn: "2026-05-04" },
+  { activeOn: "2026-05-03" },
+  { activeOn: "2025-12-15" },
+  { activeOn: "2025-12-14" },
+  { activeOn: "2026-06-02" },
+  { activeOn: "2026-06-01", suspendedAt: "2026-05-31T00:00:00.000Z" },
+  { activeOn: "2026-06-01", suspendedAt: "" },
+];
+
 export type SqlRow = Record<string, SqlStorageValue>;
 
 // A SqlStorage over `real` that hands the rows each statement returns to `observe` (with the statement), as they leave

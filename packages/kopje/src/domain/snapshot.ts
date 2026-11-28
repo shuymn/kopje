@@ -20,12 +20,9 @@ export type SnapshotSource =
   | { kind: "static" };
 
 // Whether the source as the Store holds it now, in the form the Worker renders it from (JSON of the same read), is the
-// one the body was rendered from. A NodeInfo usage is counted at its render's `now`, and when that differs and
-// `storeNow`, the Store's own time, falls on another UTC day, its user counts are counted again at `storeNow` beside
-// the same localPosts: a sign-in after UTC midnight moves an active_on past the render's day, which the count at the
-// render's `now` leaves out, though the render still matches the usage as it stands. The active counts change with
-// the UTC day alone and localPosts not with time (nodeInfoAccountsOf), so neither is counted twice. A body matching
-// neither count is refused.
+// one the body was rendered from. A NodeInfo usage that differs at its render's `now` is checked again with the user
+// counts at the Store's own time when that falls on another UTC day: a sign-in after UTC midnight can move an
+// active_on past the render's day. Its localPosts does not depend on time and is read once.
 function sourceMatches(db: Db, source: Exclude<SnapshotSource, { kind: "static" }>, storeNow: number): boolean {
   switch (source.kind) {
     case "actor":
