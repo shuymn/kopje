@@ -657,6 +657,14 @@ Accounts (the `Account` and credential account entities):
   collection sync, so a fresh store of the account's document that still names an unresolved destination starts it
   again, and another request for the sync renews its attempts: a peer that keeps sending profile updates or collection
   changes while its destination keeps failing keeps the account in this state.
+- A verified `Move` whose target's own move is being resolved moves no follower: the job is admitted covering none, and
+  a batch after a first one moves none once the target's move is being resolved or set, so the followers left keep the
+  source with its lists; the source's move is set and blocks and mutes are carried as for any `Move`. A new `Move`
+  stores the target's document afresh, which can leave its move being resolved again. Mastodon fetches the destination
+  while it processes the target, so when that destination proves gone or has itself moved, Mastodon finds no moved
+  account and moves the followers to the target (`move_worker.rb`, `follow_service.rb:18`), where Kopje keeps them on
+  the source (`test/inbox.test.ts`, "keeps the follower on the source when the target's destination then proves
+  gone").
 - A remote actor's document is stored only while the Store revision read before its fetch holds (ID-1 in
   `docs/threat-model.md`): a document fetched before another store of the actor committed is not stored. Mastodon
   serializes the processing of one account (`process_account_service.rb:30`) but stores whatever document it processes

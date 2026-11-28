@@ -32,8 +32,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   empty, `@id` and nested spellings no longer resolve, a context no longer renames the member, and a fragment is
   ignored for a stored account, so some stored moves change when the profile is next stored, and with them whether a
   `Move` to that profile moves its followers. This adds no fetch of the account `movedTo` names.
-- While a remote account's move is being resolved, following it answers 503 `Remote data could not be fetched`, and
-  a held follow request to it waits; once resolved, following answers 403
+- While a remote account's move is being resolved, following it answers 503 `Remote data could not be fetched`, a
+  held follow request to it waits, and a `Move` to it keeps the followers; once resolved, following answers 403
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts).
 - A video upload whose processing estimate does not fit the time left at its duration's rendition is encoded at the
   first lower rendition that fits (720p at 30 fps, then 480p at 30 fps) instead of being refused, and is refused only

@@ -5,10 +5,11 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { forwardSubject } from "../src/domain/deliveries";
-import { inboxGate, KEY_REFRESH_MS, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
+import { inboxGate, KEY_REFRESH_MS, MOVE_BATCH, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
 import { type RemoteActorInput, SWEEP_BATCH, upsertRemoteActor } from "../src/domain/remote-actors";
 import { webfingerUrl } from "../src/domain/remote-statuses";
 import { MAX_RETRACTIONS_PER_ACTOR, RETRACTION_TTL_MS } from "../src/domain/retractions";
+import { syncCollections } from "../src/federation/collections";
 import { verifySpooledRequest } from "../src/federation/inbound";
 import { handleQueue } from "../src/jobs/queue";
 import { sha256Hex } from "../src/platform/sha256";
@@ -2049,6 +2050,143 @@ describe("account moves", () => {
         { target_account_id: bob2Id },
       ]);
     }
+  });
+
+  // A target whose fresh document names, as its movedTo, an account Kopje does not hold has its move being resolved
+  // (accounts.move_pending): the transfer cannot wait for the collection sync that resolves it, so the job covers no
+  // follower (bound '0') and the follower keeps the source; the source's move is set and blocks and mutes are carried
+  // as for any verified Move. The control is the same target naming no destination.
+  it("moves no follower to a target whose move is being resolved, and admits the job covering none", async () => {
+    for (const pending of [true, false]) {
+      const t = await setup();
+      const bob = await mastodonActor(t.web, "bob");
+      const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
+      const named = pending ? { movedTo: "https://other.example/users/dest" } : {};
+      t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri], ...named });
+      await t.post(bob, follow(bob, DAVE_URI));
+      const bobId = (await accountId(t.store, bob.uri))!;
+      await sql(
+        t.store,
+        "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted')",
+        ALICE,
+        bobId,
+      );
+      await sql(t.store, "INSERT INTO mutes (account_id, target_account_id) VALUES (?, ?)", DAVE, bobId);
+      const before = (await outbound(t.store)).length;
+      expect(await t.post(bob, moveOf(bob, bob2, 1))).toBe(202);
+      const bob2Id = (await accountId(t.store, bob2.uri))!;
+      expect(await sql(t.store, "SELECT move_pending FROM accounts WHERE id = ?", bob2Id)).toEqual([
+        { move_pending: pending ? 1 : 0 },
+      ]);
+      const jobs = await sql<{ bound: string; done: number }>(
+        t.store,
+        "SELECT bound, done_at IS NOT NULL AS done FROM inbound_jobs WHERE kind = 'move'",
+      );
+      expect([pending, jobs]).toEqual([
+        pending,
+        [{ bound: pending ? "0" : expect.not.stringMatching(/^0$/), done: 1 }],
+      ]);
+      expect(await movedTo(t.store, bob.uri)).toBe(bob2.uri);
+      const sent = (await outbound(t.store)).slice(before).map((o) => o.activity.type);
+      const alice = (await follows(t.store)).filter((f) => f.account_id === ALICE);
+      if (pending) {
+        expect(alice).toEqual([{ account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null }]);
+        expect(sent).toEqual([]);
+      } else {
+        expect(alice).toEqual([expect.objectContaining({ target_account_id: bob2Id, state: "pending" })]);
+        expect(sent).toEqual(["Undo", "Follow"]);
+      }
+      expect(await sql(t.store, "SELECT target_account_id FROM mutes WHERE account_id = ? ORDER BY id", DAVE)).toEqual([
+        { target_account_id: bobId },
+        { target_account_id: bob2Id },
+      ]);
+    }
+  });
+
+  // Each batch reads the target again: once its move is being resolved or set after the first batch, the next batch
+  // moves no follower and the job ends, so the followers left keep the source. The control stores the target's
+  // document again naming no destination, and the last follower moves.
+  it.each([
+    ["names no destination", null, MOVE_BATCH + 1],
+    ["names an account Kopje does not hold", "https://other.example/users/dest", MOVE_BATCH],
+    ["names a stored account", "https://new.example/users/carol", MOVE_BATCH],
+  ] as const)("stops between batches when the target's document then %s", async (_name, movedTo, moved) => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
+    const carol = await mastodonActor(t.web, "carol", { origin: "https://new.example", key: 3 });
+    await t.post(carol, follow(carol, DAVE_URI));
+    t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri] });
+    await t.post(bob, follow(bob, DAVE_URI));
+    const bobId = (await accountId(t.store, bob.uri))!;
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+			INSERT INTO accounts (id, uri, username, domain) SELECT printf('5%017d', i), ? || i, 'u' || i, NULL FROM n`,
+      MOVE_BATCH + 1,
+      `${LOCAL}/ap/users/u`,
+    );
+    await sql(
+      t.store,
+      `INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey)
+			SELECT id, username || '@mail.example', x'00', x'00', 'k' FROM accounts WHERE id GLOB '5*'`,
+    );
+    await sql(
+      t.store,
+      "INSERT INTO follows (account_id, target_account_id, state) SELECT id, ?, 'accepted' FROM accounts WHERE id GLOB '5*'",
+      bobId,
+    );
+    const toBob2 = async () =>
+      (
+        await sql<{ n: number }>(
+          t.store,
+          "SELECT count(*) AS n FROM follows f JOIN accounts a ON a.id = f.target_account_id WHERE a.uri = ?",
+          bob2.uri,
+        )
+      )[0]!.n;
+    expect(await t.post(bob, moveOf(bob, bob2, 1))).toBe(202);
+    expect(await toBob2()).toBe(MOVE_BATCH);
+    await refresh(t, bob2, { ...bob2.document, alsoKnownAs: [bob.uri], ...(movedTo === null ? {} : { movedTo }) }, 1);
+    await settle(t.store);
+    expect(await toBob2()).toBe(moved);
+    expect(await sql(t.store, "SELECT 1 FROM inbound_jobs WHERE kind = 'move' AND done_at IS NULL")).toEqual([]);
+  });
+
+  // The recorded deviation (docs/mastodon-deviations.md, Accounts): the target's destination proves gone after the job
+  // was admitted covering no follower, so the target's move settles with nothing, yet the follower stays on the source;
+  // Mastodon, finding no moved account, would move it to the target.
+  it("keeps the follower on the source when the target's destination then proves gone", async () => {
+    const t = await setup();
+    const DEST = "https://other.example/users/dest";
+    const bob = await mastodonActor(t.web, "bob");
+    const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
+    t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri], movedTo: DEST });
+    t.web.fail(DEST, 404);
+    await t.post(bob, follow(bob, DAVE_URI));
+    const bobId = (await accountId(t.store, bob.uri))!;
+    await sql(
+      t.store,
+      "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted')",
+      ALICE,
+      bobId,
+    );
+    expect(await t.post(bob, moveOf(bob, bob2, 1))).toBe(202);
+    const from = t.web.fetched.length;
+    for (let call = 0; call < 10 && (await sql(t.store, "SELECT 1 FROM collection_syncs")).length > 0; call++) {
+      await syncCollections(
+        t.env,
+        inboxDeps(() => t.store, t.web.loader),
+      );
+    }
+    expect(t.web.fetched.slice(from)).toContain(DEST);
+    expect(
+      await sql(t.store, "SELECT move_pending, moved_to_account_id FROM accounts WHERE uri = ?", bob2.uri),
+    ).toEqual([{ move_pending: 0, moved_to_account_id: null }]);
+    await settle(t.store);
+    expect((await follows(t.store)).filter((f) => f.account_id === ALICE)).toEqual([
+      { account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null },
+    ]);
+    expect(await sql(t.store, "SELECT 1 FROM inbound_jobs WHERE kind = 'move' AND done_at IS NULL")).toEqual([]);
   });
 
   it("names no account being purged, by a document or by a Move", async () => {

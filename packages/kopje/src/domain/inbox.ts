@@ -40,6 +40,7 @@ import {
   isPublicCollection,
   MENTION_STATUS_COLUMNS,
   mentionStatusSql,
+  moveTargetHeldSql,
   type Visibility,
   REACHES_FOLLOWERS_SQL,
   removalBegunSql,
@@ -1291,11 +1292,15 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
   if (targetId === actor.id) {
     return ignored("self-move");
   }
-  const bound =
-    db.first<{ bound: string | null }>(
-      "SELECT CAST(max(id) AS TEXT) AS bound FROM follows WHERE target_account_id = ? AND state = 'accepted'",
-      actor.id,
-    )?.bound ?? "0";
+  // A target that has moved, or whose move its fresh document left being resolved, takes no follower
+  // (moveTargetHeldSql): the job covers none ('0') and ends at its first batch.
+  const held = db.first(`SELECT 1 AS x WHERE ${moveTargetHeldSql("?1")}`, targetId) !== undefined;
+  const bound = held
+    ? "0"
+    : (db.first<{ bound: string | null }>(
+        "SELECT CAST(max(id) AS TEXT) AS bound FROM follows WHERE target_account_id = ? AND state = 'accepted'",
+        actor.id,
+      )?.bound ?? "0");
   db.run(
     `INSERT INTO inbound_jobs (kind, key, actor_uri, target_account_id, bound, cursor, created_at)
 		VALUES ('move', ?, ?, ?, ?, '0', ?)`,
@@ -1363,19 +1368,23 @@ function moveBatch(db: Db, key: string, now: number): boolean {
   const target =
     job === undefined
       ? undefined
-      : db.first<{ id: string; uri: string; local: number; locked: number }>(
-          "SELECT id, uri, domain IS NULL AS local, locked FROM accounts WHERE id = ?",
+      : db.first<{ id: string; uri: string; local: number; locked: number; held: number }>(
+          `SELECT id, uri, domain IS NULL AS local, locked, ${moveTargetHeldSql("?1")} AS held
+					FROM accounts WHERE id = ?1`,
           job.target_account_id,
         );
   // Checked before every batch: a Move whose source or target has since deleted itself, or whose source has become
-  // unavailable (R38: suspended), ends here, before it changes anything (ID-7: a purged actor gets no new follows).
+  // unavailable (R38: suspended), ends here, before it changes anything (ID-7: a purged actor gets no new follows); so
+  // does one whose target has since moved or has a move being resolved (moveTargetHeldSql), so the followers left keep
+  // the source.
   if (
     job === undefined ||
     source === undefined ||
     target === undefined ||
     isDeletedActor(db, source.uri, now) ||
     db.first(`SELECT 1 AS x WHERE ${availableSql("?1")}`, source.id) === undefined ||
-    (target.local === 0 && isDeletedActor(db, target.uri, now))
+    (target.local === 0 && isDeletedActor(db, target.uri, now)) ||
+    target.held === 1
   ) {
     finishJob(db, "move", key, now);
     return false;

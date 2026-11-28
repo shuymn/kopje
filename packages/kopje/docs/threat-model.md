@@ -456,8 +456,9 @@ against their own instance. TLS is assumed between all parties.
   spelling as an absolute http(s) URI (`namedMove` in `src/domain/collection-requests.ts`), may name any stored account
   or one the account's collection sync fetches one hop and stores (its handle confirmed, its own document naming no
   move; `accounts.move_pending` holds the account while that fetch is due), and a verified `Move` sets it when first
-  processed and ends a pending one; followers move only on a verified `Move`, each judged by R21, so
-  none moves to a target that has itself moved (`upsertRemoteActor` in `src/domain/remote-actors.ts` and `move` in
+  processed and ends a pending one; it also holds a follow of the account while its move is pending (503). Followers
+  move only on a verified `Move` whose target has neither moved nor a pending move, checked when the job is admitted
+  and before each batch (`moveTargetHeldSql` in `src/domain/audience.ts`), each judged by R21 (`upsertRemoteActor` in `src/domain/remote-actors.ts` and `move` in
   `src/domain/inbox.ts`; `test/inbox.test.ts` ("account moves")). Setting it issues a new revision of the source (ID-1),
   so a document of the source fetched before the `Move` committed never clears it, a stale-author refresh included; a
   target stored after its revision was read answers 503, having written nothing (`test/inbox-actor-revision.test.ts`).

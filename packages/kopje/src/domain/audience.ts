@@ -441,6 +441,15 @@ function movedSql(x: string): string {
 		WHERE pmv.id = ${x} AND ${movedTargetShownSql("pmt")})`;
 }
 
+// R21 for a Move's transfer as a whole: whether the Move's target `x` takes no follower, because it has moved
+// (movedSql) or a move of it is being resolved (accounts.move_pending, which its collection sync settles). A transfer
+// cannot wait for that resolution, so it moves none, as R21 would refuse each follower once the target has moved
+// (docs/mastodon-deviations.md, Accounts). Key lookups of `x` only.
+export function moveTargetHeldSql(x: string): string {
+  return `(${movedSql(x)} OR EXISTS (SELECT 1 FROM main.accounts pmp INDEXED BY ${ACCOUNTS_ID_INDEX}
+		WHERE pmp.id = ${x} AND pmp.move_pending = 1))`;
+}
+
 // R21 (FollowService): whether `viewer` may follow the account `x`: it is available and someone else, has not moved,
 // neither blocks the other, and the viewer does not block its domain.
 export function followableBySql(x: string, viewer: string): string {
