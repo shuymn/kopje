@@ -418,6 +418,9 @@ describe("GET /api/v2/search with account_id", () => {
     // The poll reset after carol's vote: her vote is of a past generation.
     await sql(h.store, "UPDATE polls SET generation = generation + 1 WHERE status_id = ?", reset.id);
     const control = await post(h, bob, { status: "scoped control" });
+    // Another author's status carol favourited: an interaction, but not bob's.
+    const elsewhere = await post(h, h.users.alice, { status: "scoped elsewhere" });
+    await act(h, carol, `/api/v1/statuses/${elsewhere.id}/favourite`);
     // Private statuses carol may see while she follows bob: one she favourited, one she did not.
     await follow(h, carol, bob.id);
     const kept = await post(h, bob, { status: "scoped private kept", visibility: "private" });
@@ -430,6 +433,7 @@ describe("GET /api/v2/search with account_id", () => {
     await sql(h.store, "UPDATE accounts SET indexable = 0 WHERE id = ?", bob.id);
     expect(await scoped()).toEqual(found);
     // The guarded branches ran: every status left out matches and is one carol may see, and bob finds them all.
+    expect(await statusIds("scoped", "", carol.token)).toContain(elsewhere.id);
     for (const id of [withdrawn.id, addressed, reset.id, control.id, unsaved.id]) {
       expect(await statusIds("scoped", `&account_id=${bob.id}`, bob.token)).toContain(id);
       expect((await h.request(`/api/v1/statuses/${id}`, bearer(carol.token))).status).toBe(200);
@@ -471,13 +475,25 @@ describe("GET /api/v2/search with account_id", () => {
     const open = await post(h, bob, { status: "listed public" });
     const quiet = await post(h, bob, { status: "listed unlisted", visibility: "unlisted" });
     const closed = await post(h, bob, { status: "listed private", visibility: "private" });
+    // A direct status carol is only addressed in: she may see it, and it is not one she may search.
+    const addressed = await seedStatus(h.store, {
+      accountId: bob.id,
+      visibility: "direct",
+      content: "<p>listed direct</p>",
+      mentions: [{ accountId: carol.id, silent: true }],
+    });
     const scoped = () => statusIds("listed", `&account_id=${bob.id}`, carol.token);
     expect(await scoped()).toEqual([]);
     await sql(h.store, "UPDATE accounts SET indexable = 1 WHERE id = ?", bob.id);
     expect(await scoped()).toEqual([open.id]);
     // carol, a follower, may see the unlisted and the private one: both are in her timeline's reach.
-    expect(await statusIds("listed", `&account_id=${bob.id}`, bob.token)).toEqual([closed.id, quiet.id, open.id]);
-    for (const id of [quiet.id, closed.id]) {
+    expect(await statusIds("listed", `&account_id=${bob.id}`, bob.token)).toEqual([
+      addressed,
+      closed.id,
+      quiet.id,
+      open.id,
+    ]);
+    for (const id of [quiet.id, closed.id, addressed]) {
       expect((await h.request(`/api/v1/statuses/${id}`, bearer(carol.token))).status).toBe(200);
     }
   });
@@ -485,14 +501,16 @@ describe("GET /api/v2/search with account_id", () => {
   it("returns every status of the viewer's own account whatever its indexable (P6.3)", async () => {
     const { h, statusIds } = await fixture();
     const { bob, carol } = h.users;
-    await sql(h.store, "UPDATE accounts SET indexable = 0 WHERE id = ?", carol.id);
     const own = [
       await post(h, carol, { status: "mine public" }),
       await post(h, carol, { status: "mine unlisted", visibility: "unlisted" }),
       await post(h, carol, { status: "mine private", visibility: "private" }),
       await post(h, carol, { status: `@bob mine direct`, visibility: "direct" }),
     ].map((s) => s.id);
-    expect(await statusIds("mine", `&account_id=${carol.id}`, carol.token)).toEqual(descending(own));
+    for (const indexable of [null, 0, 1]) {
+      await sql(h.store, "UPDATE accounts SET indexable = ? WHERE id = ?", indexable, carol.id);
+      expect(await statusIds("mine", `&account_id=${carol.id}`, carol.token)).toEqual(descending(own));
+    }
     void bob;
   });
 
@@ -543,4 +561,53 @@ describe("GET /api/v2/search with account_id", () => {
     expect(await statusIds("addressed", "", carol.token)).toEqual([addressed]);
     expect(await statusIds("addressed", `&account_id=${bob.id}`, carol.token)).toEqual([]);
   });
+
+  it("drops an indexable account's public status once the viewer mutes it (VIS-5)", async () => {
+    const { h, statusIds } = await fixture();
+    const { bob, carol } = h.users;
+    await sql(h.store, "UPDATE accounts SET indexable = 1 WHERE id = ?", bob.id);
+    const open = await post(h, bob, { status: "muted public" });
+    const scoped = () => statusIds("muted", `&account_id=${bob.id}`, carol.token);
+    expect(await scoped()).toEqual([open.id]);
+    await mute(h.store, carol.id, bob.id);
+    expect(await scoped()).toEqual([]);
+  });
+
+  // Candidacy is not eligibility (A10): a status a window nominates is returned when it is eligible by any rule.
+  it("returns an indexable account's public status past its window that an old vote or a silent mention names", async () => {
+    const { h, statusIds } = await fixture();
+    const { bob, carol } = h.users;
+    const target = await post(h, bob, { status: "nominated public", poll: { options: ["a", "b"], expires_in: 3600 } });
+    // LIBRARY_SOURCE_LIMIT newer originals of bob's, none matching: the status is past bob's window.
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, search_text)
+			SELECT CAST(900000000000000000 + i AS TEXT), 'https://kopje.test/ap/o/n' || i, ?, 'public', '', '2026-10-12T00:00:00.000Z', 'filler'
+			FROM n`,
+      LIBRARY_SOURCE_LIMIT,
+      bob.id,
+    );
+    await sql(h.store, "UPDATE accounts SET indexable = 1 WHERE id = ?", bob.id);
+    const scoped = () => statusIds("nominated", `&account_id=${bob.id}`, carol.token);
+    // Nothing names it: not a candidate.
+    expect(await scoped()).toEqual([]);
+    // A vote of a past generation names it; it is eligible as public and indexable.
+    expect((await act(h, carol, `/api/v1/polls/${target.id}/votes`, { choices: [0] })).status).toBe(200);
+    await sql(h.store, "UPDATE polls SET generation = generation + 1 WHERE status_id = ?", target.id);
+    expect(await scoped()).toEqual([target.id]);
+    await sql(h.store, "UPDATE accounts SET indexable = 0 WHERE id = ?", bob.id);
+    expect(await scoped()).toEqual([]);
+    // A silent mention names it in place of the vote.
+    await sql(h.store, "DELETE FROM poll_votes WHERE poll_id = ?", target.id);
+    await sql(
+      h.store,
+      "INSERT INTO status_mentions (status_id, account_id, silent) VALUES (?, ?, 1)",
+      target.id,
+      carol.id,
+    );
+    expect(await scoped()).toEqual([]);
+    await sql(h.store, "UPDATE accounts SET indexable = 1 WHERE id = ?", bob.id);
+    expect(await scoped()).toEqual([target.id]);
+  }, 60_000);
 });

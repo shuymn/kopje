@@ -281,7 +281,7 @@ export function explainPlan(sql: SqlStorage, query: string, ...params: SqlStorag
     .join(" | ");
 }
 
-export type PlannedStatement = { query: string; plan: string[]; rows: number };
+export type PlannedStatement = { query: string; params: SqlStorageValue[]; plan: string[]; rows: number };
 
 // A SqlStorage over `real` that records in `plans`, for each statement whose SQL matches `pattern`, its query plan
 // (EXPLAIN QUERY PLAN of the statement with its parameters, before it runs, or after with `explainFirst` false) and the
@@ -304,7 +304,7 @@ export function plannedSql(
       }
       const before = explainFirst ? explain(query, params) : [];
       const cursor = real.exec(query, ...params);
-      const entry = { query, plan: explainFirst ? before : explain(query, params), rows: 0 };
+      const entry = { query, params, plan: explainFirst ? before : explain(query, params), rows: 0 };
       plans.push(entry);
       return watchedCursor(cursor, () => (entry.rows += cursor.rowsRead));
     },

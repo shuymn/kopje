@@ -148,6 +148,33 @@ describe("account_id candidates reach past the account's window", () => {
     // The control: without a cursor, all three.
     expect(await ids()).toEqual([id(2), id(1), id(0)]);
   }, 60_000);
+
+  // The vote window is the viewer's newest LIBRARY_SOURCE_LIMIT vote rows, and the id bounds apply after it (A7): a
+  // vote older than that many newer votes is not a candidate of a request whose bounds leave the newer ones out.
+  it("takes the viewer's newest votes before max_id applies", async () => {
+    const { h, id, poll, ids } = await scoped(LIBRARY_SOURCE_LIMIT + 1);
+    const { alice, carol } = h.users;
+    // carol votes in bob's oldest status (past his newest 2,500), then in LIBRARY_SOURCE_LIMIT polls of alice's
+    // statuses, all above bob's.
+    await poll(0);
+    await fillerStatuses(h, alice.id, LIBRARY_SOURCE_LIMIT, 400000000000000000n);
+    await sql(
+      h.store,
+      `INSERT INTO polls (status_id, options, tallies) SELECT id, '["a","b"]', '[0,0]' FROM statuses WHERE account_id = ?`,
+      alice.id,
+    );
+    await sql(
+      h.store,
+      "INSERT INTO poll_votes (poll_id, account_id, choice) SELECT id, ?, 0 FROM statuses WHERE account_id = ? ORDER BY id",
+      carol.id,
+      alice.id,
+    );
+    const below = "&max_id=400000000000000000";
+    expect(await ids(below)).toEqual([]);
+    // The control: with one of the newer votes gone, the oldest is within the window and found.
+    await sql(h.store, "DELETE FROM poll_votes WHERE poll_id = '400000000000000000' AND account_id = ?", carol.id);
+    expect(await ids(below)).toEqual([id(0)]);
+  }, 60_000);
 });
 
 // Runs the search operation over a SqlStorage that counts the rows each statement reads.
@@ -585,15 +612,34 @@ describe("ranking queries with stale statistics (RES-7)", () => {
     expect(rows).toBe(before.plans[0]!.rows);
   }, 60_000);
 
-  // The account_id statement (#1564, D7): every window by its index, the vote window in its rowid order with no sort,
-  // and each candidate's interactions probed by key, as the account's boosts, others' statuses and the viewer's older
-  // votes grow after ANALYZE.
+  // The account_id statement (#1564, D7): every window starts at its cap, and older rows grow under each window's own
+  // key after ANALYZE (bob's originals; alice's boosts, favourites, bookmarks, mentions and votes). Each window still
+  // walks its index newest first and stops at its LIMIT, so the candidates and the rows read stay the same; each
+  // candidate's interactions are probed by key.
   it("walks an account's originals and the viewer's newest votes by their indexes, and probes by key", async () => {
     const { h } = await fixture();
     const { alice, bob, carol } = h.users;
-    const originals = LIBRARY_SOURCE_LIMIT + 500;
-    await fillerStatuses(h, bob.id, originals, 300000000000000000n);
-    // A poll on each of bob's statuses, and alice's vote in each, with rowids above every vote grown later.
+    const full = LIBRARY_SOURCE_LIMIT + 100;
+    const older = 5000;
+    // alice's library rows of carol's statuses from `base` up, and alice's boosts of them.
+    const library = async (base: bigint, count: number) => {
+      const range = `SELECT id, uri, published_at FROM statuses WHERE account_id = '${carol.id}'
+				AND CAST(id AS INTEGER) BETWEEN ${base} AND ${base + BigInt(count) - 1n}`;
+      await sql(h.store, `INSERT INTO favourites (account_id, status_id) SELECT ?, id FROM (${range})`, alice.id);
+      await sql(h.store, `INSERT INTO bookmarks (account_id, status_id) SELECT ?, id FROM (${range})`, alice.id);
+      await sql(h.store, `INSERT INTO status_mentions (status_id, account_id) SELECT id, ? FROM (${range})`, alice.id);
+      await sql(
+        h.store,
+        `INSERT INTO statuses (id, uri, account_id, reblog_of_id, visibility, published_at)
+					SELECT CAST(CAST(id AS INTEGER) + 150000000000000000 AS TEXT), uri || '/boost', ?, id, 'public', published_at
+					FROM (${range})`,
+        alice.id,
+      );
+    };
+    await fillerStatuses(h, bob.id, full, 600000000000000000n);
+    await fillerStatuses(h, carol.id, full, 700000000000000000n);
+    await library(700000000000000000n, full);
+    // A poll on each of bob's statuses and alice's vote in each, with rowids above every vote grown later.
     await sql(
       h.store,
       `INSERT INTO polls (status_id, options, tallies) SELECT id, '["a","b"]', '[0,0]' FROM statuses WHERE account_id = ?`,
@@ -606,21 +652,9 @@ describe("ranking queries with stale statistics (RES-7)", () => {
       alice.id,
       bob.id,
     );
-    // alice's library: some of bob's statuses favourited, bookmarked, boosted and mentioning her.
-    const some = `SELECT id FROM statuses WHERE account_id = '${bob.id}' AND CAST(id AS INTEGER) % 7 = 0`;
-    await sql(h.store, `INSERT INTO favourites (account_id, status_id) SELECT ?, id FROM (${some})`, alice.id);
-    await sql(h.store, `INSERT INTO bookmarks (account_id, status_id) SELECT ?, id FROM (${some})`, alice.id);
-    await sql(h.store, `INSERT INTO status_mentions (status_id, account_id) SELECT id, ? FROM (${some})`, alice.id);
-    await sql(
-      h.store,
-      `INSERT INTO statuses (id, uri, account_id, reblog_of_id, visibility, published_at)
-				SELECT CAST(CAST(id AS INTEGER) + 50000000000000000 AS TEXT), uri || '/boost', ?, id, 'public', published_at
-				FROM (${some.replace("SELECT id", "SELECT id, uri, published_at")})`,
-      alice.id,
-    );
     const maxId = "900000000000000000";
-    const run = (extra: { maxId?: string }) =>
-      planned(h, /^WITH library\(id\)/, {
+    const run = async (extra: { maxId?: string }) => {
+      const { value, plans } = await planned(h, /^WITH library\(id\)/, {
         query: "filler",
         types: ["statuses"],
         following: false,
@@ -628,44 +662,56 @@ describe("ranking queries with stale statistics (RES-7)", () => {
         limit: 40,
         ...extra,
       });
+      expect(plans).toHaveLength(1);
+      const { query, params, plan, rows } = plans[0]!;
+      // The candidates the statement takes, counted by the statement's own CTEs and parameters.
+      const counted = await sql<{ n: number }>(
+        h.store,
+        `${query.slice(0, query.indexOf("SELECT s.id AS id FROM candidates"))}
+					SELECT count(*) AS n FROM candidates WHERE 1 ${params.map((_, i) => `OR ?${i + 1} IS NULL`).join(" ")}`,
+        ...params,
+      );
+      return { ids: value.statuses.map((s) => s.id), plan, rows, candidates: counted[0]!.n };
+    };
     const both = async () => [await run({}), await run({ maxId })];
     const { before, after } = await staleStatistics(h, {
       capture: both,
       grow: async () => {
-        // carol's statuses above every original, and bob's boosts of them above those; alice's older votes, under
-        // her key with rowids below the window's (past generations of one poll).
-        await fillerStatuses(h, carol.id, 20_000, 400000000000000000n);
+        await fillerStatuses(h, bob.id, older, 200000000000000000n);
+        await fillerStatuses(h, carol.id, older, 300000000000000000n);
+        await library(300000000000000000n, older);
         await sql(
           h.store,
-          `INSERT INTO statuses (id, uri, account_id, reblog_of_id, visibility, published_at)
-						SELECT CAST(CAST(id AS INTEGER) + 100000000000000000 AS TEXT), uri || '/boost', ?, id, 'public', published_at
-						FROM statuses WHERE account_id = ?`,
-          bob.id,
-          carol.id,
-        );
-        await sql(
-          h.store,
-          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20000)
-						INSERT INTO poll_votes (id, poll_id, account_id, choice, generation) SELECT i, ?, ?, 0, i FROM n`,
-          "300000000000000000",
+          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?3)
+						INSERT INTO poll_votes (id, poll_id, account_id, choice, generation) SELECT i, ?1, ?2, 0, i FROM n`,
+          "600000000000000000",
           alice.id,
+          older,
         );
       },
     });
-    const grown = await sql<{ boosts: number; votes: number }>(
+    // Every window's own key grew by `older` rows below its window.
+    const grown = await sql(
       h.store,
-      `SELECT (SELECT count(*) FROM statuses WHERE account_id = ?1 AND reblog_of_id IS NOT NULL) AS boosts,
+      `SELECT (SELECT count(*) FROM statuses WHERE account_id = ?1 AND reblog_of_id IS NULL) AS originals,
+				(SELECT count(*) FROM statuses WHERE account_id = ?2 AND reblog_of_id IS NOT NULL) AS boosts,
+				(SELECT count(*) FROM favourites WHERE account_id = ?2) AS favourites,
+				(SELECT count(*) FROM bookmarks WHERE account_id = ?2) AS bookmarks,
+				(SELECT count(*) FROM status_mentions WHERE account_id = ?2) AS mentions,
 				(SELECT count(*) FROM poll_votes WHERE account_id = ?2) AS votes`,
       bob.id,
       alice.id,
     );
-    expect(grown).toEqual([{ boosts: 20_000, votes: originals + 20_000 }]);
-    for (const [i, { value, plans }] of after.entries()) {
-      // The statuses alice interacted with among bob's newest, and those of her newest votes: the newest 40.
-      expect(value.statuses.map((s) => s.id)).toEqual(before[i]!.value.statuses.map((s) => s.id));
-      expect(value.statuses).toHaveLength(40);
-      expect(plans).toHaveLength(1);
-      const { plan, rows } = plans[0]!;
+    const total = full + older;
+    expect(grown).toEqual([
+      { originals: total, boosts: total, favourites: total, bookmarks: total, mentions: total, votes: total },
+    ]);
+    for (const [i, { ids, plan, rows, candidates }] of after.entries()) {
+      // bob's statuses alice voted in, the newest 40.
+      expect(ids).toHaveLength(40);
+      expect(ids).toEqual(before[i]!.ids);
+      // bob's newest 2,500 (the polls of alice's newest votes among them) and carol's newest 2,500 alice saved.
+      expect([before[i]!.candidates, candidates]).toEqual([2 * LIBRARY_SOURCE_LIMIT, 2 * LIBRARY_SOURCE_LIMIT]);
       const author = i === 0 ? "(account_id=?)" : "(account_id=? AND id<?)";
       expect(
         plan.filter((detail) => /^SEARCH statuses USING (COVERING )?INDEX statuses_account_originals /.test(detail)),
@@ -696,10 +742,10 @@ describe("ranking queries with stale statistics (RES-7)", () => {
       expect(
         scansOf(plan, ["s", "statuses", "favourites", "bookmarks", "status_mentions", "poll_votes", "p", "v"]),
       ).toEqual([]);
-      // The same rows read as before the growth: no window walks what grew.
-      expect(rows).toBe(before[i]!.plans[0]!.rows);
+      // The same rows read as before the growth: no window walks the older rows.
+      expect(rows).toBe(before[i]!.rows);
     }
-  }, 120_000);
+  }, 180_000);
 
   it("seeks the candidate accounts by id and the username prefix by its index, past the newest window", async () => {
     const { h } = await fixture();
