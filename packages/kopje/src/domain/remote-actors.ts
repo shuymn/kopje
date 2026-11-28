@@ -546,7 +546,7 @@ function storeActor(
 // ActivityPub::TagManager#uri_to_resource, `split('#').first`), other than `self` and not being purged; else null. An
 // unavailable one is presented redacted (accounts.ts presentAccount). Every writer of a move from a document reads it
 // here: the store, and the collection sync's claim and completion (remote-collections.ts).
-function moveTarget(db: Db, id: string | null, self: string): string | null {
+export function moveTarget(db: Db, id: string | null, self: string): string | null {
   if (id === null) {
     return null;
   }

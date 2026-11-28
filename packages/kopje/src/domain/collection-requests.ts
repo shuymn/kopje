@@ -192,7 +192,7 @@ const MOVE_URI = /^https?:\/\/[^\s\\/?#]+(?:[/?#][^\s\\]*)?$/i;
 // `@json['movedTo']` (process_account_service.rb:166), with no JSON-LD context applied: an array gives its first value
 // and an object its id (collectionValue), and the string must be an absolute http(s) URI (MOVE_URI) that Kopje stores
 // as an actor id, other than `uri` itself; its href, else null. Where Mastodon fails on an array or an object, this
-// reads them (docs/mastodon-deviations.md). The stored row it names is remote-actors.ts moveTargetSql's.
+// reads them (docs/mastodon-deviations.md). The stored row it names is remote-actors.ts moveTarget's.
 export function namedMove(raw: string | null, uri: string): string | null {
   let value: unknown;
   try {

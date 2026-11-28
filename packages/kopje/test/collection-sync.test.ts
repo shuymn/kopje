@@ -8,6 +8,7 @@ import { answerFeatureRequest } from "../src/domain/inbound-feature-requests";
 import {
   PART_COLLECTIONS,
   PART_FEATURED,
+  PART_MOVED,
   PART_NETWORK,
   PART_TAGS,
   SYNC_RETRY_MS,
@@ -313,13 +314,13 @@ describe("the collections part of a sync", () => {
     const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
     const ownerId = await storedOwner(t, owner);
     const stored = PART_FEATURED | PART_NETWORK | PART_TAGS;
-    // A claimed read ended with `parts`: the sync's columns after it.
+    // A claimed read ended with `parts`: the sync's columns after it. No move is pending: the move part reads as read.
     const end = async (parts: number, claimed: number) => {
       const sync = await t.store.claimCollectionSync(BUILD, { now: NOW });
       if (sync === null || sync === "more") {
         throw new Error("no sync claimed");
       }
-      expect([sync.phase, sync.parts]).toEqual(["read", claimed]);
+      expect([sync.phase, sync.parts]).toEqual(["read", claimed | PART_MOVED]);
       const counts = { statuses: null, following: null, followers: null };
       const round = { now: NOW, origin: LOCAL, accountUri: owner.uri, generation: sync.generation, token: sync.token };
       const read = { parts, pins: null, tags: null, hideCollections: null, counts, collections: null };

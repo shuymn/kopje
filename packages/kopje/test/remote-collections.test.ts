@@ -2529,13 +2529,18 @@ describe("the network part within one round", () => {
 // fetched one per MAX_SYNC_ATTEMPTS claims, each round its whole budget. A call (COLLECTION_SYNCS_PER_ROUND claims)
 // may run two rounds of one generation.
 describe("the requests of one generation", () => {
+  // Each read claim spends at most one round's budget; a generation has the document part's claims (a refresh asked
+  // with it, before its read), MAX_SYNC_ATTEMPTS per read part (each claim after one without progress starts with
+  // another part), and MAX_SYNC_ATTEMPTS per pin row.
   function worstCase(network: { documents: number; redirects: number }, sends = 1) {
     const parts = [
+      PART_DOCUMENTS.moved * (1 + MAX_REDIRECTS) * sends,
       PART_DOCUMENTS.featured * (1 + MAX_REDIRECTS) * sends,
       network.documents * (1 + network.redirects) * sends,
       PART_DOCUMENTS.tags * (1 + MAX_REDIRECTS) * sends,
       PART_DOCUMENTS.collections * (1 + COLLECTIONS_CAPS.maxRedirects) * sends,
     ];
+    const documentClaims = MAX_SYNC_ATTEMPTS;
     const readClaims = parts.length * MAX_SYNC_ATTEMPTS;
     const readRound = Math.min(
       REQUEST_MAX_FETCHES,
@@ -2543,11 +2548,12 @@ describe("the requests of one generation", () => {
     );
     const pinClaims = MAX_REMOTE_PINS * MAX_SYNC_ATTEMPTS;
     return {
-      networkPerRound: Math.min(REQUEST_MAX_FETCHES, parts[1]!),
-      networkPerGeneration: readClaims * Math.min(REQUEST_MAX_FETCHES, parts[1]!),
+      readClaims,
+      networkPerRound: Math.min(REQUEST_MAX_FETCHES, parts[2]!),
+      networkPerGeneration: readClaims * Math.min(REQUEST_MAX_FETCHES, parts[2]!),
       networkHealthy: network.documents,
       perCall: COLLECTION_SYNCS_PER_ROUND * REQUEST_MAX_FETCHES,
-      perGeneration: readClaims * readRound + pinClaims * REQUEST_MAX_FETCHES,
+      perGeneration: (documentClaims + readClaims) * readRound + pinClaims * REQUEST_MAX_FETCHES,
     };
   }
 
@@ -2560,11 +2566,28 @@ describe("the requests of one generation", () => {
     console.info(
       `Requests of one generation: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}, retried ${JSON.stringify(retried)}`,
     );
+    const figures = { readClaims: 15, perCall: 16, perGeneration: 624 };
     expect({ before, after, retried }).toEqual({
-      before: { networkPerRound: 8, networkPerGeneration: 96, networkHealthy: 2, perCall: 16, perGeneration: 576 },
-      after: { networkPerRound: 6, networkPerGeneration: 72, networkHealthy: 3, perCall: 16, perGeneration: 576 },
-      retried: { networkPerRound: 8, networkPerGeneration: 96, networkHealthy: 3, perCall: 16, perGeneration: 576 },
+      before: { ...figures, networkPerRound: 8, networkPerGeneration: 120, networkHealthy: 2 },
+      after: { ...figures, networkPerRound: 6, networkPerGeneration: 90, networkHealthy: 3 },
+      retried: { ...figures, networkPerRound: 8, networkPerGeneration: 120, networkHealthy: 3 },
     });
+  });
+
+  // RES-6's quote chain: each of its author documents may store one destination of a pending move through its sync,
+  // and that destination's own document asks for one generation (it names no destination: one with a movedTo of its
+  // own is not stored), so each document leads to two generations. Handle invalidation, which a destination's handle
+  // can cause, is bounded apart (ACCOUNT_STALE_MS) and not counted here.
+  it("bounds the quote chain's author documents with their destinations", () => {
+    const documents = 1 + QUOTE_HOPS * QUOTE_AUTHOR_FETCHES;
+    const generations = documents * 2;
+    const { perGeneration } = worstCase({ documents: PART_DOCUMENTS.network, redirects: NETWORK_CAPS.maxRedirects });
+    expect({
+      documents,
+      generations,
+      requests: generations * perGeneration,
+      pins: generations * MAX_REMOTE_PINS,
+    }).toEqual({ documents: 13, generations: 26, requests: 16_224, pins: 520 });
   });
 
   // The pin phase at its worst, through the real Worker and Store: MAX_REMOTE_PINS + 5 statuses listed on the origin

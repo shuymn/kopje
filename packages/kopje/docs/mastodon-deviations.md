@@ -616,8 +616,16 @@ Accounts (the `Account` and credential account entities):
   earlier release stored from Fedify's reading of the same document (which resolved relative and empty values against
   the actor's id, read `@id` and nested arrays, applied the document's context, and kept the fragment) is recomputed
   only when the account's document is next stored: such a move can then clear, and a `movedTo` with a fragment or under
-  a context that renames the member can then resolve. A `movedTo` naming an account Kopje does not know reads as none:
-  it is not fetched (Mastodon fetches it, `process_account_service.rb:310-314`). Mastodon processes a `Move` once per
+  a context that renames the member can then resolve. A `movedTo` naming an account Kopje does not know is fetched one
+  hop after the document is stored, by the account's background collection sync (`src/federation/collections.ts`, the
+  move part), where Mastodon fetches it while it processes the account (`process_account_service.rb:516-520`): until a
+  round runs, `moved` is absent. Only an `https:` id on a public host, with no fragment and not on this instance, is
+  fetched. The fetch is signed as the instance actor, as Mastodon's `FetchRemoteAccountService` signs it, follows no
+  redirect, and takes the account only when its document has exactly that id, names no `movedTo` of its own (Rails'
+  `present?`, `fetch_remote_actor_service.rb:33`) and WebFinger confirms its handle; a destination that cannot be
+  fetched for now is loaded once per read claim until the read is given up, and one refused or gone leaves `moved`
+  absent until the source's document is stored again. An account stored by an earlier release resolves its destination
+  only when its document is next stored. Mastodon processes a `Move` once per
   source account for 7 days (`move.rb:38`), Kopje once per activity id while its job is kept (30 days). Mastodon
   refreshes an account on a signature only after verification with the stored key fails
   (`signature_verification.rb:59-61`), and `possibly_stale?` chooses a full refresh or one of the key alone, which
@@ -661,7 +669,8 @@ Accounts (the `Account` and credential account entities):
 - A remote account's `followers_count`, `following_count` and `statuses_count` are the `totalItems` of its followers,
   following and outbox collections, as `ProcessAccountService#set_fetchable_attributes!` sets them
   (`process_account_service.rb:162-164`), but read by the background collection sync that each stored actor document
-  asks for (`src/federation/collections.ts`), not while the document is stored: an account shows 0 until its first
+  asks for (`src/federation/collections.ts`, which also fetches the destination of an unknown `movedTo`, above), not
+  while the document is stored: an account shows 0 until its first
   sync, and an account stored by an earlier release shows 0 until its document is stored again. Mastodon also moves
   the counts by its own deliveries between refreshes (`status.rb:480-493`, `follow.rb:62-70`); Kopje recounts local
   accounts only, so a remote account keeps the reported counts until the next refresh. A collection that may be read

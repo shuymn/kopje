@@ -45,6 +45,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- When a remote profile's `movedTo` names an account Kopje does not know yet, the background collection sync fetches
+  that account, signed as the instance actor, and shows the move unless that account has moved too.
 - Following an account that has moved answers 403, as Mastodon does, also to change the options of an existing follow;
   a held follow request to it is not sent, and a `Move` keeps the followers of an account whose target has itself
   moved. Follow suggestions leave out accounts that have moved.
