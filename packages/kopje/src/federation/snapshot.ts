@@ -132,7 +132,31 @@ export async function answerFromSnapshot(
   if (url.pathname !== "/actor") {
     headers["access-control-allow-origin"] = "*";
   }
-  return new Response(request.method === "HEAD" ? null : snapshot.body, { headers });
+  const body = ACTOR_PATH.test(url.pathname) ? publishedDay(snapshot.body) : snapshot.body;
+  return new Response(request.method === "HEAD" ? null : body, { headers });
+}
+
+// A time as an earlier build published a local actor's creation (Temporal.Instant#toString of the stored time).
+const PUBLISHED_TIME = /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
+
+// A local actor document with its `published` as the live document writes it (actor-row.ts actorPublished): the
+// creation day's midnight UTC. A snapshot an earlier build kept carries the exact creation time until a healthy GET
+// replaces it (#1564 D5); every other body is served as kept.
+function publishedDay(body: string): string {
+  let document: unknown;
+  try {
+    document = JSON.parse(body);
+  } catch {
+    return body;
+  }
+  if (typeof document !== "object" || document === null || Array.isArray(document)) {
+    return body;
+  }
+  const published: unknown = (document as { published?: unknown }).published;
+  const day = typeof published === "string" ? PUBLISHED_TIME.exec(published)?.[1] : undefined;
+  return day === undefined || published === `${day}T00:00:00Z`
+    ? body
+    : JSON.stringify({ ...document, published: `${day}T00:00:00Z` });
 }
 
 function isActorPath(url: URL): boolean {

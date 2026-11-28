@@ -111,6 +111,26 @@ describe("actor document snapshot", () => {
     }
   });
 
+  // #1564 D5: an actor publishes its creation day's midnight. A snapshot an earlier build kept carries the exact
+  // creation time until a healthy GET replaces it; the rescue answer shows that day's midnight too, as the live one does.
+  it("serves an earlier build's actor snapshot with the creation day's midnight as published", async () => {
+    const { store, healthy } = await healthyInstance();
+    const live = JSON.parse(healthy["/ap/users/Alice"]!.body) as Record<string, unknown>;
+    const day = String(live.published).slice(0, 10);
+    expect(live.published).toBe(`${day}T00:00:00Z`);
+    const kept = { ...live, published: `${day}T13:14:15.678Z` };
+    await runInDurableObject(store, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE kopje_state SET value = json_set(value, '$.body', ?) WHERE name = 'snapshot:path:/ap/users/Alice'",
+        JSON.stringify(kept),
+      );
+    });
+    const { bodies } = await served(store, "0.0.0-other");
+    const rescued = bodies["/ap/users/Alice"]!;
+    expect(rescued.status).toBe(200);
+    expect(JSON.parse(rescued.body)).toEqual(live);
+  });
+
   it("answers 503 when no snapshot was ever kept", async () => {
     const store = freshStore();
     const { request } = harness(store, {}, "0.0.0-other", offline, undefined, DOMAIN);
