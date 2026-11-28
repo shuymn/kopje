@@ -273,8 +273,8 @@ describe("dump", () => {
   }
 
   // A dump taken before 0086_authorized_apps, of apps each holding an app token only: the upgrade through 0086 leaves
-  // them all pending, more than registration keeps (MAX_PENDING_APPS), and the cron's sweep keeps them (each has a
-  // token). The upgraded Store's own export restores: no import bound may refuse what an honest upgrade made.
+  // them all pending, more than registration keeps (MAX_PENDING_APPS). The upgraded Store's own export restores: no
+  // import bound may refuse what an honest upgrade made.
   it("restores the export of a Store upgraded through 0086 with more pending apps than registration keeps", async () => {
     const apps = MAX_PENDING_APPS + 1;
     const restored = await restoredBefore(

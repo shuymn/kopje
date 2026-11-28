@@ -783,10 +783,9 @@ export const ROWS_1468: readonly Row1468[] = [
   {
     group: 9,
     statement:
-      "registration's pending app count (found by the audit): not bounded on import, since an upgrade through 0086 can honestly leave more than MAX_PENDING_APPS (test/dump-import.test.ts)",
+      "registration's pending app count (found by the audit): an upgrade through 0086 can honestly leave more than MAX_PENDING_APPS (test/dump-import.test.ts), so it counts up to PENDING_READ_CAP",
     sites: ["src/domain/oauth.ts#pendingApps"],
-    status: "observed",
-    ids: ["7e7121a3e8e907cd"],
+    status: "fixed",
   },
   {
     group: 0,
