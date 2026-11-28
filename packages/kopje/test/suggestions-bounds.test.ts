@@ -250,6 +250,23 @@ describe("a candidate's move (RES-7)", () => {
     }
     expect(after.shown.length).toBeGreaterThan(0);
     expect(after.shown.some((id) => moved.some((row) => row.id === id))).toBe(false);
+    // B3's pending term reads the candidate row already read: with the statistics still older, five listed candidates
+    // with no move get one being resolved (accounts.move_pending), and they are left out by the same plan, reading no
+    // row more.
+    const unmoved = (await sql<{ id: string }>(stub, "SELECT id FROM accounts WHERE moved_to_account_id IS NULL"))
+      .map((row) => row.id)
+      .filter((id) => after.shown.includes(id))
+      .slice(0, 5);
+    expect(unmoved).toHaveLength(5);
+    await sql(
+      stub,
+      `UPDATE accounts SET move_pending = 1 WHERE id IN (${unmoved.map(() => "?").join(", ")})`,
+      ...unmoved,
+    );
+    const pending = await plan(stub);
+    expect(pending.plan.map((row) => row.detail)).toEqual(after.plan.map((row) => row.detail));
+    expect(pending.rows).toBeLessThanOrEqual(after.rows);
+    expect(pending.shown.filter((id) => unmoved.includes(id))).toEqual([]);
   });
 });
 

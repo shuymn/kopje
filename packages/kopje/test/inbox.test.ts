@@ -2028,6 +2028,11 @@ describe("account moves", () => {
       expect(await t.post(bob, moveOf(bob, bob2, 1))).toBe(202);
       const bob2Id = (await accountId(t.store, bob2.uri))!;
       expect([label, await movedTo(t.store, bob2.uri)]).toEqual([label, targetMoved ? carol.uri : null]);
+      // A moved target is held at admission (moveTargetHeldSql): the job covers no follower, not only R21's refusal.
+      expect(
+        await sql(t.store, "SELECT bound, done_at IS NOT NULL AS done FROM inbound_jobs WHERE kind = 'move'"),
+        label,
+      ).toEqual([{ bound: targetMoved ? "0" : expect.not.stringMatching(/^0$/), done: 1 }]);
       const sent = (await outbound(t.store)).slice(before).map((o) => o.activity.type);
       const members = await sql(t.store, "SELECT account_id FROM list_accounts ORDER BY account_id");
       if (targetMoved) {
