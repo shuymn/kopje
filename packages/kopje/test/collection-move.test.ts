@@ -124,7 +124,8 @@ describe("a pending move ended without a result", () => {
   it("ends when the claim gives the read up to the pins it left", async () => {
     const t = await setup();
     const bobId = await pendingBob(t);
-    await sql(t.store, "UPDATE collection_syncs SET attempts = ?, due_at = ?", MAX_SYNC_ATTEMPTS, NOW);
+    // The streak the pending move opens has one claim more than MAX_SYNC_ATTEMPTS (moveOpened).
+    await sql(t.store, "UPDATE collection_syncs SET attempts = ?, due_at = ?", MAX_SYNC_ATTEMPTS + 1, NOW);
     await sql(
       t.store,
       "INSERT INTO collection_pins_pending (account_id, uri, pinned_at) VALUES (?, ?, ?)",
@@ -140,7 +141,8 @@ describe("a pending move ended without a result", () => {
   it("ends when the claim drops the sync", async () => {
     const t = await setup();
     const bobId = await pendingBob(t);
-    await sql(t.store, "UPDATE collection_syncs SET attempts = ?, due_at = ?", MAX_SYNC_ATTEMPTS, NOW);
+    // The streak the pending move opens has one claim more than MAX_SYNC_ATTEMPTS (moveOpened).
+    await sql(t.store, "UPDATE collection_syncs SET attempts = ?, due_at = ?", MAX_SYNC_ATTEMPTS + 1, NOW);
     expect(await t.store.claimCollectionSync(BUILD, { now: NOW })).toBeNull();
     expect(await sql(t.store, "SELECT move_pending FROM accounts WHERE id = ?", bobId)).toEqual([{ move_pending: 0 }]);
     expect(await sql(t.store, "SELECT account_id FROM collection_syncs")).toEqual([]);

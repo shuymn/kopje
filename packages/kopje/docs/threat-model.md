@@ -5321,17 +5321,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   with every stored actor document (an
   `Update`, a key miss or rotation, an authenticated resolve, any other fetch of the actor), and pending work coalesces
   per actor (one `collection_syncs` row, `requestCollectionSync`); no admission policy limits how often an actor's
-  document is stored. One generation makes at most 624 requests: 3 document-part claims (a refresh asked with it,
-  `MAX_SYNC_ATTEMPTS`), 15 read claims (5 parts × `MAX_SYNC_ATTEMPTS`) and 60 pin claims (`MAX_REMOTE_PINS` ×
-  `MAX_SYNC_ATTEMPTS`), each of 8 fetches. The move part (`PART_MOVED`) goes first in each generation's first claim and
-  last in every other, so the other parts keep the first turns of the claims after (`readCollections`), and it
-  costs nothing when no move is pending; when one is, it loads the destination once a read claim, as the instance actor
-  (DATA-7), with no redirect (`MOVED_CAPS`) and the loader's 1 MiB body limit, and its WebFinger answers, each
+  document is stored. One generation makes at most 632 requests: 3 document-part claims (a refresh asked with it,
+  `MAX_SYNC_ATTEMPTS`), 16 read claims (5 parts × `MAX_SYNC_ATTEMPTS`, and the claim a pending move opens) and 60 pin
+  claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches. The move part (`PART_MOVED`) has a claim of its
+  own: while it is pending and nothing else is read through (`moveOpened`), the read's streak has one claim more than
+  `MAX_SYNC_ATTEMPTS`, whose first turn is the move part's, and the claims after it rotate the other parts as a read
+  without a move does, the move part last (`readCollections`), so every other part keeps the full-budget first turns
+  it has without a move. It costs nothing when no move is pending; when one is, it loads the destination once a read
+  claim, as the instance actor (DATA-7), with no redirect (`MOVED_CAPS`) and the loader's 1 MiB body limit, and its WebFinger answers, each
   following up to `MAX_REDIRECTS`, share the round's 8 fetches, 2 MiB and deadline. Accepted: a destination whose
   WebFinger answers redirect several times, together pass the bytes left, or whose document names contexts that are not
   preloaded spends the round as a failure that may pass, and is given up with the read. A destination it stores names
   no move of its own, so a stored destination with collections requests its own generation (one naming none requests
-  none) and nothing chains: each stored source document leads to at most 2 generations, 1,248 requests and 40 pins. A
+  none) and nothing chains: each stored source document leads to at most 2 generations, 1,264 requests and 40 pins. A
   destination confirming a handle another account holds
   invalidates that account, whose refresh is bounded as every invalidation is (once per `ACCOUNT_STALE_MS`) and is not
   counted here. The pin claims fetch every status the
@@ -5341,8 +5343,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   where it fetched only the unstored ones, and updates or removes at most `MAX_REMOTE_PINS` statuses, each a refetch's
   or a `Delete`'s bounded work (`replacePins`, `completePinFetches` in `src/domain/remote-collections.ts`;
   `test/remote-collections.test.ts` ("bounds the pin phase with every listed status stored or not at its worst")). The
-  network part takes at most 6 a round and 90 a generation while no document needs the RFC 9421 retry, a round's whole
-  budget (8 a round, 120 a generation) when each needs a redirect and the retry, and 3 documents when nothing fails
+  network part takes at most 6 a round and 96 a generation while no document needs the RFC 9421 retry, a round's whole
+  budget (8 a round, 128 a generation) when each needs a redirect and the retry, and 3 documents when nothing fails
   (`test/remote-collections.test.ts` ("bounds them before and after the network part reads the outbox", "the network
   part within one round")).
   The collections part (`PART_COLLECTIONS`, #1589's FEP-7aa9 collections) reads the account's `featuredCollections`
@@ -5598,11 +5600,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   from its attempts: at most `QUOTE_AUTHOR_FETCHES` (6) a work, whose renewal starts the count again, and an author
   stage with none left fetches nothing and ends the work, so a work whose rounds die after the author stage, reclaimed
   once the author is stale again, still applies at most 6 author documents (the column's CHECK holds the same bound).
-  Each author document stored with collections requests one collection sync generation, and may store one destination
-  of a pending move; a stored destination with collections requests its own generation (at most 2 generations and
-  1,248 requests, above). So a status arriving from outside at
+  Each author document stored with collections or a pending move requests one collection sync generation, and may store
+  one destination of a pending move; a stored destination with collections requests its own generation (at most 2
+  generations and 1,264 requests, above). So a status arriving from outside at
   `QUOTE_HOPS` (2) leads to at most 3 statuses of its quote chain, at most 1 + 2 × 6 = 13 author documents and 26 direct
-  source and destination sync generations (at most 16,224 requests) and 26 × `MAX_REMOTE_PINS` = 520 pins, a subtotal
+  source and destination sync generations (at most 16,432 requests) and 26 × `MAX_REMOTE_PINS` = 520 pins, a subtotal
   that leaves handle invalidation out, and to nothing further but the create walk of its replies (Replies walks, below)
   (`test/remote-collections.test.ts` ("counts each author document a quote applies, interrupted rounds included", "ends
   a quote's work with no fetch once its author

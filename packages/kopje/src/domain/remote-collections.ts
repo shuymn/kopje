@@ -69,6 +69,19 @@ export const MAX_SYNC_ATTEMPTS = 3;
 export const SYNC_LEASE_MS = 10 * 60 * 1000;
 export const SYNC_RETRY_MS = 15 * 60 * 1000;
 
+// Whether a read claim of these parts (CollectionSync.parts) is in the streak the move part opens: the move is pending
+// and nothing else is read through yet, so no claim of the streak has progressed. That streak has one claim more than
+// MAX_SYNC_ATTEMPTS, its first, where the move part goes first (federation/collections.ts readCollections); the other
+// parts then have MAX_SYNC_ATTEMPTS claims of their own and the rotation a read without a move gives them.
+export function moveOpened(parts: number): boolean {
+  return parts === 0;
+}
+
+// The claims a read streak of these parts has before the read is given up.
+function readAttempts(parts: number): number {
+  return MAX_SYNC_ATTEMPTS + (moveOpened(parts) ? 1 : 0);
+}
+
 // The parts of a read (phase 1), each read and applied on its own and recorded once it is, so a round that reads one
 // part makes progress whatever the others cost, and a later round reads only the rest: the featured collection (pins),
 // the followers, following and outbox collections (hide_collections and the counts), the featuredTags collection
@@ -331,7 +344,7 @@ function giveUpMove(db: Db, accountId: string): void {
 // The sync due first, claimed for SYNC_LEASE_MS (due again when the lease ends): phase document while a refresh is
 // asked for an account whose handle is invalidated (a refresh of another account, or one out of attempts, is given up),
 // else phase read while a request has not been read through, else phase pins while statuses are pending. One claimed
-// MAX_SYNC_ATTEMPTS times without progress, of an account that is no longer an available remote account
+// MAX_SYNC_ATTEMPTS times without progress (a read in the streak the move part opens, once more: moveOpened), of an account that is no longer an available remote account
 // (ProcessAccountService schedules none for a suspended account, and the services return for one), or with nothing left
 // to do, is dropped instead, and the next is taken; at most MAX_SYNC_ATTEMPTS + 1 rows are read. 'more': that many were
 // dropped and another is due, for the next claim; null: none is due.
@@ -368,9 +381,11 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       read && !refresh && account !== undefined && account.move_pending === 1
         ? pendingMove(db, row.account_id, account)
         : null;
+    const parts = row.parts_read | (row.collections_read << 3) | (pending === null ? PART_MOVED : 0);
+    let limit = read ? readAttempts(parts) : MAX_SYNC_ATTEMPTS;
     // A read that ran out of attempts with rows left to fetch gives way to them: the read is given up, the rows get
     // attempts of their own.
-    if (read && row.attempts >= MAX_SYNC_ATTEMPTS && pendingUris(db, row.account_id).length > 0) {
+    if (read && row.attempts >= limit && pendingUris(db, row.account_id).length > 0) {
       db.run(
         `UPDATE collection_syncs SET read_through = generation, parts_read = 0, collections_read = 0, attempts = 0
 				WHERE account_id = ?`,
@@ -379,9 +394,10 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       giveUpMove(db, row.account_id);
       read = false;
       row.attempts = 0;
+      limit = MAX_SYNC_ATTEMPTS;
     }
     const uris = read || refresh ? [] : pendingUris(db, row.account_id);
-    if (account === undefined || row.attempts >= MAX_SYNC_ATTEMPTS || (!refresh && !read && uris.length === 0)) {
+    if (account === undefined || row.attempts >= limit || (!refresh && !read && uris.length === 0)) {
       dropSync(db, row.account_id);
       continue;
     }
@@ -401,7 +417,7 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       token,
       phase: refresh ? "document" : read ? "read" : "pins",
       state: refresh ? actorState(db, account.uri) : NO_ACTOR_STATE,
-      parts: row.parts_read | (row.collections_read << 3) | (movedTo === null ? PART_MOVED : 0),
+      parts: parts | (movedTo === null ? PART_MOVED : 0),
       movedTo,
       sourceRevision: movedTo === null ? null : account.revision,
       attempt: row.attempts + 1,

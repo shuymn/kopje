@@ -2531,7 +2531,7 @@ describe("the network part within one round", () => {
 describe("the requests of one generation", () => {
   // Each read claim spends at most one round's budget; a generation has the document part's claims (a refresh asked
   // with it, before its read), MAX_SYNC_ATTEMPTS per read part (each claim after one without progress starts with
-  // another part), and MAX_SYNC_ATTEMPTS per pin row.
+  // another part) and one more, the claim a pending move opens (moveOpened), and MAX_SYNC_ATTEMPTS per pin row.
   function worstCase(network: { documents: number; redirects: number }, sends = 1) {
     const parts = [
       PART_DOCUMENTS.moved * (1 + MAX_REDIRECTS) * sends,
@@ -2541,7 +2541,7 @@ describe("the requests of one generation", () => {
       PART_DOCUMENTS.collections * (1 + COLLECTIONS_CAPS.maxRedirects) * sends,
     ];
     const documentClaims = MAX_SYNC_ATTEMPTS;
-    const readClaims = parts.length * MAX_SYNC_ATTEMPTS;
+    const readClaims = parts.length * MAX_SYNC_ATTEMPTS + 1;
     const readRound = Math.min(
       REQUEST_MAX_FETCHES,
       parts.reduce((sum, n) => sum + n, 0),
@@ -2566,11 +2566,11 @@ describe("the requests of one generation", () => {
     console.info(
       `Requests of one generation: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}, retried ${JSON.stringify(retried)}`,
     );
-    const figures = { readClaims: 15, perCall: 16, perGeneration: 624 };
+    const figures = { readClaims: 16, perCall: 16, perGeneration: 632 };
     expect({ before, after, retried }).toEqual({
-      before: { ...figures, networkPerRound: 8, networkPerGeneration: 120, networkHealthy: 2 },
-      after: { ...figures, networkPerRound: 6, networkPerGeneration: 90, networkHealthy: 3 },
-      retried: { ...figures, networkPerRound: 8, networkPerGeneration: 120, networkHealthy: 3 },
+      before: { ...figures, networkPerRound: 8, networkPerGeneration: 128, networkHealthy: 2 },
+      after: { ...figures, networkPerRound: 6, networkPerGeneration: 96, networkHealthy: 3 },
+      retried: { ...figures, networkPerRound: 8, networkPerGeneration: 128, networkHealthy: 3 },
     });
   });
 
@@ -2587,7 +2587,7 @@ describe("the requests of one generation", () => {
       generations,
       requests: generations * perGeneration,
       pins: generations * MAX_REMOTE_PINS,
-    }).toEqual({ documents: 13, generations: 26, requests: 16_224, pins: 520 });
+    }).toEqual({ documents: 13, generations: 26, requests: 16_432, pins: 520 });
   });
 
   // The pin phase at its worst, through the real Worker and Store: MAX_REMOTE_PINS + 5 statuses listed on the origin

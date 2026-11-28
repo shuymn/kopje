@@ -13,12 +13,13 @@ import {
   SYNC_RETRY_MS,
 } from "../src/domain/remote-collections";
 import { syncCollections } from "../src/federation/collections";
+import { REQUEST_MAX_FETCHES } from "../src/federation/loader";
 import { sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD, runStoreJobs } from "./helpers";
 import { actorDefaults, confirmedAs, LOCAL, MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
-import { AS, DAVE, DAVE_URI, followed, OTHER, type Setup, setup } from "./inbox-status-helpers";
+import { AS, DAVE, DAVE_URI, followed, mastodonNote, OTHER, type Setup, setup } from "./inbox-status-helpers";
 
 // The move part of a remote account's collection sync (domain/remote-collections.ts PART_MOVED,
 // federation/collections.ts readMoved): a stored document's movedTo naming an account Kopje does not hold is fetched one
@@ -246,27 +247,72 @@ describe("the move part", () => {
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: DEST, pending: 0 });
   });
 
-  // The move's turn is the generation's first claim alone: the claims after it start with the other parts as a read
-  // without a move does (featured, network, featuredTags), so a move that keeps failing takes no first turn from them.
-  it("goes first in the generation's first claim only, and the other parts keep the first turns of the claims after", async () => {
-    const t = await setup();
+  // Bob's every part answering 503 (a featuredCollections collection included, so the first claim makes no progress).
+  async function failingBob(t: Setup) {
     const collections = `${MASTODON}/users/bob/collections/collections`;
-    const { bob } = await pendingBob(t, { extra: { featuredCollections: collections } });
+    const pending = await pendingBob(t, { extra: { featuredCollections: collections } });
     t.web.fail(DEST, 503);
     for (const path of ["collections/featured", "collections/tags", "following", "followers", "outbox"]) {
-      t.web.fail(`${bob.uri}/${path}`, 503);
+      t.web.fail(`${pending.bob.uri}/${path}`, 503);
     }
     t.web.fail(collections, 503);
+    return pending;
+  }
+
+  // The move part opens the generation with a claim of its own: the MAX_SYNC_ATTEMPTS claims after it rotate over the
+  // other parts as a read without a move does (featured, network, featuredTags), with the move last, and the read is
+  // given up after them.
+  it("opens the generation with one more claim, after which the other parts rotate as without a move", async () => {
+    const t = await setup();
+    const { bob } = await failingBob(t);
     const firsts: string[] = [];
     let now = NOW;
-    for (let round = 1; round <= MAX_SYNC_ATTEMPTS; round++) {
+    for (let round = 0; round <= MAX_SYNC_ATTEMPTS; round++) {
       const from = t.web.fetched.length;
       await syncCollections(t.env, at(t, now));
       firsts.push(t.web.fetched[from]!);
       expect(fetchesOf(t, DEST, from), String(round)).toBe(1);
+      expect(await moveState(t, bob.uri), String(round)).toMatchObject({ pending: 1 });
       now += SYNC_RETRY_MS;
     }
-    expect(firsts).toEqual([DEST, `${bob.uri}/following`, `${bob.uri}/collections/tags`]);
+    expect(firsts).toEqual([
+      DEST,
+      `${bob.uri}/collections/featured`,
+      `${bob.uri}/following`,
+      `${bob.uri}/collections/tags`,
+    ]);
+    await syncCollections(t.env, at(t, now));
+    expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 0 });
+    expect(await sql(t.store, "SELECT 1 FROM collection_syncs")).toEqual([]);
+  });
+
+  // A featured collection that needs a whole round's budget (its collection and first page each behind three
+  // redirects) keeps the full-budget first turn a read without a move gives it, through the real loaders: the move's
+  // destination answers 503 first, and the other parts spend what is left of each round.
+  it("keeps a full-budget first turn for a featured collection that needs a whole round", async () => {
+    const t = await setup();
+    const { bob, bobId } = await failingBob(t);
+    const note = mastodonNote(bob);
+    t.web.serve(note.id, { "@context": AS, ...note });
+    const featured = `${bob.uri}/collections/featured`;
+    const behind = (url: string, body: Record<string, unknown>) => {
+      const hop = (n: number) => (n === 0 ? url : `${url}${url.includes("?") ? "&" : "?"}hop=${n}`);
+      for (let n = 0; n < 3; n++) {
+        t.web.redirect(hop(n), hop(n + 1));
+      }
+      t.web.serve(hop(3), body);
+    };
+    behind(featured, { "@context": AS, id: featured, type: "OrderedCollection", first: `${featured}?page=1` });
+    behind(`${featured}?page=1`, {
+      "@context": AS,
+      id: `${featured}?page=1`,
+      type: "OrderedCollectionPage",
+      orderedItems: [note.id],
+    });
+    expect(2 * 4).toBe(REQUEST_MAX_FETCHES);
+    await syncUntilDone(t);
+    const pinned = await t.api<{ uri: string }[]>(`/api/v1/accounts/${bobId}/statuses?pinned=true`, null);
+    expect(pinned.body.map((status) => status.uri)).toEqual([note.id]);
   });
 
   // Mastodon takes the destination only when the document's literal id is the URL it fetched (json_ld_helper.rb
@@ -571,14 +617,15 @@ describe("the move part's fences", () => {
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: DEST, pending: 0 });
   });
 
-  // A restored lease of the last attempt (dump-format.md): pending until the claim after it gives the read up.
+  // A restored lease of the last attempt (dump-format.md): pending until the claim after it gives the read up. The
+  // streak the pending move opens has one claim more than MAX_SYNC_ATTEMPTS (moveOpened).
   it("keeps a pending move under the last attempt's lease until the next claim gives the read up", async () => {
     const t = await setup();
     const { bob } = await pendingBob(t);
     await sql(
       t.store,
       "UPDATE collection_syncs SET attempts = ?, token = 'restored', due_at = ?",
-      MAX_SYNC_ATTEMPTS,
+      MAX_SYNC_ATTEMPTS + 1,
       NOW + SYNC_LEASE_MS,
     );
     expect(await t.store.claimCollectionSync(BUILD, { now: NOW })).toBeNull();
