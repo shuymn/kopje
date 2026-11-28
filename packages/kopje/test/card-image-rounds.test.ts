@@ -285,7 +285,13 @@ describe("the card image round", () => {
     const second = await w.imageRound({ images: () => steered.codec });
     expect(first.none + second.none).toBe(4);
     // The port was refused before any network step; no Images call was made for any.
-    expect(w.requests).toEqual(sources.slice(1).map((s) => `GET ${s}`));
+    // The card round claims the newest links first, so the images queue in that order; only the set matters here.
+    expect(w.requests.toSorted()).toEqual(
+      sources
+        .slice(1)
+        .map((s) => `GET ${s}`)
+        .toSorted(),
+    );
     expect(steered.calls).toEqual([]);
     expect(await w.images()).toEqual([]);
     // CARD_IMAGE_BODY_LIMIT is exclusive, as Mastodon's less_than.
