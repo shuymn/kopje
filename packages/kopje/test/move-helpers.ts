@@ -53,13 +53,25 @@ export async function syncUntilDone(t: Setup, calls = 10): Promise<void> {
   }
 }
 
-// `source`'s Move to `target`, as Mastodon's ActivityPub::MoveSerializer writes it.
-export function moveActivity(source: TestActor, target: string): Record<string, unknown> {
-  return { "@context": AS, id: `${source.uri}#moves/1`, type: "Move", actor: source.uri, object: source.uri, target };
+// `source`'s `n`th Move to `target`, as Mastodon's ActivityPub::MoveSerializer writes it.
+export function moveActivity(source: TestActor, target: string, n = 1): Record<string, unknown> {
+  return {
+    "@context": AS,
+    id: `${source.uri}#moves/${n}`,
+    type: "Move",
+    actor: source.uri,
+    object: source.uri,
+    target,
+  };
 }
 
-// A fresh document of `actor` stored through its Update.
-export async function updated(t: Setup, actor: TestActor, document: Record<string, unknown>, n: number): Promise<void> {
+// A fresh document of `actor` stored through its Update, as any refresh stores it.
+export async function updated(
+  t: Pick<Setup, "web" | "post">,
+  actor: TestActor,
+  document: Record<string, unknown>,
+  n: number,
+): Promise<void> {
   t.web.serve(actor.uri, document);
   const update = {
     "@context": AS,
