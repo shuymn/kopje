@@ -1252,6 +1252,8 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
     return applied("moved", runJobBatch(db, { kind: "move", key: activity.id }, now) === "advanced");
   }
   let targetId: string;
+  // A target whose fresh document leaves its own move pending: the jobs round that resolves it is rung for.
+  let targetPending = false;
   if ("local" in activity.target) {
     const local = localAccount(db, activity.target.local);
     const aliases = db.first<{ also_known_as: string }>(
@@ -1277,6 +1279,7 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
       return ignored("unknown-target");
     }
     targetId = remote.id;
+    targetPending = remote.movePending;
   }
   if (targetId === actor.id) {
     return ignored("self-move");
@@ -1337,7 +1340,10 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
     targetId,
     ...carried,
   );
-  return applied("moved", runJobBatch(db, { kind: "move", key: activity.id }, now) === "advanced" || severed);
+  return applied(
+    "moved",
+    runJobBatch(db, { kind: "move", key: activity.id }, now) === "advanced" || severed || targetPending,
+  );
 };
 
 // Moves the next MOVE_BATCH local followers covered by the Move. Returns whether any remain.
@@ -4036,11 +4042,27 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   clearSenderHost(db, actor.id);
   const handler = HANDLERS[activity.type] as Handler<typeof activity.type>;
   const result = handler(db, actor, activity, input);
-  // A sync of the actor's collections was asked for, or quotes have verification work due, or a create walk is (only
-  // the job rounds verify and walk them): the Worker asks the Queue for a round (cron runs one regardless).
+  // A sync of the actor's collections was asked for, or quotes have verification work due, or a create walk is, or an
+  // actor the request fetched (a boosted original's author) is left with a pending move (only the job rounds verify,
+  // walk and resolve them): the Worker asks the Queue for a round (cron runs one regardless).
   const waiting =
-    ("syncWaiting" in actor && actor.syncWaiting) || quotesDue(db, now) || createWalkDue(db, input.storeNow);
+    ("syncWaiting" in actor && actor.syncWaiting) ||
+    pendingMoveFetched(db, input.prefetched) ||
+    quotesDue(db, now) ||
+    createWalkDue(db, input.storeNow);
   return waiting ? { ...result, jobsPending: true } : result;
+}
+
+// Whether an actor whose document the Worker fetched for this request is left with a pending move (accounts.move_pending,
+// remote-collections.ts): one seek of each by its uri, at most as many as the request's needs fetched.
+function pendingMoveFetched(db: Db, prefetched: Prefetched | undefined): boolean {
+  return Object.keys(prefetched?.actors ?? {}).some(
+    (uri) =>
+      db.first(
+        `SELECT 1 AS x FROM accounts INDEXED BY ${ACCOUNTS_URI_INDEX} WHERE uri = ? AND domain IS NOT NULL AND move_pending = 1`,
+        uri,
+      ) !== undefined,
+  );
 }
 
 // Whether the actor's purge has a batch that may run now (a backing-off or parked one waits for its round).

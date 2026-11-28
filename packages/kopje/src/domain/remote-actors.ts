@@ -128,8 +128,9 @@ export function originOf(uri: string | null): string | null {
 
 export type RemoteRow = { id: string; uri: string; domain: string };
 
-// What upsertRemoteActor stored.
-export type StoredActor = RemoteRow & { syncWaiting: boolean; frozen: boolean };
+// What upsertRemoteActor stored. movePending: the store left the account's move pending and its sync's request waits
+// for a round (syncWaiting), so the caller rings the jobs queue for it.
+export type StoredActor = RemoteRow & { syncWaiting: boolean; movePending: boolean; frozen: boolean };
 
 // ID-1's revision fence. accounts.document_revision changes with every store of a remote actor's document (its profile,
 // keys, movedTo or routing), the Move handler's movedTo included (nextDocumentRevisionSql, migration 0073). A writer
@@ -387,7 +388,7 @@ function storeActor(
     if (protocol !== null) {
       refreshRouting(db, frozen.id, protocol);
     }
-    return { ...frozen, syncWaiting: false, frozen: true };
+    return { ...frozen, syncWaiting: false, movePending: false, frozen: true };
   }
   const published = actor.published === null ? NaN : Date.parse(actor.published);
   const createdAt = new Date(Number.isNaN(published) || published > now ? now : published).toISOString();
@@ -404,7 +405,7 @@ function storeActor(
   const searched = keep ? searchedHandle(db, actor.uri) : handle;
   if (hostCovered(db, hostDomain(actor.uri)) || hostCovered(db, domain)) {
     const row = remoteAccount(db, actor.uri);
-    return row === undefined ? undefined : { ...row, syncWaiting: false, frozen: true };
+    return row === undefined ? undefined : { ...row, syncWaiting: false, movePending: false, frozen: true };
   }
   if (handle === actor.confirmed) {
     invalidateHolder(db, handle, actor.uri, now);
@@ -538,7 +539,8 @@ function storeActor(
   // The sync is asked for when the document names a collection, or a destination to fetch (the move part).
   const collections = actorCollections(actor.raw);
   const named = Object.values(collections).some((url) => url !== null);
-  return { ...row, syncWaiting: (named || pending) && requestCollectionSync(db, row.id, now), frozen: false };
+  const syncWaiting = (named || pending) && requestCollectionSync(db, row.id, now);
+  return { ...row, syncWaiting, movePending: pending && syncWaiting, frozen: false };
 }
 
 // The id of the account a move named `id` (namedMove's href, or null) resolves to, for the account `self`: the stored

@@ -1047,14 +1047,22 @@ export type ResolveInput = {
   present: PresentInput;
 };
 
-// quotesDue: the status found has a quote whose verification is due (the Worker asks the Queue for a job round).
-export type ResolveResult = { accounts: Account[]; statuses: Status[]; collections: Collection[]; quotesDue?: boolean };
+// quotesDue: the status found has a quote whose verification is due; movePending: the account resolved, or the status's
+// author, is left with a pending move (remote-collections.ts). Either way the Worker asks the Queue for a job round.
+export type ResolveResult = {
+  accounts: Account[];
+  statuses: Status[];
+  collections: Collection[];
+  quotesDue?: boolean;
+  movePending?: boolean;
+};
 
 // What a resolution stored, by id: the account, status or remote collection the query names, or nothing. quotesDue: the
-// status has a quote whose verification is due (the Worker asks the Queue for a job round).
+// status has a quote whose verification is due; movePending: the account stored, or the status's author, is left with
+// a pending move (StoredActor). Either asks the Worker for a job round.
 export type StoredResolution =
-  | { kind: "account"; id: string | undefined }
-  | { kind: "status"; id: string | undefined; quotesDue: boolean }
+  | { kind: "account"; id: string | undefined; movePending?: boolean }
+  | { kind: "status"; id: string | undefined; quotesDue: boolean; movePending?: boolean }
   | { kind: "collection"; id: string }
   | { kind: "none" };
 
@@ -1124,13 +1132,22 @@ export function storeResolved(
   { query, resolved, now, storeNow, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "storeNow" | "origin">,
   viewer: boolean,
 ): StoredResolution {
-  const storedActor = (actor: RemoteActorInput, revision: DocumentRevision): RemoteRow | undefined => {
+  const storedActor = (
+    actor: RemoteActorInput,
+    revision: DocumentRevision,
+  ): (RemoteRow & { movePending: boolean }) | undefined => {
     const stored = upsertRemoteActor(db, actor, origin, now, revision);
-    return stored === "superseded" ? remoteAccount(db, actor.uri) : stored;
+    if (stored === "superseded") {
+      const row = remoteAccount(db, actor.uri);
+      return row === undefined ? undefined : { ...row, movePending: false };
+    }
+    return stored;
   };
   switch (resolved.kind) {
-    case "account":
-      return { kind: "account", id: storedActor(resolved.actor, resolved.revision)?.id };
+    case "account": {
+      const stored = storedActor(resolved.actor, resolved.revision);
+      return { kind: "account", id: stored?.id, movePending: stored?.movePending === true };
+    }
     case "status": {
       const author = storedActor(resolved.author, resolved.revision);
       if (author === undefined) {
@@ -1148,6 +1165,7 @@ export function storeResolved(
         kind: "status",
         id: stored.statusId,
         quotesDue: stored.statusId !== undefined && quoteDue(db, stored.statusId, now),
+        movePending: author.movePending,
       };
     }
     case "collection": {
@@ -1317,9 +1335,9 @@ export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveI
       : fetched;
   switch (stored.kind) {
     case "account":
-      return account(stored.id);
+      return { ...account(stored.id), movePending: stored.movePending === true };
     case "status":
-      return { ...status(stored.id), quotesDue: stored.quotesDue };
+      return { ...status(stored.id), quotesDue: stored.quotesDue, movePending: stored.movePending === true };
     case "collection": {
       const shown = shownCollection(db, stored.id, accountId, input.present.origin);
       return { accounts: [], statuses: [], collections: shown === null ? [] : [shown] };
