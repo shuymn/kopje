@@ -1,4 +1,3 @@
-import { publishedDay } from "../domain/actor-row";
 import type { SnapshotSource } from "../domain/snapshot";
 import { errorFields } from "../platform/error-message";
 import { offDomain } from "../platform/instance-host";
@@ -133,45 +132,7 @@ export async function answerFromSnapshot(
   if (url.pathname !== "/actor") {
     headers["access-control-allow-origin"] = "*";
   }
-  const body = ACTOR_PATH.test(url.pathname) ? keptActor(snapshot, `${url.origin}${url.pathname}`) : snapshot.body;
-  return new Response(request.method === "HEAD" ? null : body, { headers });
-}
-
-const ACTIVITY_JSON = /^application\/(activity|ld)\+json\b/i;
-// A top-level member `"published": "<string>"` of a JSON object, its string's escapes included.
-const PUBLISHED_MEMBER = /("published"\s*:\s*)"((?:[^"\\]|\\.)*)"/g;
-
-// The kept document of the local actor `actorId` with its `published` as the live document writes it (actor-row.ts
-// publishedDay): a snapshot an earlier build kept carries the exact creation time until a healthy GET replaces it
-// (#1564 D5). Only that string changes, every other byte as kept; a body that is not that actor's activity JSON, or
-// whose published is not an instant or appears more than once, is served as kept.
-function keptActor(snapshot: Snapshot, actorId: string): string {
-  const { body } = snapshot;
-  if (!ACTIVITY_JSON.test(snapshot.contentType)) {
-    return body;
-  }
-  let document: unknown;
-  try {
-    document = JSON.parse(body);
-  } catch {
-    return body;
-  }
-  if (typeof document !== "object" || document === null || Array.isArray(document)) {
-    return body;
-  }
-  const { id, published } = document as { id?: unknown; published?: unknown };
-  const day = typeof published === "string" ? publishedDay(published) : null;
-  const members = [...body.matchAll(PUBLISHED_MEMBER)];
-  const member = members.length === 1 ? members[0] : undefined;
-  if (id !== actorId || day === null || day === published || member === undefined) {
-    return body;
-  }
-  const [text, key = "", literal = ""] = member;
-  if (JSON.parse(`"${literal}"`) !== published) {
-    return body;
-  }
-  const at = member.index;
-  return body.slice(0, at) + key + JSON.stringify(day) + body.slice(at + text.length);
+  return new Response(request.method === "HEAD" ? null : snapshot.body, { headers });
 }
 
 function isActorPath(url: URL): boolean {

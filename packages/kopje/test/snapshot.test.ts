@@ -111,68 +111,6 @@ describe("actor document snapshot", () => {
     }
   });
 
-  // #1564 D5: an actor publishes its creation day's midnight. A snapshot an earlier build kept carries the exact
-  // creation time until a healthy GET replaces it; the rescue answer shows that day's midnight too, as the live one does
-  // (actor-row.ts publishedDay), and changes no other byte of the kept body.
-  describe("kept by an earlier build", () => {
-    const ACTOR = "https://social.example/ap/users/Alice";
-    // Replaces the kept actor document's body (and content type) as an earlier build would have kept it.
-    const keep = (store: StoreStub, body: string, contentType?: string) =>
-      runInDurableObject(store, (_instance, state) => {
-        state.storage.sql.exec(
-          `UPDATE kopje_state SET value = json_set(value, '$.body', ?1, '$.contentType', coalesce(?2, value ->> '$.contentType'))
-						WHERE name = 'snapshot:path:/ap/users/Alice'`,
-          body,
-          contentType ?? null,
-        );
-      });
-    const rescued = async (store: StoreStub) => {
-      const answer = (await served(store, "0.0.0-other")).bodies["/ap/users/Alice"]!;
-      expect(answer.status).toBe(200);
-      return answer.body;
-    };
-
-    it("serves the creation day's midnight as published, every other byte as kept", async () => {
-      const { store, healthy } = await healthyInstance();
-      const live = healthy["/ap/users/Alice"]!.body;
-      const day = String((JSON.parse(live) as { published: unknown }).published).slice(0, 10);
-      const midnight = `"published":"${day}T00:00:00Z"`;
-      expect(live).toContain(midnight);
-      await keep(store, live.replace(midnight, `"published":"${day}T13:14:15.678Z"`));
-      expect(await rescued(store)).toBe(live);
-      // Whitespace and a number past 2^53 stay as kept.
-      const spaced = (published: string) =>
-        `{\n  "id": "${ACTOR}",\n  "big": 9007199254740993,\n  "published" : "${published}"\n}`;
-      await keep(store, spaced(`${day}T13:14:15Z`));
-      expect(await rescued(store)).toBe(spaced(`${day}T00:00:00Z`));
-    });
-
-    it("serves the day the live document publishes for a creation time with an offset", async () => {
-      const { store } = await healthyInstance();
-      await runInDurableObject(store, (_instance, state) => {
-        state.storage.sql.exec("UPDATE accounts SET created_at = '2026-10-12T00:15:00+01:00'");
-      });
-      const live = (await served(store)).bodies["/ap/users/Alice"]!.body;
-      expect((JSON.parse(live) as { published: unknown }).published).toBe("2026-10-11T00:00:00Z");
-      // What an earlier build published for that row: Temporal's instant.
-      await keep(store, live.replace('"published":"2026-10-11T00:00:00Z"', '"published":"2026-10-11T23:15:00Z"'));
-      expect(await rescued(store)).toBe(live);
-    });
-
-    it.each([
-      ["a time past 23 hours", { published: "2026-10-12T99:14:15Z" }, undefined],
-      ["a day the month lacks", { published: "2026-02-30T13:14:15Z" }, undefined],
-      ["a text that is no time", { published: "unreadable" }, undefined],
-      ["a document of another actor", { id: "https://remote.example/users/alice" }, undefined],
-      ["a document kept as plain text", {}, "text/plain"],
-    ])("serves %s as kept", async (_name, fields, contentType) => {
-      const { store } = await healthyInstance();
-      const body = JSON.stringify({ id: ACTOR, published: "2026-10-12T13:14:15.678Z", ...fields });
-      await keep(store, body, contentType);
-      expect(await rescued(store)).toBe(body);
-    });
-  });
-
   it("answers 503 when no snapshot was ever kept", async () => {
     const store = freshStore();
     const { request } = harness(store, {}, "0.0.0-other", offline, undefined, DOMAIN);

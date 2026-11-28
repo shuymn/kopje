@@ -362,6 +362,11 @@ settings page):
   `profiles_controller.rb:16`). An image description is published only on its image (the actor's `icon` and `image`, as
   `ActivityPub::ActorSerializer` writes them), so a description changed while the image is absent sends none; followers
   get it with the image's next Update.
+- While the Store refuses reads during an upgrade, a local actor's document is answered from the copy the last normal
+  GET kept (`src/federation/snapshot.ts`). A copy kept by an earlier release publishes the exact creation time as
+  `published`, where the current release publishes its day's midnight UTC, as Mastodon does, until the first normal GET
+  after the upgrade replaces it. Every Kopje release before this one published the exact time, the window ends at that
+  first fetch, and no content a peer or user sees is lost. Accepted, 2026-11-28.
 - The Profile's `featured_tags` are the account's first 10 featured hashtags in the order they were featured, as
   Kopje's writers keep at most 10; Mastodon lists every one of the association, in no stated order. Only an imported
   account can have more, and its others stay listed by `GET /api/v1/featured_tags`.
