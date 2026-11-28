@@ -28,6 +28,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials).
 - An account's `created_at` is midnight UTC of its creation day, and a local account's actor publishes that midnight as
   `published`, as Mastodon does. The admin API's own `created_at` stays exact.
+- The link card round fetches the most recently due links first. While no more links are due than a round fetches, a
+  new status gets its card within a round. While more are due, older links wait behind newer ones. A link still
+  unfetched a day after it was queued is dropped as before, but now the oldest are the ones dropped. A link already
+  near its day when newer ones arrive can be dropped where it was fetched late before. A link dropped this way gets
+  another status's card of the same URL when one fetched within 14 days qualifies.
 
 ### Fixed
 

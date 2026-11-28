@@ -480,9 +480,14 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   now stored only on its actor's host, so a host would have to give more than 200 of its own actors one url; until
   each account is stored again, though, a url an earlier release stored or a dump imported may name another host, and
   such rows count toward the 200 too. Accepted, 2026-11-17.
-- Fetched by a round of the 5-minute cron, at most 6 a round (3 at a time), not within a minute as Mastodon queues
-  them; a link still unfetched a day after its post is dropped. A claim the round could not run (its budget, its
-  deadline, a policy read that failed) is tried again; one that never finished is retried once, then dropped.
+- Fetched by a round of the 5-minute cron, at most 6 a round (3 at a time), the most recently due first, not within a
+  minute as Mastodon queues them. While more links are due than the rounds fetch, older links wait behind newer ones,
+  and a link still unfetched a day after it was queued is dropped. It gets another status's card of the same URL when
+  one fetched within 14 days qualifies (one of the URL's 8 newest copies, its image usable). So under a backlog the
+  oldest links are the ones dropped: a link near the end of its day when newer ones become due can be dropped where
+  fetching oldest first would have fetched it late. Mastodon queues a job for every eligible link. Accepted,
+  2026-11-29. A claim the round could not run (its budget, its deadline, a policy read that failed) is tried again; one
+  that never finished is retried once, then dropped.
 - Read through the web-page sink (NET-3): `Accept-Language: en, *;q=0.5`, exactly the first 1 MiB of a 200
   `text/html` or `application/xhtml+xml` page (Mastodon reads to the end of the chunk that crosses it). The scan keeps
   at most 128 metas and 4 JSON-LD scripts of 32,768 characters each, values of at most 2,048 characters, and the first
