@@ -10,10 +10,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [0.9.0] - 2026-11-28
 
-A minor release, published under the npm dist-tag `latest`. A remote account that has moved is shown as moved even when
-Kopje did not know its new account, and following it, suggesting it or moving followers to it behaves as Mastodon's
-does; a post can mention an account the instance has not stored; a domain block with `reject_media` hides that domain's
-media. It adds two Store migrations. Upgrading is recommended.
+A minor release, published under the npm dist-tag `latest`. A remote account that has moved is shown as moved once a
+background sync has fetched a new account Kopje did not know, and it can no longer be followed or suggested, nor take a
+`Move`'s followers; while its move is being resolved, following it answers 503
+([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). A post can mention an account the instance has
+not stored, and a domain block with `reject_media` withholds that domain's media from what the instance serves. It adds
+two Store migrations. Upgrading is recommended.
 
 ### Instance changes
 
@@ -42,10 +44,12 @@ media. It adds two Store migrations. Upgrading is recommended.
 - A remote profile's `movedTo` is read literally: an absolute http(s) URI, or an array or object naming one. Relative,
   empty, `@id` and nested spellings no longer resolve, a context no longer renames the member, and a fragment is
   ignored for a stored account, so some stored moves change when the profile is next stored, and with them whether a
-  `Move` to that profile moves its followers. This adds no fetch of the account `movedTo` names.
-- While a remote account's move is being resolved, following it answers 503 `Remote data could not be fetched`, a
-  held follow request to it waits, suggestions leave it out, and a `Move` to it keeps the followers; once resolved,
-  following answers 403 ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts).
+  `Move` to that profile moves its followers. The fetch of an account `movedTo` names that Kopje does not know yet
+  is under Fixed.
+- While a remote account's move is being resolved, following it answers 503 `Remote data could not be fetched`,
+  `/authorize_interaction` says the account is still being checked, a held follow request to it waits, suggestions leave
+  it out, and a `Move` to it keeps the followers; once the move is confirmed, following answers 403
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts).
 - A video upload whose processing estimate does not fit the time left at its duration's rendition is encoded at the
   first lower rendition that fits (720p at 30 fps, then 480p at 30 fps) instead of being refused, and is refused only
   when none fits. A 1080p60 video of about 112 to 120 s is now taken at 720p, and 2160p HDR video up to about 91 s
@@ -53,10 +57,10 @@ media. It adds two Store migrations. Upgrading is recommended.
   ([docs/media-processor.md](docs/media-processor.md), "Estimated admission limits"). The time limits, the job budget
   and the cost bound are unchanged.
 - Local image uploads, avatars, headers and video thumbnails take up to 33,177,600 pixels (7680×4320), Mastodon's
-  limit since v4.2, and `/api/v1/instance` and `/api/v2/instance` advertise it as `image_matrix_limit`. Remote media
-  and link preview images keep 16,777,216. A `kopje-admin media-rebuild` call starts no new row after two minutes once
-  it has handled one, and the command continues with the next call; it stops with exit 3 when three calls in a row
-  make no progress.
+  limit since v4.2, and `/api/v1/instance` and `/api/v2/instance` advertise it as `image_matrix_limit`;
+  `kopje-admin images-export` takes images up to the same limit. Remote media and link preview images keep 16,777,216.
+  A `kopje-admin media-rebuild` call starts no new row after two minutes once it has handled one, and the command
+  continues with the next call; it stops with exit 3 when three calls in a row make no progress.
 
 ### Fixed
 
