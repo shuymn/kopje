@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "2c67d5edf2ef5300c55099daa019ad55a73f884f",
+  "confirmed": "2888bc28f26bc3143cfccb141c16a8b3e385faa7",
   "files": [
     {
       "path": "src/store.ts",
@@ -112,7 +112,7 @@
       "path": "src/domain/collection-requests.ts",
       "functions": ["markCollectionsChanged"],
       "spec": "CollectionConsent.tla Touch: a valid push of R's collections outdates a read under way (outd), apart from the row fence (chg)",
-      "blob": "e1600152ae8afca196bf0ed083b4a7878a4c2a61"
+      "blob": "eb10d5dc5f5edac2e109e6fdaa25a80771f38758"
     },
     {
       "path": "src/domain/audience.ts",
