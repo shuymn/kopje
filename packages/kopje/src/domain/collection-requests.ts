@@ -183,13 +183,16 @@ export function actorCollections(raw: string | null): ActorCollections {
   };
 }
 
-// An absolute http(s) URI with an authority, in any case of the scheme, without whitespace or a backslash anywhere:
-// what namedMove takes before the URL parser, which would repair `https:host/b`, `https:\\host`, `https:///host/b` and
-// surrounding whitespace.
-const MOVE_URI = /^https?:\/\/[^\s\\/?#]+(?:[/?#][^\s\\]*)?$/i;
+// An absolute http(s) URI with an authority, in any case of the scheme, without whitespace, a backslash, a C0 or C1
+// control character (U+0000 to U+001F, U+007F to U+009F) or a `%` that does not begin two hex digits anywhere: what
+// namedMove takes before the URL parser, which would repair `https:host/b`, `https:\\host`, `https:///host/b`,
+// surrounding whitespace and controls, and encode a C1 control or keep a stray `%`.
+const MOVE_URI =
+  // oxlint-disable-next-line no-control-regex
+  /^https?:\/\/(?:[^\s\\/?#%\u0000-\u001f\u007f-\u009f]|%[0-9a-f]{2})+(?:[/?#](?:[^\s\\%\u0000-\u001f\u007f-\u009f]|%[0-9a-f]{2})*)?$/i;
 
 // The account a stored actor document's movedTo names (ID-4), read from the literal member as Mastodon 4.7.5 reads
-// `@json['movedTo']` (process_account_service.rb:166), with no JSON-LD context applied: an array gives its first value
+// `@json['movedTo']` (process_account_service.rb:293), with no JSON-LD context applied: an array gives its first value
 // and an object its id (collectionValue), and the string must be an absolute http(s) URI (MOVE_URI) that Kopje stores
 // as an actor id, other than `uri` itself; its href, else null. Where Mastodon fails on an array or an object, this
 // reads them (docs/mastodon-deviations.md). The stored row it names is remote-actors.ts moveTargetSql's.

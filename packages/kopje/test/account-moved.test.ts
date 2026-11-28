@@ -774,6 +774,7 @@ describe("the literal reading of movedTo (ID-4)", () => {
       ["an object's id", { id: B }, B],
       ["a typed object's id", { type: "Person", id: B }, B],
       ["an array's first object", [{ id: B }], B],
+      ["a percent-encoded octet", `${B}%2Fc`, `${B}%2Fc`],
       ["at ACTOR_URI_LIMIT", atLimit, atLimit],
     ];
     for (const [label, value, expected] of cases) {
@@ -801,6 +802,12 @@ describe("the literal reading of movedTo (ID-4)", () => {
       ["no slashes", "https:other.example/users/b"],
       ["backslashes for slashes", "https:\\\\other.example\\b"],
       ["a backslash in the path", "https://other.example/users\\b"],
+      ["a C1 control", `${B}\u0085`],
+      ["NUL", `${B}\0`],
+      ["a C0 control in the host", "https://other.exa\u0001mple/users/b"],
+      ["DEL", `${B}\u007f`],
+      ["a % without two hex digits", `${B}%zz`],
+      ["a % with one", `${B}%2`],
       ["no authority", "https:///other.example/users/b"],
       ["a compact IRI", "as:foo"],
       ["mailto", "mailto:a@b"],
