@@ -127,10 +127,10 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   {
     id: "a4524774e362a846",
     scans: ["local_accounts: SCAN l"],
-    site: "src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> < src/domain/federation-reads.ts#<anonymous>",
+    site: "src/domain/actors.ts#nodeInfoAccountsOf < src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> < src/domain/federation-reads.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'NodeInfo counts the available local accounts and their active days in one walk (nodeInfoUsageOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
+      'NodeInfo counts the available local accounts and their active days in one walk (nodeInfoAccountsOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "a22117d33a2816a7",

@@ -388,13 +388,14 @@ export const featuredTagsOfActor = readOperation<
 
 export type NodeInfoUsage = { users: number; activeMonth: number; activeHalfyear: number; localPosts: number };
 
-// Usage for NodeInfo, in one walk of the local accounts (operator-sized, a deployment assumption of the threat model).
-// users and the active counts are the available local accounts (availableLocalSql), so neither active count exceeds
-// users. The active counts are the accounts whose active_on is within ACTIVE_DAYS and ACTIVE_HALFYEAR_DAYS UTC days
-// ending today, as /api/v2/instance's active_month counts them (instance.ts activeCountSql); no status is read for
-// them. localPosts counts every local account's original statuses, of every visibility, a suspended account's
-// included, walking each account's statuses_account_originals prefix (RES-7).
-export function nodeInfoUsageOf(db: Db, now: number): NodeInfoUsage {
+export type NodeInfoAccounts = Omit<NodeInfoUsage, "localPosts">;
+
+// NodeInfo's user counts, in one walk of the local accounts (operator-sized, a deployment assumption of the threat
+// model). users and the active counts are the available local accounts (availableLocalSql), so neither active count
+// exceeds users. The active counts are the accounts whose active_on is within ACTIVE_DAYS and ACTIVE_HALFYEAR_DAYS UTC
+// days ending today, as /api/v2/instance's active_month counts them (instance.ts activeCountSql), so they change with
+// `now`'s UTC day alone; no status is read for them.
+export function nodeInfoAccountsOf(db: Db, now: number): NodeInfoAccounts {
   const accounts = db.first<{ users: number; month: number; halfyear: number }>(
     `SELECT COUNT(*) AS users, ${activeCountSql("?1", "?3")} AS month, ${activeCountSql("?2", "?3")} AS halfyear
 			FROM local_accounts l WHERE ${availableLocalSql("l")}`,
@@ -406,6 +407,15 @@ export function nodeInfoUsageOf(db: Db, now: number): NodeInfoUsage {
     users: accounts?.users ?? 0,
     activeMonth: accounts?.month ?? 0,
     activeHalfyear: accounts?.halfyear ?? 0,
+  };
+}
+
+// Usage for NodeInfo: the user counts (nodeInfoAccountsOf) and localPosts, every local account's original statuses,
+// of every visibility, a suspended account's included, walking each account's statuses_account_originals prefix
+// (RES-7).
+export function nodeInfoUsageOf(db: Db, now: number): NodeInfoUsage {
+  return {
+    ...nodeInfoAccountsOf(db, now),
     localPosts:
       db.first<{ n: number }>(
         `SELECT count(*) AS n

@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MIGRATIONS } from "../src/db/migrations";
+import { saveSnapshot } from "../src/domain/snapshot";
 import { createSnapshotSaver, SNAPSHOT_SAVE_INTERVAL_MS } from "../src/federation/snapshot";
 import type { StoreStub } from "../src/platform/store-client";
 import { storeMaintenanceError } from "../src/platform/store-errors";
@@ -10,6 +11,7 @@ import { bearer, sql } from "./api-helpers";
 import { harness, NOW } from "./app-helpers";
 import { fixtureKeyGen, LEGACY, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, freshStore, migratedStore, testKernel } from "./helpers";
+import { type PlannedStatement, plannedRun } from "./read-helpers";
 import { community, seedStatus } from "./status-helpers";
 
 const DOMAIN = "social.example";
@@ -250,6 +252,22 @@ describe("a NodeInfo saved after UTC midnight", () => {
   const BEFORE = Date.parse("2026-06-01T23:59:59Z");
   const AFTER = BEFORE + 1_000;
   const KEY = "path:/nodeinfo/2.1";
+  // The statements of NodeInfo's usage: localPosts' walk of the post history, and the user counts.
+  const POSTS_OR_ACCOUNTS = /statuses_account_originals|AS halfyear/;
+  const counted = (plans: readonly PlannedStatement[]) => ({
+    posts: plans.filter(({ query }) => query.includes("statuses_account_originals")).length,
+    accounts: plans.filter(({ query }) => query.includes("AS halfyear")).length,
+  });
+  const nodeInfoSource = (now: number, body: string) => ({ kind: "nodeinfo", now, rendered: body }) as const;
+  // saveSnapshot's input with the Store's time the kernel would fill.
+  const nodeInfoSave = (body: string, storeNow: number) => ({
+    key: KEY,
+    contentType: "application/json",
+    body,
+    renderedAt: BEFORE,
+    source: nodeInfoSource(BEFORE, body),
+    storeNow,
+  });
 
   afterEach(() => {
     vi.useRealTimers();
@@ -306,6 +324,46 @@ describe("a NodeInfo saved after UTC midnight", () => {
     expect(await save()).toBe(false);
     expect(await h.store.rescueSnapshot(BUILD, KEY)).toBeNull();
   });
+
+  // The re-check counts the post history once on either day: across midnight the user counts are counted again at the
+  // Store's time beside the same localPosts, and on the render's own day nothing is counted again.
+  it("counts the post history once when it checks a render across midnight", async () => {
+    for (const drop of [false, true]) {
+      const { h, status, body } = await rendered();
+      if (drop) {
+        await sql(h.store, "DELETE FROM statuses WHERE id = ?", status);
+      }
+      const { result, plans } = await plannedRun(h, POSTS_OR_ACCOUNTS, saveSnapshot, nodeInfoSave(body, AFTER), true);
+      expect({ result, ...counted(plans) }, `status deleted: ${drop}`).toEqual({
+        result: !drop,
+        posts: 1,
+        accounts: 2,
+      });
+    }
+  });
+
+  it("counts the post history once when it refuses a stale render of the same day", async () => {
+    const h = await community(["alice"]);
+    const renderedAt = Date.parse("2026-06-01T12:00:00Z");
+    const grow = (first: number, last: number) =>
+      sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (VALUES (CAST(?1 AS INTEGER)) UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+				INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+				SELECT CAST(700000000000000000 + i AS TEXT), 'https://kopje.test/ap/o/p' || i, ?3, 'public',
+					'2026-05-31T00:00:00.000Z'
+				FROM n`,
+        first,
+        last,
+        h.users.alice.id,
+      );
+    await grow(1, 5_000);
+    const body = JSON.stringify(await h.store.nodeInfoUsage(BUILD, { now: renderedAt }));
+    await grow(5_001, 5_001);
+    const input = { ...nodeInfoSave(body, renderedAt + 1_000), renderedAt, source: nodeInfoSource(renderedAt, body) };
+    const { result, plans } = await plannedRun(h, POSTS_OR_ACCOUNTS, saveSnapshot, input, true);
+    expect({ result, ...counted(plans) }).toEqual({ result: false, posts: 1, accounts: 1 });
+  }, 30_000);
 });
 
 describe("snapshot caps", () => {

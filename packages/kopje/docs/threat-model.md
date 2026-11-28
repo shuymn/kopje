@@ -3048,15 +3048,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   search refused before any network work").
 - **NET-5: snapshots come only from authoritative local data.** A rescue snapshot holds only a canonical actor,
   WebFinger or NodeInfo document rendered on the fixed domain from Store columns, and is kept only if its source still
-  matches the Store when saved: a NodeInfo usage counted at its render's time or, when that differs, at the Store's own
-  time (a sign-in after UTC midnight moves an account's day out of the earlier count), and a body matching neither is
-  refused. Request hosts, arbitrary queries and remote documents never create or change one. Suspending an account
-  removes the snapshots of its actor document and WebFinger answers in the same transaction, so the rescue path answers
-  503 for them, never with the document from before the suspension, until a live request keeps the redacted one. A
-  NodeInfo document is rendered from the request's one Store read (`apNodeInfo` in `src/domain/federation-reads.ts`),
-  the domain and the usage of one transaction. _Enforced (main):_ `src/domain/snapshot.ts`,
-  `src/domain/federation-reads.ts`, `src/federation/routes.ts`; `test/snapshot.test.ts` ("snapshots of a suspended
-  actor"; "a NodeInfo saved after UTC midnight").
+  matches the Store when saved: a NodeInfo usage counted at its render's time or, when that differs and the Store's own
+  time falls on another UTC day, with its user counts counted again at the Store's time (a sign-in after UTC midnight
+  moves an account's day out of the earlier count), the post history read once; a body matching neither is refused.
+  Request hosts, arbitrary queries and remote documents never create or change one. Suspending an account removes the
+  snapshots of its actor document and WebFinger answers in the same transaction, so the rescue path answers 503 for
+  them, never with the document from before the suspension, until a live request keeps the redacted one. A NodeInfo
+  document is rendered from the request's one Store read (`apNodeInfo` in `src/domain/federation-reads.ts`), the domain
+  and the usage of one transaction. _Enforced (main):_ `src/domain/snapshot.ts`, `src/domain/federation-reads.ts`,
+  `src/federation/routes.ts`; `test/snapshot.test.ts` ("snapshots of a suspended actor"; "a NodeInfo saved after UTC
+  midnight", its post history read once).
 
 ### Content (HTML)
 
