@@ -17,6 +17,7 @@ import {
   actorCollections,
   collectionRead,
   collectionSql,
+  fetchableMove,
   namedMove,
   requestCollectionSync,
   UNREADABLE,
@@ -481,15 +482,21 @@ function storeActor(
       ),
   );
   const row = remoteAccount(db, actor.uri);
+  let pending = false;
   if (row !== undefined) {
     // The account's move as its document states it (ID-4), set or cleared by every store, an unchanged document's
-    // included (Mastodon's ProcessAccountService: process_account_service.rb:166), written once the row is stored, by
-    // its id: the literal movedTo (collection-requests.ts namedMove) naming a stored account (moveTargetSql); one Kopje
-    // does not know reads as none, as it is not fetched (process_account_service.rb:310-314 fetches it).
+    // included (Mastodon's ProcessAccountService: process_account_service.rb:293), written once the row is stored, by
+    // its id: the literal movedTo (collection-requests.ts namedMove) naming a stored account (moveTargetSql). One Kopje
+    // does not know is pending (accounts.move_pending) when the sync may fetch it (fetchableMove), as Mastodon fetches it
+    // (process_account_service.rb:516-520): the sync's move part resolves it (remote-collections.ts). The move and the
+    // bit are written in this one statement, so no intermediate row passes their bound (0125_account_move_pending).
+    const target = moveTarget(db, namedMove(actor.raw, actor.uri), row.id);
+    pending = target === null && fetchableMove(actor.raw, actor.uri, origin) !== null;
     db.run(
-      `UPDATE accounts SET moved_to_account_id = ${moveTargetSql("?2", "?1")} WHERE id = ?1 AND domain IS NOT NULL`,
+      "UPDATE accounts SET moved_to_account_id = ?2, move_pending = ?3 WHERE id = ?1 AND domain IS NOT NULL",
       row.id,
-      namedMove(actor.raw, actor.uri),
+      target,
+      pending ? 1 : 0,
     );
     // The links of its fields to verify, from the same projection (remote-field-links.ts).
     armRemoteFieldLinks(db, row.id, remoteLinkBack(actor.uri, actor.url), links, now);
@@ -528,18 +535,29 @@ function storeActor(
   if (row === undefined) {
     return undefined;
   }
+  // The sync is asked for when the document names a collection, or a destination to fetch (the move part).
   const collections = actorCollections(actor.raw);
   const named = Object.values(collections).some((url) => url !== null);
-  return { ...row, syncWaiting: named && requestCollectionSync(db, row.id, now), frozen: false };
+  return { ...row, syncWaiting: (named || pending) && requestCollectionSync(db, row.id, now), frozen: false };
 }
 
-// The id of the account a move named `id` (an SQL expression, namedMove's href or NULL) resolves to, for the account
-// `self`: the stored row, local or remote, whatever its availability, whose actor id is `id` with its fragment removed
-// (Mastodon's ActivityPub::TagManager#uri_to_resource, `split('#').first`), other than `self` and not being purged;
-// else NULL. An unavailable one is presented redacted (accounts.ts presentAccount).
-function moveTargetSql(id: string, self: string): string {
-  return `(SELECT m.id FROM accounts m INDEXED BY ${ACCOUNTS_URI_INDEX}
-		WHERE m.uri = substr(${id}, 1, instr(${id} || '#', '#') - 1) AND m.id <> ${self} AND NOT ${deletingSql("m")})`;
+// The id of the account a move named `id` (namedMove's href, or null) resolves to, for the account `self`: the stored
+// row, local or remote, whatever its availability, whose actor id is `id` with its fragment removed (Mastodon's
+// ActivityPub::TagManager#uri_to_resource, `split('#').first`), other than `self` and not being purged; else null. An
+// unavailable one is presented redacted (accounts.ts presentAccount). Every writer of a move from a document reads it
+// here: the store, and the collection sync's claim and completion (remote-collections.ts).
+function moveTarget(db: Db, id: string | null, self: string): string | null {
+  if (id === null) {
+    return null;
+  }
+  return (
+    db.first<{ id: string }>(
+      `SELECT m.id FROM accounts m INDEXED BY ${ACCOUNTS_URI_INDEX}
+			WHERE m.uri = substr(?1, 1, instr(?1 || '#', '#') - 1) AND m.id <> ?2 AND NOT ${deletingSql("m")}`,
+      id,
+      self,
+    )?.id ?? null
+  );
 }
 
 // The flags a half of an interaction policy gives, the same in canQuote's and canFeature's (audience.ts

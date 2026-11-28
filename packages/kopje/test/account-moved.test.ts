@@ -681,7 +681,7 @@ describe("query plans of moves (RES-7)", () => {
         presentAccountsWithin(planned, [source], { origin: ORIGIN, viewerId: null }, Infinity, true);
         const mover = `https://remote.example/users/mover-${phase}`;
         receiveActivity.run(
-          plannedSql(real, /moved_to_account_id/, plans),
+          plannedSql(real, /moved_to_account_id|m INDEXED BY/, plans),
           {
             now: NOW,
             storeNow: NOW,
@@ -731,9 +731,12 @@ describe("query plans of moves (RES-7)", () => {
       /^SEARCH m USING INDEX sqlite_autoindex_accounts_1 \(id=\?\)$/,
       /^SEARCH ml USING INDEX sqlite_autoindex_local_accounts_1 \(account_id=\?\)( LEFT-JOIN)?$/,
     ]);
-    // An actor document resolves the movedTo by actor id and writes the source by its key; a Move writes it by its key.
-    expectSeeks(/moved_to_account_id = \(SELECT/, [
+    // An actor document resolves the movedTo by actor id (remote-actors.ts moveTarget) and writes the source's move and
+    // pending bit by its key; a Move writes it by its key.
+    expectSeeks(/SELECT m\.id FROM accounts m INDEXED BY/, [
       /^SEARCH m USING (COVERING )?INDEX sqlite_autoindex_accounts_2 \(uri=\?\)$/,
+    ]);
+    expectSeeks(/SET moved_to_account_id = \?2, move_pending = \?3/, [
       /^SEARCH accounts USING INDEX sqlite_autoindex_accounts_1 \(id=\?\)$/,
     ]);
     expectSeeks(/SET moved_to_account_id = \?2/, [

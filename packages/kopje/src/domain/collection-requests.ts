@@ -1,5 +1,5 @@
 import type { Db } from "../db/sql";
-import { httpUrl } from "../platform/http-url";
+import { fetchableHref, httpUrl } from "../platform/http-url";
 import { isStorableActorId } from "../platform/identity-bounds";
 import { requireExactIncrement } from "./ids";
 
@@ -216,4 +216,14 @@ export function namedMove(raw: string | null, uri: string): string | null {
     return null;
   }
   return isStorableActorId(href) && href !== uri ? href : null;
+}
+
+// The destination namedMove reads from `raw` when the collection sync may fetch it (accounts.move_pending, the sync's
+// move part in remote-collections.ts): an id the document loader would request (fetchableHref, NET-1's shape), with no
+// fragment (the document fetched for it would have another id) and not on this instance's `origin` (ID-3); else null.
+export function fetchableMove(raw: string | null, uri: string, origin: string): string | null {
+  const named = namedMove(raw, uri);
+  return named !== null && fetchableHref(named) !== null && !named.includes("#") && new URL(named).origin !== origin
+    ? named
+    : null;
 }

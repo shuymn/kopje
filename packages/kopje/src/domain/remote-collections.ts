@@ -295,9 +295,17 @@ function pendingUris(db: Db, accountId: string): string[] {
     .map((row) => row.uri);
 }
 
+// A sync given up whole, with the move its read left pending (giveUpMove).
 function dropSync(db: Db, accountId: string): void {
   db.run("DELETE FROM collection_pins_pending WHERE account_id = ?", accountId);
   db.run("DELETE FROM collection_syncs WHERE account_id = ?", accountId);
+  giveUpMove(db, accountId);
+}
+
+// A read given up ends the account's pending move with nothing (accounts.move_pending, 0125_account_move_pending): the
+// claim is the one place a pending move ends without a result, so none outlives the read that was to resolve it.
+function giveUpMove(db: Db, accountId: string): void {
+  db.run("UPDATE accounts SET move_pending = 0 WHERE id = ? AND move_pending = 1", accountId);
 }
 
 // The sync due first, claimed for SYNC_LEASE_MS (due again when the lease ends): phase document while a refresh is
@@ -335,6 +343,7 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
 				WHERE account_id = ?`,
         row.account_id,
       );
+      giveUpMove(db, row.account_id);
       read = false;
       row.attempts = 0;
     }

@@ -724,17 +724,20 @@ describe("dump", () => {
       ).toEqual({ a: avatar, h: header, f: 0, m: 1, r: 0 });
     });
     // A dump from elsewhere, as its text could hold it: a description of 151 characters, one of malformed bytes past
-    // the characters, a setting of 2, and NULL for each; and the local account's feature policy (0115, the last
-    // column) not 0.
-    const values = `'${avatar}','${header}',0,1,0,0)`;
+    // the characters, a setting of 2, and NULL for each; and the local account's feature policy (0115, the column
+    // before 0125's move_pending, the last) not 0.
+    const values = `'${avatar}','${header}',0,1,0,0,0)`;
     expect(text.split(values)).toHaveLength(2);
     for (const [past, refusal] of [
-      [`'${avatar}','${header}h',0,1,0,0)`, /accounts: profile setting past its stored bound/],
-      [`'${avatar}',CAST(X'${"4180".repeat(76)}' AS TEXT),0,1,0,0)`, /accounts: profile setting past its stored bound/],
-      [`'${avatar}','${header}',0,2,0,0)`, /accounts: profile setting past its stored bound/],
-      [`NULL,'${header}',0,1,0,0)`, /accounts: profile setting past its stored bound/],
-      [`'${avatar}','${header}',0,1,NULL,0)`, /accounts: profile setting past its stored bound/],
-      [`'${avatar}','${header}',0,1,0,2)`, /accounts: feature_policy past its stored bound/],
+      [`'${avatar}','${header}h',0,1,0,0,0)`, /accounts: profile setting past its stored bound/],
+      [
+        `'${avatar}',CAST(X'${"4180".repeat(76)}' AS TEXT),0,1,0,0,0)`,
+        /accounts: profile setting past its stored bound/,
+      ],
+      [`'${avatar}','${header}',0,2,0,0,0)`, /accounts: profile setting past its stored bound/],
+      [`NULL,'${header}',0,1,0,0,0)`, /accounts: profile setting past its stored bound/],
+      [`'${avatar}','${header}',0,1,NULL,0,0)`, /accounts: profile setting past its stored bound/],
+      [`'${avatar}','${header}',0,1,0,2,0)`, /accounts: feature_policy past its stored bound/],
     ] as const) {
       const dump = text.replace(values, past);
       const target = await migratedStore();
@@ -1748,6 +1751,89 @@ describe("dump", () => {
           expect(sql.exec("SELECT * FROM media_attachments ORDER BY id").toArray()).toEqual(
             before.map((row) => ({ ...row, thumbnail_of: null })),
           );
+        },
+      );
+    }, 120_000);
+  });
+
+  // A pending move (0125_account_move_pending) is restored only with what ends it: an unread collection sync and a
+  // movedTo the sync may fetch. Bob is seedStore's remote account; his sync and lease are kept as dumped.
+  describe("pending moves (0125_account_move_pending)", () => {
+    const BOB = "110000000000000002";
+    const pendingBob = (
+      sql: SqlStorage,
+      movedTo: string,
+      sync: { generation: number; read_through: number } | null,
+    ) => {
+      sql.exec(
+        "UPDATE accounts SET raw = ?, move_pending = 1 WHERE id = ?",
+        JSON.stringify({ id: "https://remote.test/users/bob", type: "Person", movedTo }),
+        BOB,
+      );
+      if (sync !== null) {
+        sql.exec(
+          `INSERT INTO collection_syncs (account_id, due_at, token, attempts, generation, read_through)
+					VALUES (?, 1760227200000, 'lease', 3, ?, ?)`,
+          BOB,
+          sync.generation,
+          sync.read_through,
+        );
+      }
+    };
+    const read =
+      "SELECT a.move_pending, c.* FROM accounts a LEFT JOIN collection_syncs c ON c.account_id = a.id WHERE a.id = ?";
+
+    it("keeps a pending account with its unread sync and its lease", async () => {
+      const source = await seeded(0);
+      await runInDurableObject(source, (_instance, state) =>
+        pendingBob(state.storage.sql, "https://other.test/users/dest", { generation: 2, read_through: 1 }),
+      );
+      const { text } = await dumpViaRpc(source);
+      const target = await migratedStore();
+      await copyConfig(source, target);
+      expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
+      const rows = (store: StoreStub) =>
+        runInDurableObject(store, (_instance, state) => state.storage.sql.exec(read, BOB).toArray());
+      expect(await rows(target)).toEqual(await rows(source));
+      expect(await rows(target)).toMatchObject([{ move_pending: 1, token: "lease", attempts: 3, generation: 2 }]);
+    }, 120_000);
+
+    for (const [name, movedTo, sync] of [
+      ["no sync", "https://other.test/users/dest", null],
+      ["a sync read through", "https://other.test/users/dest", { generation: 2, read_through: 2 }],
+      ["a movedTo the sync may not fetch", "http://other.test/users/dest", { generation: 2, read_through: 1 }],
+      ["a movedTo on the instance's own origin", "https://kopje.test/users/dest", { generation: 2, read_through: 1 }],
+    ] as const) {
+      it(`refuses a pending account with ${name} as move-pending-invalid`, async () => {
+        const source = await seeded(0);
+        await runInDurableObject(source, (_instance, state) => pendingBob(state.storage.sql, movedTo, sync));
+        const { text } = await dumpViaRpc(source);
+        const target = await migratedStore();
+        await copyConfig(source, target);
+        const { report } = await importViaRpc(target, text);
+        expect(report).toMatchObject({ ok: false });
+        expect(JSON.stringify(report)).toMatch(/move-pending-invalid: accounts '110000000000000002'/);
+      }, 120_000);
+    }
+
+    // A dump of 0124 carries no move_pending: restored at its own migrations, it upgrades through 0125 with every
+    // account at 0, so no destination is fetched for it until its document is stored again.
+    it("upgrades a dump restored at 0124 with every account not pending", async () => {
+      await restoredBefore(
+        "0125_account_move_pending",
+        (sql) => {
+          sql.exec(
+            `INSERT INTO accounts (id, uri, username, domain, raw) VALUES ('190000000000000006', 'https://r.test/u', 'u',
+							'r.test', ?)`,
+            JSON.stringify({ id: "https://r.test/u", type: "Person", movedTo: "https://other.test/users/dest" }),
+          );
+          sql.exec("INSERT INTO collection_syncs (account_id, due_at) VALUES ('190000000000000006', 0)");
+        },
+        async (sql, upgrade) => {
+          expect(await upgrade()).toMatchObject({ ok: true, applied: ["0125_account_move_pending"] });
+          expect(sql.exec("SELECT id, move_pending FROM accounts ORDER BY id").toArray()).toEqual([
+            { id: "190000000000000006", move_pending: 0 },
+          ]);
         },
       );
     }, 120_000);

@@ -1297,9 +1297,12 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
   );
   // The source shows the move (Mastodon's move.rb:18), set once, when the job is first written: a replay of a known
   // Move writes nothing, and a later document of the source sets or clears it again (upsertRemoteActor). It issues a
-  // new revision of the source (DocumentRevision), so a document of it fetched before the Move never clears it (ID-4).
+  // new revision of the source (DocumentRevision), so a document of it fetched before the Move never clears it (ID-4),
+  // and ends a move its document left pending (move_pending, which the bound of 0125_account_move_pending requires 0
+  // beside a move): the collection sync never resolves the older declaration.
   db.run(
-    `UPDATE accounts SET moved_to_account_id = ?2, document_revision = ${nextDocumentRevisionSql("document_revision")}
+    `UPDATE accounts SET moved_to_account_id = ?2, move_pending = 0,
+			document_revision = ${nextDocumentRevisionSql("document_revision")}
 		WHERE id = ?1 AND domain IS NOT NULL AND ?2 <> ?1`,
     actor.id,
     targetId,
@@ -1493,8 +1496,10 @@ function startActorDeletion(db: Db, actor: { id: string; uri: string }, now: num
     actor.uri,
     now,
   );
+  // A move its document left pending ends here, before the purge's first batch deletes its sync (purgeBatch), so no
+  // account is pending without a sync to end it (0125_account_move_pending).
   db.run(
-    "UPDATE accounts SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ? AND domain IS NOT NULL",
+    "UPDATE accounts SET deleted_at = COALESCE(deleted_at, ?), move_pending = 0 WHERE id = ? AND domain IS NOT NULL",
     new Date(now).toISOString(),
     actor.id,
   );

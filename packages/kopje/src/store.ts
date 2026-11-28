@@ -10,6 +10,7 @@ import * as instanceActivity from "./domain/instance-activity";
 import * as media from "./domain/media";
 import * as mediaProcessing from "./domain/media-processing";
 import * as mediaRebuild from "./domain/media-rebuild";
+import { pendingMoveCheck } from "./domain/pending-move-check";
 import * as remoteActors from "./domain/remote-actors";
 import * as remoteMedia from "./domain/remote-media";
 import * as remoteStills from "./domain/remote-media-stills";
@@ -128,6 +129,7 @@ export class Store extends DurableObject<Env> {
     this.#admin = new StoreAdmin(ctx, this.#kernel, {
       source: { build, version: PACKAGE_VERSION },
       onPublish: (sql, now) => announceConvertedProfiles(new Db(sql, (fn) => ctx.storage.transactionSync(fn)), now),
+      rowCheck: pendingMoveCheck,
     });
     // A turn is a request to this object's own stub (stream-hub.ts).
     this.#streams = new StreamHub(ctx, this.#kernel, (headers) =>

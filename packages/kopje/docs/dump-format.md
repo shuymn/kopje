@@ -303,6 +303,15 @@ ASCII digits) of another account, on a remote row only; anything else, the row's
 with `accounts: moved_to_account_id past its stored bound`. No foreign key holds it: an id that names no account
 restores as it is and presents no `moved`. A file built from legacy data writes NULL.
 
+Pending moves (migration `0125_account_move_pending`): `accounts.move_pending` is the integer 0 or 1, and 1 only on a
+remote row whose `moved_to_account_id` is NULL; anything else fails with `accounts: move_pending past its stored bound`.
+1 means the account's stored document names, as its `movedTo`, an account its collection sync is to fetch. A dump whose
+account is pending without a `collection_syncs` row of an unread generation (`generation` above `read_through`), or
+whose stored document names no destination the sync may fetch, fails verification with `move-pending-invalid`; a valid
+one restores with its sync and lease as dumped, and the restored Store's next claim of that sync resumes or gives it
+up. A dump taken before 0125 has no such column: after its upgrade, every row reads 0, and no destination is fetched
+until that actor's document is stored again. A file built from legacy data leaves it at 0.
+
 Static images (migration `0061_account_static_images`): `accounts.avatar_static_url` and `header_static_url` are NULL
 (the static image is the image itself), or text of at most 512 UTF-8 bytes without NUL, only on a local row whose
 `avatar_url` or `header_url` respectively is set; anything else fails with `accounts: static image past its stored

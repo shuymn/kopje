@@ -430,9 +430,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(107);
+      expect(STORED_TRIGGERS.size).toBe(109);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        107 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        109 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -16315,6 +16315,79 @@ describe("0123_media_thumbnails", () => {
       ).toEqual([
         { id: CHILD, gc_at: EPOCH, url: "" },
         { id: SECOND, gc_at: T, url: "" },
+      ]);
+    });
+  });
+});
+
+describe("0125_account_move_pending", () => {
+  const NAME = "0125_account_move_pending";
+  const at = NAMES.indexOf(NAME);
+  const A = "100000000000000001";
+  const B = "100000000000000002";
+  const LOCAL = "100000000000000003";
+  const REFUSED = /accounts: move_pending past its stored bound/;
+
+  it("gives every row 0, then bounds the bit to 0 or 1, and 1 to a remote row without a move", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        `INSERT INTO accounts (id, uri, username, domain, moved_to_account_id) VALUES
+					(?1, 'https://remote.test/users/a', 'a', 'remote.test', NULL),
+					(?2, 'https://remote.test/users/b', 'b', 'remote.test', ?1),
+					(?3, 'https://kopje.test/ap/users/c', 'c', NULL, NULL)`,
+        A,
+        B,
+        LOCAL,
+      );
+      await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+      expect(sql.exec("SELECT id, move_pending FROM accounts ORDER BY id").toArray()).toEqual([
+        { id: A, move_pending: 0 },
+        { id: B, move_pending: 0 },
+        { id: LOCAL, move_pending: 0 },
+      ]);
+      const update = (set: string, id: string, ...params: SqlStorageValue[]) =>
+        sql.exec(`UPDATE accounts SET ${set} WHERE id = ?`, ...params, id);
+      // A remote row without a move takes 1, and goes back to 0.
+      update("move_pending = 1", A);
+      update("move_pending = 0", A);
+      update("move_pending = 1", A);
+      // In order: the storage class (INTEGER affinity keeps a non-numeric text as text), a value past 1, a local row,
+      // a row with a move; then the other watched columns: a pending row neither takes a move nor becomes local.
+      const refused: [string, string, string, ...SqlStorageValue[]][] = [
+        ["a text", "move_pending = ?", B, "x"],
+        ["a BLOB", "move_pending = ?", B, new Uint8Array([1]).buffer],
+        ["a real", "move_pending = ?", B, 0.5],
+        ["2", "move_pending = 2", B],
+        ["-1", "move_pending = -1", B],
+        ["on a local row", "move_pending = 1", LOCAL],
+        ["beside a move", "move_pending = 1", B],
+        ["a move set on a pending row", "moved_to_account_id = ?", A, B],
+        ["a pending row made local", "domain = NULL", A],
+      ];
+      for (const [name, set, id, ...params] of refused) {
+        expect(() => update(set, id, ...params), name).toThrow(REFUSED);
+      }
+      // A move and the bit written together, either way, pass.
+      update("moved_to_account_id = ?, move_pending = 0", A, B);
+      update("moved_to_account_id = NULL, move_pending = 1", A);
+      const insert = (pending: SqlStorageValue, domain: string | null, moved: string | null = null) =>
+        sql.exec(
+          `INSERT INTO accounts (id, uri, username, domain, moved_to_account_id, move_pending)
+					VALUES ('100000000000000004', 'https://remote.test/users/d', 'd', ?, ?, ?)`,
+          domain,
+          moved,
+          pending,
+        );
+      expect(() => insert(2, "remote.test")).toThrow(REFUSED);
+      expect(() => insert(1, null)).toThrow(REFUSED);
+      expect(() => insert(1, "remote.test", A)).toThrow(REFUSED);
+      insert(1, "remote.test");
+      expect(sql.exec("SELECT id FROM accounts WHERE move_pending = 1 ORDER BY id").toArray()).toEqual([
+        { id: A },
+        { id: "100000000000000004" },
       ]);
     });
   });

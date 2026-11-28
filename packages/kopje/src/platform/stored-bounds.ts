@@ -1095,6 +1095,21 @@ export function movedToPastBoundSql(row: string): string {
 // The partial index the purge's clearing step and completion check seek references through.
 export const MOVED_TO_INDEX = "accounts_moved_to";
 
+// ---- Pending moves: migration 0125_account_move_pending
+
+// accounts.move_pending: 1 while a remote account's stored document names, as its movedTo, a destination Kopje has
+// neither stored nor settled, which its collection sync fetches (domain/remote-collections.ts), else 0. True when `NEW`
+// holds anything else, judged in order: the storage class, the value, then the row (1 only on a remote row whose
+// moved_to_account_id is NULL).
+export function movePendingPastBoundSql(row: string): string {
+  const column = `${row}.move_pending`;
+  return `CASE WHEN typeof(${column}) <> 'integer' THEN 1
+	WHEN ${column} NOT IN (0, 1) THEN 1
+	WHEN ${column} = 1 AND ${row}.domain IS NULL THEN 1
+	WHEN ${column} = 1 AND ${row}.moved_to_account_id IS NOT NULL THEN 1
+	ELSE 0 END`;
+}
+
 // ---- Account static images: migration 0061_account_static_images
 
 // accounts.avatar_static_url and header_static_url: NULL ("the same as the image"), or the still preview URL of the

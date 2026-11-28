@@ -4145,6 +4145,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/migrations.test.ts` ("0113_featured_collection_syncs"), `test/remote-featured-collections.test.ts` ("defer a
   spent owner's items from the last day a quota row holds to a due time the queue holds"),
   `test/inbox-regressions.test.ts` ("purges a remote account's collections and memberships within the batch budget").
+  `accounts.move_pending` (0 or 1, and 1 only on a remote row with no move), imports included, meets the
+  [stored bounds](dump-format.md#stored-bounds), enforced by migration `0125_account_move_pending`
+  (`movePendingPastBoundSql`); each writer writes the bit together with the move it guards, so no write passes through
+  a pair the bound refuses, and an import's verification also refuses a pending account without an unread collection
+  sync or a `movedTo` the sync may fetch (`pendingMoveCheck` in `src/domain/pending-move-check.ts`);
+  `test/migrations.test.ts` ("0125_account_move_pending"), `test/dump-import.test.ts` ("pending moves
+  (0125_account_move_pending)"), `test/collection-move.test.ts`.
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or
