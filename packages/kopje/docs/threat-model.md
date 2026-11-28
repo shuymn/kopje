@@ -274,8 +274,10 @@ against their own instance. TLS is assumed between all parties.
   revision before its probe and fetches a stored actor's id as that actor, and fetches the actor document a probe or its
   alternate found again after reading its revision, so neither is ever stored), the refresh of a stale boosted or quoted
   author (the revision read when the refresh was decided travels with the need or the quote's work; staleness stays the
-  refresh policy, since a `Move` changes the revision but not `fetched_at`), and a collection sync's document part, the
-  refresh of an invalidated account (by the revision read at its claim). A document stored under
+  refresh policy, since a `Move` changes the revision but not `fetched_at`), a collection sync's document part, the
+  refresh of an invalidated account (by the revision read at its claim), and a collection sync's move part, the account
+  a stored document's `movedTo` names (stored under the expectation `null`; its source's move written only while the
+  revision its claim read holds). A document stored under
   an expectation is fetched after it was read: an expectation read before the request's first fetch (the inbox gate's, a
   quote stage's) pairs with the request's loaders, and one read later (a refresh need's, a search resolution's) takes a
   document loader with a memo of its own (`afterRevisionRead` in `src/federation/federation.ts`), so no response cached
@@ -296,13 +298,15 @@ against their own instance. TLS is assumed between all parties.
   `upsertRemoteActor`, `applyRefresh`, `receive`, `inboxGate` and `actorGone` in `src/domain/inbox.ts`, `quoteWork` in
   `src/domain/quotes.ts`, `resolveSearch` in `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`,
   `src/federation/actor-gone.ts`, `refetchDocument` in `src/federation/collections.ts`, `completeDocumentRefresh` in
+  `src/domain/remote-collections.ts`, `readMoved` in `src/federation/collections.ts` and `completeCollectionRead` in
   `src/domain/remote-collections.ts`, `walkTurn` in `src/federation/replies.ts`, `upsertEmbeddedActor` in
   `src/domain/remote-actors.ts`, `readEmbeddedActor` in `src/federation/remote-actor.ts`;
   `test/inbox-actor-revision.test.ts`, `test/inbox-actor-update.test.ts`, `test/inbox-gone.test.ts`,
   `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"),
-  `test/remote-collections.test.ts` ("the document part of a refresh (D9)"), `test/reply-walk-rounds.test.ts` ("a walk's
-  author whose URI answers 410"). A second exception: a `Delete` another server relays, signed with its own key (a
-  booster or quoter forwarding the author's `Delete` of a status, or a server holding the quoting status forwarding the
+  `test/remote-collections.test.ts` ("the document part of a refresh (D9)"), `test/collection-move-fetch.test.ts` ("the
+  move part's fences"), `test/reply-walk-rounds.test.ts` ("a walk's author whose URI answers 410"). A second exception:
+  a `Delete` another server relays, signed with its own key (a booster or quoter forwarding the author's `Delete` of a
+  status, or a server holding the quoting status forwarding the
   quoted author's revocation of its stamp, as Mastodon forwards both). Its HTTP signer must own its key by the same
   rule; the `Delete` is applied as its `actor`'s only when it carries that actor's own proof, an RsaSignature2017 Linked
   Data Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before the Store is called, against a key
@@ -449,12 +453,16 @@ against their own instance. TLS is assumed between all parties.
   its display, whether it may be followed (R21 in `docs/visibility.md`), whether it is suggested (R39), each counting a
   move only when the presenter shows its target (`movedTargetShownSql` in `src/domain/audience.ts`), and whether its
   posts appear in a link timeline (R8, which counts any stored id): an actor document's `movedTo`, read by its literal
-  spelling as an absolute http(s) URI (`namedMove` in `src/domain/collection-requests.ts`), may name any stored account,
-  and a verified `Move` sets it when first processed; followers move only on a verified `Move`, each judged by R21, so
+  spelling as an absolute http(s) URI (`namedMove` in `src/domain/collection-requests.ts`), may name any stored account
+  or one the account's collection sync fetches one hop and stores (its handle confirmed, its own document naming no
+  move; `accounts.move_pending` holds the account while that fetch is due), and a verified `Move` sets it when first
+  processed and ends a pending one; followers move only on a verified `Move`, each judged by R21, so
   none moves to a target that has itself moved (`upsertRemoteActor` in `src/domain/remote-actors.ts` and `move` in
   `src/domain/inbox.ts`; `test/inbox.test.ts` ("account moves")). Setting it issues a new revision of the source (ID-1),
   so a document of the source fetched before the `Move` committed never clears it, a stale-author refresh included; a
   target stored after its revision was read answers 503, having written nothing (`test/inbox-actor-revision.test.ts`).
+  Resolving the document's own destination issues no revision: the stored document already names it
+  (`test/collection-move-fetch.test.ts`).
 - **ID-5: local documents come from stored data only.** Actor ids derive from the domain fixed at setup and the stored
   username's exact spelling; public keys come from `local_accounts.pubkey`. Another spelling or host answers 404 and has
   no key pair. An actor's `webfinger` handle names the host of the actor id its document declares, on the actor endpoint
@@ -4145,6 +4153,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/migrations.test.ts` ("0113_featured_collection_syncs"), `test/remote-featured-collections.test.ts` ("defer a
   spent owner's items from the last day a quota row holds to a due time the queue holds"),
   `test/inbox-regressions.test.ts` ("purges a remote account's collections and memberships within the batch budget").
+  `accounts.move_pending` (0 or 1, and 1 only on a remote row with no move), imports included, meets the
+  [stored bounds](dump-format.md#stored-bounds), enforced by migration `0125_account_move_pending`
+  (`movePendingPastBoundSql`); each writer writes the bit together with the move it guards, so no write passes through
+  a pair the bound refuses, and an import's verification also refuses a pending account without an unread collection
+  sync or a `movedTo` the sync may fetch (`pendingMoveCheck` in `src/domain/pending-move-check.ts`);
+  `test/migrations.test.ts` ("0125_account_move_pending"), `test/dump-import.test.ts` ("pending moves
+  (0125_account_move_pending)"), `test/collection-move.test.ts`.
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or
@@ -5295,8 +5310,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   collection syncs (`src/federation/collections.ts`,
   `src/domain/remote-collections.ts`): each round runs one sync within a budget of its own, at most
   `COLLECTION_SYNCS_PER_ROUND` (2) rounds a call. Each part of a read fits one budget with a redirect, or the RFC 9421
-  retry, on each of its documents (featured 2 documents, network 3: the following, followers and outbox collections,
-  featuredTags 4, collections 3), and the network part's documents are read with at most one redirect and 512 KiB each
+  retry, on each of its documents (moved 3: a pending move's destination and the two WebFinger answers confirming its
+  handle; featured 2 documents, network 3: the following, followers and outbox collections, featuredTags 4,
+  collections 3), and the network part's documents are read with at most one redirect and 512 KiB each
   (`NETWORK_CAPS`): with a redirect or the retry on each document, 6 fetches and 1.5 MiB, so its outbox then never
   starves behind the other two. Accepted: a document that needs both a redirect and the retry takes 3 or 4 fetches, so
   such documents can pass a round's budget before their part is read through (three network documents that each
@@ -5305,16 +5321,32 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   with every stored actor document (an
   `Update`, a key miss or rotation, an authenticated resolve, any other fetch of the actor), and pending work coalesces
   per actor (one `collection_syncs` row, `requestCollectionSync`); no admission policy limits how often an actor's
-  document is stored. One generation makes at most 576 requests: 12 read claims (4 parts × `MAX_SYNC_ATTEMPTS`) and 60
-  pin claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches. The pin claims fetch every status the
+  document is stored. One generation makes at most 632 requests: 3 document-part claims (a refresh asked with it,
+  `MAX_SYNC_ATTEMPTS`), 16 read claims (5 parts × `MAX_SYNC_ATTEMPTS`, and the claim a pending move opens) and 60 pin
+  claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches. The move part (`PART_MOVED`) has a claim of its
+  own: while it is pending and nothing else is read through (`moveOpened`), the read's streak has one claim more than
+  `MAX_SYNC_ATTEMPTS`, whose first turn is the move part's, and the claims after it rotate the other parts as a read
+  without a move does, the move part last (`readCollections`), so every other part keeps the full-budget first turns it
+  has without a move; a writer that clears the bit mid-read (the claim reconciling a destination stored since, a
+  verified `Move`) counts that claim off first (`countOffMoveClaim`), so the claims left are those. It costs nothing
+  when no move is pending; when one is, it loads the destination once a read claim, as the instance actor (DATA-7), with
+  no redirect (`MOVED_CAPS`) and the loader's 1 MiB body limit, and its WebFinger answers, each following up to
+  `MAX_REDIRECTS`, share the round's 8 fetches, 2 MiB and deadline. Accepted: a destination whose WebFinger answers
+  redirect several times, together pass the bytes left, or whose document names contexts that are not preloaded spends
+  the round as a failure that may pass, and is given up with the read. A destination it stores names no move of its own,
+  so a stored destination with collections requests its own generation (one naming none requests none) and nothing
+  chains: each stored source document leads to at most 2 generations, 1,264 requests and 40 pins. A destination
+  confirming a handle another account holds
+  invalidates that account, whose refresh is bounded as every invalidation is (once per `ACCOUNT_STALE_MS`) and is not
+  counted here. The pin claims fetch every status the
   featured collection lists on the account's origin, stored or not (Mastodon's `FetchFeaturedCollectionService`): a
   read leaves one row for each of the first `MAX_REMOTE_PINS` distinct URIs listed, a pending row for one Kopje does
   not store and a refresh row for one it does, so a typical generation now fetches every listed status (up to 20)
   where it fetched only the unstored ones, and updates or removes at most `MAX_REMOTE_PINS` statuses, each a refetch's
   or a `Delete`'s bounded work (`replacePins`, `completePinFetches` in `src/domain/remote-collections.ts`;
   `test/remote-collections.test.ts` ("bounds the pin phase with every listed status stored or not at its worst")). The
-  network part takes at most 6 a round and 72 a generation while no document needs the RFC 9421 retry, a round's whole
-  budget (8 a round, 96 a generation) when each needs a redirect and the retry, and 3 documents when nothing fails
+  network part takes at most 6 a round and 96 a generation while no document needs the RFC 9421 retry, a round's whole
+  budget (8 a round, 128 a generation) when each needs a redirect and the retry, and 3 documents when nothing fails
   (`test/remote-collections.test.ts` ("bounds them before and after the network part reads the outbox", "the network
   part within one round")).
   The collections part (`PART_COLLECTIONS`, #1589's FEP-7aa9 collections) reads the account's `featuredCollections`
@@ -5570,13 +5602,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   from its attempts: at most `QUOTE_AUTHOR_FETCHES` (6) a work, whose renewal starts the count again, and an author
   stage with none left fetches nothing and ends the work, so a work whose rounds die after the author stage, reclaimed
   once the author is stale again, still applies at most 6 author documents (the column's CHECK holds the same bound).
-  Each author document stored requests one collection sync generation (at most 576 requests, above). So a status
-  arriving from outside at `QUOTE_HOPS` (2) leads to at most 3 statuses of its quote chain, at most 1 + 2 × 6 = 13
-  author documents and sync generations (at most 7,488 requests) and 13 × `MAX_REMOTE_PINS` = 260 pins, and to nothing
-  further but the create walk of its replies (Replies walks, below) (`test/remote-collections.test.ts` ("counts each
-  author document a quote applies, interrupted rounds included", "ends a quote's work with no fetch once its author
+  Each author document stored with collections or a pending move requests one collection sync generation, and may store
+  one destination of a pending move; a stored destination with collections requests its own generation (at most 2
+  generations and 1,264 requests, above). So a status arriving from outside at
+  `QUOTE_HOPS` (2) leads to at most 3 statuses of its quote chain, at most 1 + 2 × 6 = 13 author documents and 26 direct
+  source and destination sync generations (at most 16,432 requests) and 26 × `MAX_REMOTE_PINS` = 520 pins, a subtotal
+  that leaves handle invalidation out, and to nothing further but the create walk of its replies (Replies walks, below)
+  (`test/remote-collections.test.ts` ("counts each author document a quote applies, interrupted rounds included", "ends
+  a quote's work with no fetch once its author
   fetches are spent", "stores one author an attempt for a quoted status whose author changes at each fetch", "keeps a
-  quote's retries after its author is stored")).
+  quote's retries after its author is stored", "bounds the quote chain's author documents with their destinations")).
   A stamp's `Delete` writes one `quote_revocations` row and changes the quotes naming it in batches of at most
   500 rows counted with `total_changes()` (a third of the rows left a batch: a row, its count trigger and its streaming
   journal row, `stream_quote_state`), the first in the request and the rest in the
@@ -5633,9 +5668,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   "reads a page's entries past the cap before the next page its URI names", "reads the rest of the replies a status
   embeds by fetching it for its replies only, storing nothing")). A reply a walk stores verifies its quote one hop short
   of a root's (`QUOTE_HOPS` − 1), so its quoted status is stored with no quote work of its own, and nothing a walk
-  stores, verifies or syncs starts another walk. Each author document stored requests one sync generation (above), so a
-  walk leads to at most 400 statuses of its own and quotes, 200 + 200 × `QUOTE_AUTHOR_FETCHES` (6) = 1,400 author
-  documents and sync generations and 1,400 × `MAX_REMOTE_PINS` = 28,000 pins, and to nothing past them
+  stores, verifies or syncs starts another walk. Each author document stored requests at most one sync generation, and
+  its sync may store one destination of a pending move, which requests one more (above), so a walk leads to at most 400
+  statuses of its own and quotes, 200 + 200 × `QUOTE_AUTHOR_FETCHES` (6) = 1,400 author documents, 2,800 sync
+  generations (at most 1,769,600 requests) and 2,800 × `MAX_REMOTE_PINS` = 56,000 pins, a subtotal that leaves handle
+  invalidation out, and to nothing past them
   (`test/reply-walks.test.ts` ("records at most WALK_STATUSES nodes", "reads at most WALK_PAGES collection documents",
   "charges a page whose round died after its fetch", "hands out at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES
   documents a walk", "stores replies listed before their parent once it is", "carries at most REPLY_READ_ENTRIES entries
@@ -6719,8 +6756,12 @@ so the Store isolate's 128 MB holds them together.
   preparation of `inboxGate`, of a `receiveActivity` need, of `resolutionGate` (a search resolution, the instance
   actor), of `postMentionGate` and `editMentionGate` (a post's or an edit's mention resolution, the instance actor) and
   of `reservePollRefresh`; `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
-  `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch"). A replies walk's fetches (its
-  statuses, their collections and pages, and their authors) have no recipient: the instance actor signs them, as
+  `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch"). The move part of that sync
+  fetches another account, the destination a stored document's `movedTo` names, for no recipient: the instance actor
+  signs it and the WebFinger requests that confirm its handle go unsigned, while the source's collections keep the
+  follower's key (`readMoved` in `src/federation/collections.ts`; `test/collection-move-fetch.test.ts`). A replies
+  walk's fetches (its statuses, their collections and pages, and their authors) have no recipient: the instance actor
+  signs them, as
   Mastodon's representative signs them, but for the WebFinger lookup that confirms an author's handle, unsigned as every
   WebFinger request (`JsonLdHelper#fetch_resource_without_id_validation`; `src/federation/replies.ts`;
   `test/reply-walk-rounds.test.ts` ("signed by the instance actor")).

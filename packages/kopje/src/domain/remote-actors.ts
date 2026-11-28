@@ -17,6 +17,7 @@ import {
   actorCollections,
   collectionRead,
   collectionSql,
+  fetchableMove,
   namedMove,
   requestCollectionSync,
   UNREADABLE,
@@ -127,8 +128,9 @@ export function originOf(uri: string | null): string | null {
 
 export type RemoteRow = { id: string; uri: string; domain: string };
 
-// What upsertRemoteActor stored.
-export type StoredActor = RemoteRow & { syncWaiting: boolean; frozen: boolean };
+// What upsertRemoteActor stored. movePending: the store left the account's move pending and its sync's request waits
+// for a round (syncWaiting), so the caller rings the jobs queue for it.
+export type StoredActor = RemoteRow & { syncWaiting: boolean; movePending: boolean; frozen: boolean };
 
 // ID-1's revision fence. accounts.document_revision changes with every store of a remote actor's document (its profile,
 // keys, movedTo or routing), the Move handler's movedTo included (nextDocumentRevisionSql, migration 0073). A writer
@@ -386,7 +388,7 @@ function storeActor(
     if (protocol !== null) {
       refreshRouting(db, frozen.id, protocol);
     }
-    return { ...frozen, syncWaiting: false, frozen: true };
+    return { ...frozen, syncWaiting: false, movePending: false, frozen: true };
   }
   const published = actor.published === null ? NaN : Date.parse(actor.published);
   const createdAt = new Date(Number.isNaN(published) || published > now ? now : published).toISOString();
@@ -403,7 +405,7 @@ function storeActor(
   const searched = keep ? searchedHandle(db, actor.uri) : handle;
   if (hostCovered(db, hostDomain(actor.uri)) || hostCovered(db, domain)) {
     const row = remoteAccount(db, actor.uri);
-    return row === undefined ? undefined : { ...row, syncWaiting: false, frozen: true };
+    return row === undefined ? undefined : { ...row, syncWaiting: false, movePending: false, frozen: true };
   }
   if (handle === actor.confirmed) {
     invalidateHolder(db, handle, actor.uri, now);
@@ -481,33 +483,40 @@ function storeActor(
       ),
   );
   const row = remoteAccount(db, actor.uri);
-  if (row !== undefined) {
-    // The account's move as its document states it (ID-4), set or cleared by every store, an unchanged document's
-    // included (Mastodon's ProcessAccountService: process_account_service.rb:293), written once the row is stored, by
-    // its id: the literal movedTo (collection-requests.ts namedMove) naming a stored account (moveTargetSql); one Kopje
-    // does not know reads as none, as it is not fetched (process_account_service.rb:516-519 fetches it).
-    db.run(
-      `UPDATE accounts SET moved_to_account_id = ${moveTargetSql("?2", "?1")} WHERE id = ?1 AND domain IS NOT NULL`,
-      row.id,
-      namedMove(actor.raw, actor.uri),
-    );
-    // The links of its fields to verify, from the same projection (remote-field-links.ts).
-    armRemoteFieldLinks(db, row.id, remoteLinkBack(actor.uri, actor.url), links, now);
-    // Its avatar and header to cache, from the same projection (remote-media.ts).
-    syncProfileFiles(db, row.id, { avatar: actor.avatarUrl, header: actor.headerUrl }, now);
-    // Its custom emoji to cache, from the snapshot just stored (remote-media.ts).
-    noteEmojiSnapshot(db, emojis, domain, now);
-    // Its feature policy, set by every store (process_account_service.rb:232), with the collections the document just
-    // stored names; a profile from an earlier build, which read none, keeps the stored one.
-    if (actor.featurePolicy !== undefined) {
-      db.run(
-        "UPDATE accounts SET feature_policy = ?2 WHERE id = ?1 AND domain IS NOT NULL",
-        row.id,
-        actor.featurePolicy === null ? 0 : remoteFeaturePolicy(db, { id: row.id, uri: actor.uri }, actor.featurePolicy),
-      );
-    }
+  if (row === undefined) {
+    return undefined;
   }
-  if (row !== undefined && protocol !== null) {
+  // The account's move as its document states it (ID-4), set or cleared by every store, an unchanged document's
+  // included (Mastodon's ProcessAccountService: process_account_service.rb:293), written once the row is stored, by
+  // its id: the literal movedTo (collection-requests.ts namedMove) naming a stored account (moveTarget). One Kopje
+  // does not know is pending (accounts.move_pending) when the sync may fetch it (fetchableMove), as Mastodon fetches it
+  // (process_account_service.rb:516-519): the sync's move part resolves it (remote-collections.ts). The move and the
+  // bit are written in this one statement, so no intermediate row passes their bound (0125_account_move_pending).
+  const named = namedMove(actor.raw, actor.uri);
+  const target = moveTarget(db, named, row.id);
+  const pending = target === null && fetchableMove(named, origin) !== null;
+  db.run(
+    "UPDATE accounts SET moved_to_account_id = ?2, move_pending = ?3 WHERE id = ?1 AND domain IS NOT NULL",
+    row.id,
+    target,
+    pending ? 1 : 0,
+  );
+  // The links of its fields to verify, from the same projection (remote-field-links.ts).
+  armRemoteFieldLinks(db, row.id, remoteLinkBack(actor.uri, actor.url), links, now);
+  // Its avatar and header to cache, from the same projection (remote-media.ts).
+  syncProfileFiles(db, row.id, { avatar: actor.avatarUrl, header: actor.headerUrl }, now);
+  // Its custom emoji to cache, from the snapshot just stored (remote-media.ts).
+  noteEmojiSnapshot(db, emojis, domain, now);
+  // Its feature policy, set by every store (process_account_service.rb:232), with the collections the document just
+  // stored names; a profile from an earlier build, which read none, keeps the stored one.
+  if (actor.featurePolicy !== undefined) {
+    db.run(
+      "UPDATE accounts SET feature_policy = ?2 WHERE id = ?1 AND domain IS NOT NULL",
+      row.id,
+      actor.featurePolicy === null ? 0 : remoteFeaturePolicy(db, { id: row.id, uri: actor.uri }, actor.featurePolicy),
+    );
+  }
+  if (protocol !== null) {
     // The document lists the actor's current keys; keys it no longer lists are not trusted any more.
     db.run("DELETE FROM remote_keys WHERE account_id = ?", row.id);
     for (const key of protocol.keys) {
@@ -525,21 +534,30 @@ function storeActor(
       );
     }
   }
-  if (row === undefined) {
-    return undefined;
-  }
+  // The sync is asked for when the document names a collection, or a destination to fetch (the move part).
   const collections = actorCollections(actor.raw);
-  const named = Object.values(collections).some((url) => url !== null);
-  return { ...row, syncWaiting: named && requestCollectionSync(db, row.id, now), frozen: false };
+  const listed = Object.values(collections).some((url) => url !== null);
+  const syncWaiting = (listed || pending) && requestCollectionSync(db, row.id, now);
+  return { ...row, syncWaiting, movePending: pending && syncWaiting, frozen: false };
 }
 
-// The id of the account a move named `id` (an SQL expression, namedMove's href or NULL) resolves to, for the account
-// `self`: the stored row, local or remote, whatever its availability, whose actor id is `id` with its fragment removed
-// (Mastodon's ActivityPub::TagManager#uri_to_resource, `split('#').first`), other than `self` and not being purged;
-// else NULL. An unavailable one is presented redacted (accounts.ts presentAccount).
-function moveTargetSql(id: string, self: string): string {
-  return `(SELECT m.id FROM accounts m INDEXED BY ${ACCOUNTS_URI_INDEX}
-		WHERE m.uri = substr(${id}, 1, instr(${id} || '#', '#') - 1) AND m.id <> ${self} AND NOT ${deletingSql("m")})`;
+// The id of the account a move named `id` (namedMove's href, or null) resolves to, for the account `self`: the stored
+// row, local or remote, whatever its availability, whose actor id is `id` with its fragment removed (Mastodon's
+// ActivityPub::TagManager#uri_to_resource, `split('#').first`), other than `self` and not being purged; else null. An
+// unavailable one is presented redacted (accounts.ts presentAccount). Every writer of a move from a document reads it
+// here: the store, and the collection sync's claim and completion (remote-collections.ts).
+export function moveTarget(db: Db, id: string | null, self: string): string | null {
+  if (id === null) {
+    return null;
+  }
+  return (
+    db.first<{ id: string }>(
+      `SELECT m.id FROM accounts m INDEXED BY ${ACCOUNTS_URI_INDEX}
+			WHERE m.uri = substr(?1, 1, instr(?1 || '#', '#') - 1) AND m.id <> ?2 AND NOT ${deletingSql("m")}`,
+      id,
+      self,
+    )?.id ?? null
+  );
 }
 
 // The flags a half of an interaction policy gives, the same in canQuote's and canFeature's (audience.ts
@@ -634,7 +652,7 @@ export function staleAccount(db: Db, id: string, now: number): boolean {
 // when the refetch was decided (DocumentRevision), and a superseded one stores nothing ('current', the stored row).
 // While it is stale:
 //   - a usable document of this actor (ok) is stored (upsertRemoteActor) while `expected` holds: 'refreshed', frozen if
-//     it stored nothing;
+//     it stored nothing, movePending as the store left it (StoredActor);
 //   - 'gone' (404 or 410) writes nothing, and nothing is stored under the account ('refused'), as for an author that
 //     cannot be fetched;
 //   - any other failure (null: unusable, another id, or one that may pass, budget and deadline included) stamps
@@ -648,8 +666,10 @@ export function applyRefresh(
   origin: string,
   now: number,
   expected: DocumentRevision,
-): { kind: "current" | "refreshed" | "stamped"; author: RemoteRow; frozen: boolean } | { kind: "refused" } {
-  const current = { kind: "current", author, frozen: false } as const;
+):
+  | { kind: "current" | "refreshed" | "stamped"; author: RemoteRow; frozen: boolean; movePending: boolean }
+  | { kind: "refused" } {
+  const current = { kind: "current", author, frozen: false, movePending: false } as const;
   if (!staleAccount(db, author.id, now)) {
     return current;
   }
@@ -662,11 +682,13 @@ export function applyRefresh(
       author.id,
       new Date(now).toISOString(),
     );
-    return { kind: "stamped", author, frozen: false };
+    return { kind: "stamped", author, frozen: false, movePending: false };
   }
   const stored = upsertRemoteActor(db, document, origin, now, expected);
   if (stored === "superseded") {
     return current;
   }
-  return stored === undefined ? { kind: "refused" } : { kind: "refreshed", author: stored, frozen: stored.frozen };
+  return stored === undefined
+    ? { kind: "refused" }
+    : { kind: "refreshed", author: stored, frozen: stored.frozen, movePending: stored.movePending };
 }

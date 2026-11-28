@@ -119,7 +119,14 @@ import {
   revisionHolds,
   refreshRouting,
 } from "./remote-actors";
-import { collectionOf, featureRemote, pinRemote, unfeatureRemote, unpinRemote } from "./remote-collections";
+import {
+  collectionOf,
+  countOffMoveClaim,
+  featureRemote,
+  pinRemote,
+  unfeatureRemote,
+  unpinRemote,
+} from "./remote-collections";
 import {
   applyFeaturedCollection,
   applyFeaturedItem,
@@ -588,11 +595,18 @@ function recordFollowAnswer(
 // whatever the Worker's clock (`now`) says or however late the call comes.
 export type StoreReceiveInput = ReceiveInput & { storeNow: number };
 
+// What a handler's own stores ask the jobs round for, beside its result: movePending, an account other than the sender
+// stored by this call with its move pending and its sync waiting (StoredActor.movePending). It is the call's alone (a
+// store an earlier call made rang in that call's answer), and a store rolled back with the call rings nothing.
+type Doorbell = { movePending: boolean };
+
+type HandlerInput = StoreReceiveInput & { doorbell: Doorbell };
+
 type Handler<T extends InboundActivity["type"]> = (
   db: Db,
   actor: RemoteRow,
   activity: Extract<InboundActivity, { type: T }>,
-  input: StoreReceiveInput,
+  input: HandlerInput,
 ) => ReceiveResult;
 
 // Mastodon's ActivityPub::Activity::Follow, for a local target.
@@ -1252,6 +1266,8 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
     return applied("moved", runJobBatch(db, { kind: "move", key: activity.id }, now) === "advanced");
   }
   let targetId: string;
+  // A target whose fresh document leaves its own move pending: the jobs round that resolves it is rung for.
+  let targetPending = false;
   if ("local" in activity.target) {
     const local = localAccount(db, activity.target.local);
     const aliases = db.first<{ also_known_as: string }>(
@@ -1277,6 +1293,7 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
       return ignored("unknown-target");
     }
     targetId = remote.id;
+    targetPending = remote.movePending;
   }
   if (targetId === actor.id) {
     return ignored("self-move");
@@ -1297,9 +1314,14 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
   );
   // The source shows the move (Mastodon's move.rb:18), set once, when the job is first written: a replay of a known
   // Move writes nothing, and a later document of the source sets or clears it again (upsertRemoteActor). It issues a
-  // new revision of the source (DocumentRevision), so a document of it fetched before the Move never clears it (ID-4).
+  // new revision of the source (DocumentRevision), so a document of it fetched before the Move never clears it (ID-4),
+  // and ends a move its document left pending (move_pending, which the bound of 0125_account_move_pending requires 0
+  // beside a move): the collection sync never resolves the older declaration; the claim the pending move opened is
+  // counted off first (countOffMoveClaim).
+  countOffMoveClaim(db, actor.id);
   db.run(
-    `UPDATE accounts SET moved_to_account_id = ?2, document_revision = ${nextDocumentRevisionSql("document_revision")}
+    `UPDATE accounts SET moved_to_account_id = ?2, move_pending = 0,
+			document_revision = ${nextDocumentRevisionSql("document_revision")}
 		WHERE id = ?1 AND domain IS NOT NULL AND ?2 <> ?1`,
     actor.id,
     targetId,
@@ -1334,7 +1356,10 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
     targetId,
     ...carried,
   );
-  return applied("moved", runJobBatch(db, { kind: "move", key: activity.id }, now) === "advanced" || severed);
+  return applied(
+    "moved",
+    runJobBatch(db, { kind: "move", key: activity.id }, now) === "advanced" || severed || targetPending,
+  );
 };
 
 // Moves the next MOVE_BATCH local followers covered by the Move. Returns whether any remain.
@@ -1493,8 +1518,10 @@ function startActorDeletion(db: Db, actor: { id: string; uri: string }, now: num
     actor.uri,
     now,
   );
+  // A move its document left pending ends here, before the purge's first batch deletes its sync (purgeBatch), so no
+  // account is pending without a sync to end it (0125_account_move_pending).
   db.run(
-    "UPDATE accounts SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ? AND domain IS NOT NULL",
+    "UPDATE accounts SET deleted_at = COALESCE(deleted_at, ?), move_pending = 0 WHERE id = ? AND domain IS NOT NULL",
     new Date(now).toISOString(),
     actor.id,
   );
@@ -3254,7 +3281,8 @@ function announceable(authorId: string, actorId: string, visibility: Visibility)
 // so the caller's checks then read the refreshed row), and an unknown one is fetched (need) and stored by `store`
 // (upsertRemoteActor), which the caller runs once its own checks pass, so a status it refuses stores no author. The
 // collection sync a refresh asks for is left to the job rounds. followers: the author's followers collection, which
-// VIS-6 reads. The caller has refused an author whose deletion has started (isDeletedActor, ID-7) first.
+// VIS-6 reads. The caller has refused an author whose deletion has started (isDeletedActor, ID-7) first. `doorbell`
+// (the inbox's) is rung when the refresh, or `store`, stores the author with its move pending (StoredActor.movePending).
 export type FetchedAuthor = { followers: string | null; store: () => RemoteRow | undefined };
 
 export function fetchedAuthor(
@@ -3263,6 +3291,7 @@ export function fetchedAuthor(
   prefetched: Prefetched | undefined,
   origin: string,
   now: number,
+  doorbell: Doorbell = { movePending: false },
 ): FetchedAuthor | ReceiveResult {
   const stored = remoteAccount(db, authorUri);
   const document = prefetched?.actors[authorUri];
@@ -3273,7 +3302,14 @@ export function fetchedAuthor(
     if (document === null || document === "gone" || document.uri !== authorUri) {
       return ignored("unfetchable");
     }
-    return { followers: followersOf(document.raw), store: () => upsertRemoteActor(db, document, origin, now) };
+    return {
+      followers: followersOf(document.raw),
+      store: () => {
+        const stored = upsertRemoteActor(db, document, origin, now);
+        doorbell.movePending ||= stored?.movePending === true;
+        return stored;
+      },
+    };
   }
   let author = stored;
   if (document !== undefined) {
@@ -3282,6 +3318,7 @@ export function fetchedAuthor(
       return ignored("unfetchable");
     }
     author = refreshed.author;
+    doorbell.movePending ||= refreshed.movePending;
   } else if (staleAccount(db, author.id, now)) {
     return {
       ...ignored("need-author-refresh"),
@@ -3299,7 +3336,7 @@ function newOriginal(
   db: Db,
   actor: RemoteRow,
   activity: Extract<InboundActivity, { type: "Announce" }>,
-  input: StoreReceiveInput,
+  input: HandlerInput,
 ): Original | ReceiveResult {
   const { now, origin } = input;
   const context = { now, origin, deliveredTo: null, fetched: true, readReplies: { storeNow: input.storeNow } };
@@ -3328,7 +3365,7 @@ function newOriginal(
   if (known !== undefined) {
     return known;
   }
-  const found = fetchedAuthor(db, authorUri, input.prefetched, origin, now);
+  const found = fetchedAuthor(db, authorUri, input.prefetched, origin, now, input.doorbell);
   if ("reason" in found) {
     return found;
   }
@@ -4030,11 +4067,16 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   // again (delivery-hosts.ts clearSenderHost), as Mastodon's inbox resets its signer's inbox host.
   clearSenderHost(db, actor.id);
   const handler = HANDLERS[activity.type] as Handler<typeof activity.type>;
-  const result = handler(db, actor, activity, input);
-  // A sync of the actor's collections was asked for, or quotes have verification work due, or a create walk is (only
-  // the job rounds verify and walk them): the Worker asks the Queue for a round (cron runs one regardless).
+  const doorbell: Doorbell = { movePending: false };
+  const result = handler(db, actor, activity, { ...input, doorbell });
+  // A sync of the actor's collections was asked for, or quotes have verification work due, or a create walk is, or an
+  // actor this call stored (a boosted original's author) is left with a pending move (only the job rounds verify,
+  // walk and resolve them): the Worker asks the Queue for a round (cron runs one regardless).
   const waiting =
-    ("syncWaiting" in actor && actor.syncWaiting) || quotesDue(db, now) || createWalkDue(db, input.storeNow);
+    ("syncWaiting" in actor && actor.syncWaiting) ||
+    doorbell.movePending ||
+    quotesDue(db, now) ||
+    createWalkDue(db, input.storeNow);
   return waiting ? { ...result, jobsPending: true } : result;
 }
 

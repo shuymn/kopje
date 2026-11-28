@@ -10,10 +10,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Instance changes
 
-- Store schema: adds one migration (0124), an index, applied on the first request after the deploy, so the release is
-  a minor version. Until it is applied the Store refuses every request, and it stays readonly until it is verified
-  ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an earlier version needs
-  the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md).
+- Store schema: adds two migrations, applied on the first request after the deploy, so the release is a minor
+  version: 0124, an index, and 0125, `accounts.move_pending`, a column with a constant default and its triggers, which
+  reads and rewrites no row. Until they are applied the Store refuses every request, and it stays readonly until they
+  are verified ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an earlier
+  version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md).
 - `wrangler.jsonc`: no change.
 
 ### Added
@@ -45,6 +46,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- When a remote profile's `movedTo` names an account Kopje does not know yet, the background collection sync fetches
+  that account, signed as the instance actor, and shows the move unless that account has moved too.
 - Following an account that has moved answers 403, as Mastodon does, also to change the options of an existing follow;
   a held follow request to it is not sent, and a `Move` keeps the followers of an account whose target has itself
   moved. Follow suggestions leave out accounts that have moved.

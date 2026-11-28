@@ -24,6 +24,7 @@ import {
   MAX_TREND_LINKS,
   MAX_TREND_REVIEWS,
   movedToPastBoundSql,
+  movePendingPastBoundSql,
   nextDocumentRevisionSql,
   notificationCollectionKeysPastBoundSql,
   oembedEndpointPastBoundSql,
@@ -541,6 +542,14 @@ END;`,
   ),
   // 0123_media_thumbnails: a thumbnail's link to its video or audio upload, and its doom with its parent row.
   ...THUMBNAIL_TRIGGERS,
+  // 0125_account_move_pending: 0 or 1, and 1 only on a remote row without a move.
+  ...boundTriggers(
+    "accounts_move_pending",
+    "accounts",
+    "move_pending, moved_to_account_id, domain",
+    movePendingPastBoundSql("NEW"),
+    "accounts: move_pending past its stored bound",
+  ),
 ];
 
 // Each registered trigger's statement by its name.

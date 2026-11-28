@@ -203,8 +203,9 @@ export async function resolveQuery(
         }),
       ),
     );
-    // The resolved status's quote is verified by the job rounds (federation/quotes.ts).
-    if (found.quotesDue) {
+    // The resolved status's quote is verified by the job rounds (federation/quotes.ts), and a pending move resolved by
+    // the account's collection sync (federation/collections.ts).
+    if (found.jobsPending === true) {
       await deps.requestJobs?.(c.env);
     }
     return found;

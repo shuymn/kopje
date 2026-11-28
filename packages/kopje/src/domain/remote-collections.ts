@@ -2,7 +2,7 @@ import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
 import { storedCount } from "../platform/stored-bounds";
 import { availableSql, requiresMention, type Visibility } from "./audience";
-import { actorCollections, type ActorCollections } from "./collection-requests";
+import { actorCollections, type ActorCollections, fetchableMove, namedMove } from "./collection-requests";
 import { outboundMark, outboundSince } from "./deliveries";
 import {
   displayName,
@@ -14,12 +14,14 @@ import {
 } from "./featured-tags";
 import { type FollowerSigner, localFollower } from "./follower-signer";
 import { isIntegerText } from "./ids";
+import { instanceDomainOf } from "./instance-domain";
 import { writeOperation } from "./operation";
 import {
   type ActorState,
   actorState,
   NO_ACTOR_STATE,
   type DocumentRevision,
+  moveTarget,
   type RemoteActorInput,
   upsertRemoteActor,
 } from "./remote-actors";
@@ -67,18 +69,53 @@ export const MAX_SYNC_ATTEMPTS = 3;
 export const SYNC_LEASE_MS = 10 * 60 * 1000;
 export const SYNC_RETRY_MS = 15 * 60 * 1000;
 
+// Whether a read claim of these parts (CollectionSync.parts) is in the streak the move part opens: the move is pending
+// and nothing else is read through yet, so no claim of the streak has progressed. That streak has one claim more than
+// MAX_SYNC_ATTEMPTS, its first, where the move part goes first (federation/collections.ts readCollections); the other
+// parts then have MAX_SYNC_ATTEMPTS claims of their own and the rotation a read without a move gives them.
+export function moveOpened(parts: number): boolean {
+  return parts === 0;
+}
+
+// The claims a read streak of these parts has before the read is given up.
+function readAttempts(parts: number): number {
+  return MAX_SYNC_ATTEMPTS + (moveOpened(parts) ? 1 : 0);
+}
+
+// Run just before a writer clears the account's pending bit while its read may be under way (the claim's
+// reconciliation, a verified Move): the claim the move part opened, once charged, is counted off, so the claims left
+// are exactly a read's without a move (moveOpened): the streak is still the opened one while nothing else is read
+// through and the bit is set. Only an integer count is lowered: an edited dump may hold a fractional one, which
+// collection_syncs' CHECK takes and the lowered value would not pass. Returns whether one was counted off. The read's end settles the bit as progress, which
+// starts the count again, so it needs none.
+export function countOffMoveClaim(db: Db, accountId: string): boolean {
+  return (
+    db.run(
+      `UPDATE collection_syncs SET attempts = attempts - 1
+			WHERE account_id = ?1 AND typeof(attempts) = 'integer' AND attempts > 0 AND refresh = 0
+				AND generation > read_through AND parts_read = 0
+				AND collections_read = 0 AND (SELECT move_pending FROM accounts WHERE id = ?1) = 1`,
+      accountId,
+    ) > 0
+  );
+}
+
 // The parts of a read (phase 1), each read and applied on its own and recorded once it is, so a round that reads one
 // part makes progress whatever the others cost, and a later round reads only the rest: the featured collection (pins),
 // the followers, following and outbox collections (hide_collections and the counts), the featuredTags collection
 // (featured hashtags; read with the featured collection for an actor without one), and the featuredCollections
-// collection (FEP-7aa9 collections, remote-featured-collections.ts). The first three are recorded in
+// collection (FEP-7aa9 collections, remote-featured-collections.ts), and the destination the account's movedTo names
+// when Kopje does not store it (the move part, ProcessAccountService#moved_account). The first three are recorded in
 // collection_syncs.parts_read, whose CHECK holds them alone (0025_remote_collections), and the fourth in
-// collections_read (0113_featured_collection_syncs); a round reads them as parts_read | (collections_read << 3).
+// collections_read (0113_featured_collection_syncs); the move part is read while the account's move_pending is 0
+// (0125_account_move_pending), which a request leaves as it is. A round reads them as
+// parts_read | (collections_read << 3) | ((move_pending = 0) << 4).
 export const PART_FEATURED = 1;
 export const PART_NETWORK = 2;
 export const PART_TAGS = 4;
 export const PART_COLLECTIONS = 8;
-export const ALL_PARTS = PART_FEATURED | PART_NETWORK | PART_TAGS | PART_COLLECTIONS;
+export const PART_MOVED = 16;
+export const ALL_PARTS = PART_FEATURED | PART_NETWORK | PART_TAGS | PART_COLLECTIONS | PART_MOVED;
 // The parts parts_read holds.
 const STORED_PARTS = PART_FEATURED | PART_NETWORK | PART_TAGS;
 
@@ -216,7 +253,8 @@ export function unfeatureRemote(db: Db, accountId: string, name: string): boolea
 // ---- Syncs
 //
 // A sync has two phases, each run in rounds with their own fetch budgets, and durable state between them:
-//   1. read: four parts (PART_*), the featured collection's first MAX_REMOTE_PINS items (its pins), the followers,
+//   1. read: five parts (PART_*): the destination of a pending move (below), the featured collection's first
+//      MAX_REMOTE_PINS items (its pins), the followers,
 //      following and outbox collections (hide_collections and the counts), the featuredTags collection (the featured
 //      hashtags) and the featuredCollections collection's embedded collections (at most MAX_REMOTE_COLLECTIONS, each
 //      with its items, applied as remote-featured-collections.ts applies every embedded collection, their items' checks
@@ -230,8 +268,17 @@ export function unfeatureRemote(db: Db, accountId: string, name: string): boolea
 //      applied as the account's own (storeFetchedStatus) and, for a pending row, pinned; one gone at its own URI is
 //      removed (removeGone); one that cannot be used is dropped, and one that may be fetched later stays. The metadata
 //      is never read again for them.
-// A round makes progress when it reads a part not read before or the rows shrink; MAX_SYNC_ATTEMPTS claims without
-// progress give up the read (its rows are still fetched) or drop the sync.
+// A round makes progress when it reads a part not read before, settles a pending move, or the rows shrink;
+// MAX_SYNC_ATTEMPTS claims without progress give up the read (its rows are still fetched) or drop the sync.
+// The move part (PART_MOVED) runs while the account's move_pending is 1: work left to the sync, as its stored
+// document's movedTo named a destination Kopje did not hold when the document was stored (remote-actors.ts storeActor),
+// and may have stored by another path since. A claim that reads or gives the read up (never one of the document part)
+// first resolves one stored since (moveTarget), and otherwise hands the id over with the account's document revision; the round fetches it one
+// hop as the instance actor (federation/collections.ts), and the read's end settles the bit, writing the move, only
+// while the claim's token, that revision and the bit all still hold: a store of the account's document since, or a
+// verified Move, leaves the outcome unused. A request that did not store the document leaves the bit, and its fetch
+// is still valid. Giving the read up, or dropping the sync, ends the move with nothing (giveUpMove), once the claim has
+// taken a destination stored since.
 // A sync asked for with refresh (an invalidated account, remote-actors.ts) first runs a document part (D9, Mastodon's
 // AccountRefreshWorker): a round refetches the account's document and confirms its claim (federation/collections.ts),
 // and completeDocumentRefresh stores it under the revision the claim read, as any store of the actor; that store's own
@@ -253,6 +300,10 @@ export type CollectionSync = ActorCollections & {
   state: ActorState;
   // Phase read: the parts already read for this generation (PART_*), which the round does not read again.
   parts: number;
+  // Phase read: the destination of the account's pending move to fetch (collection-requests.ts fetchableMove), and the
+  // account's document revision the claim read it from (handed back with the outcome); null when nothing is pending.
+  movedTo: string | null;
+  sourceRevision: number | null;
   // The round's claim among those since the sync last made progress (1 for the first), which picks the part a read
   // starts with.
   attempt: number;
@@ -295,15 +346,23 @@ function pendingUris(db: Db, accountId: string): string[] {
     .map((row) => row.uri);
 }
 
+// A sync given up whole, with the move its read left pending (giveUpMove).
 function dropSync(db: Db, accountId: string): void {
   db.run("DELETE FROM collection_pins_pending WHERE account_id = ?", accountId);
   db.run("DELETE FROM collection_syncs WHERE account_id = ?", accountId);
+  giveUpMove(db, accountId);
+}
+
+// A read given up ends the account's pending move with nothing (accounts.move_pending, 0125_account_move_pending): the
+// claim is the one place a pending move ends without a result, so none outlives the read that was to resolve it.
+function giveUpMove(db: Db, accountId: string): void {
+  db.run("UPDATE accounts SET move_pending = 0 WHERE id = ? AND move_pending = 1", accountId);
 }
 
 // The sync due first, claimed for SYNC_LEASE_MS (due again when the lease ends): phase document while a refresh is
 // asked for an account whose handle is invalidated (a refresh of another account, or one out of attempts, is given up),
 // else phase read while a request has not been read through, else phase pins while statuses are pending. One claimed
-// MAX_SYNC_ATTEMPTS times without progress, of an account that is no longer an available remote account
+// MAX_SYNC_ATTEMPTS times without progress (a read in the streak the move part opens, once more: moveOpened), of an account that is no longer an available remote account
 // (ProcessAccountService schedules none for a suspended account, and the services return for one), or with nothing left
 // to do, is dropped instead, and the next is taken; at most MAX_SYNC_ATTEMPTS + 1 rows are read. 'more': that many were
 // dropped and another is due, for the next claim; null: none is due.
@@ -313,8 +372,15 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
     if (row === undefined) {
       return null;
     }
-    const account = db.first<{ uri: string; raw: string | null; invalid: number }>(
-      `SELECT a.uri, a.raw, substr(a.username, 1, 2) = '! ' AS invalid
+    const account = db.first<{
+      uri: string;
+      raw: string | null;
+      invalid: number;
+      move_pending: number;
+      revision: number | null;
+    }>(
+      `SELECT a.uri, a.raw, substr(a.username, 1, 2) = '! ' AS invalid, a.move_pending,
+				CASE WHEN typeof(a.document_revision) = 'integer' THEN a.document_revision END AS revision
 			FROM accounts a WHERE a.id = ?1 AND a.domain IS NOT NULL AND ${availableSql("?1")}`,
       row.account_id,
     );
@@ -327,22 +393,36 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       row.attempts = 0;
     }
     let read = row.unread === 1;
+    // The account's pending move, reconciled by a claim that reads or gives the read up (never by one of the document
+    // part, D3), so a destination stored since the last attempt becomes the move with no further fetch.
+    const reconciled =
+      read && !refresh && account !== undefined && account.move_pending === 1
+        ? pendingMove(db, row.account_id, account)
+        : { movedTo: null, countedOff: false };
+    const pending = reconciled.movedTo;
+    row.attempts -= reconciled.countedOff ? 1 : 0;
+    const parts = row.parts_read | (row.collections_read << 3) | (pending === null ? PART_MOVED : 0);
+    let limit = read ? readAttempts(parts) : MAX_SYNC_ATTEMPTS;
     // A read that ran out of attempts with rows left to fetch gives way to them: the read is given up, the rows get
-    // attempts of their own.
-    if (read && row.attempts >= MAX_SYNC_ATTEMPTS && pendingUris(db, row.account_id).length > 0) {
+    // attempts of their own (those rows: the writes below touch only the sync and the account).
+    const left = read && row.attempts >= limit ? pendingUris(db, row.account_id) : [];
+    if (left.length > 0) {
       db.run(
         `UPDATE collection_syncs SET read_through = generation, parts_read = 0, collections_read = 0, attempts = 0
 				WHERE account_id = ?`,
         row.account_id,
       );
+      giveUpMove(db, row.account_id);
       read = false;
       row.attempts = 0;
+      limit = MAX_SYNC_ATTEMPTS;
     }
-    const uris = read || refresh ? [] : pendingUris(db, row.account_id);
-    if (account === undefined || row.attempts >= MAX_SYNC_ATTEMPTS || (!refresh && !read && uris.length === 0)) {
+    const uris = read || refresh ? [] : left.length > 0 ? left : pendingUris(db, row.account_id);
+    if (account === undefined || row.attempts >= limit || (!refresh && !read && uris.length === 0)) {
       dropSync(db, row.account_id);
       continue;
     }
+    const movedTo = read ? pending : null;
     const token = crypto.randomUUID();
     // The round reads what the remote serves from now on: no change of the collections is after its read yet.
     db.run(
@@ -358,7 +438,9 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       token,
       phase: refresh ? "document" : read ? "read" : "pins",
       state: refresh ? actorState(db, account.uri) : NO_ACTOR_STATE,
-      parts: row.parts_read | (row.collections_read << 3),
+      parts: parts | (movedTo === null ? PART_MOVED : 0),
+      movedTo,
+      sourceRevision: movedTo === null ? null : account.revision,
       attempt: row.attempts + 1,
       uris,
       ...actorCollections(account.raw),
@@ -368,6 +450,31 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
   }
   return claimable(db, now) === undefined ? null : "more";
 });
+
+// The destination of the account's pending move for the round to fetch, or null once the move is ended here: one the
+// account's document names that was stored since (moveTarget) becomes its move, and one the sync may not fetch (only an
+// edited dump holds one) ends with nothing, each with the bit in one statement, the claim the move opened counted off
+// first (countOffMoveClaim).
+function pendingMove(
+  db: Db,
+  accountId: string,
+  account: { uri: string; raw: string | null },
+): { movedTo: string | null; countedOff: boolean } {
+  const domain = instanceDomainOf(db);
+  const named = namedMove(account.raw, account.uri);
+  const fetchable = fetchableMove(named, domain === null ? "" : `https://${domain}`);
+  const target = moveTarget(db, named, accountId);
+  if (fetchable !== null && target === null) {
+    return { movedTo: fetchable, countedOff: false };
+  }
+  const countedOff = countOffMoveClaim(db, accountId);
+  db.run(
+    "UPDATE accounts SET moved_to_account_id = ?2, move_pending = 0 WHERE id = ?1 AND move_pending = 1",
+    accountId,
+    target,
+  );
+  return { movedTo: null, countedOff };
+}
 
 // The end of a round of the account's sync: kept while a request is not read through or statuses are pending, due at
 // once with a fresh count of attempts after progress (or a request since the round claimed it), else after
@@ -430,6 +537,11 @@ function roundAccount(db: Db, input: RoundInput): { id: string; uri: string } | 
 //                alone deletes the stored collections it does not list.
 export type CollectionReadInput = RoundInput & {
   parts: number;
+  // The claim's movedTo and sourceRevision, handed back, and what the move part fetched of the destination (null when
+  // it fetched nothing): its document with its claim confirmed ('moved'), or a failure, final or one that may pass.
+  movedTo?: string | null;
+  sourceRevision?: number | null;
+  move?: MoveOutcome | null;
   pins: { uris: string[] } | null;
   tags: string[] | null;
   hideCollections: boolean | null;
@@ -439,10 +551,13 @@ export type CollectionReadInput = RoundInput & {
 
 export type CollectionCounts = { statuses: number | null; following: number | null; followers: number | null };
 
+export type MoveOutcome = { kind: "moved"; document: RemoteActorInput } | { kind: "failed"; final: boolean };
+
 // Phase 1's end (FetchFeaturedCollectionService#process_note_items and #process_hashtag_items,
 // FetchFeaturedTagsCollectionService#process_items, ProcessAccountService#set_fetchable_attributes!): what was read is
-// applied, and the parts read are recorded for the generation the round claimed (not for a newer request, whose parts
-// start over); once every part is, the request is read through. The round progressed when it read a part not read
+// applied, and the parts read are recorded for the generation the round claimed, by a write that names it (not for a
+// newer request, whose parts start over, even one asked for inside this transaction); once every part is, the request
+// is read through. The round progressed when it read a part not read
 // before. Returns whether a sync is due (pending), and whether the read recorded deliveries (delivers: a local member's
 // Delete answering a listing, feature-answers.ts answerUnserved), for the jobs round's doorbell.
 // hide_collections and the counts are written only while the round's generation is the sync's (`before`): a round
@@ -484,13 +599,24 @@ export const completeCollectionRead = writeOperation<CollectionReadInput, { pend
     }
     const before = isIntegerText(input.generation)
       ? db.first<{ parts_read: number }>(
-          `SELECT parts_read | (collections_read << 3) AS parts_read FROM collection_syncs
-				WHERE account_id = ? AND generation = CAST(? AS INTEGER)`,
+          `SELECT parts_read | (collections_read << 3) | ((SELECT move_pending = 0 FROM accounts WHERE id = ?1) << 4)
+					AS parts_read FROM collection_syncs
+				WHERE account_id = ?1 AND generation = CAST(?2 AS INTEGER)`,
           account.id,
           input.generation,
         )
       : undefined;
-    const parts = (before?.parts_read ?? 0) | (input.parts & (outdated ? ALL_PARTS & ~PART_COLLECTIONS : ALL_PARTS));
+    const move = settleMove(db, account.id, input);
+    // The move part's bit is the account's (move_pending), never the round's own claim of it.
+    const moved =
+      db.first<{ pending: number }>("SELECT move_pending AS pending FROM accounts WHERE id = ?", account.id)
+        ?.pending === 0
+        ? PART_MOVED
+        : 0;
+    const parts =
+      ((before?.parts_read ?? 0) & ~PART_MOVED) |
+      (input.parts & (outdated ? ALL_PARTS & ~PART_COLLECTIONS & ~PART_MOVED : ALL_PARTS & ~PART_MOVED)) |
+      moved;
     if (before !== undefined) {
       if (input.hideCollections !== null) {
         db.run("UPDATE accounts SET hide_collections = ? WHERE id = ?", input.hideCollections ? 1 : 0, account.id);
@@ -500,21 +626,77 @@ export const completeCollectionRead = writeOperation<CollectionReadInput, { pend
         `UPDATE collection_syncs SET parts_read = CASE WHEN ?1 = ?3 THEN 0 ELSE ?1 & ?4 END,
 				collections_read = CASE WHEN ?1 = ?3 THEN 0 ELSE (?1 & ?5) >> 3 END,
 				read_through = CASE WHEN ?1 = ?3 THEN max(read_through, generation) ELSE read_through END
-			WHERE account_id = ?2`,
+			WHERE account_id = ?2 AND generation = CAST(?6 AS INTEGER)`,
         parts,
         account.id,
         ALL_PARTS,
         STORED_PARTS,
         PART_COLLECTIONS,
+        input.generation,
       );
     }
-    const progressed = before !== undefined && parts !== before.parts_read;
+    // A record that matched but changed no part is no progress: a destination that keeps failing beside parts read
+    // through counts its attempts.
+    const progressed = move.settled || (before !== undefined && parts !== before.parts_read);
+    if (move.store !== null) {
+      storeDestination(db, account.id, move.store, input.origin, input.now);
+    }
     return {
       pending: endRound(db, account.id, input.generation, progressed, input.now),
       delivers: outboundSince(db, mark),
     };
   },
 );
+
+// The move part's outcome, while the claim's fences hold (the token, checked by roundAccount; the account's document
+// revision the claim read, which every store of its document and every verified Move renews; the bit still 1, so its
+// move is still NULL), and a document of exactly the id fetched: a destination fetched settles the bit, to be stored
+// after the parts are recorded (store); a failure settles it with the account a moveTarget finds (stored by another
+// path meanwhile), else with nothing when final, and one that may pass changes nothing. settled: the bit was settled
+// here.
+function settleMove(
+  db: Db,
+  accountId: string,
+  input: CollectionReadInput,
+): { settled: boolean; store: RemoteActorInput | null } {
+  const { move, movedTo, sourceRevision } = input;
+  if (move === undefined || move === null || movedTo === undefined || movedTo === null || sourceRevision == null) {
+    return { settled: false, store: null };
+  }
+  const fetched = move.kind === "moved" && move.document.uri === movedTo ? move.document : null;
+  const target = fetched === null ? moveTarget(db, movedTo, accountId) : null;
+  if (fetched === null && target === null && !(move.kind === "moved" || move.final)) {
+    return { settled: false, store: null };
+  }
+  const settled =
+    db.run(
+      `UPDATE accounts SET move_pending = 0, moved_to_account_id = ?2
+			WHERE id = ?1 AND move_pending = 1 AND document_revision = ?3`,
+      accountId,
+      target,
+      sourceRevision,
+    ) > 0;
+  return { settled, store: settled ? fetched : null };
+}
+
+// A fetched destination (its id the claim's movedTo, settleMove) stored as any new remote actor is (upsertRemoteActor under the expectation that no row of it
+// is stored, ID-1), and then the source's move to it, or to the row stored by another path since ('superseded');
+// nothing when it stores none (a deleted actor, a host or domain an instance suspend block covers, checked here, or a
+// handle WebFinger did not confirm). The source's document already names the destination: no revision is issued.
+// Stored after the parts are recorded: storing it may invalidate a handle the source holds, which asks for a new
+// generation of the source's sync, whose parts start over.
+function storeDestination(db: Db, accountId: string, document: RemoteActorInput, origin: string, now: number): void {
+  upsertRemoteActor(db, document, origin, now, null);
+  const target = moveTarget(db, document.uri, accountId);
+  if (target !== null) {
+    db.run(
+      `UPDATE accounts SET moved_to_account_id = ?2
+			WHERE id = ?1 AND domain IS NOT NULL AND moved_to_account_id IS NULL AND move_pending = 0`,
+      accountId,
+      target,
+    );
+  }
+}
 
 // ProcessAccountService#set_fetchable_attributes!: a remote account's counts become the totalItems learned, each that
 // storedCount keeps (the others, and those not learned, stay as stored; Mastodon keeps a count it is not given). Local

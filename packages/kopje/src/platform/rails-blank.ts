@@ -13,3 +13,18 @@ export const WHITE_SPACE = [
 export function railsBlankSql(value: string): string {
   return `(trim(${value}, char(${WHITE_SPACE.join(", ")})) = '')`;
 }
+
+// ActiveSupport's Object#present? of a parsed JSON value: false for undefined (absent), null, false, a blank string
+// (railsBlank), an empty array and an empty object; true for anything else, a number or true included.
+export function railsPresent(value: unknown): boolean {
+  if (value === undefined || value === null || value === false) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return !railsBlank(value);
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  return typeof value !== "object" || Object.keys(value).length > 0;
+}

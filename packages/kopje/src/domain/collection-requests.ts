@@ -1,5 +1,5 @@
 import type { Db } from "../db/sql";
-import { httpUrl } from "../platform/http-url";
+import { fetchableHref, httpUrl } from "../platform/http-url";
 import { ACTOR_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { requireExactIncrement } from "./ids";
 
@@ -199,7 +199,7 @@ const MOVE_REFUSED = /[\s\\\u0000-\u001f\u007f-\u009f]|%(?![0-9a-f]{2})/i;
 // and an object its id (collectionValue), and the string must be an absolute http(s) URI (MOVE_PREFIX, MOVE_REFUSED)
 // whose href is within ACTOR_URI_LIMIT and is not `uri` itself; that href, else null. Where Mastodon fails on an array
 // or an object, this reads them (docs/mastodon-deviations.md). The stored row it names is remote-actors.ts
-// moveTargetSql's.
+// moveTarget's.
 export function namedMove(raw: string | null, uri: string): string | null {
   const named = collectionValue(storedDocument(raw)?.movedTo);
   if (named === null || !MOVE_PREFIX.test(named) || MOVE_REFUSED.test(named)) {
@@ -207,4 +207,14 @@ export function namedMove(raw: string | null, uri: string): string | null {
   }
   const href = httpUrl(named)?.href ?? null;
   return href !== null && withinIdentityBound(href, ACTOR_URI_LIMIT) && href !== uri ? href : null;
+}
+
+// The destination namedMove read (`named`) when the collection sync may fetch it (accounts.move_pending, the sync's
+// move part in remote-collections.ts): an id the document loader would request (fetchableHref, NET-1's shape), with no
+// fragment (the document fetched for it would have another id) and not on this instance's `origin` (ID-3); else null.
+// The stored-target lookup (remote-actors.ts moveTarget) takes the same `named` without these checks.
+export function fetchableMove(named: string | null, origin: string): string | null {
+  return named !== null && fetchableHref(named) !== null && !named.includes("#") && new URL(named).origin !== origin
+    ? named
+    : null;
 }

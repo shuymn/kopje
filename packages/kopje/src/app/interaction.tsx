@@ -160,8 +160,9 @@ export function interactionRoutes(deps: InteractionDeps): Hono<WebEnv> {
     if (result.status !== "ok") {
       return toLogin(c, target, result.status);
     }
-    // The stored status's quote is verified by the job rounds (federation/quotes.ts), as after search resolution.
-    if (result.value.quotesDue) {
+    // The stored status's quote is verified by the job rounds (federation/quotes.ts), and a pending move resolved by the
+    // account's collection sync, as after search resolution.
+    if (result.value.jobsPending) {
       requestJobsSoon(c, deps);
     }
     const found = result.value.target;

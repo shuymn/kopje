@@ -7,14 +7,18 @@ import {
   type CollectionSync,
   type DocumentRefreshInput,
   MAX_REMOTE_PINS,
+  type MoveOutcome,
   PART_COLLECTIONS,
   PART_FEATURED,
+  moveOpened,
+  PART_MOVED,
   PART_NETWORK,
   PART_TAGS,
   type PinFetchesInput,
 } from "../domain/remote-collections";
 import { MAX_REMOTE_COLLECTIONS } from "../domain/remote-featured-collections";
 import { readConfig, userKek } from "../platform/config";
+import { railsPresent } from "../platform/rails-blank";
 import { callStore } from "../platform/store-client";
 import { storedCount } from "../platform/stored-bounds";
 import { goneAt, goneSettler, type SettleGone } from "./actor-gone";
@@ -39,7 +43,9 @@ import { confirmedInput } from "./resolve";
 // loader (NET-1) within one request's fetch budget per round (RES-6), signed by a local follower of the account or
 // else by the instance actor, and never from the signed-document cache (NET-4). Mastodon signs the featured and pin
 // fetches with local_follower, as Kopje does, but the network collections as Account.representative
-// (json_ld_helper.rb:232-235): Kopje signs them as the others (docs/mastodon-deviations.md, Accounts). The
+// (json_ld_helper.rb:232-235): Kopje signs them as the others (docs/mastodon-deviations.md, Accounts). The move part
+// fetches another account, the destination of a pending move, which has no recipient: as the instance actor (DATA-7),
+// as Mastodon's FetchRemoteAccountService fetches it (Account.representative), on the round's one budget. The
 // jobs/queue.ts rounds run it after the Store's inbound jobs: a round runs one phase of a sync, reading the
 // collections or fetching the listed statuses that reading left to fetch, stored or not.
 //
@@ -61,8 +67,10 @@ export const MAX_FEATURED_TAG_PAGES = 3;
 // read first in its round always completes, so every round with a healthy part left makes progress. Both on one
 // document are not covered: a server that refuses draft-cavage and redirects every document may leave a part unread
 // until its attempts run out (RES-6). The document part of a refresh (D9) runs alone in its round: the account's
-// document and at most two WebFinger answers confirming its claim (resolve.ts confirmHandle).
+// document and at most two WebFinger answers confirming its claim (resolve.ts confirmHandle). The move part fetches the
+// destination's document and the same two WebFinger answers.
 export const PART_DOCUMENTS = {
+  moved: 3,
   featured: 2,
   network: 3,
   tags: 1 + MAX_FEATURED_TAG_PAGES,
@@ -112,6 +120,11 @@ if (
     "the collections part must fit one round of REQUEST_MAX_FETCHES and REQUEST_MAX_BYTES under COLLECTIONS_CAPS, an RFC 9421 retry each included",
   );
 }
+
+// The move part's actor document is read with no redirect, as Mastodon's fetch_resource (json_ld_helper.rb:242-252,
+// allow_redirects false): a destination that redirects settles with nothing. Its body keeps the loader's own cap,
+// DOCUMENT_BODY_LIMIT, Mastodon's too.
+const MOVED_CAPS = { maxRedirects: 0 } as const satisfies DocumentCaps;
 
 type Json = Record<string, unknown>;
 
@@ -344,17 +357,70 @@ async function readFeaturedCollections(
   }
 }
 
-type ReadOut = Pick<CollectionReadInput, "parts" | "pins" | "tags" | "hideCollections" | "counts" | "collections">;
+type ReadOut = Pick<
+  CollectionReadInput,
+  "parts" | "pins" | "tags" | "hideCollections" | "counts" | "collections" | "move"
+>;
 
 // The loaders of a read: `document` within the loader's own caps, `network` within NETWORK_CAPS, `collections` within
-// COLLECTIONS_CAPS.
-type ReadLoaders = { document: DocumentLoader; network: DocumentLoader; collections: DocumentLoader };
+// COLLECTIONS_CAPS, each signed by the sync's signer; `moved`, the move part's, signed by the instance actor on the
+// same budget, built only for a sync that hands a destination over.
+type ReadLoaders = {
+  document: DocumentLoader;
+  network: DocumentLoader;
+  collections: DocumentLoader;
+  moved: (() => RemoteLoaders) | null;
+  instanceDomain: string;
+};
+
+// ProcessAccountService#moved_account's fetch (FetchRemoteAccountService with break_on_redirect, one hop): the
+// destination's document by its id, without a redirect, whose literal id must be that URL as fetched (Mastodon's
+// fetch_resource with id: true, json_ld_helper.rb:242-252: json['id'] == uri; readActor's parsed check, ID-2, holds as
+// well) and which must name no movedTo of its own (fetch_remote_actor_service.rb:33, Rails' present?), and its claim
+// confirmed by WebFinger (resolve.ts confirmedInput; no row of it is stored). A 404 or 410 deletes nothing: the fetch was made for another account.
+async function readMoved(movedTo: string, loaders: RemoteLoaders, instanceDomain: string): Promise<MoveOutcome> {
+  const final = { kind: "failed", final: true } as const;
+  const fetched = await fetchActor(movedTo, loaders.capped(MOVED_CAPS), loaders.context);
+  if (fetched.kind === "transient") {
+    return { kind: "failed", final: false };
+  }
+  if (fetched.kind !== "ok" || fetched.input === null) {
+    return final;
+  }
+  const literal = literalMembers(fetched.input.raw);
+  if (literal.id !== movedTo || railsPresent(literal.movedTo)) {
+    return final;
+  }
+  const checked = await confirmedInput(loaders, fetched.input, null, instanceDomain);
+  if (checked.outcome === "transient") {
+    return { kind: "failed", final: false };
+  }
+  return checked.outcome === "confirmed" ? { kind: "moved", document: checked.input } : final;
+}
+
+// The members of a fetched actor document by their literal spelling, as Mastodon reads `json['id']` and
+// `@json['movedTo']`.
+function literalMembers(raw: string): Record<string, unknown> {
+  const parsed = JSON.parse(raw) as unknown;
+  return isObject(parsed) ? parsed : {};
+}
 
 // Each part's read, which records in `out` what it read through.
 const PART_READS: [
   number,
   (sync: CollectionSync, origin: string | null, loaders: ReadLoaders, out: ReadOut) => Promise<void>,
 ][] = [
+  // The move part, first in the claim it opens and last in every other (readCollections): four parts that keep failing
+  // never take every claim before it, and it takes no first turn from them. With nothing to fetch it costs nothing. Its
+  // bit is the Store's (move_pending), never set here.
+  [
+    PART_MOVED,
+    async (sync, _origin, loaders, out) => {
+      if (sync.movedTo !== null && loaders.moved !== null) {
+        out.move = await readMoved(sync.movedTo, loaders.moved(), loaders.instanceDomain);
+      }
+    },
+  ],
   // The featured collection: its pins, and its hashtags for an actor without a featuredTags collection (that part is
   // read with it). One that cannot be read at all is read through: nothing changes, as with Mastodon.
   [
@@ -402,10 +468,13 @@ const PART_READS: [
   ],
 ];
 
-// Phase 1: what a round reads of one account's collections: the parts not read through yet, in the order featured,
-// network, featuredTags, starting from the one the round's attempt names. A round after one without progress starts
+// Phase 1: what a round reads of one account's collections: the parts not read through yet, in the order of PART_READS,
+// starting from the one the round's attempt names. A round after one without progress starts
 // with the next unread part, so each gets a round where it goes first with the whole budget (a part that keeps failing
-// does not spend every round's budget before a healthy one) before MAX_SYNC_ATTEMPTS gives the read up.
+// does not spend every round's budget before a healthy one) before MAX_SYNC_ATTEMPTS gives the read up. The move part
+// is outside that rotation: the streak it opens (moveOpened: pending, nothing else read through) has one claim more,
+// whose first turn is the move part's; the attempts after it rotate the other parts as a read without a move does,
+// with the move part last, so every other part keeps the full-budget first turns it has without a move.
 async function readCollections(sync: CollectionSync, loaders: ReadLoaders): Promise<ReadOut> {
   const origin = originOf(sync.accountUri);
   const out: ReadOut = {
@@ -415,12 +484,18 @@ async function readCollections(sync: CollectionSync, loaders: ReadLoaders): Prom
     hideCollections: null,
     counts: { statuses: null, following: null, followers: null },
     collections: null,
+    move: null,
   };
   const unread = PART_READS.filter(
     ([part]) => (sync.parts & part) === 0 && !(part === PART_TAGS && sync.featuredTags === null),
   );
-  const first = unread.length === 0 ? 0 : (Math.max(sync.attempt, 1) - 1) % unread.length;
-  for (const [, read] of [...unread.slice(first), ...unread.slice(0, first)]) {
+  const move = unread.filter(([part]) => part === PART_MOVED);
+  const others = unread.filter(([part]) => part !== PART_MOVED);
+  // The attempt among the other parts' own: 0 for the claim the move part opens.
+  const attempt = Math.max(sync.attempt, 1) - (moveOpened(sync.parts) ? 1 : 0);
+  const first = others.length === 0 ? 0 : (Math.max(attempt, 1) - 1) % others.length;
+  const rotated = [...others.slice(first), ...others.slice(0, first)];
+  for (const [, read] of attempt === 0 ? [...move, ...rotated] : [...rotated, ...move]) {
     await read(sync, origin, loaders, out);
   }
   return out;
@@ -487,20 +562,17 @@ export async function syncCollectionsRound(
     }
     pending = sync.pending;
     const state: FederationState = { resolvedUsername: null, source: null, storeError: null, ticket: null };
-    const loaders = createRemoteLoaders(
-      {
-        domain,
-        build,
-        store,
-        kek: config.ok ? userKek(config.config) : "",
-        now: deps.now,
-        keygen: deps.keygen,
-        loader: deps.loader,
-      },
-      state,
-      sync.signer,
-      requestBudget(Date.now()),
-    );
+    const federation = {
+      domain,
+      build,
+      store,
+      kek: config.ok ? userKek(config.config) : "",
+      now: deps.now,
+      keygen: deps.keygen,
+      loader: deps.loader,
+    };
+    const budget = requestBudget(Date.now());
+    const loaders = createRemoteLoaders(federation, state, sync.signer, budget);
     const round = { origin, accountUri: sync.accountUri, generation: sync.generation, token: sync.token };
     if (sync.phase === "document") {
       const { document, jobsPending } = await refetchDocument(sync, loaders, domain, settle);
@@ -516,12 +588,20 @@ export async function syncCollectionsRound(
         document: loaders.document,
         network: loaders.capped(NETWORK_CAPS),
         collections: loaders.capped(COLLECTIONS_CAPS),
+        moved: sync.movedTo === null ? null : () => createRemoteLoaders(federation, state, null, budget),
+        instanceDomain: domain,
       });
       if (state.storeError !== null) {
         throw state.storeError;
       }
       const ended = await callStore(() =>
-        store().completeCollectionRead(build, { ...round, now: deps.now(), ...read }),
+        store().completeCollectionRead(build, {
+          ...round,
+          now: deps.now(),
+          ...read,
+          movedTo: sync.movedTo,
+          sourceRevision: sync.sourceRevision,
+        }),
       );
       pending = ended.pending;
       progress.delivers ||= ended.delivers;

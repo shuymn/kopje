@@ -40,6 +40,7 @@ import {
   MAX_DUMP_CHUNK_BYTES,
   MIN_DUMP_CHUNK_BYTES,
   parseCursor,
+  type RowCheck,
   type ScanPosition,
   trailerOf,
 } from "./store-dump";
@@ -97,6 +98,9 @@ export type AdminOptions = {
   // Runs in the publication's transaction, once the Store is published; returns how many profile Updates it recorded,
   // or null when the stored list is malformed (store.ts: domain/actor-update.ts announceConvertedProfiles).
   onPublish?: (sql: SqlStorage, now: number) => number | null;
+  // A row check of the import's verification beside this module's own, given the domain the Store keeps (store.ts:
+  // domain/pending-move-check.ts pendingMoveCheck).
+  rowCheck?: (sql: SqlStorage, domain: string | null) => RowCheck;
 };
 
 // Who asks for an import or configuration change (see the import section of StoreAdmin).
@@ -189,6 +193,11 @@ class Rollback extends Error {}
 const ROLLBACK = new Rollback("rollback");
 
 // Where a verification's checksums start: the first row of the first table.
+// The domain the Store keeps through an import, which the import restores once it is verified (its own bootstrap rows).
+function keptDomain(record: ImportRecord): string | null {
+  return (record.bootstrap ?? []).find((row) => row.name === "domain")?.value ?? null;
+}
+
 function verifyStart(): ScanPosition {
   return { phase: "rows", table: 0, after: null, rows: 0, hash: null };
 }
@@ -215,6 +224,7 @@ export class StoreAdmin {
   readonly #randomId: () => string;
   readonly #resetBatchRows: number;
   readonly #onPublish: NonNullable<AdminOptions["onPublish"]>;
+  readonly #rowCheck: NonNullable<AdminOptions["rowCheck"]>;
 
   constructor(ctx: DurableObjectState, kernel: StoreKernel, options: AdminOptions) {
     this.#ctx = ctx;
@@ -228,6 +238,7 @@ export class StoreAdmin {
     this.#randomId = options.randomId ?? (() => crypto.randomUUID());
     this.#resetBatchRows = options.resetBatchRows ?? RESET_BATCH_ROWS;
     this.#onPublish = options.onPublish ?? (() => 0);
+    this.#rowCheck = options.rowCheck ?? (() => () => null);
   }
 
   // ---- inspection (read-only, any caller build)
@@ -899,16 +910,18 @@ export class StoreAdmin {
         // The row checks, in order: the first problem refuses the import.
         const boosts = new BoostChainCheck(this.#sql).check;
         const thumbnails = new ThumbnailLinkCheck(this.#sql).check;
+        const injected = this.#rowCheck(this.#sql, keptDomain(record));
         const step = checksumStep(
           this.#sql,
           record.header.tables,
           verify.position,
           budget,
-          (spec, row) => boosts(spec, row) ?? thumbnails(spec, row),
+          (spec, row) => boosts(spec, row) ?? thumbnails(spec, row) ?? injected(spec, row),
         );
         const results = [...verify.results, ...step.finished];
         if (step.refused !== null) {
-          // A row the Store cannot hold (BoostChainCheck, ThumbnailLinkCheck): the import fails and needs a reset.
+          // A row the Store cannot hold (BoostChainCheck, ThumbnailLinkCheck, the injected check): the import fails
+          // and needs a reset.
           const report: VerifyReport = { ok: false, tables: [], foreignKeyViolations: 0, problems: [step.refused] };
           return this.#verifyFailed(record, report);
         }
@@ -929,10 +942,7 @@ export class StoreAdmin {
           report.problems.push(migrations);
         }
         // Against the domain the Store keeps, which the import restores below (ID-5).
-        const collision = localUsernameDomainProblem(
-          this.#sql,
-          (record.bootstrap ?? []).find((row) => row.name === "domain")?.value ?? null,
-        );
+        const collision = localUsernameDomainProblem(this.#sql, keptDomain(record));
         if (collision !== null) {
           report.ok = false;
           report.problems.push(collision);

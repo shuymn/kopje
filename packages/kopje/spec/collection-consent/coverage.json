@@ -1,24 +1,24 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "b0271be2768c21675ce3eceb9df2b7429b483a1c",
+  "confirmed": "25422fed0da316f9261d13b158399aba7119b470",
   "files": [
     {
       "path": "src/store.ts",
       "functions": ["Store.receiveActivity"],
       "spec": "CollectionConsent.tla KRecv: one inbound activity, one Store transaction",
-      "blob": "22c6e21633217911c7fbf09335766f01be32b3df"
+      "blob": "54cf241aff1fb2e0f65e1d97978897727a409d14"
     },
     {
       "path": "src/domain/inbox.ts",
       "functions": ["receiveActivity", "startActorDeletion", "purgeBatch"],
       "spec": "CollectionConsent.tla RecvRes and Touch: which of CollectionConsentKopje.tla's operators an inbound activity runs, when it is ignored, and that every valid push of R's collections outdates a read under way, a no-op one included; OwnerGone and KPurge: an actor Delete writes R's tombstone and runs the first purge batch in its own transaction, which reaches C or not, and later batches purge the rest",
-      "blob": "e153d9b9b46f5087802fe3dfc2c3917b36b83cb6"
+      "blob": "35f60fa28ad40a87146560d63ab20877e03836ef"
     },
     {
       "path": "src/federation/inbound.ts",
       "functions": ["receiveInbound", "fetchesFirst"],
       "spec": "CollectionConsent.tla KRecv and NeedsFetch: an inbound activity's routing; the Store's need to fetch the instrument of a FeatureRequest for a collection Kopje does not store (the step's response \"fetch\"), then the resumed activity's own transaction and final status (202, 503)",
-      "blob": "6a05333c4596a8a30b4c7c1dc225346f99da2ed0"
+      "blob": "f4a730c105d70f30a77b887d61c730403e42d8b2"
     },
     {
       "path": "src/domain/inbound-feature-requests.ts",
@@ -57,13 +57,13 @@
       "path": "src/domain/remote-collections.ts",
       "functions": ["claimCollectionSync", "endRound", "roundAccount", "completeCollectionRead"],
       "spec": "CollectionConsent.tla KClaim, KApply, KLease and KStale: a read's claim (a new token; the request kept until a completion reads it through), its completion, its outdated check and its claim token, which only a new claim replaces (a lease's end alone fences nothing)",
-      "blob": "2f38cd6c53481bfa1d434898eaef74d1a2f0e30c"
+      "blob": "5b1536f63696da87b1e39119c0a9c2927b76fb1b"
     },
     {
       "path": "src/federation/collections.ts",
       "functions": ["syncCollections"],
       "spec": "CollectionConsent.tla KFetch, KFetch1 and KFetch2: a read's page GETs",
-      "blob": "a812128a9cb10ccd6c5cdeea5a23fe24f4bdd591"
+      "blob": "be927d06eaaf0ce8544757baa21e3ba077cf30aa"
     },
     {
       "path": "src/domain/collections.ts",
@@ -112,7 +112,7 @@
       "path": "src/domain/collection-requests.ts",
       "functions": ["markCollectionsChanged"],
       "spec": "CollectionConsent.tla Touch: a valid push of R's collections outdates a read under way (outd), apart from the row fence (chg)",
-      "blob": "320a1f493b5b62be94c43e0ba281a4e9fcf7f98c"
+      "blob": "9fb8179f549a348efddad7a1eccf0f4daecd9007"
     },
     {
       "path": "src/domain/audience.ts",
