@@ -653,10 +653,12 @@ Accounts (the `Account` and credential account entities):
   the move settles. Mastodon fetches the destination while it processes the account and answers the follow 200 or 403
   (`FetchRemoteAccountService`; its 503 with this body is a failed fetch, `error_handling.rb:22-24`). Once the move
   resolves, following answers 403; once it settles with nothing (the destination refused or gone, or the read given up
-  after `MAX_SYNC_ATTEMPTS` claims), the follow is judged as for any account. The state lasts one read of the account's
-  collection sync, so a fresh store of the account's document that still names an unresolved destination starts it
-  again, and another request for the sync renews its attempts: a peer that keeps sending profile updates or collection
-  changes while its destination keeps failing keeps the account in this state.
+  after `MAX_SYNC_ATTEMPTS` claims since its last progress), the follow is judged as for any
+  account. The state lasts one read of the account's collection sync, so a fresh store of the account's document that
+  still names an unresolved destination starts it again, and another request for the sync renews its attempts: a peer
+  that keeps sending profile updates or collection changes while its destination keeps failing, or that stores its
+  document again before each fetch of the destination completes (a fetch whose read was overtaken is not used), keeps
+  the account in this state.
 - A verified `Move` whose target's own move is being resolved moves no follower: the job is admitted covering none, and
   a batch after a first one moves none once the target's move is being resolved or set, so the followers left keep the
   source with its lists; the source's move is set and blocks and mutes are carried as for any `Move`. A new `Move`

@@ -661,9 +661,9 @@ is left out here too. Candidates rank by how many counted edges reach them, then
 first, as `presentedCountSql` reads it), then by id (newest first); the first `SUGGESTIONS_KEPT` (40) are kept and a
 request answers `offset` and `limit` of them (`[]` from offset 40 on, where Mastodon answers 500). A remote account's
 follower count is the one its followers collection reports, learned by its collection sync (0 until then). There is no
-cache: the order is deterministic, so an offset is stable only while the follows, blocks, mutes and dismissals stay as
-they were. v2 wraps each account as `{"source": "past_interactions", "sources": ["friends_of_friends"], "account":
-...}`.
+cache: the order is deterministic, so an offset is stable only while the follows, blocks, mutes, dismissals and moves
+(a move set or being resolved, or one settling with nothing) stay as they were. v2 wraps each account as `{"source":
+"past_interactions", "sources": ["friends_of_friends"], "account": ...}`.
 
 The ranking is over a bounded graph, by windows of follow ids that the query reads as ranges of `follows_following`
 (`account_id`, `id`), each from the id of its last entry, which a scalar lookup of that index finds, so the access
