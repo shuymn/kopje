@@ -1,4 +1,4 @@
-import { type ColumnMap, fixedColumns, fixedNumeric } from "../db/columns";
+import { type ColumnMap, fixedColumns, fixedNumeric, sameBytesAs } from "../db/columns";
 import { LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import { DOMAIN_BYTES } from "../platform/identity-bounds";
 import {
@@ -148,15 +148,18 @@ export const LOCAL_ROW_JOIN = `LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACC
 
 // The creation day of the stored time `column` (YYYY-MM-DD), which an Account's created_at and a local actor's published
 // present at its midnight UTC as Mastodon's serializers do (created_at.midnight), else NULL: the value is judged whole
-// (isoTimeSql, its length first), so one that is not a stored time is presented as it is today.
+// (isoTimeSql), so one that is not a stored time is presented as it is today. Its bytes are judged first, from the
+// record header (octet_length), so a longer imported value is never loaded to be judged (RES-3).
 export function createdDaySql(column: string): string {
-  return `CASE WHEN ${isoTimeSql(column)} IS NOT NULL THEN substr(${column}, 1, 10) END`;
+  return `CASE WHEN octet_length(${column}) = 24 AND ${isoTimeSql(column)} IS NOT NULL
+		THEN substr(${column}, 1, 10) END`;
 }
 
 // An Account's created_at (REST::AccountSerializer#created_at): the creation day's midnight UTC (createdDaySql), else
-// the stored value. Both are 24 bytes for a stored time, so the row reads no more than the stored column.
+// the stored value. Both are 24 bytes for a stored time, so it has the stored column's bytes, and the row heap estimate
+// measures that column (sameBytesAs).
 function createdAtSql(column: string): string {
-  return `COALESCE(${createdDaySql(column)} || 'T00:00:00.000Z', ${column})`;
+  return sameBytesAs(`COALESCE(${createdDaySql(column)} || 'T00:00:00.000Z', ${column})`, column);
 }
 
 // The date of the account `a`'s newest status its followers reach.

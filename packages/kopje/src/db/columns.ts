@@ -23,17 +23,28 @@ export function fixedNumeric(expression: string): string {
   return expression;
 }
 
+// The expressions marked sameBytesAs, with the column whose UTF-8 bytes each always has.
+const SAME_BYTES = new Map<string, string>();
+
+// Marks `expression`, a column of a ColumnMap whose value always has as many UTF-8 bytes as the stored `column` (NULL
+// when it is NULL): rowHeapSql measures the column from its record header and never evaluates the expression, which
+// would load the whole stored value to judge it (RES-3).
+export function sameBytesAs(expression: string, column: string): string {
+  SAME_BYTES.set(expression, column);
+  return expression;
+}
+
 // Bounds rowHeapBytes (src/db/sql.ts): ROW_OBJECT_BYTES, plus VALUE_BYTES and twice each value's UTF-8 bytes.
-// octet_length loads no value; UTF-8 bytes bound UTF-16 code units. A number overcounts by its decimal digits, NULL
-// adds nothing; a fixedNumeric column counts as one digit. balancedSum keeps the expression depth logarithmic (SQLite
-// refuses deeper than 100; test-node/sql-depth.ts).
+// octet_length of a column loads no value; UTF-8 bytes bound UTF-16 code units. A number overcounts by its decimal
+// digits, NULL adds nothing; a fixedNumeric column counts as one digit, and a sameBytesAs one as its column.
+// balancedSum keeps the expression depth logarithmic (SQLite refuses deeper than 100; test-node/sql-depth.ts).
 export function rowHeapSql(columns: ColumnMap): string {
   return balancedSum([
     String(ROW_OBJECT_BYTES),
     ...Object.values(columns).map((expression) =>
       FIXED_NUMERIC.has(expression)
         ? String(VALUE_BYTES + 2)
-        : `(${VALUE_BYTES} + coalesce(2 * octet_length(${expression}), 0))`,
+        : `(${VALUE_BYTES} + coalesce(2 * octet_length(${SAME_BYTES.get(expression) ?? expression}), 0))`,
     ),
   ]);
 }

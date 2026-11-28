@@ -1,8 +1,14 @@
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { rowHeapSql } from "../src/db/columns";
+import { Db } from "../src/db/sql";
+import { ACCOUNT_COLUMN_MAP } from "../src/domain/account-columns";
 import type { Account } from "../src/domain/accounts";
+import { adminAccountStream } from "../src/domain/admin-account-presenter";
 import { sql } from "./api-helpers";
 import { community, follow, getJson, remoteAccount, seedStatus } from "./status-helpers";
+import { recordingSql } from "./status-row-fixtures";
 
 // Account#created_at as REST::AccountSerializer shows it (Mastodon v4.7.5: `object.created_at.midnight.as_json`): the
 // creation day's midnight UTC, the nested `moved` account's included (account-columns.ts createdDaySql). A stored value
@@ -101,5 +107,53 @@ describe("an account's created_at", () => {
     await move(source, carol);
     expect((await shown(carol)).created_at).toBe(stored);
     expect((await shown(source)).moved?.created_at).toBe(cut);
+  });
+});
+
+// RES-3: SQLite's OP_Column with OPFLAG_BYTELENARG (0xc0 in p5) answers octet_length from the record header without
+// loading the value; a read without it loads the whole value, however long an import stored it. The row heap estimate
+// (rowHeapSql, R in status-rows.ts) measures created_at without loading it, and the admin entity's exact time loads it
+// only once its bytes are a stored time's.
+describe("an account's created_at, measured", () => {
+  const BYTELENARG = 0xc0;
+  type Op = { addr: number; opcode: string; p1: number; p2: number; p5: number };
+  // The accounts table's reads of created_at in `query`'s program, in order.
+  const createdAtReads = (storage: SqlStorage, query: string, ...params: SqlStorageValue[]) => {
+    const [{ rootpage }] = storage
+      .exec<{ rootpage: number }>("SELECT rootpage FROM sqlite_master WHERE type = 'table' AND name = 'accounts'")
+      .toArray() as [{ rootpage: number }];
+    const column = storage.exec("SELECT * FROM accounts LIMIT 0").columnNames.indexOf("created_at");
+    const program = storage.exec<Op>(`EXPLAIN ${query}`, ...params).toArray();
+    const cursors = new Set(program.filter((op) => op.opcode === "OpenRead" && op.p2 === rootpage).map((op) => op.p1));
+    return program.filter((op) => op.opcode === "Column" && cursors.has(op.p1) && op.p2 === column);
+  };
+
+  it("estimates the row's heap from the record header", async () => {
+    const { h } = await fixture();
+    await runInDurableObject(h.store, (_instance, state) => {
+      const reads = createdAtReads(
+        state.storage.sql,
+        `SELECT ${rowHeapSql({ created_at: ACCOUNT_COLUMN_MAP.created_at })} AS heap FROM accounts a WHERE a.id = ?`,
+        "1",
+      );
+      expect(reads.length).toBeGreaterThan(0);
+      for (const read of reads) {
+        expect(read.p5 & BYTELENARG, String(read.addr)).toBe(BYTELENARG);
+      }
+    });
+  });
+
+  it("reads the admin entity's exact time only after its bytes", async () => {
+    const { h, carol, created } = await fixture();
+    await created(carol, EXACT);
+    await runInDurableObject(h.store, (_instance, state) => {
+      const recording = recordingSql(state.storage.sql);
+      const [entity] = [...adminAccountStream(new Db(recording.sql), [carol], carol, { origin: "https://kopje.test" })];
+      expect(entity?.created_at).toBe(EXACT);
+      const query = recording.reads.find((read) => read.includes("exact_created_at"))!;
+      const reads = createdAtReads(state.storage.sql, query, JSON.stringify([carol]));
+      expect(reads.length).toBeGreaterThan(1);
+      expect(reads[0]!.p5 & BYTELENARG).toBe(BYTELENARG);
+    });
   });
 });

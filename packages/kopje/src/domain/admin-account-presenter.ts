@@ -1,6 +1,6 @@
 import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { isoTimeSql } from "../platform/stored-bounds";
+import { createdDaySql } from "./account-columns";
 import { type Account, accountsOf, presentFor, type PresentInput } from "./accounts";
 import { EVERYONE_ROLE, OWNER_ROLE, type Role } from "./auth";
 
@@ -13,8 +13,9 @@ import { EVERYONE_ROLE, OWNER_ROLE, type Role } from "./auth";
 //   - a remote account (no User): email, confirmed, disabled, approved, locale and role null, which is what
 //     Account's delegation to a missing user gives (app/models/account.rb:173-191, allow_nil);
 //   - both: created_at the exact stored time (the serializer's attribute, where the nested account shows its day), read
-//     only when it is one (isoTimeSql), else the nested account's; ip null and ips [], invite_request null;
-//     created_by_application_id and invited_by_account_id absent (their conditions never hold); suspended when the account is unavailable (R1), as the nested account shows it;
+//     only when it is one (account-columns.ts createdDaySql), else the nested account's; ip null and ips [],
+//     invite_request null; created_by_application_id and invited_by_account_id absent (their conditions never hold);
+//     suspended when the account is unavailable (R1), as the nested account shows it;
 //     username as the nested account shows it, but '! <id>' for an invalidated handle (accounts.ts shownHandle): the
 //     username Mastodon's invalidate_username! stores and its serializer shows (Account#username), where the nested
 //     account shows the placeholder.
@@ -54,7 +55,7 @@ export function* adminAccountStream(
       db
         .all<{ id: string; domain: string | null; email: string | null; exact_created_at: string | null }>(
           `SELECT a.id, a.domain, l.email,
-						CASE WHEN ${isoTimeSql("a.created_at")} IS NOT NULL THEN a.created_at END AS exact_created_at
+						CASE WHEN ${createdDaySql("a.created_at")} IS NOT NULL THEN a.created_at END AS exact_created_at
 					FROM json_each(?1) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.value
 						LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id`,
           JSON.stringify([...new Set(slice)]),
