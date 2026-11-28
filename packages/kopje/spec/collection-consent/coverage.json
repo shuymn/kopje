@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "a76edb9cad3547f1159d1d1eb4c7751a5ca38900",
+  "confirmed": "4b8d65c6acba759d87603d9b187bbeef63fd9cfd",
   "files": [
     {
       "path": "src/store.ts",
@@ -18,7 +18,7 @@
       "path": "src/federation/inbound.ts",
       "functions": ["receiveInbound", "fetchesFirst"],
       "spec": "CollectionConsent.tla KRecv and NeedsFetch: an inbound activity's routing; the Store's need to fetch the instrument of a FeatureRequest for a collection Kopje does not store (the step's response \"fetch\"), then the resumed activity's own transaction and final status (202, 503)",
-      "blob": "5d01f26978cc77cc460175b3fbbccdd273f88a01"
+      "blob": "f4a730c105d70f30a77b887d61c730403e42d8b2"
     },
     {
       "path": "src/domain/inbound-feature-requests.ts",
@@ -57,13 +57,13 @@
       "path": "src/domain/remote-collections.ts",
       "functions": ["claimCollectionSync", "endRound", "roundAccount", "completeCollectionRead"],
       "spec": "CollectionConsent.tla KClaim, KApply, KLease and KStale: a read's claim (a new token; the request kept until a completion reads it through), its completion, its outdated check and its claim token, which only a new claim replaces (a lease's end alone fences nothing)",
-      "blob": "52dfa082716150285d4f8084610b6e85d6609c1b"
+      "blob": "3aeeaf1352fb0b46d14a17e6d996b40b5091341f"
     },
     {
       "path": "src/federation/collections.ts",
       "functions": ["syncCollections"],
       "spec": "CollectionConsent.tla KFetch, KFetch1 and KFetch2: a read's page GETs",
-      "blob": "e5600a22cba08c17cae576152275b1d39f5ece0c"
+      "blob": "be927d06eaaf0ce8544757baa21e3ba077cf30aa"
     },
     {
       "path": "src/domain/collections.ts",
