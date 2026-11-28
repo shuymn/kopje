@@ -1230,11 +1230,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "7e7121a3e8e907cd",
+    id: "985ef6db27678bcf",
     scans: ["oauth_clients: SCAN c USING COVERING INDEX oauth_clients_pending"],
     site: "src/domain/oauth.ts#pendingApps < src/domain/oauth.ts#<anonymous> in registerApp",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "bounded",
+    reason:
+      "the count reads at most PENDING_READ_CAP + 1 entries of the partial index (its LIMIT, src/domain/oauth.ts, and the web client's entry, which it passes over) and one settings seek, also over a restored Store with more pending apps",
+    witness:
+      'test/apps-budget.test.ts ("reads at most PENDING_READ_CAP pending apps and removes at most OAUTH_SWEEP_BATCH from a restored backlog")',
   },
   {
     id: "4ad13738b4c4f7ef",

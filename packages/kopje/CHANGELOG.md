@@ -38,6 +38,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Authorizing a follow request through the API (`POST /api/v1/follow_requests/:id/authorize`) writes a `follow`
   notification from the new follower, pushed and streamed as any other, as Mastodon does. Unlocking the account still
   writes none.
+- The cron no longer removes an app that no user has authorized a day after it registers, so a client that keeps its
+  registration can sign in with it later, as on Mastodon. Such an app is removed only when a registration finds 500 of
+  them stored, and then only as many as the new one needs: the oldest unused ones older than a day first, then the
+  oldest older than an hour. A Store restored with more than 500 such apps (upgraded from a dump taken before migration
+  0086, which leaves pending the apps that then held no user's code or token, or exported since) loses at most 500 of
+  them a registration, and registration answers 429 until fewer than 500 remain. In such a Store a registration looks
+  for unused apps only among the oldest 1,000 older than a day, so it can remove older apps holding app tokens before
+  unused ones behind them.
 
 ## [0.9.0] - 2026-11-28
 
