@@ -1837,7 +1837,8 @@ Media (the `MediaAttachment` entity):
 - A local attachment's `Document` in its Note, whatever its type, writes `duration` to the millisecond (`PT29.964S`;
   a converted gifv's 1.234567 seconds is `PT1.235S`), and only for stored seconds from 1/48,000 to 1,200 (the
   verifier's range, `AUDIO_DURATION_LIMIT`), so an imported 1,200.5 is left out; Mastodon writes its stored seconds as
-  they are (ffprobe's, to the microsecond). The API's `meta` keeps the stored value.
+  they are (ffprobe's, to the microsecond). The API's `meta` presents the stored value for video and audio within that
+  range only.
 - A local upload's `blurhash` (avatars and headers included; 4 × 4 components, alpha dropped) is computed, as
   Mastodon's BlurhashTranscoder computes one from the `small` style, from Images' raw RGBA output of Kopje's preview (at
   most 640 pixels an edge, where Mastodon's small style is 230,400 pixels), fitted within 100 pixels by area averaging
