@@ -16,8 +16,8 @@ import { editOnce, guardFixtures, parse, type Source, sources, walk } from "./so
 const FILES = ["src/federation/remote-actor.ts", "src/federation/inbound.ts"];
 const INVENTORY_FILE = "src/federation/remote-actor.ts";
 
-// The Fedify Actor accessors Kopje reads, each with the member of the document it reads. getActorTypeName reads the
-// type.
+// The Fedify Actor accessors the guard recognizes, each with the member of the document it reads (one whose member
+// FEDIFY_MEMBERS lacks is a read the guard refuses, such as successorId). getActorTypeName reads the type.
 const ACCESSORS: Readonly<Record<string, string>> = {
   id: "id",
   preferredUsername: "preferredUsername",
@@ -274,6 +274,11 @@ describe("the members Fedify is handed (#1709)", () => {
         "a read of url": [
           "function f(actor: Actor) { return actor.url; }",
           `${INBOUND} url: reads url, which FEDIFY_MEMBERS lacks`,
+        ],
+        // movedTo is read from the JSON (collection-requests.ts namedMove), never from Fedify's object.
+        "a read of successorId": [
+          "function f(actor: Actor) { return actor.successorId; }",
+          `${INBOUND} successorId: reads movedTo, which FEDIFY_MEMBERS lacks`,
         ],
         // #1747: the flags are read from the JSON as Rails casts them (remote-actor.ts remoteActorInput), never from
         // Fedify's object.

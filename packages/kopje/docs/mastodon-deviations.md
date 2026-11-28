@@ -603,9 +603,28 @@ Accounts (the `Account` and credential account entities):
 - `last_status_at` is the publication date of the newest stored status that reaches followers, computed when read:
   deleting that status moves it back, where Mastodon 4.6 keeps the newest it counted (`account/counters.rb:53-75`).
 - `moved` is the latest of two writes: every stored actor document sets it from its `movedTo` or clears it, and a
-  verified `Move` sets it when Kopje first processes it; a replay of a known `Move` writes nothing. A `movedTo` naming
-  an account Kopje does not know reads as none: it is not fetched (Mastodon fetches it,
-  `process_account_service.rb:310-314`). Mastodon processes a `Move` once per source account for 7 days (`move.rb:38`),
+  verified `Move` sets it when Kopje first processes it; a replay of a known `Move` writes nothing. The member is read
+  by its literal spelling, as Mastodon reads `@json['movedTo']` (`process_account_service.rb:293`), with no JSON-LD
+  context applied (`namedMove` in `src/domain/collection-requests.ts`): a string, an array's first value, or an object's
+  `id`, which must be an absolute `http:` or `https:` URI with an authority and without whitespace, a backslash, a
+  control character or a `%` not followed by two hex digits, other than the actor's own id. Only the literal top-level
+  `movedTo` key is read as a move, and it is not handed to Fedify; another key that a context maps to `as:movedTo` is
+  not read as one. It names the stored account, local or remote, whose actor id is that URI without its fragment, as
+  Mastodon looks up a remote account (`split('#').first`, `tag_manager.rb:300`), so a stored row whose id carries the
+  fragment is never named; Mastodon recognizes a local account by its routes, and Kopje by its actor id alone. Mastodon
+  fails the account's processing on an array or an object (a `TypeError`), where Kopje reads them. A relative, empty,
+  compact (`as:foo`) or non-http value names none, as Mastodon finds no account for it; so do an `@id` object, a nested
+  array and an array whose first value is not a string or an object, on which Mastodon fails, and a value with
+  surrounding whitespace, which Mastodon does not verify. Kopje looks the URI up as the URL parser normalizes it (the
+  scheme and host lowercased), where Mastodon looks up the spelling it was given. A move an earlier release stored from
+  Fedify's reading of the same document (which resolved relative and empty values against the actor's id, read `@id` and
+  nested arrays, applied the document's context, and kept the fragment) is recomputed only when the account's document
+  is next stored: such a move can then clear, and a `movedTo` with a fragment or under a context that renames the member
+  can then resolve. When a verified `Move` stores a remote target's fetched document, it does so before it moves the
+  followers, so the target's own `movedTo` is read the same way, and decides whether the followers move (R21 in
+  `docs/visibility.md`): a relative one no longer stops them, and one with a fragment naming a stored account now does.
+  A `movedTo` naming an account Kopje does not know reads as none: it is not fetched (Mastodon fetches it,
+  `process_account_service.rb:516-519`). Mastodon processes a `Move` once per source account for 7 days (`move.rb:38`),
   Kopje once per activity id while its job is kept (30 days). Mastodon refreshes an account on a signature only after
   verification with the stored key fails (`signature_verification.rb:59-61`), and `possibly_stale?` chooses a full
   refresh or one of the key alone, which leaves `movedTo` as it was (`signature_verification.rb:123-127`,

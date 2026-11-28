@@ -83,8 +83,10 @@ export async function loadActor(
 // and fails the whole actor on one it cannot decode (an `icon` that is not an Image, an unreadable `updated`, an
 // invalid language map), where Mastodon 4.7 reads every member by its literal spelling (`@json[...]`) and stores the
 // account. Every member outside this inventory, in any spelling, is read from the document's JSON by spelling
-// (profileUrl, profileImage, collection-requests.ts collectionUri, sharedInboxUri, claimedHandle, emojiCandidates,
-// remoteActorInput's flags) or not at all.
+// (profileUrl, profileImage, collection-requests.ts collectionUri and namedMove, sharedInboxUri, claimedHandle,
+// emojiCandidates, remoteActorInput's flags) or not at all. So the literal top-level `movedTo` is never handed to
+// Fedify; a kept member a context maps to `as:movedTo` still is, and Kopje reads no move from it (namedMove reads the
+// literal key alone, as Mastodon does).
 const FEDIFY_MEMBERS: Readonly<Record<string, string>> = {
   "@context": "JSON-LD expansion",
   id: "lookupObject's id check (ID-2), readActor",
@@ -93,7 +95,6 @@ const FEDIFY_MEMBERS: Readonly<Record<string, string>> = {
   inbox: "remoteActorInput",
   name: "remoteActorInput",
   summary: "remoteActorInput",
-  movedTo: "storableActorId",
   alsoKnownAs: "inbound.ts Move",
   publicKey: "ownKeys; the HTTP signature's and the LD signature's key (ID-1)",
   assertionMethod: "ownKeys; the author proof's key (ID-1)",
@@ -466,7 +467,6 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
       typeof document === "object" && document !== null ? (document as { tag?: unknown }).tag : null,
     ),
     raw: JSON.stringify(document),
-    movedTo: storableActorId(actor.successorId),
     featurePolicy: featurePolicyOf(json),
   };
 }
@@ -498,9 +498,4 @@ function featurePolicyOf(json: Record<string, unknown>): RemoteFeaturePolicyInpu
     return policyHalf(entries);
   };
   return { automatic: half(policy.automaticApproval), manual: half(policy.manualApproval) };
-}
-
-// An actor id the document names (movedTo), when Kopje stores such an id.
-function storableActorId(id: URL | null): string | null {
-  return id !== null && isStorableActorId(id.href) ? id.href : null;
 }

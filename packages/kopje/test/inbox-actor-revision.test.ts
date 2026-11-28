@@ -105,7 +105,6 @@ const documentOf = (uri: string): RemoteActorInput => ({
   ...confirmedAs(uri.split("/").at(-1)!, new URL(uri).host),
   displayName: "d",
   inboxUrl: `${uri}/inbox`,
-  movedTo: null,
 });
 
 // carol's document on another server served with avatar `n`; extra replaces any other property.

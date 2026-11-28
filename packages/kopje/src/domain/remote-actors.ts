@@ -17,6 +17,7 @@ import {
   actorCollections,
   collectionRead,
   collectionSql,
+  namedMove,
   requestCollectionSync,
   UNREADABLE,
 } from "./collection-requests";
@@ -86,10 +87,8 @@ export type RemoteActorInput = {
   keys: { id: string; pem: string }[];
   // Emoji tags as read (federation/remote-emoji.ts); the snapshot is chosen when the account is written.
   emojiTags: EmojiCandidate[];
-  // The document as received; followers, alsoKnownAs and fields are read from it.
+  // The document as received; followers, alsoKnownAs, fields and movedTo are read from it.
   raw: string;
-  // The actor id the document's movedTo names (Fedify's successorId), when Kopje stores such an id; else null.
-  movedTo: string | null;
   // interactionPolicy.canFeature's halves as the Worker read them (federation/remote-actor.ts featurePolicyOf), or null
   // when the document states none: the stored policy is 0. Undefined from an earlier build: the stored policy is kept.
   featurePolicy?: RemoteFeaturePolicyInput | null;
@@ -483,16 +482,14 @@ function storeActor(
   );
   const row = remoteAccount(db, actor.uri);
   if (row !== undefined) {
-    // The account's move as its document states it, set or cleared by every store (Mastodon's
-    // ProcessAccountService: process_account_service.rb:166), written once the row is stored, by its id: an account
-    // other than itself, stored and not being purged, by its actor id; one Kopje does not know reads as none, as it is
-    // not fetched (process_account_service.rb:310-314 fetches it).
+    // The account's move as its document states it (ID-4), set or cleared by every store, an unchanged document's
+    // included (Mastodon's ProcessAccountService: process_account_service.rb:293), written once the row is stored, by
+    // its id: the literal movedTo (collection-requests.ts namedMove) naming a stored account (moveTargetSql); one Kopje
+    // does not know reads as none, as it is not fetched (process_account_service.rb:516-519 fetches it).
     db.run(
-      `UPDATE accounts SET moved_to_account_id = (SELECT m.id FROM accounts m INDEXED BY ${ACCOUNTS_URI_INDEX}
-				WHERE m.uri = ?2 AND m.id <> ?1 AND NOT ${deletingSql("m")})
-			WHERE id = ?1 AND domain IS NOT NULL`,
+      `UPDATE accounts SET moved_to_account_id = ${moveTargetSql("?2", "?1")} WHERE id = ?1 AND domain IS NOT NULL`,
       row.id,
-      actor.movedTo,
+      namedMove(actor.raw, actor.uri),
     );
     // The links of its fields to verify, from the same projection (remote-field-links.ts).
     armRemoteFieldLinks(db, row.id, remoteLinkBack(actor.uri, actor.url), links, now);
@@ -534,6 +531,15 @@ function storeActor(
   const collections = actorCollections(actor.raw);
   const named = Object.values(collections).some((url) => url !== null);
   return { ...row, syncWaiting: named && requestCollectionSync(db, row.id, now), frozen: false };
+}
+
+// The id of the account a move named `id` (an SQL expression, namedMove's href or NULL) resolves to, for the account
+// `self`: the stored row, local or remote, whatever its availability, whose actor id is `id` with its fragment removed
+// (Mastodon's ActivityPub::TagManager#uri_to_resource, `split('#').first`), other than `self` and not being purged;
+// else NULL. An unavailable one is presented redacted (accounts.ts presentAccount).
+function moveTargetSql(id: string, self: string): string {
+  return `(SELECT m.id FROM accounts m INDEXED BY ${ACCOUNTS_URI_INDEX}
+		WHERE m.uri = substr(${id}, 1, instr(${id} || '#', '#') - 1) AND m.id <> ${self} AND NOT ${deletingSql("m")})`;
 }
 
 // The flags a half of an interaction policy gives, the same in canQuote's and canFeature's (audience.ts

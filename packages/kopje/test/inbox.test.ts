@@ -44,6 +44,7 @@ import {
   mastodonNote,
   setup as statusSetup,
   type Setup as StatusSetup,
+  token,
 } from "./inbox-status-helpers";
 import {
   cavageByKeyId,
@@ -1070,7 +1071,6 @@ describe("ID-6: the authorization table, one negative case per row", () => {
         ...actorDefaults(),
         displayName: "pwned",
         inboxUrl: null,
-        movedTo: null,
       },
       activity: { type: "UpdateActor", id: `${LOCAL}/u` },
     });
@@ -1678,8 +1678,8 @@ describe("the follow limit and inbound activities", () => {
 });
 
 // Account#moved_to_account (migration 0060_account_moves), as the latest of two writes leaves it: every stored actor
-// document sets or clears it from its movedTo (process_account_service.rb:166), and a verified Move sets it when it is
-// first processed (move.rb:18). A replay of a known Move writes nothing.
+// document sets or clears it from its movedTo, and a verified Move sets it when it is first processed (move.rb:18). A
+// replay of a known Move writes nothing.
 describe("account moves", () => {
   const movedTo = (store: StoreStub, uri: string) =>
     sql<{ moved: string | null }>(
@@ -1717,12 +1717,13 @@ describe("account moves", () => {
     await t.post(bob, follow(bob, DAVE_URI));
     await refresh(t, bob, { ...bob.document, movedTo: carol.uri }, 1);
     expect(await movedTo(t.store, bob.uri)).toBe(carol.uri);
-    // Kopje does not fetch an unknown account to resolve it (process_account_service.rb:310-314 does).
+    // Kopje does not fetch an unknown account to resolve it (Mastodon does).
     await refresh(t, bob, { ...bob.document, movedTo: `${MASTODON}/users/unknown` }, 2);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
     await refresh(t, bob, { ...bob.document, movedTo: bob.uri }, 3);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
-    // Named as an array or an object with an id: Fedify reads each as the successor.
+    // Named as an array or an object with an id: the first value and the id are read (collection-requests.ts
+    // namedMove).
     for (const [n, document] of [
       [4, { ...bob.document, movedTo: [carol.uri] }],
       [5, { ...bob.document, movedTo: { id: carol.uri } }],
@@ -1732,8 +1733,8 @@ describe("account moves", () => {
       await refresh(t, bob, document, n);
       expect(await movedTo(t.store, bob.uri), String(n)).toBe(carol.uri);
     }
-    // Spelled as the expanded property, it is not read, as Mastodon reads only `movedTo` (#1709: Fedify is handed the
-    // literal members alone, federation/remote-actor.ts fedifyActorView).
+    // Spelled as the expanded property, it is not read, as Mastodon reads only `movedTo` (collection-requests.ts
+    // namedMove).
     const { movedTo: _literal, ...unmoved } = bob.document;
     await refresh(t, bob, { ...unmoved, "https://www.w3.org/ns/activitystreams#movedTo": { "@id": carol.uri } }, 6);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
@@ -1743,6 +1744,106 @@ describe("account moves", () => {
     await sql(t.store, "UPDATE accounts SET deleted_at = '2026-01-01T00:00:00.000Z' WHERE uri = ?", carol.uri);
     await refresh(t, bob, { ...bob.document, movedTo: carol.uri }, 8);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
+  });
+
+  // ID-4: the literal member as an absolute URI, and the stored account whose actor id is that URI without its
+  // fragment, as Mastodon reads `@json['movedTo']` and looks it up (docs/mastodon-deviations.md).
+  it("resolves the literal movedTo to the stored account it names, without the fragment", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const carol = await mastodonActor(t.web, "carol", { key: 2 });
+    const erin = await mastodonActor(t.web, "erin", { key: 3 });
+    const frank = await mastodonActor(t.web, "frank", { key: 4 });
+    for (const actor of [carol, erin, frank, bob]) {
+      await t.post(actor, follow(actor, DAVE_URI));
+    }
+    // Rows that the relative and empty spellings, read against bob's id, would name, and one whose actor id carries a
+    // fragment.
+    const fragmented = `${MASTODON}/users/x#main`;
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE uri = ?", `${MASTODON}/users/`, erin.uri);
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE uri = ?", fragmented, frank.uri);
+    const cases: [unknown, string | null][] = [
+      [{ "@id": carol.uri }, null],
+      ["/users/carol", null],
+      ["", null],
+      [fragmented, null],
+      [`${carol.uri}#main`, carol.uri],
+    ];
+    let n = 0;
+    for (const [value, expected] of cases) {
+      const label = JSON.stringify(value);
+      // From the other state first, so each store is seen writing the move.
+      await refresh(t, bob, { ...bob.document, movedTo: expected === null ? carol.uri : null }, ++n);
+      expect(await movedTo(t.store, bob.uri), label).toBe(expected === null ? carol.uri : null);
+      await refresh(t, bob, { ...bob.document, movedTo: value }, ++n);
+      expect(await movedTo(t.store, bob.uri), label).toBe(expected);
+    }
+  });
+
+  // A move stored from an earlier reading of the same document is recomputed when it is stored again, as every store
+  // sets or clears the move: a relative or `@id` movedTo stops naming an account, and one under a context that maps the
+  // term elsewhere starts to; following (R21) and suggestions (R39) follow the recomputed move.
+  it("recomputes a stored move when the same document is stored again", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const carol = await mastodonActor(t.web, "carol", { key: 2 });
+    await t.post(carol, follow(carol, DAVE_URI));
+    await t.post(bob, follow(bob, DAVE_URI));
+    const bobId = (await accountId(t.store, bob.uri)) ?? "";
+    const carolId = (await accountId(t.store, carol.uri)) ?? "";
+    const shown = async () => {
+      const response = await t.request(`/api/v1/accounts/${bobId}`);
+      expect(response.status).toBe(200);
+      const account = await response.json<{ moved?: { id: string } | null }>();
+      return Object.hasOwn(account, "moved") ? (account.moved?.id ?? null) : undefined;
+    };
+    // alice follows dave, who follows bob, so bob is suggested to alice while he has not moved.
+    const alice = await token(t.store, ALICE);
+    await sql(
+      t.store,
+      "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted'), (?, ?, 'accepted')",
+      ALICE,
+      DAVE,
+      DAVE,
+      bobId,
+    );
+    const suggested = async () => {
+      const response = await t.request("/api/v1/suggestions", bearer(alice));
+      expect(response.status).toBe(200);
+      return (await response.json<{ id: string }[]>()).some((account) => account.id === bobId);
+    };
+    // The follow's answer; a follow it writes is removed again, so the next case starts unfollowed.
+    const followAnswer = async () => {
+      const { status } = await t.request(`/api/v1/accounts/${bobId}/follow`, bearer(alice, { method: "POST" }));
+      await sql(t.store, "DELETE FROM follows WHERE account_id = ? AND target_account_id = ?", ALICE, bobId);
+      return status;
+    };
+    const live = async (moved: string | null, label: string) => {
+      expect(await suggested(), label).toBe(moved === null);
+      expect(await followAnswer(), label).toBe(moved === null ? 200 : 403);
+    };
+    const elsewhere = {
+      ...bob.document,
+      "@context": [...(bob.document["@context"] as unknown[]), { movedTo: "https://elsewhere.example/ns#moved" }],
+      movedTo: carol.uri,
+    };
+    const cases: [string, Record<string, unknown>, string | null, string | null][] = [
+      ["relative", { ...bob.document, movedTo: "/users/carol" }, carolId, null],
+      ["@id", { ...bob.document, movedTo: { "@id": carol.uri } }, carolId, null],
+      ["a context mapping movedTo elsewhere", elsewhere, null, carolId],
+    ];
+    let n = 0;
+    for (const [label, document, earlier, now] of cases) {
+      await refresh(t, bob, document, ++n);
+      // The move an earlier reading stored for this document.
+      await sql(t.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", earlier, bobId);
+      expect(await shown(), label).toBe(earlier ?? undefined);
+      await live(earlier, `${label}, before`);
+      await refresh(t, bob, document, ++n);
+      expect(await movedTo(t.store, bob.uri), label).toBe(now === null ? null : carol.uri);
+      expect(await shown(), label).toBe(now ?? undefined);
+      await live(now, label);
+    }
   });
 
   it("leaves it as it was on a frozen refresh and under a domain block", async () => {
@@ -1760,7 +1861,7 @@ describe("account moves", () => {
       ...confirmedAs("bob", "mastodon.example"),
       displayName: "bob",
       inboxUrl: `${bob.uri}/inbox`,
-      movedTo: target,
+      raw: JSON.stringify({ movedTo: target }),
     });
     const store = (target: string) =>
       runInDurableObject(t.store, (_instance, state) =>
@@ -1892,19 +1993,25 @@ describe("account moves", () => {
 
   // R21 judges each follower a Move carries: a target that has itself moved is not followable, so the follower keeps
   // the source and its lists and nothing is sent (Mastodon's UnfollowFollowWorker rescues FollowService's
-  // NotPermittedError); blocks and mutes are carried anyway (move_worker.rb:21-22).
+  // NotPermittedError); blocks and mutes are carried anyway (move_worker.rb:21-22). The Move stores the target's
+  // fetched document first, so whether the target has moved is its literal movedTo's reading (collection-requests.ts
+  // namedMove): a relative one names no account, though carol is stored where it would resolve against the target's
+  // id, and one with a fragment names carol.
   it("keeps the followers of the source when the Move's target has moved, and moves them when it has not", async () => {
-    for (const targetMoved of [true, false]) {
+    const CAROL = "https://new.example/users/carol";
+    const cases: [string, Record<string, unknown>, boolean][] = [
+      ["carol", { movedTo: CAROL }, true],
+      ["carol with a fragment", { movedTo: `${CAROL}#main` }, true],
+      ["none", {}, false],
+      ["relative", { movedTo: "/users/carol" }, false],
+    ];
+    for (const [label, moved, targetMoved] of cases) {
       const t = await setup();
       const bob = await mastodonActor(t.web, "bob");
       const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
-      const carol = await mastodonActor(t.web, "carol", { origin: "https://third.example", key: 3 });
+      const carol = await mastodonActor(t.web, "carol", { origin: "https://new.example", key: 3 });
       await t.post(carol, follow(carol, DAVE_URI));
-      t.web.serve(bob2.uri, {
-        ...bob2.document,
-        alsoKnownAs: [bob.uri],
-        ...(targetMoved ? { movedTo: carol.uri } : {}),
-      });
+      t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri], ...moved });
       await t.post(bob, follow(bob, DAVE_URI));
       const bobId = (await accountId(t.store, bob.uri))!;
       await sql(
@@ -1919,21 +2026,23 @@ describe("account moves", () => {
       const before = (await outbound(t.store)).length;
       expect(await t.post(bob, moveOf(bob, bob2, 1))).toBe(202);
       const bob2Id = (await accountId(t.store, bob2.uri))!;
-      expect([targetMoved, await movedTo(t.store, bob2.uri)]).toEqual([targetMoved, targetMoved ? carol.uri : null]);
+      expect([label, await movedTo(t.store, bob2.uri)]).toEqual([label, targetMoved ? carol.uri : null]);
       const sent = (await outbound(t.store)).slice(before).map((o) => o.activity.type);
       const members = await sql(t.store, "SELECT account_id FROM list_accounts ORDER BY account_id");
       if (targetMoved) {
-        expect((await follows(t.store)).filter((f) => f.account_id === ALICE)).toEqual([
-          { account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null },
-        ]);
-        expect(sent).toEqual([]);
-        expect(members).toEqual([{ account_id: bobId }]);
+        expect(
+          (await follows(t.store)).filter((f) => f.account_id === ALICE),
+          label,
+        ).toEqual([{ account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null }]);
+        expect(sent, label).toEqual([]);
+        expect(members, label).toEqual([{ account_id: bobId }]);
       } else {
-        expect((await follows(t.store)).filter((f) => f.account_id === ALICE)).toEqual([
-          expect.objectContaining({ target_account_id: bob2Id, state: "pending" }),
-        ]);
-        expect(sent).toEqual(["Undo", "Follow"]);
-        expect(members).toEqual([{ account_id: bob2Id }]);
+        expect(
+          (await follows(t.store)).filter((f) => f.account_id === ALICE),
+          label,
+        ).toEqual([expect.objectContaining({ target_account_id: bob2Id, state: "pending" })]);
+        expect(sent, label).toEqual(["Undo", "Follow"]);
+        expect(members, label).toEqual([{ account_id: bob2Id }]);
       }
       expect(await sql(t.store, "SELECT target_account_id FROM mutes WHERE account_id = ? ORDER BY id", DAVE)).toEqual([
         { target_account_id: bobId },

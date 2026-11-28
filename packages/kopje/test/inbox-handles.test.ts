@@ -465,7 +465,6 @@ describe("a confirmed handle another account holds (C6, C7)", () => {
         ...confirmedAs(name, "remote.example"),
         displayName: name,
         inboxUrl: null,
-        movedTo: null,
       });
       const changes = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
       const written = (input: ReturnType<typeof actor>, at: number) =>
