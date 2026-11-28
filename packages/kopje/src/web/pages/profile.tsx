@@ -2,6 +2,7 @@ import type { FC } from "hono/jsx";
 
 import type { Account } from "../../domain/accounts";
 import type { Status } from "../../domain/status-presenter";
+import { taggedPath } from "../../domain/tagged-path";
 import type { StatusStub } from "../../domain/web-pages/budget";
 import type { PageCursor, Paging } from "../../domain/web-pages/paging";
 import type { ParentLink } from "../../domain/web-pages/parents";
@@ -49,7 +50,7 @@ function tabPath(username: string, tab: ProfileTab): string {
     case "media":
       return `${profile}/media`;
     case "tagged":
-      return `${profile}/tagged/${encodeURIComponent(tab.tag)}`;
+      return taggedPath(username, tab.tag);
   }
 }
 

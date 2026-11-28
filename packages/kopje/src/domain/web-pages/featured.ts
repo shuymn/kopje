@@ -1,21 +1,21 @@
 import type { Db } from "../../db/sql";
 import { type Account } from "../accounts";
 import { accountEndorsementsWithin } from "../endorsements";
-import { accountFeaturedTagsOf, type FeaturedTag, MAX_FEATURED_TAGS } from "../featured-tags";
+import { accountFeaturedKeysOf, type FeaturedTag, MAX_FEATURED_TAGS } from "../featured-tags";
+import { isHashtagName } from "../status-text";
 import { admitMandatory, admitStrict, pageBudget, WEB_PAGE_BYTES } from "./budget";
 import { type PageCursor, type Paging, LONGEST_PAGING, pagingOf } from "./paging";
 import { localPageAccount } from "./profile";
 import { localUsername, pagePresent, pageRead, type Site } from "./site";
-import { tagPageName } from "./tags";
 
 // The endorsed accounts a page lists at a time: the API's default page, as for the follow lists.
 export const ENDORSEMENTS_PAGE_SIZE = 40;
 
 export type FeaturedInput = { handle: string; cursor: PageCursor };
 
-// A featured hashtag as the API presents it, and the normalized name of the hashtag page that serves it (tagPageName),
-// or null when none does (an imported name that is not a hashtag).
-export type FeaturedTagLink = { featured: FeaturedTag; tag: string | null };
+// A featured hashtag as the API presents it, and its stored key when the account's tagged route accepts it
+// (isHashtagName, profilePageWithin), else null.
+export type FeaturedTagLink = { featured: FeaturedTag; key: string | null };
 
 export type FeaturedPage =
   | {
@@ -67,9 +67,9 @@ export function featuredPageWithin(db: Db, input: FeaturedInput, site: Site, ans
     answerBytes,
   );
   admitMandatory(budget, account);
-  const tags = accountFeaturedTagsOf(db, row.id, present.origin, MAX_FEATURED_TAGS).map((featured) => ({
+  const tags = accountFeaturedKeysOf(db, row.id, present.origin, MAX_FEATURED_TAGS).map(({ featured, key }) => ({
     featured,
-    tag: tagPageName(featured.name),
+    key: isHashtagName(key) ? key : null,
   }));
   admitMandatory(budget, tags);
   const list = accountEndorsementsWithin(

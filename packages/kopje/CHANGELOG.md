@@ -10,8 +10,34 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- `POST` and `PUT /api/v1/statuses` no longer read a scalar `media_ids` (`media_ids=<id>` or `"media_ids": "<id>"`) as a
+  list of one. As in Mastodon, the scalar is read as not sent: a new status is posted without media, and an edit removes
+  its media if the status it leaves is valid: an edit that would leave no text, no media and no quote answers 422
+  `Validation failed: Text can't be blank` and keeps the status as it was.
+- A status text search with `account_id` (`GET /api/v2/search?type=statuses&account_id=`) of another account now returns
+  only its statuses the viewer boosted, favourited, bookmarked, voted in or is mentioned in, and its public statuses
+  when the account is indexable, as Mastodon's search does. The viewer's own interactions with that account are found
+  among the viewer's newest 2,500 of each kind even when they are older than the account's newest 2,500 posts. For an
+  account that is not indexable, the same request returns fewer statuses than before: no public, unlisted or private
+  status outside the viewer's interactions, and none the viewer is only addressed in. For an indexable account, it
+  returns no unlisted or private status outside them. When 2,500 newer matching posts of an indexable account that the
+  viewer may see but never interacted with fill the account's window, a request can return only an older status the
+  viewer interacted with, and paging by its id passes a public status between them that a client reached before by
+  paging through those newer posts. A status the request finds can also lie past the offset of 10,000 a client may
+  request. A search of the viewer's own account, a search without `account_id`, and URL resolution are unchanged
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials).
 - An account's `created_at` is midnight UTC of its creation day, and a local account's actor publishes that midnight as
   `published`, as Mastodon does. The admin API's own `created_at` stays exact.
+
+### Fixed
+
+- The hashtags of a profile's Featured tab (`/@user/featured`) link to the account's posts with the hashtag
+  (`/@user/tagged/:name`), as the featured hashtags on Mastodon's account timeline do. The link names the hashtag by its
+  stored name, as the API's featured tag `url` does, where Mastodon's web app uses the display name. A featured hashtag
+  whose stored name that page does not serve is shown without a link.
+- Authorizing a follow request through the API (`POST /api/v1/follow_requests/:id/authorize`) writes a `follow`
+  notification from the new follower, pushed and streamed as any other, as Mastodon does. Unlocking the account still
+  writes none.
 
 ## [0.9.0] - 2026-11-28
 

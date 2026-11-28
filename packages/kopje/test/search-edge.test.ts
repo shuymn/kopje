@@ -14,59 +14,19 @@ import {
 import type { StoreOperation } from "../src/platform/store-kernel";
 import { MAX_TREND_REVIEWS } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
-import { bearer, sql } from "./api-helpers";
+import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { type PlannedStatement, plannedSql, scansOf, staleStatistics, watchedCursor } from "./read-helpers";
-import { act, community, post, seedStatus } from "./status-helpers";
+import {
+  fillerStatuses,
+  type SearchHarness,
+  searchFixture as fixture,
+  type SearchResults as Results,
+} from "./search-helpers";
+import { act, post, seedStatus } from "./status-helpers";
 
 // Search bounds: cursors that reach past each library source's window, work that stays bounded as the
 // collections grow (RES-7), and hashtags whose visibility hidden statuses cannot change (VIS-1).
-
-type Results = { statuses: { id: string }[]; hashtags: { name: string }[]; accounts: { id: string }[] };
-
-async function fixture() {
-  const h = await community(["alice", "bob", "carol"]);
-  const search = async (q: string, extra = "", token = h.users.alice.token) => {
-    const response = await h.request(`/api/v2/search?q=${encodeURIComponent(q)}${extra}`, bearer(token));
-    if (response.status !== 200) {
-      throw new Error(`search: ${response.status} ${await response.text()}`);
-    }
-    return response.json<Results>();
-  };
-  return { h, search };
-}
-
-// `count` public statuses by `author` with ids from `base` up, each with `content` (and no search hit for "deep").
-async function fillerStatuses(
-  h: Awaited<ReturnType<typeof fixture>>["h"],
-  author: string,
-  count: number,
-  base: bigint,
-  { visibility = "public", tag }: { visibility?: string; tag?: string } = {},
-) {
-  await sql(
-    h.store,
-    `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ? - 1)
-		INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, search_text)
-		SELECT CAST(? + i AS TEXT), 'https://kopje.test/ap/o/f' || ? || '-' || i, ?, ?, '<p>filler</p>',
-			'2026-10-12T00:00:00.000Z', 'filler'
-		FROM n`,
-    count,
-    String(base),
-    String(base),
-    author,
-    visibility,
-  );
-  if (tag !== undefined) {
-    await sql(
-      h.store,
-      `INSERT INTO status_tags (status_id, name) SELECT id, ? FROM statuses WHERE CAST(id AS INTEGER) BETWEEN ? AND ?`,
-      tag,
-      String(base),
-      String(base + BigInt(count) - 1n),
-    );
-  }
-}
 
 describe("library cursors reach past each source window", () => {
   for (const source of ["favourites", "bookmarks", "boosts"] as const) {
@@ -101,9 +61,80 @@ describe("library cursors reach past each source window", () => {
   }
 });
 
+// A status search with account_id of another account (#1564, D7): a status the viewer's own interactions nominate is a
+// candidate though it is past the account's newest originals, and the vote window's cursors apply outside its LIMIT.
+describe("account_id candidates reach past the account's window", () => {
+  // `count` public statuses by bob matching "filler", the oldest first; carol is the viewer.
+  async function scoped(count: number) {
+    const { h, search } = await fixture();
+    const { bob, carol } = h.users;
+    await fillerStatuses(h, bob.id, count, 300000000000000000n);
+    const id = (i: number) => String(300000000000000000n + BigInt(i));
+    const poll = async (i: number) => {
+      await sql(h.store, `INSERT INTO polls (status_id, options, tallies) VALUES (?, '["a","b"]', '[0,0]')`, id(i));
+      await sql(h.store, "INSERT INTO poll_votes (poll_id, account_id, choice) VALUES (?, ?, 0)", id(i), carol.id);
+    };
+    const ids = async (extra = "") =>
+      (await search("filler", `&type=statuses&account_id=${bob.id}${extra}`, carol.token)).statuses.map((s) => s.id);
+    return { h, id, poll, ids };
+  }
+
+  it("returns the one status the viewer favourited or voted in, past the account's newest 2,500 (P6.5)", async () => {
+    const { h, id, poll, ids } = await scoped(LIBRARY_SOURCE_LIMIT + 1);
+    const { carol } = h.users;
+    expect(await ids()).toEqual([]);
+    await sql(h.store, "INSERT INTO favourites (account_id, status_id) VALUES (?, ?)", carol.id, id(0));
+    expect(await ids()).toEqual([id(0)]);
+    await sql(h.store, "DELETE FROM favourites WHERE account_id = ?", carol.id);
+    expect(await ids()).toEqual([]);
+    await poll(0);
+    expect(await ids()).toEqual([id(0)]);
+  }, 60_000);
+
+  it("applies max_id and min_id to the polls of the viewer's votes", async () => {
+    const { id, poll, ids } = await scoped(LIBRARY_SOURCE_LIMIT + 1);
+    // Votes in three polls of bob's, V1 < V2 < V3, V1 past his newest 2,500.
+    for (const i of [0, 1, 2]) {
+      await poll(i);
+    }
+    expect(await ids(`&max_id=${id(1)}`)).toEqual([id(0)]);
+    expect(await ids(`&min_id=${id(1)}`)).toEqual([id(2)]);
+    expect(await ids(`&max_id=${BigInt(id(0)) - 1n}`)).toEqual([]);
+    // The control: without a cursor, all three.
+    expect(await ids()).toEqual([id(2), id(1), id(0)]);
+  }, 60_000);
+
+  // The vote window is the viewer's newest LIBRARY_SOURCE_LIMIT vote rows, and the id bounds apply after it (A7): a
+  // vote older than that many newer votes is not a candidate of a request whose bounds leave the newer ones out.
+  it("takes the viewer's newest votes before max_id applies", async () => {
+    const { h, id, poll, ids } = await scoped(LIBRARY_SOURCE_LIMIT + 1);
+    const { alice, carol } = h.users;
+    // carol votes in bob's oldest status (past his newest 2,500), then in LIBRARY_SOURCE_LIMIT polls of alice's
+    // statuses, all above bob's.
+    await poll(0);
+    await fillerStatuses(h, alice.id, LIBRARY_SOURCE_LIMIT, 400000000000000000n);
+    await sql(
+      h.store,
+      `INSERT INTO polls (status_id, options, tallies) SELECT id, '["a","b"]', '[0,0]' FROM statuses WHERE account_id = ?`,
+      alice.id,
+    );
+    await sql(
+      h.store,
+      "INSERT INTO poll_votes (poll_id, account_id, choice) SELECT id, ?, 0 FROM statuses WHERE account_id = ? ORDER BY id",
+      carol.id,
+      alice.id,
+    );
+    const below = "&max_id=400000000000000000";
+    expect(await ids(below)).toEqual([]);
+    // The control: with one of the newer votes gone, the oldest is within the window and found.
+    await sql(h.store, "DELETE FROM poll_votes WHERE poll_id = '400000000000000000' AND account_id = ?", carol.id);
+    expect(await ids(below)).toEqual([id(0)]);
+  }, 60_000);
+});
+
 // Runs the search operation over a SqlStorage that counts the rows each statement reads.
 async function rowsRead(
-  h: Awaited<ReturnType<typeof fixture>>["h"],
+  h: SearchHarness,
   token: string,
   {
     followingOnly = false,
@@ -219,12 +250,7 @@ describe("hashtag results do not depend on hidden statuses (VIS-1)", () => {
 
 describe("verification review", () => {
   // `count` remote accounts named `username` (or u<i>) on their own domains, ids from `base` up.
-  async function remoteAccounts(
-    h: Awaited<ReturnType<typeof fixture>>["h"],
-    count: number,
-    base: bigint,
-    username?: string,
-  ) {
+  async function remoteAccounts(h: SearchHarness, count: number, base: bigint, username?: string) {
     await sql(
       h.store,
       `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ? - 1)
@@ -296,7 +322,7 @@ describe("verification review", () => {
       );
       return runFollowing(h);
     };
-    const runFollowing = (h: Awaited<ReturnType<typeof fixture>>["h"]) =>
+    const runFollowing = (h: SearchHarness) =>
       rowsRead(h, h.users.alice.token, { query: "nobody", types: ["accounts"], followingOnly: true });
     const small = await measure(4000);
     const large = await measure(16000);
@@ -333,7 +359,7 @@ describe("verification review", () => {
 // `operation` over `h`'s Store with `input` and alice's credential of `scope`, its results, and the plan and rows read
 // of each statement whose SQL matches `pattern` (EXPLAIN QUERY PLAN of the production statement with its parameters).
 async function plannedOperation<I, O>(
-  h: Awaited<ReturnType<typeof fixture>>["h"],
+  h: SearchHarness,
   pattern: RegExp,
   operation: StoreOperation<I, Authorized<O>>,
   scope: string,
@@ -360,7 +386,7 @@ async function plannedOperation<I, O>(
 
 // The search operation (GET /api/v2/search).
 async function planned(
-  h: Awaited<ReturnType<typeof fixture>>["h"],
+  h: SearchHarness,
   pattern: RegExp,
   input: Omit<SearchRequest, "credential" | "present" | "localDomain" | "limit" | "offset"> & {
     limit?: number;
@@ -535,6 +561,146 @@ describe("ranking queries with stale statistics (RES-7)", () => {
     expect(scansOf(plan, ["s", "statuses"])).toEqual([]);
     expect(rows).toBe(before.plans[0]!.rows);
   }, 60_000);
+
+  // The account_id statement (#1564, D7): every window starts at its cap, and older rows grow under each window's own
+  // key after ANALYZE (bob's originals; alice's boosts, favourites, bookmarks, mentions and votes). Each window still
+  // walks its index newest first and stops at its LIMIT, so the candidates and the rows read stay the same; each
+  // candidate's interactions are probed by key.
+  it("walks an account's originals and the viewer's newest votes by their indexes, and probes by key", async () => {
+    const { h } = await fixture();
+    const { alice, bob, carol } = h.users;
+    const full = LIBRARY_SOURCE_LIMIT + 100;
+    const older = 5000;
+    // alice's library rows of carol's statuses from `base` up, and alice's boosts of them.
+    const library = async (base: bigint, count: number) => {
+      const range = `SELECT id, uri, published_at FROM statuses WHERE account_id = '${carol.id}'
+				AND CAST(id AS INTEGER) BETWEEN ${base} AND ${base + BigInt(count) - 1n}`;
+      await sql(h.store, `INSERT INTO favourites (account_id, status_id) SELECT ?, id FROM (${range})`, alice.id);
+      await sql(h.store, `INSERT INTO bookmarks (account_id, status_id) SELECT ?, id FROM (${range})`, alice.id);
+      await sql(h.store, `INSERT INTO status_mentions (status_id, account_id) SELECT id, ? FROM (${range})`, alice.id);
+      await sql(
+        h.store,
+        `INSERT INTO statuses (id, uri, account_id, reblog_of_id, visibility, published_at)
+					SELECT CAST(CAST(id AS INTEGER) + 150000000000000000 AS TEXT), uri || '/boost', ?, id, 'public', published_at
+					FROM (${range})`,
+        alice.id,
+      );
+    };
+    await fillerStatuses(h, bob.id, full, 600000000000000000n);
+    await fillerStatuses(h, carol.id, full, 700000000000000000n);
+    await library(700000000000000000n, full);
+    // A poll on each of bob's statuses and alice's vote in each, with rowids above every vote grown later.
+    await sql(
+      h.store,
+      `INSERT INTO polls (status_id, options, tallies) SELECT id, '["a","b"]', '[0,0]' FROM statuses WHERE account_id = ?`,
+      bob.id,
+    );
+    await sql(
+      h.store,
+      `INSERT INTO poll_votes (id, poll_id, account_id, choice)
+				SELECT 1000000 + row_number() OVER (ORDER BY id), id, ?, 0 FROM statuses WHERE account_id = ?`,
+      alice.id,
+      bob.id,
+    );
+    const maxId = "900000000000000000";
+    const run = async (extra: { maxId?: string }) => {
+      const { value, plans } = await planned(h, /^WITH library\(id\)/, {
+        query: "filler",
+        types: ["statuses"],
+        following: false,
+        accountId: bob.id,
+        limit: 40,
+        ...extra,
+      });
+      expect(plans).toHaveLength(1);
+      const { query, params, plan, rows } = plans[0]!;
+      // The candidates the statement takes, counted by the statement's own CTEs and parameters.
+      const counted = await sql<{ n: number }>(
+        h.store,
+        `${query.slice(0, query.indexOf("SELECT s.id AS id FROM candidates"))}
+					SELECT count(*) AS n FROM candidates WHERE 1 ${params.map((_, i) => `OR ?${i + 1} IS NULL`).join(" ")}`,
+        ...params,
+      );
+      return { ids: value.statuses.map((s) => s.id), plan, rows, candidates: counted[0]!.n };
+    };
+    const both = async () => [await run({}), await run({ maxId })];
+    const { before, after } = await staleStatistics(h, {
+      capture: both,
+      grow: async () => {
+        await fillerStatuses(h, bob.id, older, 200000000000000000n);
+        await fillerStatuses(h, carol.id, older, 300000000000000000n);
+        await library(300000000000000000n, older);
+        await sql(
+          h.store,
+          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?3)
+						INSERT INTO poll_votes (id, poll_id, account_id, choice, generation) SELECT i, ?1, ?2, 0, i FROM n`,
+          "600000000000000000",
+          alice.id,
+          older,
+        );
+      },
+    });
+    // Every window's own key grew by `older` rows below its window.
+    const grown = await sql(
+      h.store,
+      `SELECT (SELECT count(*) FROM statuses WHERE account_id = ?1 AND reblog_of_id IS NULL) AS originals,
+				(SELECT count(*) FROM statuses WHERE account_id = ?2 AND reblog_of_id IS NOT NULL) AS boosts,
+				(SELECT count(*) FROM favourites WHERE account_id = ?2) AS favourites,
+				(SELECT count(*) FROM bookmarks WHERE account_id = ?2) AS bookmarks,
+				(SELECT count(*) FROM status_mentions WHERE account_id = ?2) AS mentions,
+				(SELECT count(*) FROM poll_votes WHERE account_id = ?2) AS votes`,
+      bob.id,
+      alice.id,
+    );
+    const total = full + older;
+    expect(grown).toEqual([
+      { originals: total, boosts: total, favourites: total, bookmarks: total, mentions: total, votes: total },
+    ]);
+    for (const [i, { ids, plan, rows, candidates }] of after.entries()) {
+      // bob's statuses alice voted in, the newest 40.
+      expect(ids).toHaveLength(40);
+      expect(ids).toEqual(before[i]!.ids);
+      // bob's newest 2,500 (the polls of alice's newest votes among them) and carol's newest 2,500 alice saved.
+      expect([before[i]!.candidates, candidates]).toEqual([2 * LIBRARY_SOURCE_LIMIT, 2 * LIBRARY_SOURCE_LIMIT]);
+      const author = i === 0 ? "(account_id=?)" : "(account_id=? AND id<?)";
+      const authorWindow = plan.filter((detail) =>
+        /^SEARCH statuses USING (COVERING )?INDEX statuses_account_originals /.test(detail),
+      );
+      expect(authorWindow).toHaveLength(1);
+      expect(authorWindow[0]!.endsWith(` ${author}`)).toBe(true);
+      const votes = plan.findIndex((detail) =>
+        /^SEARCH poll_votes USING (COVERING )?INDEX poll_votes_account \(account_id=\?\)$/.test(detail),
+      );
+      expect(votes).toBeGreaterThan(-1);
+      expect(plan[votes + 1]).not.toMatch(/TEMP B-TREE FOR .*ORDER BY/);
+      // Each library window by its index and its own range, newest first: below max_id when one is given (the kept
+      // boosts' range also holds reblog_of_id IS NOT NULL, a range above NULL).
+      const below = (column: string) => (i === 0 ? "" : ` AND ${column}<?`);
+      for (const [table, index, range] of [
+        ["statuses", "statuses_account_reblogs_kept", `(account_id=? AND reblog_of_id>?${below("reblog_of_id")})`],
+        ["favourites", "favourites_account_status", `(account_id=?${below("status_id")})`],
+        ["bookmarks", "bookmarks_account_status", `(account_id=?${below("status_id")})`],
+        ["status_mentions", "status_mentions_account", `(account_id=?${below("status_id")})`],
+      ]) {
+        expect(plan).toContain(`SEARCH ${table} USING COVERING INDEX ${index} ${range}`);
+      }
+      for (const probe of [
+        "SEARCH favourites USING COVERING INDEX favourites_pair (status_id=? AND account_id=?)",
+        "SEARCH bookmarks USING COVERING INDEX bookmarks_pair (status_id=? AND account_id=?)",
+        "SEARCH statuses USING COVERING INDEX statuses_account_reblogs_kept (account_id=? AND reblog_of_id=?)",
+        "SEARCH status_mentions USING PRIMARY KEY (status_id=? AND account_id=?)",
+        "SEARCH p USING INDEX sqlite_autoindex_polls_1 (status_id=?)",
+        "SEARCH v USING COVERING INDEX sqlite_autoindex_poll_votes_1 (poll_id=? AND generation=? AND account_id=?)",
+      ]) {
+        expect(plan).toContain(probe);
+      }
+      expect(
+        scansOf(plan, ["s", "statuses", "favourites", "bookmarks", "status_mentions", "poll_votes", "p", "v"]),
+      ).toEqual([]);
+      // The same rows read as before the growth: no window walks the older rows.
+      expect(rows).toBe(before[i]!.rows);
+    }
+  }, 180_000);
 
   it("seeks the candidate accounts by id and the username prefix by its index, past the newest window", async () => {
     const { h } = await fixture();

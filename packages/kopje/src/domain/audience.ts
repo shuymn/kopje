@@ -1767,7 +1767,8 @@ function notFollowingSql(r: string, from: string): string {
 }
 
 // BaseCondition#not_follower? (:51-54): the sender does not follow the recipient, or has followed for less than
-// three days. Kopje keeps a follow's time from its request, so a follow accepted later counts from the request.
+// three days. Kopje keeps a follow's time from its request, so a follow accepted later counts from the request
+// (notificationPolicySql's `newFollower` excepts the authorization's own follow notification).
 function notFollowerSql(r: string, from: string, now: string): string {
   return `NOT EXISTS (SELECT 1 FROM main.follows pr WHERE pr.account_id = ${from} AND pr.target_account_id = ${r}
 		AND pr.state = 'accepted' AND pr.created_at <= ${daysBeforeSql(now, NEW_FOLLOWER_DAYS)})`;
@@ -1825,6 +1826,7 @@ function policyMatchesSql(
   status: string,
   now: string,
   limited: string,
+  notFollower: string,
 ): string {
   const is = (column: PolicyColumn) => `${policyChoiceSql(r, column)} = '${choice}'`;
   return `(${notFollowingSql(r, from)} AND (${is("for_not_following")}
@@ -1832,7 +1834,7 @@ function policyMatchesSql(
 			OR (${is("for_private_mentions")} AND ${privateMentionNotInResponseSql(r, type, from, status)})
 			OR (${limited} = 1 AND ${is("for_limited_accounts")})
 			OR (${is("for_bots")} AND ${botSql(from)})))
-		OR (${is("for_not_followers")} AND ${notFollowerSql(r, from, now)})`;
+		OR (${is("for_not_followers")} AND ${notFollower})`;
 }
 
 // R15, the policy part (NotifyService#drop? and #filter?, app/services/notify_service.rb:113-134 and :176-186): what
@@ -1842,7 +1844,9 @@ function policyMatchesSql(
 // drops it, else one whose choice is filter filters it. The blocks, mutes, domain blocks and conversation mutes that
 // drop a notification are notifiedSql's. Kopje has no staff role that bypasses blocks (from_staff? is false). Kopje
 // has no silenced accounts: the limited condition matches a notification its caller marks `limited` (1 or 0,
-// NotifyService's `silenced` option).
+// NotifyService's `silenced` option). `newFollower` (1 or 0) marks the follow notification of an authorization, whose
+// follow counts from the acceptance, since Mastodon creates the Follow then (follow_request.rb:34-45): the
+// not_follower condition holds for it.
 export function notificationPolicySql(
   r: string,
   type: string,
@@ -1850,12 +1854,14 @@ export function notificationPolicySql(
   status: string,
   now: string,
   limited: string,
+  newFollower: string,
 ): string {
+  const notFollower = `(${newFollower} = 1 OR ${notFollowerSql(r, from, now)})`;
   return `(CASE WHEN ${type} NOT IN (${FILTERABLE_TYPES.map((t) => `'${t}'`).join(", ")})
 			OR EXISTS (SELECT 1 FROM main.notification_permissions pp WHERE pp.account_id = ${r} AND pp.from_account_id = ${from})
 		THEN 'accept'
-		WHEN ${policyMatchesSql("drop", r, type, from, status, now, limited)} THEN 'drop'
-		WHEN ${policyMatchesSql("filter", r, type, from, status, now, limited)} THEN 'filter'
+		WHEN ${policyMatchesSql("drop", r, type, from, status, now, limited, notFollower)} THEN 'drop'
+		WHEN ${policyMatchesSql("filter", r, type, from, status, now, limited, notFollower)} THEN 'filter'
 		ELSE 'accept' END)`;
 }
 

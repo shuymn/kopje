@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { featuredTagSuggestions, suggestionsSince } from "../src/domain/tags";
 import { NOW } from "./app-helpers";
 import { migratedStore } from "./helpers";
+import { HIGH, LOW, seedViewerBetween, VIEWER } from "./plan-accounts";
 import { expectBeside, expectGrowth, PlanWitness, type Run, STATISTICS, type Statistics } from "./plan-witness";
 
 // RES-7 witness of featured tag suggestions beside main's statement (test/plan-witness.ts), under the plan audit's
@@ -17,9 +18,6 @@ import { expectBeside, expectGrowth, PlanWitness, type Run, STATISTICS, type Sta
 // one status, a name with a NUL inside, and counts tied across names. Every other statement the operation makes is
 // allowed literally; any further statement fails the witness.
 
-const VIEWER = "600000000000000001";
-const LOW = "500000000000000001";
-const HIGH = "700000000000000001";
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 const SINCE = suggestionsSince(NOW);
@@ -48,20 +46,6 @@ const BASE: Shape = { recent: 60, old: 40, others: 40 };
 // An id of `ms`, its low bits telling the accounts apart.
 const idAt = (ms: number, low: number) => ((BigInt(ms) << 16n) + BigInt(low)).toString();
 
-function local(sql: SqlStorage, id: string, name: string) {
-  sql.exec(
-    "INSERT INTO accounts (id, uri, username) VALUES (?, ?, ?)",
-    id,
-    `https://kopje.test/ap/users/${name}`,
-    name,
-  );
-  sql.exec(
-    "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, ?, X'00', X'00', 'k')",
-    id,
-    `${name}@example.com`,
-  );
-}
-
 // `count` statuses of `account`, a minute apart back from `from`, the i-th newest carrying `names(i)`.
 function statuses(sql: SqlStorage, account: string, count: number, from: number, names: (i: number) => string[]) {
   for (let i = 0; i < count; i++) {
@@ -83,16 +67,7 @@ function statuses(sql: SqlStorage, account: string, count: number, from: number,
 const tagsOf = (i: number) => [`a${i % 7}`, `b${i % 11}`, ...(i < 2 ? ["Dup", "dup"] : i < 4 ? ["nul\u0000x"] : [])];
 
 function shaped(sql: SqlStorage, shape: Shape) {
-  local(sql, LOW, "low");
-  local(sql, VIEWER, "viewer");
-  local(sql, HIGH, "high");
-  sql.exec(
-    "INSERT INTO oauth_clients (id, secret, name, redirect_uris, scopes) VALUES ('app', 's', 'app', 'urn:ietf:wg:oauth:2.0:oob', 'read write')",
-  );
-  sql.exec(
-    "INSERT INTO oauth_tokens (token_hash, kind, client_id, account_id, scopes) VALUES ('viewer', 'access', 'app', ?, 'read write')",
-    VIEWER,
-  );
+  seedViewerBetween(sql);
   statuses(sql, LOW, shape.others, NOW - DAY, tagsOf);
   statuses(sql, VIEWER, shape.recent, NOW - DAY, tagsOf);
   statuses(sql, VIEWER, shape.old, NOW - 400 * DAY, () => []);

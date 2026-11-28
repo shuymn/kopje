@@ -136,7 +136,8 @@ describe("unlock acceptance", () => {
       { following_count: 1 },
       { following_count: 1 },
     ]);
-    // Each remote acceptance recorded its Accept; the follow_request notifications went.
+    // Each remote acceptance recorded its Accept; the follow_request notifications went, and no follow notification
+    // was written, as Mastodon's AuthorizeFollowWorker writes none (the authorize API writes one).
     const [sent] = await sql<{ n: number }>(
       h.store,
       "SELECT count(*) AS n FROM outbound_activities WHERE json_extract(body, '$.activity.type') = 'Accept'",
@@ -145,7 +146,7 @@ describe("unlock acceptance", () => {
     expect(
       await sql(
         h.store,
-        "SELECT count(*) AS n FROM notifications WHERE type = 'follow_request' AND account_id = ?",
+        "SELECT count(*) AS n FROM notifications WHERE type IN ('follow', 'follow_request') AND account_id = ?",
         alice.id,
       ),
     ).toEqual([{ n: 0 }]);

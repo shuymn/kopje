@@ -36,7 +36,7 @@ export const webTagPage = pageRead<TagPageInput, TagPage>((db, input, site) =>
 
 // The normalized name of the hashtag page `name` names, or null when no page serves it: a name that is not a hashtag,
 // or whose normalized name passes the bound every hashtag Kopje lists is read by. The one rule of the page and of the
-// links to it (the Featured tab's).
+// links to it (a collection's hashtag).
 export function tagPageName(name: string): string | null {
   const tag = tagName(name);
   return tag === null || !withinTagNameBound(tag) ? null : tag;

@@ -563,7 +563,11 @@ const COLLECTION =
   "the string a member of a remote actor's stored document names (collectionSql), read as a collection URI compared " +
   "with addressing: one string, never an object, at most the stored document's bytes";
 
+const LIBRARY_ID =
+  "a library source's status id column (LIBRARY in search.ts: id, reblog_of_id or status_id), an 18-digit id";
+
 const ALLOWED: Record<string, { count: number; reason: string }> = {
+  'src/domain/search.ts interpolation status === "id" ? "id" : `${status} AS id`': { count: 1, reason: LIBRARY_ID },
   "src/domain/trends.ts interpolation TREND_OBSERVED_MAX": { count: 2, reason: NUMBER },
   // editMediaSql's proxy_id: whether a snapshot entry's raw id is within SNAPSHOT_KEY_LIMIT bytes (#1560), a number.
   "src/domain/status-bounds.ts interpolation SNAPSHOT_KEY_LIMIT": { count: 1, reason: NUMBER },

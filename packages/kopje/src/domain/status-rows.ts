@@ -274,11 +274,18 @@ const POLL_FROM = `polls p INDEXED BY ${POLLS_STATUS_INDEX}
 
 export const OWN_VOTE_COLUMNS = fixedColumns({ poll_id: "v.poll_id", choice: "v.choice" }, { poll_id: 18, choice: 0 });
 
+// The join of `viewer`'s votes in the current generation of the poll `p` (polls p before it), by the vote key's
+// prefix: what presentPolls, R's count and a status search (polls.ts ownVotedSql) read as the viewer's own (R27).
+export function currentVotesSql(viewer: string): string {
+  return `poll_votes v INDEXED BY ${POLL_VOTES_KEY_INDEX}
+		ON v.poll_id = p.status_id AND v.generation = p.generation AND v.account_id = ${viewer}`;
+}
+
 // How many votes `viewer` cast in the current generation of the poll of `status`, which presentPolls reads as their
 // own: for R (statusRowBoundSql). A count of the viewer's own votes only (R27).
 function ownVoteCountSql(status: string, viewer: string): string {
-  return `(SELECT count(*) FROM polls p INDEXED BY ${POLLS_STATUS_INDEX} CROSS JOIN poll_votes v INDEXED BY ${POLL_VOTES_KEY_INDEX}
-		ON v.poll_id = p.status_id AND v.generation = p.generation AND v.account_id = ${viewer} WHERE p.status_id = ${status})`;
+  return `(SELECT count(*) FROM polls p INDEXED BY ${POLLS_STATUS_INDEX} CROSS JOIN ${currentVotesSql(viewer)}
+		WHERE p.status_id = ${status})`;
 }
 
 // The filters that name a status (filters.ts filterStatusMatches): a filter's id and the status's.

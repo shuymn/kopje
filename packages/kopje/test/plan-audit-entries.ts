@@ -1373,12 +1373,12 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (remote-suspension.ts#<anonymous> in remoteModerationRound); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "29d9fa4322758555",
+    id: "882409c6999ac68b",
     scans: ["statuses: SCAN statuses USING INDEX statuses_public"],
     site: "src/domain/search.ts#searchHashtags < src/domain/search.ts#<anonymous> in search < src/domain/auth.ts#<anonymous> in guarded",
     disposition: "deliberate",
     reason:
-      "the newest HASHTAG_PUBLIC_WINDOW (2,000) public statuses, read in order from the partial index statuses_public (src/domain/search.ts:41 and :190, migrations/0000_initial.sql:132)",
+      "the newest HASHTAG_PUBLIC_WINDOW (2,000) public statuses, read in order from the partial index statuses_public (src/domain/search.ts:50 and :308, migrations/0000_initial.sql:132)",
   },
   {
     id: "3ae16a72600377c8",

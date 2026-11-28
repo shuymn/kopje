@@ -180,9 +180,10 @@ const RULES: readonly Rule[] = [
     pattern: readsOrWrites("poll_votes"),
     allowed: {
       ...POLICY_ONLY,
-      "src/domain/polls.ts": "votes cast through mayVoteSql (R27), the viewer’s own, and their purges",
-      "src/domain/poll-presenter.ts": "presentPolls: the viewer’s own votes, presented with the counts",
-      "src/domain/status-rows.ts": "R's count of the viewer’s own votes (ownVoteCountSql), never who voted",
+      "src/domain/polls.ts":
+        "votes cast through mayVoteSql (R27), the viewer’s own, and their purges, and the fragments a status search uses to find the viewer’s own voted polls (ownVotedSql, ownVotedPollsSql)",
+      "src/domain/status-rows.ts":
+        "the join of the viewer’s own votes of the current generation (currentVotesSql), which presentPolls, R's count (ownVoteCountSql) and polls.ts’s search fragments read, never who voted",
     },
   },
   {
