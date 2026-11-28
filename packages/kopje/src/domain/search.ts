@@ -31,7 +31,7 @@ import { statusCursor } from "./windows";
 // A search with account_id of another account keeps what Mastodon's search would find (its public index of indexable
 // accounts, and searchable_by): the account's public statuses when its stored indexable is 1, and the statuses the
 // viewer boosted (kept), favourited, bookmarked, is actively mentioned in or voted in (the poll's current generation).
-// Candidates are the account's newest LIBRARY_SOURCE_LIMIT originals, the viewer's library windows but the own one,
+// Candidates are the account's newest LIBRARY_SOURCE_LIMIT originals, the windows of the viewer's INTERACTIONS,
 // and the polls of the viewer's newest LIBRARY_SOURCE_LIMIT vote rows (polls.ts ownVotedPollsSql), each within the
 // cursors; each candidate is then judged by the author term, listableSql and that condition, the interactions probed
 // by key (libraryProbes). Candidacy is not eligibility: a status found through one window (an old vote, a silent
@@ -133,12 +133,10 @@ class Params {
 
 // The viewer's library, one entry per source: the table, the column naming the status, the source's condition, the
 // index ordered by (account_id, status) its window walks, and the key its probe seeks a status by (none: the primary
-// key, which the two key equalities select; status_mentions is WITHOUT ROWID, so it takes no INDEXED BY). The own
-// source is read as a window only. scopedWhere: what a search with account_id also asks of the probe (Mastodon's
+// key, which the two key equalities select; status_mentions is WITHOUT ROWID, so it takes no INDEXED BY). The
+// originals are read as a window only. scopedWhere: what a search with account_id also asks of the probe (Mastodon's
 // searchable_by counts active mentions only, status.rb:104); its window still reads every mention.
 type Source = {
-  own?: true;
-  mention?: true;
   table: string;
   status: string;
   where?: string;
@@ -146,8 +144,14 @@ type Source = {
   probe?: string;
   scopedWhere?: string;
 };
-const LIBRARY: readonly Source[] = [
-  { own: true, table: "statuses", status: "id", where: "reblog_of_id IS NULL", window: "statuses_account_originals" },
+const ORIGINALS: Source = {
+  table: "statuses",
+  status: "id",
+  where: "reblog_of_id IS NULL",
+  window: "statuses_account_originals",
+};
+// The sources the viewer saves: kept boosts, favourites, bookmarks.
+const SAVED: readonly Source[] = [
   {
     table: "statuses",
     status: "reblog_of_id",
@@ -157,16 +161,17 @@ const LIBRARY: readonly Source[] = [
   },
   { table: "favourites", status: "status_id", window: "favourites_account_status", probe: "favourites_pair" },
   { table: "bookmarks", status: "status_id", window: "bookmarks_account_status", probe: "bookmarks_pair" },
-  {
-    mention: true,
-    table: "status_mentions",
-    status: "status_id",
-    window: "status_mentions_account",
-    scopedWhere: "silent = 0",
-  },
 ];
-
-const OWN = LIBRARY.find((source) => source.own === true)!;
+// Others write mentions, so they are a source of status search only, never of the hashtag window (see above).
+const MENTIONS: Source = {
+  table: "status_mentions",
+  status: "status_id",
+  window: "status_mentions_account",
+  scopedWhere: "silent = 0",
+};
+// The viewer's interactions, probed in a search with account_id; with the originals, the library.
+const INTERACTIONS: readonly Source[] = [...SAVED, MENTIONS];
+const LIBRARY: readonly Source[] = [ORIGINALS, ...INTERACTIONS];
 
 // One source's window: `account`'s newest `limit` entries in the order of the status id they name, `cursor` (max_id
 // and min_id on that id) inside the LIMIT.
@@ -177,25 +182,17 @@ function sourceWindow(source: Source, account: string, limit: string, cursor: (c
 				ORDER BY ${status} DESC LIMIT ${limit})`;
 }
 
-// The viewer's library as one candidate list of status ids, the windows of LIBRARY's sources (the boosted originals
-// through the kept boosts only, so withdrawn ones awaiting their job never fill the source's limit). `own` false
-// leaves out the own source; `mentions` false the mentions, a source of status search only: others write them, so they
-// are left out of the hashtag window (see above).
-function librarySources(
-  limit: string,
-  cursor: (column: string) => string,
-  { mentions = true, own = true }: { mentions?: boolean; own?: boolean } = {},
-): string {
-  return LIBRARY.filter((source) => (own || source.own !== true) && (mentions || source.mention !== true))
-    .map((source) => sourceWindow(source, "?1", limit, cursor))
-    .join("\n\t\t\tUNION ");
+// The viewer's windows of `sources` as one candidate list of status ids (the boosted originals through the kept boosts
+// only, so withdrawn ones awaiting their job never fill the source's limit).
+function librarySources(sources: readonly Source[], limit: string, cursor: (column: string) => string): string {
+  return sources.map((source) => sourceWindow(source, "?1", limit, cursor)).join("\n\t\t\tUNION ");
 }
 
-// Whether the viewer (?1) holds the status `s` in a library source but the own one (with its scopedWhere), or voted in
-// its poll's current generation: each a key seek.
+// Whether the viewer (?1) holds the status `s` in one of INTERACTIONS (with its scopedWhere), or voted in its poll's
+// current generation: each a key seek.
 function libraryProbes(s: string): string[] {
   return [
-    ...LIBRARY.filter((source) => source.own !== true).map(({ table, status, where, probe, scopedWhere }) => {
+    ...INTERACTIONS.map(({ table, status, where, probe, scopedWhere }) => {
       const conditions = [`${status} = ${s}.id`, "account_id = ?1", ...(where === undefined ? [] : [where])];
       return `EXISTS (SELECT 1 FROM ${table}${probe === undefined ? "" : ` INDEXED BY ${probe}`} WHERE ${[
         ...conditions,
@@ -232,7 +229,7 @@ function searchStatuses(db: Db, input: SearchRequest, viewer: UserContext) {
       return [];
     }
     const author = p.add(accountId);
-    const authorWindow = sourceWindow(OWN, author, limit, cursor);
+    const authorWindow = sourceWindow(ORIGINALS, author, limit, cursor);
     if (accountId === viewerId) {
       // The viewer's own statuses: every one is theirs to search, and listableSql still decides.
       candidates = authorWindow;
@@ -247,14 +244,14 @@ function searchStatuses(db: Db, input: SearchRequest, viewer: UserContext) {
       candidates = `${authorWindow}
 			UNION SELECT id FROM library
 			UNION SELECT id FROM (${ownVotedPollsSql("?1", limit)}) WHERE 1 ${cursor("id")}`;
-      library = librarySources(limit, cursor, { own: false });
+      library = librarySources(INTERACTIONS, limit, cursor);
       scoped.push(
         `s.account_id = ${author}`,
         `(${[...(indexable ? ["s.visibility = 'public'"] : []), ...libraryProbes("s")].join("\n\t\t\tOR ")})`,
       );
     }
   } else {
-    candidates = librarySources(limit, cursor);
+    candidates = librarySources(LIBRARY, limit, cursor);
   }
   const matches = (variants: string[]) =>
     `(${variants.map((variant) => `instr(s.search_text, ${p.add(variant)}) > 0`).join(" OR ")})`;
@@ -304,7 +301,7 @@ function searchHashtags(
     // The Store's SQLite allows five terms per compound SELECT, so the windows are two CTEs. CROSS JOIN keeps the
     // windows on the outside: statuses are looked up by id per candidate (the index named, so statistics of a small
     // Store cannot turn it into a scan per candidate), and tags per visible status, never scanned by name.
-    `WITH library(id) AS (${librarySources("?4", () => "", { mentions: false })}),
+    `WITH library(id) AS (${librarySources([ORIGINALS, ...SAVED], "?4", () => "")}),
 		public(id) AS (SELECT id FROM statuses WHERE visibility = 'public' AND reblog_of_id IS NULL ORDER BY id DESC LIMIT ?5),
 		candidates(id) AS (SELECT id FROM library UNION SELECT id FROM public),
 		visible(id) AS (SELECT s.id FROM candidates c
