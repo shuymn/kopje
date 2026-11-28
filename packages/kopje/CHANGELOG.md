@@ -23,7 +23,7 @@ two Store migrations. Upgrading is recommended.
   applied the Store refuses every request, and it stays readonly until they are verified
   ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an earlier version needs
   the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the representative store defined in
-  `test/bench/migration-cost.ts` the two took 14–15 ms together (median 14 ms) in three runs of the migration bench
+  `test/bench/migration-cost.ts` the two took 15–16 ms together (median 15 ms) in three runs of the migration bench
   workflow on a GitHub-hosted runner, in workerd's local Durable Object SQLite. Migration `0124_reject_media_blocks`
   adds a partial index on `instance_domain_blocks` (the blocks with `reject_media`), built by one pass over that table;
   it rewrites no row and changes no trigger. Migration `0125_account_move_pending` adds `accounts.move_pending`, a
