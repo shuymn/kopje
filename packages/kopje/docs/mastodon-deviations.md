@@ -2000,9 +2000,10 @@ Streaming (`status.update` and `delete`; Mastodon's `FanOutOnWriteService`, `Rem
 - A status deletion streams `delete` for at most 40 boosts of that status per listening viewer on `user` and list
   streams (those by the viewer and the accounts it follows; `CAPTURE_LIMITS.boosts`, R32 in
   [visibility.md](visibility.md)). Mastodon v4.7.5 processes eligible reblogs of a deleted status without a cap
-  (`app/services/remove_status_service.rb:109-117`, excluding reblogs discarded separately), and for each reblog publishes a
-  `delete` event to a home or list stream only when `remove_from_feed` removes it from that feed (which returns false
-  when an aggregated reblog is not in the feed; `app/lib/feed_manager.rb:85-95,112-122,585-592`). Accepted, 2026-10-16.
+  (`app/services/remove_status_service.rb:109-117`, excluding reblogs discarded separately), and for each reblog
+  publishes a `delete` event to a home or list stream only when `remove_from_feed` removes it from that feed (which
+  returns false when an aggregated reblog is not in the feed; `app/lib/feed_manager.rb:85-95,112-122,585-592`).
+  Accepted, 2026-10-16.
 - Purging a deleted account sends no streaming `delete` event (R32 in [visibility.md](visibility.md)). Mastodon v4.7.5's
   `DeleteAccountService#purge_statuses!` (`app/services/delete_account_service.rb:165-171`) keeps statuses referenced by
   unresolved reports out of the batch (marking them `deleted_at` instead) and passes the rest to
