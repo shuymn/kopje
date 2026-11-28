@@ -1,6 +1,6 @@
 import type { Db } from "../db/sql";
 import { httpUrl } from "../platform/http-url";
-import { isStorableActorId } from "../platform/identity-bounds";
+import { ACTOR_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { requireExactIncrement } from "./ids";
 
 // The collections a remote actor's document names, and the request to sync them, which storing an actor makes
@@ -51,8 +51,7 @@ export function collectionRead(value: unknown): CollectionRead {
 }
 
 // valid_collection_uri's unwrap (process_account_service.rb:236-238): an array to its first value, then an object to
-// its id; the string that gives, else null. The only place an actor member's array is unwrapped (collectionRead, and
-// remote-actor.ts sharedInboxUri).
+// its id; the string that gives, else null. The only place an actor member's array is unwrapped.
 export function collectionValue(value: unknown): string | null {
   let uri: unknown = Array.isArray(value) ? value[0] : value;
   if (typeof uri === "object" && uri !== null && !Array.isArray(uri)) {
@@ -163,16 +162,21 @@ function idOf(value: unknown): string | null {
   return httpUrl(collectionUri(value))?.href ?? null;
 }
 
-export function actorCollections(raw: string | null): ActorCollections {
-  let document: Record<string, unknown> = {};
+// A stored actor document as JSON.parse reads it (the last of a duplicate key), or null for none, one that does not
+// parse (a stored document always does) or one that is not an object: such a document names nothing.
+function storedDocument(raw: string | null): Record<string, unknown> | null {
   try {
     const parsed = raw === null ? null : (JSON.parse(raw) as unknown);
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      document = parsed as Record<string, unknown>;
-    }
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
-    // A stored document always parses; an unreadable one names no collection.
+    return null;
   }
+}
+
+export function actorCollections(raw: string | null): ActorCollections {
+  const document = storedDocument(raw) ?? {};
   return {
     featured: idOf(document.featured),
     featuredCollections: idOf(document.featuredCollections),
@@ -183,40 +187,24 @@ export function actorCollections(raw: string | null): ActorCollections {
   };
 }
 
-// An absolute http(s) URI with an authority, in any case of the scheme, without whitespace, a backslash, a C0 or C1
-// control character (U+0000 to U+001F, U+007F to U+009F) or a `%` that does not begin two hex digits anywhere: what
-// namedMove takes before the URL parser, which would repair `https:host/b`, `https:\\host`, `https:///host/b`,
-// surrounding whitespace and controls, and encode a C1 control or keep a stray `%`.
-const MOVE_URI =
-  // oxlint-disable-next-line no-control-regex
-  /^https?:\/\/(?:[^\s\\/?#%\u0000-\u001f\u007f-\u009f]|%[0-9a-f]{2})+(?:[/?#](?:[^\s\\%\u0000-\u001f\u007f-\u009f]|%[0-9a-f]{2})*)?$/i;
+// What namedMove refuses before the URL parser, which would repair or encode it: a scheme other than http(s), no
+// `//` or an empty authority (`https:host/b`, `https:///host/b`), and anywhere whitespace, a backslash, a C0 or C1
+// control character (U+0000 to U+001F, U+007F to U+009F) or a `%` that does not begin two hex digits.
+const MOVE_PREFIX = /^https?:\/\/[^/?#]/i;
+// oxlint-disable-next-line no-control-regex
+const MOVE_REFUSED = /[\s\\\u0000-\u001f\u007f-\u009f]|%(?![0-9a-f]{2})/i;
 
 // The account a stored actor document's movedTo names (ID-4), read from the literal member as Mastodon 4.7.5 reads
 // `@json['movedTo']` (process_account_service.rb:293), with no JSON-LD context applied: an array gives its first value
-// and an object its id (collectionValue), and the string must be an absolute http(s) URI (MOVE_URI) that Kopje stores
-// as an actor id, other than `uri` itself; its href, else null. Where Mastodon fails on an array or an object, this
-// reads them (docs/mastodon-deviations.md). The stored row it names is remote-actors.ts moveTargetSql's.
+// and an object its id (collectionValue), and the string must be an absolute http(s) URI (MOVE_PREFIX, MOVE_REFUSED)
+// whose href is within ACTOR_URI_LIMIT and is not `uri` itself; that href, else null. Where Mastodon fails on an array
+// or an object, this reads them (docs/mastodon-deviations.md). The stored row it names is remote-actors.ts
+// moveTargetSql's.
 export function namedMove(raw: string | null, uri: string): string | null {
-  let value: unknown;
-  try {
-    const parsed = raw === null ? null : (JSON.parse(raw) as unknown);
-    value =
-      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-        ? (parsed as { movedTo?: unknown }).movedTo
-        : null;
-  } catch {
-    // A stored document always parses; an unreadable one names no move.
+  const named = collectionValue(storedDocument(raw)?.movedTo);
+  if (named === null || !MOVE_PREFIX.test(named) || MOVE_REFUSED.test(named)) {
     return null;
   }
-  const named = collectionValue(value);
-  if (named === null || !MOVE_URI.test(named)) {
-    return null;
-  }
-  let href: string;
-  try {
-    href = new URL(named).href;
-  } catch {
-    return null;
-  }
-  return isStorableActorId(href) && href !== uri ? href : null;
+  const href = httpUrl(named)?.href ?? null;
+  return href !== null && withinIdentityBound(href, ACTOR_URI_LIMIT) && href !== uri ? href : null;
 }
