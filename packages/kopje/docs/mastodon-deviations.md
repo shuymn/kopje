@@ -622,8 +622,8 @@ Accounts (the `Account` and credential account entities):
   is next stored: such a move can then clear, and a `movedTo` with a fragment or under a context that renames the member
   can then resolve. When a verified `Move` stores a remote target's fetched document, it does so before it moves the
   followers, so the target's own `movedTo` is read the same way, and decides whether the followers move (R21 in
-  `docs/visibility.md`): a relative one no longer stops them, and one with a fragment naming a stored account now does. A `movedTo` naming an
-  account Kopje does not know reads as none: it is not fetched (Mastodon fetches it,
+  `docs/visibility.md`): a relative one no longer stops them, and one with a fragment naming a stored account now does.
+  A `movedTo` naming an account Kopje does not know reads as none: it is not fetched (Mastodon fetches it,
   `process_account_service.rb:516-519`). Mastodon processes a `Move` once per source account for 7 days (`move.rb:38`),
   Kopje once per activity id while its job is kept (30 days). Mastodon refreshes an account on a signature only after
   verification with the stored key fails (`signature_verification.rb:59-61`), and `possibly_stale?` chooses a full
