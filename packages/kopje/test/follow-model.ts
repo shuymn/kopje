@@ -653,11 +653,7 @@ export class Policy {
       return false;
     }
     this.unlockJob = false;
-    if (this.locked || this.rl?.state !== "pending") {
-      return false;
-    }
-    this.acceptRequest(now);
-    return true;
+    return !this.locked && this.acceptRequest(now) === 200;
   }
 
   // ---- R38's severing of one follow (docs/visibility.md, the remote suspension paragraphs and "Instance domain

@@ -20,6 +20,7 @@ import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import { deliveryRound } from "../src/jobs/deliver";
 import { ACTIVITY_ID_LIMIT } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";
+import { sha256Hex as tokenHash } from "../src/security/tokens";
 import { bearer, json, settle, sql, userToken } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { LEGACY, signAsLegacy } from "./federation-helpers";
@@ -1777,37 +1778,34 @@ describe("authorizing a request through the API notifies the new follower", () =
   // alice locked, with a user:notification stream and two push subscriptions: one wants follow alerts from a follower,
   // one wants none. Registered after the request, so only the authorization's rows are counted.
   async function subscribed(t: T) {
-    await userToken(t.w.h, "alice@example.com", "read write follow push");
+    const second = await userToken(t.w.h, "alice@example.com", "read write follow push");
     await sql(
       t.store,
       "INSERT INTO stream_subscriptions (account_id, stream_key, sockets) VALUES (?, 'user:notification', 1)",
       t.w.alice.id,
     );
-    for (const [alerts, policy] of [
-      ['{"follow":true}', "follower"],
-      ['{"follow":false,"follow_request":true}', "all"],
-    ] as const) {
-      await sql(
-        t.store,
-        `INSERT INTO push_subscriptions (token_hash, endpoint, key_p256dh, key_auth, alerts, policy)
-				SELECT token_hash, 'https://push.example/' || ?3, 'p', 'a', ?2, ?3 FROM oauth_tokens
-				WHERE account_id = ?1 AND kind = 'access' AND token_hash NOT IN (SELECT token_hash FROM push_subscriptions)
-				ORDER BY token_hash LIMIT 1`,
-        t.w.alice.id,
-        alerts,
-        policy,
-      );
-    }
+    await sql(
+      t.store,
+      `INSERT INTO push_subscriptions (token_hash, endpoint, key_p256dh, key_auth, alerts, policy)
+			VALUES (?, 'https://push.example/1', 'p', 'a', '{"follow":true}', 'follower'),
+				(?, 'https://push.example/2', 'p', 'a', '{"follow":false,"follow_request":true}', 'all')`,
+      await tokenHash(t.w.alice.token),
+      await tokenHash(second),
+    );
     expect(await sql(t.store, "SELECT count(*) AS n FROM push_subscriptions")).toEqual([{ n: 2 }]);
   }
 
-  async function written(t: T, from: string) {
-    const rows = await sql<{ id: string; type: string; filtered: number }>(
+  // alice's notifications from `from`, filtered ones included.
+  const rowsFrom = (t: T, from: string) =>
+    sql<{ id: string; type: string; filtered: number }>(
       t.store,
       "SELECT CAST(id AS TEXT) AS id, type, filtered FROM notifications WHERE account_id = ? AND from_account_id = ?",
       t.w.alice.id,
       from,
     );
+
+  async function written(t: T, from: string) {
+    const rows = await rowsFrom(t, from);
     const events = await sql<{ subject: string }>(
       t.store,
       "SELECT subject FROM stream_events WHERE kind = 'notification'",
@@ -1846,7 +1844,7 @@ describe("authorizing a request through the API notifies the new follower", () =
     "%s requester admitted unfiltered: one follow, listed, streamed, pushed to the subscription that wants it",
     async (_, remote) => {
       const { t, from } = await requested(remote);
-      expect((await written(t, from)).rows.map((n) => n.type)).toEqual(["follow_request"]);
+      expect((await rowsFrom(t, from)).map((n) => n.type)).toEqual(["follow_request"]);
       await subscribed(t);
       await api(t, `/api/v1/follow_requests/${from}/authorize`);
       const after = await written(t, from);
@@ -1902,8 +1900,7 @@ describe("authorizing a request through the API notifies the new follower", () =
   });
 
   it("writes nothing while the requester blocks alice; the block reached the request", async () => {
-    const t = await setup({ locked: true });
-    expect((await followFrom(t)).result).toMatchObject({ reason: "follow-requested" });
+    const { t } = await requested(true);
     const block = await receive(t.store, t.rUri, {
       id: `${REMOTE}/blocks/${++sequence}`,
       type: "Block",
@@ -1912,7 +1909,6 @@ describe("authorizing a request through the API notifies the new follower", () =
     expect(block).toMatchObject({ applied: true, reason: "blocked" });
     await subscribed(t);
     await api(t, `/api/v1/follow_requests/${t.r}/authorize`);
-    // The authorization applied: r follows alice.
     expect(
       await sql(t.store, "SELECT state FROM follows WHERE account_id = ? AND target_account_id = ?", t.r, t.w.alice.id),
     ).toEqual([{ state: "accepted" }]);
