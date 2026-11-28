@@ -51,6 +51,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   them a registration, and registration answers 429 until fewer than 500 remain. In such a Store a registration looks
   for unused apps only among the oldest 1,000 older than a day, so it can remove older apps holding app tokens before
   unused ones behind them.
+- A local status's Note gives each attachment's `focalPoint` when a focus was set (`0,0` included), with the
+  `focalPoint` term in its context, so other servers crop thumbnails around the focus. It also gives each attachment's
+  `width`, `height` and `duration`, whatever its type, as Mastodon does. A dimension is given only as a whole number of
+  pixels up to 100,000.
 
 ## [0.9.0] - 2026-11-28
 

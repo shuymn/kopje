@@ -1834,9 +1834,11 @@ Media (the `MediaAttachment` entity):
   Cloudflare Free and Pro, a `POST` whose body passes the zone's request limit (100 MiB, 104,857,600 bytes) is refused
   by Cloudflare (413, not a Mastodon JSON body) before Kopje reads it, so a file near the 90 MiB limit leaves about
   10 MiB for its thumbnail and the form; a larger thumbnail goes by `PUT`.
-- A local video's or audio file's `Document` in its Note writes `duration` to the millisecond (`PT29.964S`), where
-  Mastodon writes its stored seconds as ffprobe gives them (to the microsecond); the API's `meta` keeps the stored
-  value.
+- A local attachment's `Document` in its Note, whatever its type, writes `duration` to the millisecond (`PT29.964S`;
+  a converted gifv's 1.234567 seconds is `PT1.235S`), and only for stored seconds from 1/48,000 to 1,200 (the
+  verifier's range, `AUDIO_DURATION_LIMIT`), so an imported 1,200.5 is left out; Mastodon writes its stored seconds as
+  they are (ffprobe's, to the microsecond). The API's `meta` presents the stored value for video and audio within that
+  range only.
 - A local upload's `blurhash` (avatars and headers included; 4 × 4 components, alpha dropped) is computed, as
   Mastodon's BlurhashTranscoder computes one from the `small` style, from Images' raw RGBA output of Kopje's preview (at
   most 640 pixels an edge, where Mastodon's small style is 230,400 pixels), fitted within 100 pixels by area averaging
@@ -1845,6 +1847,10 @@ Media (the `MediaAttachment` entity):
   An upload stored by an earlier release keeps null; the media rebuild computes one for each row it makes again, and
   keeps the stored one when the RGBA output fails. A Note's `Document` carries `blurhash` only when the attachment has
   one, where Mastodon writes null.
+- A local status's Note gives an attachment's `width` and `height` only as whole numbers from 1 to 100,000, the values
+  Kopje's receiver accepts. Mastodon writes each value of its `meta.original` that passes Rails' `present?` (an empty
+  string, `false` and `nil` are left out). Only a converted or imported row holds another value (a fraction, or past
+  100,000); its dimension is left out. `duration` is given as the bullet above says. Accepted, 2026-11-29.
 - A remote attachment's `blurhash` is the value it was sent with when it is base83 with at most 5 by 5 components and
   the length they give, as Mastodon's `supported_blurhash?`; Kopje checks the whole string, where Mastodon's character
   check is line-anchored and keeps a valid first line followed by anything. Mastodon reassigns it, none included, on

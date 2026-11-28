@@ -1,28 +1,29 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { playableDocumentFacts } from "../src/domain/status-presenter";
+import { documentFacts } from "../src/domain/status-presenter";
+import { DOCUMENT_DIMENSION_MAX } from "../src/platform/document-dimension";
 import { sql } from "./api-helpers";
 import { convertToVideo, imageUpload, postAs } from "./av-posting-helpers";
 import avMeta from "./fixtures/mastodon-4.7.5-av-meta.json";
 import { AUDIO, avWorld, clock, completed, SECOND, T0 } from "./media-processing-helpers";
 import { outbound, remoteAccount, remoteFollows } from "./status-helpers";
 
-// A local video's or audio file's Document in the Note (#1828 P16, activities.ts attachmentsOf): its width and height
-// (video) and its duration as ISO 8601, as ActivityPub::NoteSerializer's MediaAttachmentSerializer writes them, from
-// the verified facts its completion stored (status-presenter.ts playableDocumentFacts); an image's Document as before.
+// A local attachment's Document in the Note (#1828 P16, #1565; activities.ts attachmentsOf): its width, height and
+// duration as ISO 8601, whatever its type, as ActivityPub::NoteSerializer's MediaAttachmentSerializer writes them, from
+// the meta stored (status-presenter.ts documentFacts).
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("a playable file's Document (P16)", () => {
+describe("a local attachment's Document (P16, #1565)", () => {
   it("writes Mastodon's width, height and duration for the fixture's video and audio meta", () => {
-    expect(playableDocumentFacts("video", JSON.stringify(avMeta.video.meta))).toEqual(avMeta.video.document);
-    expect(playableDocumentFacts("audio", JSON.stringify(avMeta.audio.meta))).toEqual(avMeta.audio.document);
+    expect(documentFacts(JSON.stringify(avMeta.video.meta), null, 0)).toEqual(avMeta.video.document);
+    expect(documentFacts(JSON.stringify(avMeta.audio.meta), null, 0)).toEqual(avMeta.audio.document);
   });
 
   it("writes a whole number of seconds as Ruby's Float does, and any other to the millisecond in decimal", () => {
-    const of = (duration: unknown) => playableDocumentFacts("audio", JSON.stringify({ original: { duration } }));
+    const of = (duration: unknown) => documentFacts(JSON.stringify({ original: { duration } }), null, 0);
     expect([
       of(8),
       of(0.5),
@@ -45,23 +46,46 @@ describe("a playable file's Document (P16)", () => {
     ]);
     // Past what the verifier produces either way, or not a positive number: left out.
     expect([of(1 / 48_001), of(1200.5), of(0), of(-1), of("8")]).toEqual([{}, {}, {}, {}, {}]);
-    // An image's and a gifv's stored facts are not written.
-    expect(playableDocumentFacts("image", JSON.stringify(avMeta.video.meta))).toEqual({});
-    expect(playableDocumentFacts("gifv", JSON.stringify(avMeta.video.meta))).toEqual({});
   });
 
-  it("writes a width and a height each where stored, as positive integers within the stored bound (code review r2)", () => {
-    const of = (original: unknown) => playableDocumentFacts("video", JSON.stringify({ original }));
-    expect([of({ width: 640 }), of({ height: 360 }), of({ width: 65_535, height: 1 })]).toEqual([
+  // C4.4 (#1565): each fact on its own, a dimension only as a whole number from 1 to DOCUMENT_DIMENSION_MAX, which is
+  // what Kopje's receiver reads; no stored value throws.
+  it("writes a width and a height each where stored, as whole pixels up to DOCUMENT_DIMENSION_MAX", () => {
+    const of = (original: unknown) => documentFacts(JSON.stringify({ original }), null, 0);
+    expect([
+      of({ width: 640 }),
+      of({ height: 360 }),
+      of({ width: 65_536, height: 1 }),
+      of({ width: DOCUMENT_DIMENSION_MAX, height: DOCUMENT_DIMENSION_MAX }),
+    ]).toEqual([
       { width: 640 },
       { height: 360 },
-      { width: 65_535, height: 1 },
+      { width: 65_536, height: 1 },
+      { width: DOCUMENT_DIMENSION_MAX, height: DOCUMENT_DIMENSION_MAX },
     ]);
-    expect([
-      of({ width: 640.5 }),
-      of({ width: 65_536 }),
-      of({ width: 0.0000012345678901234567, height: "360" }),
-    ]).toEqual([{}, {}, {}]);
+    expect(
+      ["640", 0, 1.5, 640.5, DOCUMENT_DIMENSION_MAX + 1, -640, 0.0000012345678901234567].map((width) =>
+        of({ width, height: 480 }),
+      ),
+    ).toEqual(Array.from({ length: 7 }, () => ({ height: 480 })));
+    // 1e400 reads as Infinity.
+    expect(documentFacts('{"original":{"width":1e400,"height":480}}', null, 0)).toEqual({ height: 480 });
+    for (const meta of [null, "[]", '"x"', "3", "not json", '{"original":3}', '{"original":[640,480]}', "{}"]) {
+      expect(documentFacts(meta, null, 0)).toEqual({});
+    }
+  });
+
+  // C4.2's rule (#1565): the focus is written as [x, y] exactly when the row shows one (focus_x read as
+  // MEDIA_COLUMN_MAP.focus_x, NULL otherwise), beside the meta's facts.
+  it("writes the focalPoint as [x, y] when a focus is shown, 0,0 included", () => {
+    expect(documentFacts(null, 0.5, -0.25)).toEqual({ focalPoint: [0.5, -0.25] });
+    expect(documentFacts(null, 0, 0)).toEqual({ focalPoint: [0, 0] });
+    expect(documentFacts(null, null, 0)).toEqual({});
+    expect(documentFacts(JSON.stringify({ original: { width: 10, height: 10 } }), -1, 1)).toEqual({
+      width: 10,
+      height: 10,
+      focalPoint: [-1, 1],
+    });
   });
 
   // An audio file's duration is stored as computed (samples / rate, as ffprobe's float in Mastodon); the Note writes
@@ -79,7 +103,7 @@ describe("a playable file's Document (P16)", () => {
     expect(note.attachment.map((a) => a.duration)).toEqual(["PT29.964S"]);
   });
 
-  it("publishes a completed video's and audio file's facts in the Note, and an image's Document as before", async () => {
+  it("publishes a completed video's and audio file's facts in the Note, and none for an image without stored dimensions", async () => {
     const w = await avWorld();
     await remoteFollows(w.store, await remoteAccount(w.store, "fan"), w.h.users.alice.id);
     const video = await completed(w);

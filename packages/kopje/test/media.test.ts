@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TRANSFORMS_PER_UPLOAD, UPLOAD_BUDGET } from "../src/domain/media";
+import { parseRemoteStatus } from "../src/federation/remote-status";
 import { handleScheduled } from "../src/jobs/scheduled";
 import { sweepMedia, THUMBNAIL_MUST_BE_BLANK, UPLOAD_SAVE_RESERVE_MS } from "../src/mastodon/media";
 import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
@@ -9,7 +10,7 @@ import { retainedMetadata } from "../src/platform/image-bytes";
 import { IMAGE_MATRIX_LIMIT, ImageCodecError, RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
 import { restoreMarkerKey } from "../src/platform/media-files";
 import { remoteImageMetadata } from "../src/platform/remote-media-bytes";
-import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
+import { MAX_MEDIA_DESCRIPTION_LENGTH, MEDIA_META_BYTES } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, login, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -94,6 +95,33 @@ async function described(
 async function users(names: readonly string[] = ["alice", "bob"], codec = new TestCodec()) {
   const h = await community(names as ["alice", "bob"], "read write follow", { images: () => codec });
   return { ...h, codec };
+}
+
+type ServedNote = { id: string; attachment: unknown[]; "@context": [string, Record<string, unknown>] };
+
+// A status's Note as the object endpoint, the outbox's first page (its Create's context, with the object) and the
+// featured collection (once alice pins it) serve it.
+async function servedNotes(
+  h: Awaited<ReturnType<typeof users>>,
+  status: Status,
+): Promise<[ServedNote, ServedNote | undefined, ServedNote | undefined]> {
+  const AP = { headers: { accept: "application/activity+json" } };
+  const served = await (await h.request(new URL(status.uri as string).pathname, AP)).json<ServedNote>();
+  const outbox = await (await h.request("/ap/users/alice/outbox", AP)).json<{ first: string }>();
+  const first = new URL(outbox.first);
+  const page = await (
+    await h.request(first.pathname + first.search, AP)
+  ).json<{ orderedItems: { "@context": ServedNote["@context"]; object: ServedNote }[] }>();
+  const listed = page.orderedItems.find((item) => item.object.id === status.uri);
+  await h.request(`/api/v1/statuses/${status.id}/pin`, bearer(h.users.alice.token, { method: "POST" }));
+  const featured = await (
+    await h.request("/ap/users/alice/collections/featured", AP)
+  ).json<{ orderedItems: ServedNote[] }>();
+  return [
+    served,
+    listed === undefined ? undefined : { ...listed.object, "@context": listed["@context"] },
+    featured.orderedItems.find((item) => item.id === status.uri),
+  ];
 }
 
 function sweep(h: { store: Parameters<typeof sql>[0] }, at: number) {
@@ -1276,23 +1304,194 @@ describe("media lifecycle", () => {
     expect(await row(h, media.id)).toBeUndefined();
   });
 
-  it("presents media in statuses with meta, and publishes its type in the Note", async () => {
+  // C4.1, C4.6, C4.7 (#1565): an image's size and its focus, as MediaAttachmentSerializer writes them, in the Create and
+  // in every surface that serves the Note, with the focalPoint term as a list; Kopje's parser reads back the focus and
+  // each edge.
+  it("presents media in statuses with meta, and publishes its type, size and focus in the Note", async () => {
     const h = await users();
-    await remoteFollows(h.store, await remoteAccount(h.store, "fan"), h.users.alice.id);
-    const media = await uploaded(h, h.users.alice, mediaForm(bytes(JPEG_WITH_GPS)));
-    const status = await post(h, h.users.alice, { status: "x", media_ids: [media.id] });
+    const { alice } = h.users;
+    await remoteFollows(h.store, await remoteAccount(h.store, "fan"), alice.id);
+    const media = await uploaded(h, alice, mediaForm(bytes(JPEG_WITH_GPS), { focus: "0.5,-0.25" }));
+    const status = await post(h, alice, { status: "x", media_ids: [media.id] });
     expect(status.media_attachments).toEqual([media]);
+    const { width, height } = media.meta!.original!;
+    expect(media.meta?.focus).toEqual({ x: 0.5, y: -0.25 });
+    const document = {
+      type: "Document",
+      mediaType: "image/webp",
+      url: media.url,
+      name: null,
+      blurhash: media.blurhash,
+      width,
+      height,
+      focalPoint: [0.5, -0.25],
+    };
+    const TERM = {
+      toot: "http://joinmastodon.org/ns#",
+      focalPoint: { "@container": "@list", "@id": "toot:focalPoint" },
+    };
     const [create] = await outbound(h.store);
-    expect((create!.activity.object as { attachment: unknown }).attachment).toEqual([
-      { type: "Document", mediaType: "image/webp", url: media.url, name: null, blurhash: media.blurhash },
+    expect((create!.activity.object as ServedNote).attachment).toEqual([document]);
+    expect((create!.activity["@context"] as ServedNote["@context"])[1]).toMatchObject(TERM);
+    const notes = await servedNotes(h, status);
+    for (const note of notes) {
+      expect(note?.attachment).toEqual([document]);
+      expect(note?.["@context"][1]).toMatchObject(TERM);
+    }
+    const [served] = notes;
+    // Kopje's parser (federation/remote-status.ts mediaOf) reads back the same focus and each edge.
+    expect(parseRemoteStatus(served)?.media).toEqual([
+      expect.objectContaining({ focus: { x: 0.5, y: -0.25 }, width, height }),
     ]);
+  });
+});
+
+// C4.2, C4.3, C4.4 (#1565): the facts of a local attachment's Document, whatever its type, on rows as a conversion or
+// an import leaves them, read again by the object endpoint (activities.ts statusFacts): the focus exactly when REST
+// shows one (status-rows.ts focusShownSql), each dimension on its own as a Document dimension, the duration where it
+// is one, and the focalPoint term only when a Document the Note emits carries one.
+describe("the media facts of a local status's Note (#1565)", () => {
+  const AP = { headers: { accept: "application/activity+json" } };
+  const TERM = { "@container": "@list", "@id": "toot:focalPoint" };
+  type Served = { attachment: Record<string, unknown>[]; "@context": [string, Record<string, unknown>] };
+  let next = 0;
+
+  // A status of alice's with one attachment for each of `rows`, written in SQL after it is posted as images.
+  async function noteWith(
+    h: Awaited<ReturnType<typeof users>>,
+    rows: { type: string; meta: string | null; focus: [number, number, 0 | 1]; url?: string }[],
+  ): Promise<{ served: Served; ids: string[] }> {
+    const { alice } = h.users;
+    const ids = rows.map(() => `1565000000000${String(++next).padStart(5, "0")}`);
+    for (const id of ids) {
+      await sql(
+        h.store,
+        "INSERT INTO media_attachments (id, account_id, type, url) VALUES (?, ?, 'image', 'https://kopje.test/m/' || ?)",
+        id,
+        alice.id,
+        id,
+      );
+    }
+    const status = await post(h, alice, { status: "facts", media_ids: ids });
+    for (const [i, row] of rows.entries()) {
+      await sql(
+        h.store,
+        `UPDATE media_attachments SET type = ?, meta = ?, focus_x = ?, focus_y = ?, focus_given = ?,
+					url = COALESCE(?, url) WHERE id = ?`,
+        row.type,
+        row.meta,
+        ...row.focus,
+        row.url ?? null,
+        ids[i]!,
+      );
+    }
+    const response = await h.request(new URL(status.uri as string).pathname, AP);
+    expect(response.status).toBe(200);
+    return { served: await response.json<Served>(), ids };
+  }
+
+  const FOCUSES = [
+    [0.5, -0.25, 1],
+    [0, 0, 1],
+    [0, 0, 0],
+    [0.3, 0, 0],
+  ] as const;
+  const META: Record<string, [Record<string, unknown>, Record<string, unknown>]> = {
+    image: [
+      { width: 65_536, height: 1 },
+      { width: 65_536, height: 1 },
+    ],
+    video: [
+      { width: 1920, height: 1080, duration: 8 },
+      { width: 1920, height: 1080, duration: "PT8.0S" },
+    ],
+    audio: [{ duration: 30.5 }, { duration: "PT30.5S" }],
+    gifv: [
+      { width: 400, height: 300, duration: 2 },
+      { width: 400, height: 300, duration: "PT2.0S" },
+    ],
+    unknown: [
+      { width: 10, height: 10 },
+      { width: 10, height: 10 },
+    ],
+  };
+
+  it.each(Object.keys(META))(
+    "writes a %s's size, duration and focus: given, given 0,0, none, and a legacy point",
+    async (type) => {
+      const h = await users(["alice"]);
+      const [original, facts] = META[type]!;
+      const { served, ids } = await noteWith(
+        h,
+        FOCUSES.map((focus) => ({ type, meta: JSON.stringify({ original }), focus: [...focus] })),
+      );
+      expect(served.attachment).toEqual(
+        [[0.5, -0.25], [0, 0], null, [0.3, 0]].map((point, i) => ({
+          type: "Document",
+          mediaType: null,
+          url: `https://kopje.test/m/${ids[i]}`,
+          name: null,
+          ...facts,
+          ...(point === null ? {} : { focalPoint: point }),
+        })),
+      );
+      // No Document has a blurhash, so the focalPoint term brings toot.
+      expect(served["@context"][1]).not.toHaveProperty("blurhash");
+      expect(served["@context"][1]).toMatchObject({ toot: "http://joinmastodon.org/ns#", focalPoint: TERM });
+    },
+  );
+
+  it("adds the term only when a Document the Note emits carries a focalPoint", async () => {
+    const h = await users(["alice"]);
+    const unfocused = await noteWith(h, [{ type: "image", meta: null, focus: [0, 0, 0] }]);
+    expect(unfocused.served.attachment).toEqual([expect.not.objectContaining({ focalPoint: expect.anything() })]);
+    expect(unfocused.served["@context"][1]).not.toHaveProperty("focalPoint");
+    expect(unfocused.served["@context"][1]).not.toHaveProperty("toot");
+    // A focused row whose URL is not http(s) emits no Document (HTML-3), so it brings no term, though its focus shows.
+    const hidden = await noteWith(h, [{ type: "image", meta: null, focus: [0.5, 0.5, 1], url: "ftp://kopje.test/m" }]);
+    expect(await sql(h.store, "SELECT focus_given, url FROM media_attachments WHERE id = ?", hidden.ids[0]!)).toEqual([
+      { focus_given: 1, url: "ftp://kopje.test/m" },
+    ]);
+    expect(hidden.served.attachment).toEqual([]);
+    expect(hidden.served["@context"][1]).not.toHaveProperty("focalPoint");
+  });
+
+  it("leaves out each fact a stored meta does not hold as one, and never fails the Note", async () => {
+    const h = await users(["alice"]);
+    // A meta past MEDIA_META_BYTES holding a valid original, as only a write past the bound's trigger stores it.
+    await sql(h.store, "DROP TRIGGER media_attachments_bounds_update");
+    const oversized = JSON.stringify({
+      original: { width: 640, height: 480 },
+      x: "x".repeat(MEDIA_META_BYTES),
+    });
+    // The other shapes a meta may hold (NULL, not an object, an edge of another kind) are documentFacts' own cases
+    // (activities.test.ts); these show the byte bound in SQL and each edge on its own through the endpoint.
+    const metas = [
+      oversized,
+      ...[1.5, 100_001].map((width) => JSON.stringify({ original: { width, height: 480 } })),
+      JSON.stringify({ original: { width: 640 } }),
+    ];
+    const expected = [{}, { height: 480 }, { height: 480 }, { width: 640 }];
+    const { served } = await noteWith(
+      h,
+      metas.map((meta) => ({ type: "image", meta, focus: [0, 0, 0] })),
+    );
+    expect(
+      (
+        await sql<{ n: number }>(h.store, "SELECT length(meta) AS n FROM media_attachments WHERE meta = ?", oversized)
+      )[0]?.n,
+    ).toBeGreaterThan(MEDIA_META_BYTES);
+    expect(
+      served.attachment.map(({ width, height }) => {
+        return { ...(width === undefined ? {} : { width }), ...(height === undefined ? {} : { height }) };
+      }),
+    ).toEqual(expected);
   });
 });
 
 // The blurhash of a local upload (platform/images.ts processImage): its preview's, stored, presented and published in
 // the Note's Document with Mastodon's toot:blurhash term; any failure of the RGBA output keeps the upload without one.
 describe("the blurhash of a local upload", () => {
-  const AP = { headers: { accept: "application/activity+json" } };
   const formats = (codec: TestCodec) => codec.outputs.map((call) => call.options.format);
 
   async function storedBlurhash(h: { store: Parameters<typeof sql>[0] }, id: string): Promise<unknown> {
@@ -1433,33 +1632,14 @@ describe("the blurhash of a local upload", () => {
     // The object endpoint, the outbox and the featured collection read the Note again through Fedify, which serves the
     // JSON-LD it read: each keeps the blurhash and the term.
     const TERM = { toot: "http://joinmastodon.org/ns#", blurhash: "toot:blurhash" };
-    type Served = Note & { id: string; "@context": [string, Record<string, unknown>] };
     const expected = [
       expect.objectContaining({ url: hashed.url, blurhash: hashed.blurhash }),
       expect.not.objectContaining({ blurhash: expect.anything() }),
     ];
-    const served = await (await h.request(new URL(both.uri as string).pathname, AP)).json<Served>();
-    expect(served.attachment).toEqual(expected);
-    expect(served["@context"][1]).toMatchObject(TERM);
-    const outbox = await (await h.request("/ap/users/alice/outbox", AP)).json<{ first: string }>();
-    const first = new URL(outbox.first);
-    const page = await (
-      await h.request(first.pathname + first.search, AP)
-    ).json<{
-      orderedItems: { "@context": [string, Record<string, unknown>]; object: Served }[];
-    }>();
-    const listed = page.orderedItems.find((item) => item.object.id === both.uri);
-    expect(listed?.object.attachment).toEqual(expected);
-    expect(listed?.["@context"][1]).toMatchObject(TERM);
-    await h.request(`/api/v1/statuses/${both.id}/pin`, bearer(alice.token, { method: "POST" }));
-    const featured = await (
-      await h.request("/ap/users/alice/collections/featured", AP)
-    ).json<{
-      orderedItems: Served[];
-    }>();
-    const pinned = featured.orderedItems.find((item) => item.id === both.uri);
-    expect(pinned?.attachment).toEqual(expected);
-    expect(pinned?.["@context"][1]).toMatchObject(TERM);
+    for (const note of await servedNotes(h, both)) {
+      expect(note?.attachment).toEqual(expected);
+      expect(note?.["@context"][1]).toMatchObject(TERM);
+    }
   });
 });
 

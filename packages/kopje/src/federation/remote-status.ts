@@ -24,6 +24,7 @@ import {
 import { CREATE_WALK_ITEMS } from "../domain/reply-walk-create";
 import { MAX_URL_LENGTH } from "../domain/status-text";
 import { hashtagObjectName } from "../domain/tag-name";
+import { isDocumentDimension } from "../platform/document-dimension";
 import { utf8Length } from "../platform/dump-format";
 import { httpUrl } from "../platform/http-url";
 import { STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
@@ -166,7 +167,7 @@ function mediaType(type: unknown, mime: unknown): RemoteMediaInput["type"] {
 }
 
 function dimension(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 100_000 ? value : null;
+  return isDocumentDimension(value) ? value : null;
 }
 
 // A remote attachment's focalPoint as MediaAttachment#focus= casts it (MediaAttachmentParser#focus passes it as given),

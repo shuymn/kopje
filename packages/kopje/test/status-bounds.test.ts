@@ -82,6 +82,7 @@ import {
 } from "../src/domain/web-pages/budget";
 import type { PageCursor } from "../src/domain/web-pages/paging";
 import { parseRemoteStatus } from "../src/federation/remote-status";
+import { DOCUMENT_DIMENSION_MAX } from "../src/platform/document-dimension";
 import { utf8Length } from "../src/platform/dump-format";
 import { DOMAIN_BYTES, MAX_LOCAL_ADDRESSED } from "../src/platform/identity-bounds";
 import type { StoreOperation } from "../src/platform/store-kernel";
@@ -461,6 +462,8 @@ type Parts = {
     description: string;
     meta: string | null;
     blurhash?: string | null;
+    // focus_x, focus_y and focus_given; -1, -1 and 0 when not given.
+    focus?: [number, number, 0 | 1];
     // A local video or audio upload's current thumbnail (domain/media-thumbnails.ts): the parent is given a file token
     // and a child image row is linked to it, as only an import seeds beside these parts.
     thumbnail?: { preview: string; contentType: string; meta: string; blurhash: string };
@@ -500,8 +503,8 @@ async function storedStatus(t: Setup, author: string, parts: Parts): Promise<str
     await sql(
       t.store,
       `INSERT INTO media_attachments (id, account_id, status_id, position, type, content_type, url, preview_url,
-				description, meta, focus_x, focus_y, blurhash, file_token)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, -1, ?, ?)`,
+				description, meta, focus_x, focus_y, focus_given, blurhash, file_token)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       media,
       author,
       id,
@@ -512,6 +515,7 @@ async function storedStatus(t: Setup, author: string, parts: Parts): Promise<str
       m.preview,
       m.description,
       m.meta,
+      ...(m.focus ?? [-1, -1, 0]),
       m.blurhash ?? null,
       m.thumbnail === undefined ? null : `p${media}${"x".repeat(24)}`,
     );
@@ -571,15 +575,20 @@ const padded = (base: Record<string, unknown>) =>
 // their size and aspect too: a width of 24 characters (17 significant digits below 1e-5), a height of 23 (with an
 // exponent) and so an aspect of 23 (code review r2 M2). A playable file's are whole pixels within 65,535 (isEdgeSize),
 // shorter, and its facts add less than these take, so the REST maxima's media have an image's geometry: of type
-// 'unknown' (an import keeps it; its name is two bytes past 'image', the most JSON), but images in the raw fill, whose
-// cached files read the most from SQLite (their tokens).
+// 'unknown' (an import keeps it; its name is two bytes past 'image', the most JSON), but videos with a thumbnail in the
+// raw fill, whose cached files read the most from SQLite (their tokens).
 const LONGEST_SIZE = { width: 0.0000012345678901234567, height: 1.2345678901234567e100 };
 const MAX_META = padded({ original: LONGEST_SIZE, small: LONGEST_SIZE });
 
-// The most a video's Document carries (status-presenter.ts playableDocumentFacts, which reads nothing else of the
-// meta): width and height at 65,535 and the longest duration it writes, to the millisecond within the verifier's range
-// (below AUDIO_DURATION_LIMIT's 1,200 s). The Note's maxima's media are these.
-const MAX_AV_META = padded({ original: { width: 65_535, height: 65_535, duration: 1199.999 } });
+// The most a Document carries of its meta (status-presenter.ts documentFacts, which reads nothing else of it): width
+// and height at DOCUMENT_DIMENSION_MAX and the longest duration it writes, to the millisecond within the verifier's
+// range (below AUDIO_DURATION_LIMIT's 1,200 s). The Note's maxima's media are these.
+const MAX_NOTE_META = padded({
+  original: { width: DOCUMENT_DIMENSION_MAX, height: DOCUMENT_DIMENSION_MAX, duration: 1199.999 },
+});
+// The longest focus coordinate, given, from the focus_x and focus_y columns: a REAL in -1 to 1 at its longest in JSON
+// (25 bytes).
+const LONGEST_FOCUS = -0.0000012345678901234567;
 
 // A media URL of MEDIA_URL_LIMIT bytes that JSON escapes the most: a query of backslashes, which URL parsing keeps as
 // they are (a query is not a path, and the query percent-encode set has no backslash), each two bytes in JSON.
@@ -627,9 +636,9 @@ async function maximalParts(t: Setup, fill: Fill, kind: "rest" | "note" = "rest"
     content,
     source: content,
     spoiler: fill === "raw" ? "x".repeat(SPOILER_BYTES - 2) : C.repeat(Math.floor((SPOILER_BYTES - 2) / 6)),
-    // Files of an image's geometry at the longest presented meta (MAX_META: 'unknown', or images in the raw fill), or
-    // for a Note MP4 videos with their facts (MAX_AV_META: the cutover may keep four in one status, and the Document
-    // writes its mediaType), URLs at their byte bound, of ASCII (raw) or of backslashes JSON escapes (the others); a
+    // Files of an image's geometry at the longest presented meta (MAX_META: 'unknown', or videos in the raw fill), or
+    // for a Note MP4 videos with their facts and focus (MAX_NOTE_META: the cutover may keep four in one status, and the
+    // Document writes its mediaType), URLs at their byte bound, of ASCII (raw) or of backslashes JSON escapes (the others); a
     // 5x5 blurhash.
     media: Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => ({
       type: kind === "note" || fill === "raw" ? "video" : "unknown",
@@ -639,7 +648,8 @@ async function maximalParts(t: Setup, fill: Fill, kind: "rest" | "note" = "rest"
       preview:
         fill === "raw" ? atLimit(`https://${HOST}/p/${i}/`, MEDIA_URL_LIMIT) : escapingUrl(`https://p.example/${i}/?`),
       description: counted.repeat(MAX_MEDIA_DESCRIPTION_LENGTH),
-      meta: kind === "note" ? MAX_AV_META : MAX_META,
+      meta: kind === "note" ? MAX_NOTE_META : MAX_META,
+      ...(kind === "note" ? { focus: [LONGEST_FOCUS, LONGEST_FOCUS, 1] as [number, number, 1] } : {}),
       blurhash: blurhashOf(5, 5, "~"),
       // A Note's videos, and the raw fill's, each have a thumbnail at its bounds (#1828 PR6), which the Document writes
       // as its icon and REST shows as the preview: a local upload's, as only an import seeds beside remote parts.
@@ -3600,18 +3610,27 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
         });
         const facts = statusFacts(new Db(counting), ids[0]!, noteQuote, { reached: false })!;
         const note = noteOf(facts);
+        const create = createActivity(facts).activity;
         return {
           sqlite,
           rows,
           nodes: nodes(note),
           note: jsonBytes(note),
-          create: jsonBytes(createActivity(facts).activity),
+          create: jsonBytes(create),
           tags: facts.tags.length,
           longest: Math.max(...facts.tags.map((tag) => [...tag.name].length)),
           mentions: facts.mentions.length,
           media: facts.media.length,
           // Each video's thumbnail, as its Document's icon.
           icons: (note.attachment as { icon?: unknown }[]).filter((a) => a.icon !== undefined).length,
+          // Each video's focus and dimensions as stored, and the focalPoint term once.
+          focused: (note.attachment as Record<string, unknown>[]).filter(
+            (a) =>
+              JSON.stringify(a.focalPoint) === JSON.stringify([LONGEST_FOCUS, LONGEST_FOCUS]) &&
+              a.width === DOCUMENT_DIMENSION_MAX &&
+              a.height === DOCUMENT_DIMENSION_MAX,
+          ).length,
+          focalTerm: (create["@context"] as [string, Record<string, unknown>])[1].focalPoint,
           emojis: facts.emojis.length,
           emojiTags: jsonBytes(facts.emojis),
           collections: facts.collections.length,
@@ -3623,6 +3642,8 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
         mentions: MAX_STATUS_MENTION_ROWS,
         media: 4,
         icons: 4,
+        focused: 4,
+        focalTerm: FOCAL_TERM,
       });
       expect(measuredNote.longest).toBeLessThanOrEqual(MAX_TAG_LENGTH);
       expect(measuredNote.create).toBeLessThanOrEqual(OUTBOX_BYTES);
@@ -3663,13 +3684,15 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
       expect({ ...measuredNote, featured: featuredBytes, whole }).toEqual({
         ...NOTE_FILLS.escaped,
         ...NOTE_COUNTS,
-        featured: 4_522_968,
+        featured: 4_523_322,
         whole: 1,
       });
     },
     300_000,
   );
 });
+
+const FOCAL_TERM = { "@container": "@list", "@id": "toot:focalPoint" };
 
 // What the Note of a status at its bounds names, in every fill.
 const NOTE_COUNTS = {
@@ -3678,6 +3701,8 @@ const NOTE_COUNTS = {
   mentions: MAX_STATUS_MENTION_ROWS,
   media: 4,
   icons: 4,
+  focused: 4,
+  focalTerm: FOCAL_TERM,
   emojis: 61,
   emojiTags: 14_850,
   collections: MAX_TAGGED_COLLECTIONS,
