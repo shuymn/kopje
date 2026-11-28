@@ -210,27 +210,23 @@ describe("suggestions", () => {
   });
 
   // R39 (FriendsOfFriendsSource: accounts.moved_to_account_id IS NULL): a move counts when it names a stored account,
-  // as R21 reads it, so an imported id naming none leaves the account listed.
-  it("leaves out a moved account, and lists one whose move names no stored account", async () => {
+  // as R21 reads it, so an imported id naming none leaves the account listed. An account whose move is being resolved
+  // (accounts.move_pending) is left out until its collection sync settles it: once it settles with nothing (the bit
+  // cleared, no move written), it is listed again. The move is cleared before the bit is set, as the account holds
+  // one or the other (0125_account_move_pending).
+  it("leaves out a moved account or one whose move is being resolved, and lists one whose move names none", async () => {
     const { h, alice, dave, r0, r1, r2 } = await world();
     const all = [r0, r2, r1, dave.id];
+    const without = [r2, r1, dave.id];
     expect(await suggested(h, alice)).toEqual(all);
     await sql(h.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", r1, r0);
-    expect(await suggested(h, alice)).toEqual([r2, r1, dave.id]);
+    expect(await suggested(h, alice)).toEqual(without);
     await sql(h.store, "UPDATE accounts SET moved_to_account_id = '999999999999999999' WHERE id = ?", r0);
     expect(await suggested(h, alice)).toEqual(all);
     await sql(h.store, "UPDATE accounts SET moved_to_account_id = NULL WHERE id = ?", r0);
     expect(await suggested(h, alice)).toEqual(all);
-  });
-
-  // An account whose move is being resolved (accounts.move_pending) is left out until its collection sync settles it:
-  // once it settles with nothing (the bit cleared, no move written), it is listed again.
-  it("leaves out an account whose move is being resolved, and lists it once the move settles with nothing", async () => {
-    const { h, alice, dave, r0, r1, r2 } = await world();
-    const all = [r0, r2, r1, dave.id];
-    expect(await suggested(h, alice)).toEqual(all);
     await sql(h.store, "UPDATE accounts SET move_pending = 1 WHERE id = ?", r0);
-    expect(await suggested(h, alice)).toEqual([r2, r1, dave.id]);
+    expect(await suggested(h, alice)).toEqual(without);
     await sql(h.store, "UPDATE accounts SET move_pending = 0 WHERE id = ?", r0);
     expect(await suggested(h, alice)).toEqual(all);
   });
