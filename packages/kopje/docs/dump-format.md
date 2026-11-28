@@ -305,7 +305,9 @@ restores as it is and presents no `moved`. A file built from legacy data writes 
 
 Pending moves (migration `0125_account_move_pending`): `accounts.move_pending` is the integer 0 or 1, and 1 only on a
 remote row whose `moved_to_account_id` is NULL; anything else fails with `accounts: move_pending past its stored bound`.
-1 means the account's stored document names, as its `movedTo`, an account its collection sync is to fetch. A dump whose
+1 means the account's move is work left to its collection sync: its stored document names, as its `movedTo`, an
+account Kopje did not hold when the document was stored, which the sync's next read claim takes without a fetch if it
+was stored since, and fetches otherwise. A dump whose
 account is pending without a `collection_syncs` row of an unread generation (`generation` above `read_through`), or
 whose stored document names no destination the sync may fetch, fails verification with `move-pending-invalid`; a valid
 one restores with its sync and lease as dumped, and the restored Store's next claim of that sync resumes or gives it

@@ -5666,9 +5666,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   "reads a page's entries past the cap before the next page its URI names", "reads the rest of the replies a status
   embeds by fetching it for its replies only, storing nothing")). A reply a walk stores verifies its quote one hop short
   of a root's (`QUOTE_HOPS` − 1), so its quoted status is stored with no quote work of its own, and nothing a walk
-  stores, verifies or syncs starts another walk. Each author document stored requests one sync generation (above), so a
-  walk leads to at most 400 statuses of its own and quotes, 200 + 200 × `QUOTE_AUTHOR_FETCHES` (6) = 1,400 author
-  documents and sync generations and 1,400 × `MAX_REMOTE_PINS` = 28,000 pins, and to nothing past them
+  stores, verifies or syncs starts another walk. Each author document stored requests at most one sync generation, and
+  its sync may store one destination of a pending move, which requests one more (above), so a walk leads to at most 400
+  statuses of its own and quotes, 200 + 200 × `QUOTE_AUTHOR_FETCHES` (6) = 1,400 author documents, 2,800 sync
+  generations (at most 1,769,600 requests) and 2,800 × `MAX_REMOTE_PINS` = 56,000 pins, a subtotal that leaves handle
+  invalidation out, and to nothing past them
   (`test/reply-walks.test.ts` ("records at most WALK_STATUSES nodes", "reads at most WALK_PAGES collection documents",
   "charges a page whose round died after its fetch", "hands out at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES
   documents a walk", "stores replies listed before their parent once it is", "carries at most REPLY_READ_ENTRIES entries
