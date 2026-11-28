@@ -1,6 +1,8 @@
 import type { FC } from "hono/jsx";
 
 import type { Account } from "../../domain/accounts";
+import type { FeaturedTag } from "../../domain/featured-tags";
+import { taggedPath } from "../../domain/tagged-path";
 import type { FeaturedTagLink } from "../../domain/web-pages/featured";
 import type { PageCursor, Paging } from "../../domain/web-pages/paging";
 import type { Site } from "../../domain/web-pages/site";
@@ -16,11 +18,11 @@ import { emojiAllowance } from "../view/emoji";
 import { newestFirstPager } from "../view/pager";
 import { accountTarget } from "../view/remote";
 import { featuredPath, profileTabs } from "./profile";
-import { tagPath } from "./tag";
 
 export type FeaturedView = {
   account: Account;
-  tags: FeaturedTagLink[];
+  // The fields of each FeaturedTagLink the page shows.
+  tags: (Pick<FeaturedTagLink, "key"> & { featured: Pick<FeaturedTag, "name" | "statuses_count"> })[];
   // The endorsed accounts, by account id, newest first.
   accounts: Account[];
   cursor: PageCursor;
@@ -65,9 +67,9 @@ export const FeaturedPage: FC<FeaturedView> = ({ account, tags, accounts, cursor
             <p class="muted">{m.featured.noHashtags}</p>
           ) : (
             <FeaturedTags
-              tags={tags.map(({ featured, tag }) => ({
+              tags={tags.map(({ featured, key }) => ({
                 name: featured.name,
-                href: tag === null ? null : tagPath(tag),
+                href: key === null ? null : taggedPath(account.username, key),
                 count: Number(featured.statuses_count),
               }))}
             />

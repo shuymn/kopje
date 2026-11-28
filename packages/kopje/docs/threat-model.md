@@ -1258,7 +1258,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `suggestionSourceSql` and `suggestionCandidateSql` in `src/domain/audience.ts`, `suggestions` in
   `src/domain/suggestions.ts`; `test/suggestions.test.ts`, `test/policy-endpoints.test.ts`.
 - **VIS-9: only the followed side accepts.** A pending follow of a local account becomes `accepted` only by that
-  account's own authorize call; a pending remote follow only by an `Accept` that passes ID-6. _Enforced (main):_
+  account's own authorize call, or by the unlock job its own unlocking starts (`unlock-accepts.ts`); a pending remote
+  follow only by an `Accept` that passes ID-6. _Enforced (main):_
   `answerFollowRequest` in `src/domain/account-actions.ts` (`POST /api/v1/follow_requests/:id/authorize` and
   `/reject`, the viewer from the credential; a remote requester gets the Accept or Reject at its shared inbox, or its
   personal inbox without one), and the inbound `Accept`, matched first by the `follows.uri` of our Follow;
@@ -1280,7 +1281,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the reverse order does not;
   `test/inbox-reactions.test.ts` ("VIS-10: the favourite notification follows the aggregate"). _Enforced (main):_
   `notify` in `src/domain/notifications.ts`; `test/statuses.test.ts` ("a retry has no second side effect"),
-  `test/timelines.test.ts` ("notifies followers who asked to be notified, once"); the update fan-out: `notifyEdited` in
+  `test/timelines.test.ts` ("notifies followers who asked to be notified, once"), `test/follow-answers.test.ts`
+  ("authorizing a request through the API notifies the new follower"); the update fan-out: `notifyEdited` in
   `src/domain/update-fan-out.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new
   push", "…but not a kept one: the same row, no new push", "a local quote's stamp Delete fans out its status once; a
   repeated Delete none", "an approval Update notifies when the round accepts the quote, not before", "a new stamp on
@@ -1509,12 +1511,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   unlisted, private, direct or limited status, which the hashtag index it reads does not hold. Its cost is bounded
   (RES-7): a window of a page per followed hashtag, at most 100 hashtags. A featured hashtag shows how many of the
   account's public and unlisted statuses carry it and the date of the newest, never which; an unavailable account
-  shows none (VIS-1). The counts are kept on write, so no read counts the account's history; featuring a hashtag counts
-  the account's own history once, and deleting or editing the newest tagged status walks back to the one before it, as
-  Mastodon does (accepted: a local user's action on their own data). _Enforced (main):_
+  shows none (VIS-1). The Featured tab's link opens the account's tagged page, which lists only what its profile shows
+  anonymously (VIS-4); the featured record itself shows no status. The counts are kept on write, so no read counts the
+  account's history; featuring a hashtag counts the account's own history once, and deleting or editing the newest
+  tagged status walks back to the one before it, as Mastodon does (accepted: a local user's action on their own data).
+  _Enforced (main):_
   `src/domain/tags.ts`, `src/domain/featured-tags.ts`, `homeTimeline` in `src/domain/timelines.ts`, `TagWindows` in
   `src/domain/audience.ts`, migration `0016_tags`; `test/followed-tags.test.ts`, `test/featured-tags.test.ts`,
-  `test/policy-endpoints.test.ts`, `test/policy-bounds.test.ts`, `test/migrations.test.ts`.
+  `test/web-featured-page.test.ts` (the Featured tab's links), `test/policy-endpoints.test.ts`,
+  `test/policy-bounds.test.ts`, `test/migrations.test.ts`.
 - **VIS-22: a pin shows only what its status shows, and a conversation mute is its owner's alone.** A pin
   (`StatusPin`) is of the pinner's own status, never a boost or a direct or limited one, at most five per account
   (`StatusPinValidator`), a remote account's at most `MAX_REMOTE_PINS` (20) as learned from its collection; storage

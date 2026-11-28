@@ -353,7 +353,7 @@ const HOLDS: [page: PageName, selector: string, count: number][] = [
   ["follows-hidden", "main > p.muted", 1],
   // The Featured tab: the current tab, a hashtag linked and one that is not, endorsed accounts and their pager.
   ["featured", 'nav.tabs > a[aria-current="page"]', 1],
-  ["featured", 'ul.hashtags > li > a[href^="/tags/"]', 1],
+  ["featured", 'ul.hashtags > li > a[href="/@alice/tagged/walks"]', 1],
   ["featured", "ul.hashtags > li > span.name", 1],
   ["featured", "ul.accounts > li .who", 2],
   ["featured", ".pager a.btn", 1],
