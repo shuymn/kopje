@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "82af6ba87f5d10774075d41995f65c4fdac834bf",
+  "confirmed": "a76edb9cad3547f1159d1d1eb4c7751a5ca38900",
   "files": [
     {
       "path": "src/store.ts",
@@ -12,13 +12,13 @@
       "path": "src/domain/inbox.ts",
       "functions": ["receiveActivity", "startActorDeletion", "purgeBatch"],
       "spec": "CollectionConsent.tla RecvRes and Touch: which of CollectionConsentKopje.tla's operators an inbound activity runs, when it is ignored, and that every valid push of R's collections outdates a read under way, a no-op one included; OwnerGone and KPurge: an actor Delete writes R's tombstone and runs the first purge batch in its own transaction, which reaches C or not, and later batches purge the rest",
-      "blob": "beac73f3207909dba27e5c1c6048d349f271604f"
+      "blob": "99964b650fd4048158f0ab32df04e58da8ef6f29"
     },
     {
       "path": "src/federation/inbound.ts",
       "functions": ["receiveInbound", "fetchesFirst"],
       "spec": "CollectionConsent.tla KRecv and NeedsFetch: an inbound activity's routing; the Store's need to fetch the instrument of a FeatureRequest for a collection Kopje does not store (the step's response \"fetch\"), then the resumed activity's own transaction and final status (202, 503)",
-      "blob": "6a05333c4596a8a30b4c7c1dc225346f99da2ed0"
+      "blob": "5d01f26978cc77cc460175b3fbbccdd273f88a01"
     },
     {
       "path": "src/domain/inbound-feature-requests.ts",
@@ -57,13 +57,13 @@
       "path": "src/domain/remote-collections.ts",
       "functions": ["claimCollectionSync", "endRound", "roundAccount", "completeCollectionRead"],
       "spec": "CollectionConsent.tla KClaim, KApply, KLease and KStale: a read's claim (a new token; the request kept until a completion reads it through), its completion, its outdated check and its claim token, which only a new claim replaces (a lease's end alone fences nothing)",
-      "blob": "a98fb47d13053b7068f6a213470d046ecdb34059"
+      "blob": "52dfa082716150285d4f8084610b6e85d6609c1b"
     },
     {
       "path": "src/federation/collections.ts",
       "functions": ["syncCollections"],
       "spec": "CollectionConsent.tla KFetch, KFetch1 and KFetch2: a read's page GETs",
-      "blob": "7455b4c1d4dec85ceaf7c4573cc6c1eaa91cdc11"
+      "blob": "e5600a22cba08c17cae576152275b1d39f5ece0c"
     },
     {
       "path": "src/domain/collections.ts",
