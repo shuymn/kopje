@@ -8,13 +8,26 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-28
+
+A minor release, published under the npm dist-tag `latest`. A remote account that has moved is shown as moved once a
+background sync has resolved a new account Kopje did not know, and it can no longer be followed or suggested, nor take a
+`Move`'s followers; while its move is being resolved, following it answers 503
+([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). A post can mention an account the instance has
+not stored, and a domain block with `reject_media` withholds that domain's media from what the instance serves. It adds
+two Store migrations. Upgrading is recommended.
+
 ### Instance changes
 
-- Store schema: adds two migrations, applied on the first request after the deploy, so the release is a minor
-  version: 0124, an index, and 0125, `accounts.move_pending`, a column with a constant default and its triggers, which
-  reads and rewrites no row. Until they are applied the Store refuses every request, and it stays readonly until they
-  are verified ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an earlier
-  version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md).
+- Store schema: adds two migrations (0124, 0125), applied on the first request after the deploy. Until they are
+  applied the Store refuses every request, and it stays readonly until they are verified
+  ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an earlier version needs
+  the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the representative store defined in
+  `test/bench/migration-cost.ts` the two took 15–16 ms together (median 15 ms) in three runs of the migration bench
+  workflow on a GitHub-hosted runner, in workerd's local Durable Object SQLite. Migration `0124_reject_media_blocks`
+  adds a partial index on `instance_domain_blocks` (the blocks with `reject_media`), built by one pass over that table;
+  it rewrites no row and changes no trigger. Migration `0125_account_move_pending` adds `accounts.move_pending`, a
+  column with a constant default, and two triggers; it reads and rewrites no row, and the column is in a dump.
 - `wrangler.jsonc`: no change.
 
 ### Added
@@ -31,10 +44,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A remote profile's `movedTo` is read literally: an absolute http(s) URI, or an array or object naming one. Relative,
   empty, `@id` and nested spellings no longer resolve, a context no longer renames the member, and a fragment is
   ignored for a stored account, so some stored moves change when the profile is next stored, and with them whether a
-  `Move` to that profile moves its followers. This adds no fetch of the account `movedTo` names.
-- While a remote account's move is being resolved, following it answers 503 `Remote data could not be fetched`, a
-  held follow request to it waits, suggestions leave it out, and a `Move` to it keeps the followers; once resolved,
-  following answers 403 ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts).
+  `Move` to that profile moves its followers. The fetch of an account `movedTo` names that Kopje does not know yet
+  is under Fixed.
+- While a remote account's move is being resolved, following it answers 503 `Remote data could not be fetched`,
+  `/authorize_interaction` says the account is still being checked, a held follow request to it waits, suggestions leave
+  it out, and a `Move` to it keeps the followers; once the move is confirmed, following answers 403
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts).
 - A video upload whose processing estimate does not fit the time left at its duration's rendition is encoded at the
   first lower rendition that fits (720p at 30 fps, then 480p at 30 fps) instead of being refused, and is refused only
   when none fits. A 1080p60 video of about 112 to 120 s is now taken at 720p, and 2160p HDR video up to about 91 s
@@ -42,15 +57,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/media-processor.md](docs/media-processor.md), "Estimated admission limits"). The time limits, the job budget
   and the cost bound are unchanged.
 - Local image uploads, avatars, headers and video thumbnails take up to 33,177,600 pixels (7680×4320), Mastodon's
-  limit since v4.2, and `/api/v1/instance` and `/api/v2/instance` advertise it as `image_matrix_limit`. Remote media
-  and link preview images keep 16,777,216. A `kopje-admin media-rebuild` call starts no new row after two minutes once
-  it has handled one, and the command continues with the next call; it stops with exit 3 when three calls in a row
-  make no progress.
+  limit since v4.2, and `/api/v1/instance` and `/api/v2/instance` advertise it as `image_matrix_limit`;
+  `kopje-admin images-export` takes images up to the same limit. Remote media and link preview images keep 16,777,216.
+  A `kopje-admin media-rebuild` call starts no new row after two minutes once it has handled one, and the command
+  continues with the next call; it stops with exit 3 when three calls in a row make no progress.
 
 ### Fixed
 
 - When a remote profile's `movedTo` names an account Kopje does not know yet, the background collection sync fetches
-  that account, signed as the instance actor, and shows the move unless that account has moved too.
+  that account, signed as the instance actor, unless it was stored meanwhile, and shows the move once the account's
+  document and handle are confirmed and it has not moved too; a destination that is gone or cannot be confirmed shows
+  no move.
 - Following an account that has moved answers 403, as Mastodon does, also to change the options of an existing follow;
   a held follow request to it is not sent, and a `Move` keeps the followers of an account whose target has itself
   moved. Follow suggestions leave out accounts that have moved.
