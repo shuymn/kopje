@@ -4,8 +4,8 @@ import { useUi } from "../ui";
 
 export type FeaturedTagView = { name: string; href: string | null; count: number };
 
-// An account's featured hashtags: a row each, its name linked to its hashtag page when one serves it, and
-// its count of posts as the API reports it.
+// An account's featured hashtags: a row each, its name linked to the account's posts with it when that page serves
+// it, and its count of posts as the API reports it.
 export const FeaturedTags: FC<{ tags: FeaturedTagView[] }> = ({ tags }) => {
   const { m } = useUi();
   return (

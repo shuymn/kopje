@@ -15,6 +15,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   its media if the status it leaves is valid: an edit that would leave no text, no media and no quote answers 422
   `Validation failed: Text can't be blank` and keeps the status as it was.
 
+### Fixed
+
+- The hashtags of a profile's Featured tab (`/@user/featured`) link to the account's posts with the hashtag
+  (`/@user/tagged/:name`), as the featured hashtags on Mastodon's account timeline do. The link names the hashtag by its
+  stored name, as the API's featured tag `url` does, where Mastodon's web app uses the display name. A featured hashtag
+  whose stored name that page does not serve is shown without a link.
+
 ## [0.9.0] - 2026-11-28
 
 A minor release, published under the npm dist-tag `latest`. A remote account that has moved is shown as moved once a

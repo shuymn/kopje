@@ -553,7 +553,7 @@ Accounts (the `Account` and credential account entities):
 - An account whose handle another account has taken (its stored username is `! <id>`, as Mastodon's
   `invalidate_username!` writes it) shows `invalid_handle`, its id as `username` and `<id>@handle.invalid` as `acct`,
   as Mastodon 4.7 does, and `GET /api/v1/accounts/lookup` finds it by that placeholder. No other address names it:
-  lookup, an account search's exact match, a new post's mention and the web's featured hashtag page ignore
+  lookup, an account search's exact match, a new post's mention and the account's tagged route ignore
   `! <id>@<domain>`, where Mastodon's lookup matches the stored username as given (`Account.find_remote`,
   `finder_concern.rb:27-35`); an account search can still list it among its username-prefix and recent matches, by its
   search text. A search with `resolve=true` of `<id>@handle.invalid` answers as without `resolve`,
@@ -1386,8 +1386,8 @@ Hashtags (the `Tag` entity):
 - `/@user/featured` (the Featured tab of Mastodon's web app, which serves its single-page app there) is an HTML page of
   a local account's featured hashtags and the accounts it endorses, as `GET /api/v1/accounts/:id/featured_tags` and
   `/endorsements` list them to an anonymous client, the endorsements paged by account id. A featured hashtag links to
-  the instance's hashtag page (`/tags/:name`), not to the account's posts with it (`/@user/tagged/:tag`), and shows at
-  most ten hashtags, the first by id, though an import may hold more.
+  the page its `url` names, the account's posts with it, and has no link when that page does not serve its stored name.
+  The tab shows at most ten hashtags, the first by id, though an import may hold more.
 
 Admin account actions (`POST /api/v1/admin/accounts/:account_id/action`):
 
