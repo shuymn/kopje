@@ -335,7 +335,9 @@ describe("suggestions read rows within their windows (RES-7)", () => {
     // and each candidate walks every suffix of both keys; each account keeps a stale domain mark (R38: read by the
     // availability seek, then its row), the viewer's mute of each candidate has expired (read, then passed), and
     // the viewer blocks other domains. Each candidate has moved to an account the presenter does not show (a domain
-    // past DOMAIN_BYTES), so R39's moved term reads that target's row and passes it.
+    // past DOMAIN_BYTES), so R39's moved term reads that target's row and passes it, and every source has a move being
+    // resolved (accounts.move_pending, which the bound allows only beside no move), which R39 reads of candidates
+    // alone, from the row it already reads.
     const sources = SUGGESTION_SOURCES;
     const where = { domain: "a.b.c.d.e.f.g.example", host: "h.b.c.d.e.f.g.example" };
     const { rows, shown } = await rowsOf((run) => {
@@ -358,6 +360,10 @@ describe("suggestions read rows within their windows (RES-7)", () => {
       run(
         `UPDATE accounts SET moved_to_account_id = CAST(${BASE} + ${sources + SUGGESTION_EDGES} AS TEXT)
 				WHERE CAST(id AS INTEGER) >= ${BASE} + ${sources} AND CAST(id AS INTEGER) < ${BASE} + ${sources + SUGGESTION_EDGES}`,
+      );
+      run(
+        `UPDATE accounts SET move_pending = 1
+				WHERE CAST(id AS INTEGER) >= ${BASE} AND CAST(id AS INTEGER) < ${BASE} + ${sources}`,
       );
     });
     console.log(JSON.stringify({ maximum: rows }));

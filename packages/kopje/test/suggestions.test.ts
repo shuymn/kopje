@@ -223,6 +223,18 @@ describe("suggestions", () => {
     expect(await suggested(h, alice)).toEqual(all);
   });
 
+  // An account whose move is being resolved (accounts.move_pending) is left out until its collection sync settles it:
+  // once it settles with nothing (the bit cleared, no move written), it is listed again.
+  it("leaves out an account whose move is being resolved, and lists it once the move settles with nothing", async () => {
+    const { h, alice, dave, r0, r1, r2 } = await world();
+    const all = [r0, r2, r1, dave.id];
+    expect(await suggested(h, alice)).toEqual(all);
+    await sql(h.store, "UPDATE accounts SET move_pending = 1 WHERE id = ?", r0);
+    expect(await suggested(h, alice)).toEqual([r2, r1, dave.id]);
+    await sql(h.store, "UPDATE accounts SET move_pending = 0 WHERE id = ?", r0);
+    expect(await suggested(h, alice)).toEqual(all);
+  });
+
   it("takes nothing from a source R13 hides from the viewer, local or remote", async () => {
     const { h, alice, bob, dave, r0, r1, r2 } = await world();
     // Without bob: r0 by carol alone.

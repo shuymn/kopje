@@ -413,7 +413,7 @@ describe("the status read endpoints agree with the model of their rules", () => 
   it("leaves out a moved account's suggestion and link post, as the model does", async () => {
     const found = (() => {
       for (const sample of fc.sample(caseArb, { seed: 1561, numRuns: 400 })) {
-        const c = { ...sample, world: { ...sample.world, moves: [] } };
+        const c = { ...sample, world: { ...sample.world, moves: [], pending: [] } };
         const m = new PolicyModel(c.world);
         const remote = (x: number) => c.world.accounts[x]?.local === false;
         const discoverable = (x: number) => c.discoverable[x] === 1;
@@ -457,6 +457,47 @@ describe("the status read endpoints agree with the model of their rules", () => 
         .map((move) => ({ id: accountId(move.from), moved_to_account_id: accountId(move.to) }))
         .toSorted((a, b) => (a.id < b.id ? -1 : 1)),
     );
+    expect(problems).toEqual([]);
+  }, 120_000);
+
+  // A fixed case in which an account some viewer would be suggested has its move being resolved
+  // (accounts.move_pending), so the pending branch of the suggestions runs whatever the generator drew: the first case
+  // of a fixed seed that has one.
+  it("leaves out a suggestion whose move is being resolved, as the model does", async () => {
+    const found = (() => {
+      for (const sample of fc.sample(caseArb, { seed: 1561, numRuns: 400 })) {
+        const c = { ...sample, world: { ...sample.world, moves: [], pending: [] } };
+        const m = new PolicyModel(c.world);
+        const discoverable = (x: number) => c.discoverable[x] === 1;
+        // A viewer check() reads suggestions for: a local account that is not suspended.
+        const suggested = c.world.accounts
+          .flatMap((account, viewer) =>
+            account.local && !account.suspended ? m.suggestions(viewer, discoverable, SUGGESTION_WINDOWS) : [],
+          )
+          .find((x) => c.world.accounts[x]?.local === false);
+        if (suggested !== undefined) {
+          return { c, suggested, discoverable };
+        }
+      }
+      return undefined;
+    })();
+    expect(found).toBeDefined();
+    const { c, suggested, discoverable } = found!;
+    const pending: Case = { ...c, world: { ...c.world, pending: [suggested] } };
+    const m = new PolicyModel(pending.world);
+    expect(
+      c.world.accounts.some(
+        (account, viewer) =>
+          account.local &&
+          !account.suspended &&
+          m.suggestions(viewer, discoverable, SUGGESTION_WINDOWS).includes(suggested),
+      ),
+    ).toBe(false);
+    const { problems, stored } = await runInDurableObject(store, (_instance, state) => ({
+      problems: check(state.storage.sql, pending),
+      stored: state.storage.sql.exec("SELECT id FROM accounts WHERE move_pending = 1").toArray(),
+    }));
+    expect(stored).toEqual([{ id: accountId(suggested) }]);
     expect(problems).toEqual([]);
   }, 120_000);
 });

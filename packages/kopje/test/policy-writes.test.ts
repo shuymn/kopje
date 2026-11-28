@@ -228,6 +228,7 @@ function witness(
       quotes: world.quotes ?? [],
       dismissals: [],
       moves: [],
+      pending: [],
       now: "2026-10-12T00:00:00.000Z",
     },
     shared: [false],
@@ -704,6 +705,7 @@ function readWorld(sql: SqlStorage, base: World): Snapshot {
         })),
       // The actions move nobody.
       moves: base.moves,
+      pending: base.pending,
       now: base.now,
     },
   };

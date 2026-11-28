@@ -40,7 +40,7 @@ Accounts (always over an account id, never over a status or a follow row):
 | `followListedSql(x, owner, viewer, now)`                                   | R13: `x` is listed among the owner's followers or following: to an anonymous viewer and the owner, always; to anyone else, unless they block or mute `x` (while the mute applies) or `x` blocks them.                                                                                                                                                                                                  |
 | `endorsementsShownSql(owner)`, `endorsementListedSql(x)`                   | R28: the accounts the owner endorses are listed, to anyone, while the owner is available; an endorsed account is listed while it is available.                                                                                                                                                                                                                                                         |
 | `suggestionSourceSql(owner, viewer)`                                       | R39: the viewer's follow of `owner` brings the accounts the owner follows into their suggestions: R13 shows the viewer the owner's following (`followListsShownSql`).                                                                                                                                                                                                                                  |
-| `suggestionCandidateSql(a, viewer)`                                        | R39: the account of the accounts row `a` in scope is a candidate for the viewer's suggestions: someone else, discoverable, not moved to a target the presenter shows (`movedTargetShownSql`), neither followed nor requested by the viewer, and not dismissed by them (`follow_recommendation_mutes`). R12 judges each candidate after it.                                                             |
+| `suggestionCandidateSql(a, viewer)`                                        | R39: the account of the accounts row `a` in scope is a candidate for the viewer's suggestions: someone else, discoverable, not moved to a target the presenter shows (`movedTargetShownSql`), no move being resolved (`move_pending`), neither followed nor requested by the viewer, and not dismissed by them (`follow_recommendation_mutes`). R12 judges each candidate after it.                    |
 | `announcementShownSql(a)`                                                  | R40: the announcement row `a` is published, so every signed-in local user is shown it and may dismiss it and react to it.                                                                                                                                                                                                                                                                              |
 | `trendableStatusSql(s, now, langs)`                                        | R41: the status row `s` may trend at `now`: a public original that is not a reply, without a content warning and not sensitive, in a language Mastodon supports (`langs`), published by `now`, by an available and discoverable author anyone may see (R2 with no viewer), quoting nothing or a status its quote lets through that is present, public, plain and by an available, discoverable author. |
 | `findableBySql(x, viewer)`                                                 | R14: the viewer finds `x` by account search or search resolution: available, and not on a domain the viewer blocks.                                                                                                                                                                                                                                                                                    |
@@ -653,15 +653,17 @@ accounts the viewer's follows follow. A source is an accepted follow of the view
 (`suggestionSourceSql`: available, not hiding its network, not blocking the viewer; Mastodon asks only the second, so
 Kopje never counts an edge the viewer could not read in that following list, VIS-8). An edge is an accepted follow of a
 source; its target is a candidate when `suggestionCandidateSql` passes (someone else, `accounts.discoverable` 1, no
-follow by the viewer in either state, no dismissal, no move to a target the presenter shows as `moved`) and R12 lists it
-(`listedForSql`: available, not blocked, muted while the mute applies or domain-blocked by the viewer by stored domain
-or actor host, not blocking the viewer). Mastodon also leaves out silenced and memorial accounts, which Kopje does not
-record. Candidates rank by how many counted edges reach them, then by `accounts.followers_count` (lowest first, as
-`presentedCountSql` reads it), then by id (newest first); the first `SUGGESTIONS_KEPT` (40) are kept and a request
-answers `offset` and `limit` of them (`[]` from offset 40 on, where Mastodon answers 500). A remote account's follower
-count is the one its followers collection reports, learned by its collection sync (0 until then). There is no cache: the
-order is deterministic, so an offset is stable only while the follows, blocks, mutes and dismissals stay as they were.
-v2 wraps each account as `{"source": "past_interactions", "sources": ["friends_of_friends"], "account": ...}`.
+follow by the viewer in either state, no dismissal, no move to a target the presenter shows as `moved`, and no move
+being resolved, `accounts.move_pending`, until its collection sync settles it) and R12 lists it (`listedForSql`:
+available, not blocked, muted while the mute applies or domain-blocked by the viewer by stored domain or actor host, not
+blocking the viewer). Mastodon also leaves out silenced and memorial accounts, which Kopje does not record; a moved one
+is left out here too. Candidates rank by how many counted edges reach them, then by `accounts.followers_count` (lowest
+first, as `presentedCountSql` reads it), then by id (newest first); the first `SUGGESTIONS_KEPT` (40) are kept and a
+request answers `offset` and `limit` of them (`[]` from offset 40 on, where Mastodon answers 500). A remote account's
+follower count is the one its followers collection reports, learned by its collection sync (0 until then). There is no
+cache: the order is deterministic, so an offset is stable only while the follows, blocks, mutes and dismissals stay as
+they were. v2 wraps each account as `{"source": "past_interactions", "sources": ["friends_of_friends"], "account":
+...}`.
 
 The ranking is over a bounded graph, by windows of follow ids that the query reads as ranges of `follows_following`
 (`account_id`, `id`), each from the id of its last entry, which a scalar lookup of that index finds, so the access
@@ -1322,10 +1324,11 @@ lists (their residual budget), context (its traversal cap; the status web page's
 conversations (no rule before `LIMIT`), and the blocks, mutes, domain blocks and follow requests lists (no rule before
 `LIMIT`).
 
-Suggestions seek the R39 source and edge windows through `follows_following`, without sorting edges before the
-cutoff. `test/suggestions-bounds.test.ts` checks fresh and stale statistics, growth below and beyond the windows with a
-10-row allowance, and all R12 terms over 10,000 distinct candidates, each moved to an account the presenter does not
-show, so R39 reads its target too. The measured maximum is 326,768 rows; ranking returns at most 40 ids.
+Suggestions seek the R39 source and edge windows through `follows_following`, without sorting edges before the cutoff.
+`test/suggestions-bounds.test.ts` checks fresh and stale statistics, growth below and beyond the windows with a 10-row
+allowance, and all R12 terms over 10,000 distinct candidates, each moved to an account the presenter does not show, so
+R39 reads its target too, with every source's move being resolved, which R39 reads of a candidate from its row alone.
+The measured maximum is 326,768 rows; ranking returns at most 40 ids.
 
 A cursor range is a direct range (`id < coalesce(?2, ':')`, `edgeRangeSql`), never `(?2 IS NULL OR id < ?2)`, which
 no index can seek; `test-node/range-predicates.test.ts` checks every statement in `src`.

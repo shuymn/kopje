@@ -185,7 +185,7 @@ describe("the policy fragments agree with the model of their rules", () => {
   // A fixed world in which a remote account some viewer could otherwise follow has moved, so the moved branch of both
   // sides runs whatever the generator drew.
   it("followableBySql (R21) over a world whose otherwise followable account has moved", async () => {
-    const base: World = { ...fc.sample(worldArb, { seed: 1561, numRuns: 1 })[0]!, moves: [] };
+    const base: World = { ...fc.sample(worldArb, { seed: 1561, numRuns: 1 })[0]!, moves: [], pending: [] };
     const unmoved = new PolicyModel(base);
     const from = base.accounts.findIndex(
       (account, x) => !account.local && base.accounts.some((_, viewer) => unmoved.followableBy(x, viewer)),
