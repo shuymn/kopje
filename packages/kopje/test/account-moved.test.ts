@@ -19,15 +19,14 @@ import { jsonBytes } from "../src/domain/answer-budget";
 import { namedMove } from "../src/domain/collection-requests";
 import { purgeBatch, receiveActivity } from "../src/domain/inbox";
 import { actorState, type RemoteActorInput } from "../src/domain/remote-actors";
-import { SYNC_RETRY_MS } from "../src/domain/remote-collections";
-import { syncCollections } from "../src/federation/collections";
 import { ACTOR_URI_LIMIT, DOMAIN_BYTES } from "../src/platform/identity-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, setSetting, sql } from "./api-helpers";
-import { inboxDeps, NOW } from "./app-helpers";
+import { NOW } from "./app-helpers";
 import { customEmoji } from "./emoji-fixtures";
-import { actorDefaults, confirmedAs, mastodonActor } from "./inbox-helpers";
-import { DAVE, followed, OTHER, setup } from "./inbox-status-helpers";
+import { actorDefaults, confirmedAs } from "./inbox-helpers";
+import { DAVE, setup } from "./inbox-status-helpers";
+import { DEST, jobsRung, pendingBob, syncUntilDone } from "./move-helpers";
 import {
   observedSql,
   type PlannedStatement,
@@ -373,22 +372,14 @@ describe("following a moved account", () => {
 // (404) and R21 (403) come first. Once the move is resolved R21 refuses it; once it settles with nothing it is judged as
 // any account.
 describe("following an account while its move is being resolved", () => {
-  const DEST = `${OTHER}/users/dest`;
   const OPTIONS = { reblogs: false, notify: true, languages: ["en"] };
   type Edge = { state: string; show_reblogs: number; notify: number; languages: string | null };
 
-  // Bob, stored with a document whose movedTo names DEST, which is served (unless `served` is false) but not yet
-  // fetched; bob's collections answer 404, so his other parts read through at once.
-  async function pendingBob(served = true) {
+  // Bob, stored with a document whose movedTo names DEST, which is served but not yet fetched (move-helpers.ts
+  // pendingBob), and the follow API's request and reads around him.
+  async function heldBob() {
     const t = await setup();
-    const dest = await mastodonActor(t.web, "dest", { origin: OTHER, key: 3 });
-    if (!served) {
-      t.web.served.delete(DEST);
-    }
-    const bob = await mastodonActor(t.web, "bob");
-    t.web.serve(bob.uri, { ...bob.document, movedTo: DEST });
-    const bobId = await followed(t, bob);
-    expect(await sql(t.store, "SELECT move_pending FROM accounts WHERE id = ?", bobId)).toEqual([{ move_pending: 1 }]);
+    const { bobId } = await pendingBob(t);
     const follow = (body: Record<string, unknown> = {}) =>
       t.request(`/api/v1/accounts/${bobId}/follow`, bearer(t.tokens.dave, json(body)));
     const edge = async () =>
@@ -403,24 +394,14 @@ describe("following an account while its move is being resolved", () => {
     const follows = async () =>
       (await sql(t.store, "SELECT 1 FROM outbound_activities WHERE json_extract(body, '$.activity.type') = 'Follow'"))
         .length;
-    const rang = () => t.queue.pending.some((message) => (message.body as { kind?: string }).kind === "inbound-jobs");
-    // Every sync due run, the clock moved past each backoff, until none is left.
-    const settle = async () => {
-      let now = NOW;
-      for (let call = 0; call < 10; call++) {
-        await syncCollections(t.env, { ...inboxDeps(() => t.store, t.web.loader), now: () => now });
-        if ((await sql(t.store, "SELECT 1 FROM collection_syncs")).length === 0) {
-          break;
-        }
-        now += SYNC_RETRY_MS;
-      }
-    };
+    const rang = () => jobsRung(t.queue);
+    const settle = () => syncUntilDone(t);
     t.queue.pending.length = 0;
-    return { t, dest, bobId, follow, edge, follows, rang, settle };
+    return { t, bobId, follow, edge, follows, rang, settle };
   }
 
   it("answers 503 and writes, records nothing and rings, then 403 once the move is resolved", async () => {
-    const { t, bobId, follow, edge, follows, rang, settle } = await pendingBob();
+    const { t, bobId, follow, edge, follows, rang, settle } = await heldBob();
     const held = await follow();
     expect([held.status, await held.json()]).toEqual([503, { error: "Remote data could not be fetched" }]);
     expect(await edge()).toBeUndefined();
@@ -442,7 +423,7 @@ describe("following an account while its move is being resolved", () => {
 
   it("keeps the options of an accepted or pending follow as stored while it answers 503", async () => {
     for (const state of ["accepted", "pending"] as const) {
-      const { t, bobId, follow, edge, rang } = await pendingBob();
+      const { t, bobId, follow, edge, rang } = await heldBob();
       await sql(
         t.store,
         `INSERT INTO follows (account_id, target_account_id, state, show_reblogs, notify, languages)
@@ -465,7 +446,7 @@ describe("following an account while its move is being resolved", () => {
     ["the destination answers 404", 404],
     ["the read is given up after MAX_SYNC_ATTEMPTS transient claims", 503],
   ] as const)("judges the follow as for any account once %s", async (_name, status) => {
-    const { t, bobId, follow, edge, follows, settle } = await pendingBob();
+    const { t, bobId, follow, edge, follows, settle } = await heldBob();
     t.web.fail(DEST, status);
     expect((await follow()).status).toBe(503);
     await settle();

@@ -23,18 +23,8 @@ import { inboxDeps, NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD, runStoreJobs } from "./helpers";
 import { actorDefaults, confirmedAs, LOCAL, MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
-import {
-  accountId,
-  AS,
-  DAVE,
-  DAVE_URI,
-  followed,
-  mastodonNote,
-  OTHER,
-  type Setup,
-  setup,
-} from "./inbox-status-helpers";
-import { moveActivity, updated } from "./move-helpers";
+import { accountId, AS, DAVE, DAVE_URI, mastodonNote, OTHER, type Setup, setup } from "./inbox-status-helpers";
+import { DEST, moveActivity, moveState, pendingBob, syncUntilDone, updated } from "./move-helpers";
 
 // The move part of a remote account's collection sync (domain/remote-collections.ts PART_MOVED,
 // federation/collections.ts readMoved): a stored document's movedTo naming an account Kopje does not hold is fetched one
@@ -42,51 +32,11 @@ import { moveActivity, updated } from "./move-helpers";
 // own document names no move (Mastodon's ProcessAccountService#moved_account, FetchRemoteAccountService with
 // break_on_redirect).
 
-const DEST = `${OTHER}/users/dest`;
 const INSTANCE_KEY = `${LOCAL}/actor#main-key`;
-
-type MoveState = { moved: string | null; pending: number; revision: number };
-
-function moveState(t: Setup, uri: string): Promise<MoveState | undefined> {
-  return sql<MoveState>(
-    t.store,
-    `SELECT (SELECT m.uri FROM accounts m WHERE m.id = a.moved_to_account_id) AS moved, a.move_pending AS pending,
-			a.document_revision AS revision
-		FROM accounts a WHERE a.uri = ?`,
-    uri,
-  ).then((rows) => rows[0]);
-}
 
 const fetchesOf = (t: Setup, url: string, from = 0) => t.web.fetched.slice(from).filter((u) => u === url).length;
 
 const at = (t: Setup, now = NOW) => ({ ...inboxDeps(() => t.store, t.web.loader), now: () => now });
-
-// Bob, stored (followed by alice, who signs his collections) with a document whose movedTo names DEST; and the
-// destination served. Bob's collections answer 404, so his other parts read through at once.
-async function pendingBob(
-  t: Setup,
-  options: { movedTo?: string; extra?: Record<string, unknown> } = {},
-): Promise<{ bob: TestActor; bobId: string; dest: TestActor }> {
-  const dest = await mastodonActor(t.web, "dest", { origin: OTHER, key: 3 });
-  const bob = await mastodonActor(t.web, "bob");
-  t.web.serve(bob.uri, { ...bob.document, movedTo: options.movedTo ?? DEST, ...options.extra });
-  const bobId = await followed(t, bob);
-  expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 1 });
-  expect(await accountId(t.store, DEST)).toBeUndefined();
-  return { bob, bobId, dest };
-}
-
-// Every sync due run, the clock moved past each backoff, until none is left (at most `calls` calls).
-async function syncUntilDone(t: Setup, calls = 10): Promise<void> {
-  let now = NOW;
-  for (let call = 0; call < calls; call++) {
-    await syncCollections(t.env, at(t, now));
-    if ((await sql(t.store, "SELECT 1 FROM collection_syncs")).length === 0) {
-      return;
-    }
-    now += SYNC_RETRY_MS;
-  }
-}
 
 function follow(actor: TestActor, n: number) {
   return { "@context": AS, id: `${actor.uri}#follows/${n}`, type: "Follow", actor: actor.uri, object: DAVE_URI };
