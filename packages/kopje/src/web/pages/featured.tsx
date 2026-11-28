@@ -1,6 +1,8 @@
 import type { FC } from "hono/jsx";
 
 import type { Account } from "../../domain/accounts";
+import type { FeaturedTag } from "../../domain/featured-tags";
+import { taggedPath } from "../../domain/tagged-path";
 import type { FeaturedTagLink } from "../../domain/web-pages/featured";
 import type { PageCursor, Paging } from "../../domain/web-pages/paging";
 import type { Site } from "../../domain/web-pages/site";
@@ -15,11 +17,12 @@ import { accountView, authorView, displayName } from "../view/account";
 import { emojiAllowance } from "../view/emoji";
 import { newestFirstPager } from "../view/pager";
 import { accountTarget } from "../view/remote";
-import { featuredPath, profileTabs, taggedPath } from "./profile";
+import { featuredPath, profileTabs } from "./profile";
 
 export type FeaturedView = {
   account: Account;
-  tags: FeaturedTagLink[];
+  // The fields of each FeaturedTagLink the page shows.
+  tags: (Pick<FeaturedTagLink, "key"> & { featured: Pick<FeaturedTag, "name" | "statuses_count"> })[];
   // The endorsed accounts, by account id, newest first.
   accounts: Account[];
   cursor: PageCursor;

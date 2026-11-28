@@ -2,6 +2,7 @@ import type { FC } from "hono/jsx";
 
 import type { Account } from "../../domain/accounts";
 import type { Status } from "../../domain/status-presenter";
+import { taggedPath } from "../../domain/tagged-path";
 import type { StatusStub } from "../../domain/web-pages/budget";
 import type { PageCursor, Paging } from "../../domain/web-pages/paging";
 import type { ParentLink } from "../../domain/web-pages/parents";
@@ -37,11 +38,6 @@ export type ProfileView = {
   // Mastodon serves its web app's shell at this URL (app/public-pages.tsx mastodonShell).
   shell: boolean;
 };
-
-// The path of a local account's posts with the hashtag `tag`, the path of featured-tags.ts taggedUrl.
-export function taggedPath(username: string, tag: string): string {
-  return `/@${username}/tagged/${encodeURIComponent(tag)}`;
-}
 
 // The cursor-less path of a profile tab.
 function tabPath(username: string, tab: ProfileTab): string {

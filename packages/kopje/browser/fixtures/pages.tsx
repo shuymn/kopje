@@ -464,10 +464,7 @@ const ELEMENTS: Record<PageName, Child> = {
       account={alice}
       direction="followers"
       hidden={false}
-      accounts={[
-        bob,
-        { ...alice, id: "3", username: "dana", acct: "dana", display_name: "Dana", url: `${ORIGIN}/@dana` },
-      ]}
+      accounts={[bob, dana]}
       cursor={{ maxId: "40" }}
       paging={{ newest: "30", oldest: "20", more: false }}
       site={site}
@@ -493,23 +490,11 @@ const ELEMENTS: Record<PageName, Child> = {
       account={alice}
       tags={[
         {
-          featured: {
-            id: "1",
-            name: "Walks",
-            url: `${ORIGIN}/@alice/tagged/walks`,
-            statuses_count: "12",
-            last_status_at: "2026-10-20",
-          },
+          featured: { name: "Walks", statuses_count: "12" },
           key: "walks",
         },
         {
-          featured: {
-            id: "2",
-            name: "a-b",
-            url: `${ORIGIN}/@alice/tagged/a-b`,
-            statuses_count: "1",
-            last_status_at: null,
-          },
+          featured: { name: "a-b", statuses_count: "1" },
           key: null,
         },
       ]}

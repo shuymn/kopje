@@ -13,9 +13,8 @@ export const ENDORSEMENTS_PAGE_SIZE = 40;
 
 export type FeaturedInput = { handle: string; cursor: PageCursor };
 
-// A featured hashtag as the API presents it, and its stored key, the name that builds its url, when the account's
-// tagged page serves it (isHashtagName, the check profilePageWithin applies to its segment), or null when that page
-// does not (an imported key that is not a hashtag name).
+// A featured hashtag as the API presents it, and its stored key when the account's tagged route accepts it
+// (isHashtagName, profilePageWithin), else null.
 export type FeaturedTagLink = { featured: FeaturedTag; key: string | null };
 
 export type FeaturedPage =

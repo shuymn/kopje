@@ -20,6 +20,7 @@ import { usernameSql } from "./profile-bounds";
 import { isHashtagName } from "./status-text";
 import { listedTagName, listedTagNameSql, TAG_NAME_TOO_LONG, withinTagNameBound } from "./tag-bounds";
 import { normalizeTag } from "./tag-name";
+import { taggedPath } from "./tagged-path";
 
 // Featured hashtags (Mastodon 4.5's FeaturedTag, CreateFeaturedTagService and RemoveFeaturedTagService,
 // Api::V1::FeaturedTagsController and Accounts::FeaturedTagsController). A local account features up to
@@ -93,7 +94,7 @@ const FEATURED_FROM = `FROM featured_tags f INDEXED BY ${FEATURED_TAGS_ACCOUNT_I
 // redirect to its profile; Mastodon's REST::FeaturedTagSerializer builds /@username/tagged/:tag for it too, which
 // names a local account of the same username.
 export function taggedUrl(origin: string, acct: string, name: string): string {
-  return `${origin}/@${acct}/tagged/${encodeURIComponent(name)}`;
+  return `${origin}${taggedPath(acct, name)}`;
 }
 
 // The rows of a list (LISTED_FEATURED_COLUMNS) with their names decoded, those the list bound refuses left out.
@@ -154,7 +155,7 @@ export const accountFeaturedTags = readOperation<
 // (ACCOUNT_FEATURED_SQL). With `limit` (a public page's MAX_FEATURED_TAGS, within which every writer keeps an account),
 // the first `limit` rows only: at most `limit`, and no more rows read, whatever an import holds.
 export function accountFeaturedTagsOf(db: Db, accountId: string, origin: string, limit = -1): FeaturedTag[] {
-  return accountFeaturedKeysOf(db, accountId, origin, limit).map(({ featured }) => featured);
+  return accountFeaturedRows(db, accountId, limit).map((row) => presentFeatured(row, origin));
 }
 
 // The same featured hashtags, each with its stored key decoded (featured_tags.name), the name that builds its url.
@@ -164,10 +165,14 @@ export function accountFeaturedKeysOf(
   origin: string,
   limit = -1,
 ): { featured: FeaturedTag; key: string }[] {
-  return listedFeatured(db.all<FeaturedRow>(ACCOUNT_FEATURED_SQL, accountId, limit)).map((row) => ({
+  return accountFeaturedRows(db, accountId, limit).map((row) => ({
     featured: presentFeatured(row, origin),
     key: row.name,
   }));
+}
+
+function accountFeaturedRows(db: Db, accountId: string, limit: number): FeaturedRow[] {
+  return listedFeatured(db.all<FeaturedRow>(ACCOUNT_FEATURED_SQL, accountId, limit));
 }
 
 export type FeatureResult =
