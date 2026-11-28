@@ -414,8 +414,6 @@ describe("the Featured tab’s hashtags", () => {
     expect((await h.request("/@alice/tagged/ab")).status).toBe(200);
   });
 
-  // D3 of #1564: the link is built from the stored key, the name that builds the API's url (and whose count it shows),
-  // not from the display name; a key the tagged page refuses (profilePageWithin's isHashtagName) has no link.
   it("links the path of the API’s url, by the stored key, and no link for a key that page refuses", async () => {
     const h = await community(["alice", "bob", "carol"]);
     const { alice, bob, carol } = h.users;
@@ -425,64 +423,54 @@ describe("the Featured tab’s hashtags", () => {
       content: "<p>a cat post</p>",
       tags: ["cats"],
     });
-    // alice: a written key, a key that needs encoding, one with no post, and two keys that are not hashtag names (an
-    // imported a-b, and __, the key a writer stores for _\u0301_). bob: an imported key under another display name,
-    // the same key as alice's (keys are per account, migrations/0016_tags.sql). carol: an imported key that is a
-    // hashtag name under a display name that is not.
-    const rows: [string, { name: string; display: string }[]][] = [
-      [
-        alice.id,
-        [
-          { name: "cats", display: "Cats" },
-          { name: "猫", display: "猫" },
-          { name: "walks", display: "walks" },
-          { name: "a-b", display: "a-b" },
-          { name: "__", display: "_\u0301_" },
+    // Per account, its featured rows and, for each, its label, the path of its API url, whether the page links it and
+    // the status that path answers. alice: a written key, a key that needs encoding, one with no post, and two keys
+    // that are not hashtag names (an imported a-b, and __, the key a writer stores for _\u0301_). bob: an imported key
+    // under another display name, the same key as alice's (keys are per account, migrations/0016_tags.sql). carol: an
+    // imported key that is a hashtag name under a display name that is not.
+    const accounts = [
+      {
+        username: "alice",
+        id: alice.id,
+        rows: [
+          { name: "cats", display: "Cats", path: "/@alice/tagged/cats", linked: true, status: 200 },
+          { name: "猫", display: "猫", path: "/@alice/tagged/%E7%8C%AB", linked: true, status: 200 },
+          { name: "walks", display: "walks", path: "/@alice/tagged/walks", linked: true, status: 200 },
+          { name: "a-b", display: "a-b", path: "/@alice/tagged/a-b", linked: false, status: 404 },
+          { name: "__", display: "_\u0301_", path: "/@alice/tagged/__", linked: false, status: 404 },
         ],
-      ],
-      [bob.id, [{ name: "cats", display: "Dogs" }]],
-      [carol.id, [{ name: "dogs", display: "a-b" }]],
+      },
+      {
+        username: "bob",
+        id: bob.id,
+        rows: [{ name: "cats", display: "Dogs", path: "/@bob/tagged/cats", linked: true, status: 200 }],
+      },
+      {
+        username: "carol",
+        id: carol.id,
+        rows: [{ name: "dogs", display: "a-b", path: "/@carol/tagged/dogs", linked: true, status: 200 }],
+      },
     ];
-    let id = 0;
-    for (const [owner, tags] of rows) {
-      for (const tag of tags) {
-        await feature(h, owner, ++id, tag);
+    let next = 0;
+    for (const { id, rows } of accounts) {
+      for (const row of rows) {
+        await feature(h, id, ++next, row);
       }
     }
-    const linked = async (username: string, accountId: string) => {
+    for (const { username, id, rows } of accounts) {
+      const api = await (await h.request(`/api/v1/accounts/${id}/featured_tags`)).json<{ url: string }[]>();
+      expect(api.map((tag) => new URL(tag.url).pathname)).toEqual(rows.map((row) => row.path));
       const page = shown(await (await h.request(`/@${username}/featured`)).text());
-      const api = await (await h.request(`/api/v1/accounts/${accountId}/featured_tags`)).json<{ url: string }[]>();
-      expect(page.tags).toHaveLength(api.length);
-      return page.tags.map((tag, i) => ({ name: tag.name, href: tag.href, url: new URL(api[i]!.url).pathname }));
-    };
-    expect(await linked("alice", alice.id)).toEqual([
-      { name: "#Cats", href: "/@alice/tagged/cats", url: "/@alice/tagged/cats" },
-      { name: "#猫", href: "/@alice/tagged/%E7%8C%AB", url: "/@alice/tagged/%E7%8C%AB" },
-      { name: "#walks", href: "/@alice/tagged/walks", url: "/@alice/tagged/walks" },
-      { name: "#a-b", href: null, url: "/@alice/tagged/a-b" },
-      { name: "#_\u0301_", href: null, url: "/@alice/tagged/__" },
-    ]);
-    expect(await linked("bob", bob.id)).toEqual([
-      { name: "#Dogs", href: "/@bob/tagged/cats", url: "/@bob/tagged/cats" },
-    ]);
-    expect(await linked("carol", carol.id)).toEqual([
-      { name: "#a-b", href: "/@carol/tagged/dogs", url: "/@carol/tagged/dogs" },
-    ]);
-    // Each link answers 200: alice's post with the hashtag, and an empty list for one with no post.
-    const cats = await h.request("/@alice/tagged/cats");
-    expect(cats.status).toBe(200);
-    expect(await cats.text()).toContain("a cat post");
-    for (const path of [
-      "/@alice/tagged/%E7%8C%AB",
-      "/@alice/tagged/walks",
-      "/@bob/tagged/cats",
-      "/@carol/tagged/dogs",
-    ]) {
-      expect((await h.request(path)).status, path).toBe(200);
+      expect(page.tags.map(({ name, href }) => ({ name, href }))).toEqual(
+        rows.map((row) => ({ name: `#${row.display}`, href: row.linked ? row.path : null })),
+      );
+      // Each linked path answers 200, an empty list for a hashtag with no post; the unlinked keys' paths answer 404
+      // (the guarded branch ran).
+      for (const row of rows) {
+        expect((await h.request(row.path)).status, row.path).toBe(row.status);
+      }
     }
-    // The unlinked keys are those the tagged page refuses (the guarded branch ran: its url answers 404).
-    expect((await h.request("/@alice/tagged/a-b")).status).toBe(404);
-    expect((await h.request("/@alice/tagged/__")).status).toBe(404);
+    expect(await (await h.request("/@alice/tagged/cats")).text()).toContain("a cat post");
   });
 });
 
@@ -629,14 +617,13 @@ describe("the Featured tab at its maxima (RES-3)", () => {
   // PROFILE_URL_LIMIT, emoji at their presented cap, counts at MAX_ACCOUNT_COUNT, MAX_FIELDS local fields of escaping
   // names and linked values at their limits, each verified. Its username is the page's own handle (a local name, never
   // escaping) and it cannot have moved (a local row holds no moved_to_account_id, migration 0060). Ten hashtags of 256
-  // four-byte characters (the name bound in characters and bytes, and its key at the same bound), counts
-  // at MAX_ACCOUNT_COUNT and a stored time of escaping characters past its cut. A name of escaping characters would
-  // present more JSON but is no hashtag, so its key is null instead: the two caps exclude each other, and the
-  // ceiling counts both. 41 endorsed accounts, each with an actor id at ACTOR_URI_LIMIT, a username at USERNAME_LIMIT
-  // on a domain of DOMAIN_BYTES, display name and bio at their caps, profile URL and images at PROFILE_URL_LIMIT, the
-  // fullest remote fields (the first REMOTE_VERIFIED_SHOWN linking REMOTE_FIELD_LINK_BYTES links, each verified by a
-  // verification row at the writer's maximum), emoji at their presented cap, counts at MAX_ACCOUNT_COUNT, and moved to
-  // an account at every cap of a moved-to account, its counts at MAX_ACCOUNT_COUNT too.
+  // four-byte characters (the name bound in characters and bytes, and its key at the same bound), counts at
+  // MAX_ACCOUNT_COUNT and a stored time of escaping characters past its cut. 41 endorsed accounts, each with an actor id
+  // at ACTOR_URI_LIMIT, a username at USERNAME_LIMIT on a domain of DOMAIN_BYTES, display name and bio at their caps,
+  // profile URL and images at PROFILE_URL_LIMIT, the fullest remote fields (the first REMOTE_VERIFIED_SHOWN linking
+  // REMOTE_FIELD_LINK_BYTES links, each verified by a verification row at the writer's maximum), emoji at their
+  // presented cap, counts at MAX_ACCOUNT_COUNT, and moved to an account at every cap of a moved-to account, its counts
+  // at MAX_ACCOUNT_COUNT too.
   it("keeps each real RPC answer at every cap within WEB_PAGE_BYTES, cut by bytes, each account within its maximum", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
