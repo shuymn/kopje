@@ -1,6 +1,9 @@
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { MAX_SYNC_ATTEMPTS } from "../src/domain/remote-collections";
+import { Db } from "../src/db/sql";
+import { requestCollectionSync } from "../src/domain/collection-requests";
+import { ALL_PARTS, completeCollectionRead, MAX_SYNC_ATTEMPTS } from "../src/domain/remote-collections";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
@@ -172,5 +175,52 @@ describe("a pending move ended without a result", () => {
         bobId,
       ),
     ).toEqual([{ deleting: 1, move_pending: 0, syncs: 0 }]);
+  });
+});
+
+// A request inside the completion's own transaction (as the destination's store can make, invalidating the source's
+// handle) starts a new generation between the read of the claimed one's parts and their record: the record names the
+// claimed generation, so the new one keeps its fresh parts and stays unread.
+describe("a read's record and a request in its transaction", () => {
+  it("records the parts for the claimed generation only", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await followed(t, bob);
+    const claimed = await t.store.claimCollectionSync(BUILD, { now: NOW });
+    if (claimed === null || claimed === "more") {
+      throw new Error("no sync claimed");
+    }
+    await runInDurableObject(t.store, (_instance, state) => {
+      const real = state.storage.sql;
+      // The bump, right before the completion records the claimed generation's parts, after it read them.
+      const bumping = {
+        exec: (query: string, ...params: SqlStorageValue[]) => {
+          if (query.trim().startsWith("UPDATE collection_syncs SET parts_read")) {
+            requestCollectionSync(new Db(real), bobId, NOW);
+          }
+          return real.exec(query, ...params);
+        },
+      } as unknown as SqlStorage;
+      completeCollectionRead.run(
+        bumping,
+        {
+          now: NOW,
+          origin: LOCAL,
+          accountUri: claimed.accountUri,
+          generation: claimed.generation,
+          token: claimed.token,
+          parts: ALL_PARTS,
+          pins: null,
+          tags: null,
+          hideCollections: null,
+          counts: { statuses: null, following: null, followers: null },
+          collections: null,
+        },
+        (fn) => state.storage.transactionSync(fn),
+      );
+    });
+    expect(
+      await sql(t.store, "SELECT generation, read_through, parts_read, collections_read FROM collection_syncs"),
+    ).toEqual([{ generation: Number(claimed.generation) + 1, read_through: 0, parts_read: 0, collections_read: 0 }]);
   });
 });

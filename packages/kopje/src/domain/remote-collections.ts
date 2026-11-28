@@ -450,8 +450,9 @@ export type CollectionCounts = { statuses: number | null; following: number | nu
 
 // Phase 1's end (FetchFeaturedCollectionService#process_note_items and #process_hashtag_items,
 // FetchFeaturedTagsCollectionService#process_items, ProcessAccountService#set_fetchable_attributes!): what was read is
-// applied, and the parts read are recorded for the generation the round claimed (not for a newer request, whose parts
-// start over); once every part is, the request is read through. The round progressed when it read a part not read
+// applied, and the parts read are recorded for the generation the round claimed, by a write that names it (not for a
+// newer request, whose parts start over, even one asked for inside this transaction); once every part is, the request
+// is read through. The round progressed when it read a part not read
 // before. Returns whether a sync is due (pending), and whether the read recorded deliveries (delivers: a local member's
 // Delete answering a listing, feature-answers.ts answerUnserved), for the jobs round's doorbell.
 // hide_collections and the counts are written only while the round's generation is the sync's (`before`): a round
@@ -509,12 +510,13 @@ export const completeCollectionRead = writeOperation<CollectionReadInput, { pend
         `UPDATE collection_syncs SET parts_read = CASE WHEN ?1 = ?3 THEN 0 ELSE ?1 & ?4 END,
 				collections_read = CASE WHEN ?1 = ?3 THEN 0 ELSE (?1 & ?5) >> 3 END,
 				read_through = CASE WHEN ?1 = ?3 THEN max(read_through, generation) ELSE read_through END
-			WHERE account_id = ?2`,
+			WHERE account_id = ?2 AND generation = CAST(?6 AS INTEGER)`,
         parts,
         account.id,
         ALL_PARTS,
         STORED_PARTS,
         PART_COLLECTIONS,
+        input.generation,
       );
     }
     const progressed = before !== undefined && parts !== before.parts_read;
