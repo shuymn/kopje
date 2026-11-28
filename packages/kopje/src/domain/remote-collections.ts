@@ -404,8 +404,9 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
     const parts = row.parts_read | (row.collections_read << 3) | (pending === null ? PART_MOVED : 0);
     let limit = read ? readAttempts(parts) : MAX_SYNC_ATTEMPTS;
     // A read that ran out of attempts with rows left to fetch gives way to them: the read is given up, the rows get
-    // attempts of their own.
-    if (read && row.attempts >= limit && pendingUris(db, row.account_id).length > 0) {
+    // attempts of their own (those rows: the writes below touch only the sync and the account).
+    const left = read && row.attempts >= limit ? pendingUris(db, row.account_id) : [];
+    if (left.length > 0) {
       db.run(
         `UPDATE collection_syncs SET read_through = generation, parts_read = 0, collections_read = 0, attempts = 0
 				WHERE account_id = ?`,
@@ -416,7 +417,7 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       row.attempts = 0;
       limit = MAX_SYNC_ATTEMPTS;
     }
-    const uris = read || refresh ? [] : pendingUris(db, row.account_id);
+    const uris = read || refresh ? [] : left.length > 0 ? left : pendingUris(db, row.account_id);
     if (account === undefined || row.attempts >= limit || (!refresh && !read && uris.length === 0)) {
       dropSync(db, row.account_id);
       continue;
@@ -460,8 +461,9 @@ function pendingMove(
   account: { uri: string; raw: string | null },
 ): { movedTo: string | null; countedOff: boolean } {
   const domain = instanceDomainOf(db);
-  const fetchable = fetchableMove(account.raw, account.uri, domain === null ? "" : `https://${domain}`);
-  const target = moveTarget(db, namedMove(account.raw, account.uri), accountId);
+  const named = namedMove(account.raw, account.uri);
+  const fetchable = fetchableMove(named, domain === null ? "" : `https://${domain}`);
+  const target = moveTarget(db, named, accountId);
   if (fetchable !== null && target === null) {
     return { movedTo: fetchable, countedOff: false };
   }
@@ -656,7 +658,7 @@ function settleMove(
   db: Db,
   accountId: string,
   input: CollectionReadInput,
-): { settled: boolean; store: { document: RemoteActorInput; movedTo: string } | null } {
+): { settled: boolean; store: RemoteActorInput | null } {
   const { move, movedTo, sourceRevision } = input;
   if (move === undefined || move === null || movedTo === undefined || movedTo === null || sourceRevision == null) {
     return { settled: false, store: null };
@@ -674,24 +676,18 @@ function settleMove(
       target,
       sourceRevision,
     ) > 0;
-  return { settled, store: settled && fetched !== null ? { document: fetched, movedTo } : null };
+  return { settled, store: settled ? fetched : null };
 }
 
-// A fetched destination stored as any new remote actor is (upsertRemoteActor under the expectation that no row of it
+// A fetched destination (its id the claim's movedTo, settleMove) stored as any new remote actor is (upsertRemoteActor under the expectation that no row of it
 // is stored, ID-1), and then the source's move to it, or to the row stored by another path since ('superseded');
 // nothing when it stores none (a deleted actor, a host or domain an instance suspend block covers, checked here, or a
 // handle WebFinger did not confirm). The source's document already names the destination: no revision is issued.
 // Stored after the parts are recorded: storing it may invalidate a handle the source holds, which asks for a new
 // generation of the source's sync, whose parts start over.
-function storeDestination(
-  db: Db,
-  accountId: string,
-  fetched: { document: RemoteActorInput; movedTo: string },
-  origin: string,
-  now: number,
-): void {
-  upsertRemoteActor(db, fetched.document, origin, now, null);
-  const target = moveTarget(db, fetched.movedTo, accountId);
+function storeDestination(db: Db, accountId: string, document: RemoteActorInput, origin: string, now: number): void {
+  upsertRemoteActor(db, document, origin, now, null);
+  const target = moveTarget(db, document.uri, accountId);
   if (target !== null) {
     db.run(
       `UPDATE accounts SET moved_to_account_id = ?2

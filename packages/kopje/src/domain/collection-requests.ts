@@ -209,11 +209,11 @@ export function namedMove(raw: string | null, uri: string): string | null {
   return href !== null && withinIdentityBound(href, ACTOR_URI_LIMIT) && href !== uri ? href : null;
 }
 
-// The destination namedMove reads from `raw` when the collection sync may fetch it (accounts.move_pending, the sync's
+// The destination namedMove read (`named`) when the collection sync may fetch it (accounts.move_pending, the sync's
 // move part in remote-collections.ts): an id the document loader would request (fetchableHref, NET-1's shape), with no
 // fragment (the document fetched for it would have another id) and not on this instance's `origin` (ID-3); else null.
-export function fetchableMove(raw: string | null, uri: string, origin: string): string | null {
-  const named = namedMove(raw, uri);
+// The stored-target lookup (remote-actors.ts moveTarget) takes the same `named` without these checks.
+export function fetchableMove(named: string | null, origin: string): string | null {
   return named !== null && fetchableHref(named) !== null && !named.includes("#") && new URL(named).origin !== origin
     ? named
     : null;

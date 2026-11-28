@@ -483,39 +483,40 @@ function storeActor(
       ),
   );
   const row = remoteAccount(db, actor.uri);
-  let pending = false;
-  if (row !== undefined) {
-    // The account's move as its document states it (ID-4), set or cleared by every store, an unchanged document's
-    // included (Mastodon's ProcessAccountService: process_account_service.rb:293), written once the row is stored, by
-    // its id: the literal movedTo (collection-requests.ts namedMove) naming a stored account (moveTarget). One Kopje
-    // does not know is pending (accounts.move_pending) when the sync may fetch it (fetchableMove), as Mastodon fetches it
-    // (process_account_service.rb:516-519): the sync's move part resolves it (remote-collections.ts). The move and the
-    // bit are written in this one statement, so no intermediate row passes their bound (0125_account_move_pending).
-    const target = moveTarget(db, namedMove(actor.raw, actor.uri), row.id);
-    pending = target === null && fetchableMove(actor.raw, actor.uri, origin) !== null;
-    db.run(
-      "UPDATE accounts SET moved_to_account_id = ?2, move_pending = ?3 WHERE id = ?1 AND domain IS NOT NULL",
-      row.id,
-      target,
-      pending ? 1 : 0,
-    );
-    // The links of its fields to verify, from the same projection (remote-field-links.ts).
-    armRemoteFieldLinks(db, row.id, remoteLinkBack(actor.uri, actor.url), links, now);
-    // Its avatar and header to cache, from the same projection (remote-media.ts).
-    syncProfileFiles(db, row.id, { avatar: actor.avatarUrl, header: actor.headerUrl }, now);
-    // Its custom emoji to cache, from the snapshot just stored (remote-media.ts).
-    noteEmojiSnapshot(db, emojis, domain, now);
-    // Its feature policy, set by every store (process_account_service.rb:232), with the collections the document just
-    // stored names; a profile from an earlier build, which read none, keeps the stored one.
-    if (actor.featurePolicy !== undefined) {
-      db.run(
-        "UPDATE accounts SET feature_policy = ?2 WHERE id = ?1 AND domain IS NOT NULL",
-        row.id,
-        actor.featurePolicy === null ? 0 : remoteFeaturePolicy(db, { id: row.id, uri: actor.uri }, actor.featurePolicy),
-      );
-    }
+  if (row === undefined) {
+    return undefined;
   }
-  if (row !== undefined && protocol !== null) {
+  // The account's move as its document states it (ID-4), set or cleared by every store, an unchanged document's
+  // included (Mastodon's ProcessAccountService: process_account_service.rb:293), written once the row is stored, by
+  // its id: the literal movedTo (collection-requests.ts namedMove) naming a stored account (moveTarget). One Kopje
+  // does not know is pending (accounts.move_pending) when the sync may fetch it (fetchableMove), as Mastodon fetches it
+  // (process_account_service.rb:516-519): the sync's move part resolves it (remote-collections.ts). The move and the
+  // bit are written in this one statement, so no intermediate row passes their bound (0125_account_move_pending).
+  const named = namedMove(actor.raw, actor.uri);
+  const target = moveTarget(db, named, row.id);
+  const pending = target === null && fetchableMove(named, origin) !== null;
+  db.run(
+    "UPDATE accounts SET moved_to_account_id = ?2, move_pending = ?3 WHERE id = ?1 AND domain IS NOT NULL",
+    row.id,
+    target,
+    pending ? 1 : 0,
+  );
+  // The links of its fields to verify, from the same projection (remote-field-links.ts).
+  armRemoteFieldLinks(db, row.id, remoteLinkBack(actor.uri, actor.url), links, now);
+  // Its avatar and header to cache, from the same projection (remote-media.ts).
+  syncProfileFiles(db, row.id, { avatar: actor.avatarUrl, header: actor.headerUrl }, now);
+  // Its custom emoji to cache, from the snapshot just stored (remote-media.ts).
+  noteEmojiSnapshot(db, emojis, domain, now);
+  // Its feature policy, set by every store (process_account_service.rb:232), with the collections the document just
+  // stored names; a profile from an earlier build, which read none, keeps the stored one.
+  if (actor.featurePolicy !== undefined) {
+    db.run(
+      "UPDATE accounts SET feature_policy = ?2 WHERE id = ?1 AND domain IS NOT NULL",
+      row.id,
+      actor.featurePolicy === null ? 0 : remoteFeaturePolicy(db, { id: row.id, uri: actor.uri }, actor.featurePolicy),
+    );
+  }
+  if (protocol !== null) {
     // The document lists the actor's current keys; keys it no longer lists are not trusted any more.
     db.run("DELETE FROM remote_keys WHERE account_id = ?", row.id);
     for (const key of protocol.keys) {
@@ -533,13 +534,10 @@ function storeActor(
       );
     }
   }
-  if (row === undefined) {
-    return undefined;
-  }
   // The sync is asked for when the document names a collection, or a destination to fetch (the move part).
   const collections = actorCollections(actor.raw);
-  const named = Object.values(collections).some((url) => url !== null);
-  const syncWaiting = (named || pending) && requestCollectionSync(db, row.id, now);
+  const listed = Object.values(collections).some((url) => url !== null);
+  const syncWaiting = (listed || pending) && requestCollectionSync(db, row.id, now);
   return { ...row, syncWaiting, movePending: pending && syncWaiting, frozen: false };
 }
 
