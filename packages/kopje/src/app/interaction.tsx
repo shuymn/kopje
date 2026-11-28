@@ -101,6 +101,7 @@ const OUTCOMES: Record<Exclude<FollowOutcome, "not_found">, { title: string; tex
   requested: { title: STRINGS.interact.requestedTitle, text: STRINGS.interact.requested },
   already_requested: { title: STRINGS.interact.requestedTitle, text: STRINGS.interact.alreadyRequested },
   refused: { title: STRINGS.interact.refusedTitle, text: STRINGS.interact.refused },
+  pending: { title: STRINGS.interact.pendingTitle, text: STRINGS.interact.pending },
 };
 
 export function interactionRoutes(deps: InteractionDeps): Hono<WebEnv> {
@@ -194,6 +195,10 @@ export function interactionRoutes(deps: InteractionDeps): Hono<WebEnv> {
       return toLogin(c, target, result.status);
     }
     const { outcome, account } = result.value;
+    // The account's move is resolved by its collection sync in a jobs round, as after the follow API's 503.
+    if (outcome === "pending") {
+      requestJobsSoon(c, deps);
+    }
     // A follow or request may have recorded a Follow to deliver: ring once it has committed, as app.ts does after an
     // API write. A lost ring only delays it until the cron.
     const ring = outcome === "followed" || outcome === "requested" ? deps.doorbell?.(c.env) : undefined;

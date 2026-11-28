@@ -1166,6 +1166,28 @@ describe("POST /authorize_interaction/follow", () => {
     expect(await sql(t.store, "SELECT 1 FROM follows WHERE target_account_id = ?", carolId)).toEqual([]);
   });
 
+  // An account whose move is being resolved (accounts.move_pending) is held, as the follow API answers 503: nothing is
+  // written and the jobs round that resolves the move is asked for. Once it settles with nothing, the follow goes on.
+  it("tells a pending move apart and asks for the round that resolves it", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    t.web.serve(t.bob.uri, { ...t.bob.document, movedTo: "https://other.example/users/dest" });
+    const { follow } = await followed(t, browser, t.bob.uri);
+    expect(t.jobs).toHaveBeenCalledTimes(1);
+    const held = await follow();
+    expect(text(parseHtml(await held.clone().text()))).toMatch(
+      /This server is still checking .+ \(@bob@mastodon\.example\)\. Try again in a moment\./,
+    );
+    expect(await outcome(held)).toBe("Checking the account");
+    expect(t.jobs).toHaveBeenCalledTimes(2);
+    expect(t.doorbell).not.toHaveBeenCalled();
+    expect(await sql(t.store, "SELECT 1 FROM follows WHERE account_id = ?", t.aliceId)).toEqual([]);
+    await sql(t.store, "UPDATE accounts SET move_pending = 0 WHERE uri = ?", t.bob.uri);
+    expect(await outcome(await follow())).toBe("Follow requested");
+    expect(t.jobs).toHaveBeenCalledTimes(2);
+    expect(t.doorbell).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a missing, null or foreign Origin and a missing or wrong token, writing and waking nothing", async () => {
     const t = await world();
     const browser = await signIn(t);

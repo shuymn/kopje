@@ -75,11 +75,13 @@ const FOLLOW = `SELECT CAST(f.id AS TEXT) AS id, f.state, f.uri, f.account_id AS
 	WHERE f.id = CAST(?1 AS INTEGER)`;
 
 // The eligibility of the handshake of local ?1 and remote ?2 (?3: 'Follow' or 'Accept') but for the inbox's checks,
-// which read its URL in code: key lookups of both accounts, their blocks and the domain blocks.
+// which read its URL in code: key lookups of both accounts, their blocks and the domain blocks. A Follow is held while
+// its target's move is being resolved (r.move_pending), as the follow API holds a new one, so R21 judges it after.
 const ELIGIBILITY = `SELECT
 		(SELECT ${availableLocalSql("l")} FROM main.local_accounts l WHERE l.account_id = ?1) IS 1 AS local,
 		${availableSql("?2")} AS remote,
-		CASE ?3 WHEN 'Follow' THEN ${followableBySql("?2", "?1")} ELSE NOT ${blockedSql("?1", "?2")} END AS allowed,
+		CASE ?3 WHEN 'Follow' THEN ${followableBySql("?2", "?1")} AND r.move_pending = 0
+			ELSE NOT ${blockedSql("?1", "?2")} END AS allowed,
 		${addressedInboxSql("r")} AS inbox
 	FROM main.accounts r INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE r.id = ?2`;
 

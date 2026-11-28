@@ -272,7 +272,9 @@ export type FollowInput = {
   now: number;
 };
 
-export type FollowResult = RelationshipResult | { status: "invalid"; errors: string[] };
+// pending: the target's move is being resolved (accounts.move_pending, 0125_account_move_pending), answered 503 until
+// the collection sync settles it.
+export type FollowResult = RelationshipResult | { status: "invalid"; errors: string[] } | { status: "pending" };
 
 // The validator's error for a new follow or request past the limit, or null while under it. It applies where Mastodon
 // creates a Follow or FollowRequest without bypass_limit: the follow API only. Authorizing a request (local or a remote
@@ -299,6 +301,7 @@ type TargetRow = {
   locked: number;
   available: number;
   followable: number;
+  pending: number;
 };
 
 function followTarget(db: Db, viewerId: string, target: string): TargetRow | null {
@@ -309,7 +312,7 @@ function followTarget(db: Db, viewerId: string, target: string): TargetRow | nul
   return (
     db.first<TargetRow>(
       `SELECT a.id, a.domain, a.locked, ${availableSql("a.id")} AS available,
-				${followableBySql("a.id", "?1")} AS followable
+				${followableBySql("a.id", "?1")} AS followable, a.move_pending AS pending
 			FROM accounts a WHERE a.id = ?2`,
       viewerId,
       id,
@@ -322,7 +325,8 @@ function followTarget(db: Db, viewerId: string, target: string): TargetRow | nul
 // (follow, or follow_request when locked) in the same transaction; a remote target is sent a Follow (its id kept in
 // follows.uri, which the remote Accept must match) and stays pending until that Accept arrives (VIS-8, VIS-9). As
 // in Mastodon's FollowService, a suspended target is not found, and R21 (a move of the target, a block either way, a
-// domain block of the viewer) forbids the follow before an existing one is read. A new follow or request past the
+// domain block of the viewer) forbids the follow before an existing one is read, and a target whose move is being
+// resolved (move_pending) is then held, so R21 can judge it once its move settles. A new follow or request past the
 // follow limit is refused (422); changing the options of an existing one is not, as the validator runs on create only.
 // The follow API and /authorize_interaction's follow (domain/interaction.ts) both run it.
 export function followAccount(db: Db, input: FollowInput, viewerId: string): FollowResult {
@@ -332,6 +336,9 @@ export function followAccount(db: Db, input: FollowInput, viewerId: string): Fol
   }
   if (target.followable === 0) {
     return { status: "forbidden" };
+  }
+  if (target.pending === 1) {
+    return { status: "pending" };
   }
   // undefined keeps the current filter; null or an empty list means every language (no filter).
   const languages =
