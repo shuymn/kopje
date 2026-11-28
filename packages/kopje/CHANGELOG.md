@@ -21,6 +21,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   (`/@user/tagged/:name`), as the featured hashtags on Mastodon's account timeline do. The link names the hashtag by its
   stored name, as the API's featured tag `url` does, where Mastodon's web app uses the display name. A featured hashtag
   whose stored name that page does not serve is shown without a link.
+- Authorizing a follow request through the API (`POST /api/v1/follow_requests/:id/authorize`) writes a `follow`
+  notification from the new follower, pushed and streamed as any other, as Mastodon does. Unlocking the account still
+  writes none.
 
 ## [0.9.0] - 2026-11-28
 

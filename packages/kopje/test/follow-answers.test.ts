@@ -20,7 +20,8 @@ import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import { deliveryRound } from "../src/jobs/deliver";
 import { ACTIVITY_ID_LIMIT } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";
-import { bearer, json, settle, sql } from "./api-helpers";
+import { sha256Hex as tokenHash } from "../src/security/tokens";
+import { bearer, json, settle, sql, userToken } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { LEGACY, signAsLegacy } from "./federation-helpers";
 import { BUILD, claimAndSettle, runStoreJobs, deferred, drainDeliveries } from "./helpers";
@@ -1768,4 +1769,149 @@ describe("the follow-answer check leaves other superseded activities alone", () 
     },
     60_000,
   );
+});
+
+// Authorizing a request through the API writes the follow notification Mastodon's controller queues
+// (follow_requests_controller.rb:16), with its stream event and its push (VIS-10, PUSH-3), unless the requester blocks
+// alice (the notification rule; docs/mastodon-deviations.md). The unlock job writes none (unlock-accepts.test.ts).
+describe("authorizing a request through the API notifies the new follower", () => {
+  // alice locked, with a user:notification stream and two push subscriptions: one wants follow alerts from a follower,
+  // one wants none. Registered after the request, so only the authorization's rows are counted.
+  async function subscribed(t: T) {
+    const second = await userToken(t.w.h, "alice@example.com", "read write follow push");
+    await sql(
+      t.store,
+      "INSERT INTO stream_subscriptions (account_id, stream_key, sockets) VALUES (?, 'user:notification', 1)",
+      t.w.alice.id,
+    );
+    await sql(
+      t.store,
+      `INSERT INTO push_subscriptions (token_hash, endpoint, key_p256dh, key_auth, alerts, policy)
+			VALUES (?, 'https://push.example/1', 'p', 'a', '{"follow":true}', 'follower'),
+				(?, 'https://push.example/2', 'p', 'a', '{"follow":false,"follow_request":true}', 'all')`,
+      await tokenHash(t.w.alice.token),
+      await tokenHash(second),
+    );
+    expect(await sql(t.store, "SELECT count(*) AS n FROM push_subscriptions")).toEqual([{ n: 2 }]);
+  }
+
+  // alice's notifications from `from`, filtered ones included.
+  const rowsFrom = (t: T, from: string) =>
+    sql<{ id: string; type: string; filtered: number }>(
+      t.store,
+      "SELECT CAST(id AS TEXT) AS id, type, filtered FROM notifications WHERE account_id = ? AND from_account_id = ?",
+      t.w.alice.id,
+      from,
+    );
+
+  async function written(t: T, from: string) {
+    const rows = await rowsFrom(t, from);
+    const events = await sql<{ subject: string }>(
+      t.store,
+      "SELECT subject FROM stream_events WHERE kind = 'notification'",
+    );
+    const pushes = await sql<{ notification: string; alerts: string }>(
+      t.store,
+      `SELECT CAST(d.notification_id AS TEXT) AS notification, p.alerts FROM push_deliveries d
+			JOIN push_subscriptions p ON p.id = d.subscription_id`,
+    );
+    const response = await t.w.h.request("/api/v1/notifications?types[]=follow", bearer(t.w.alice.token));
+    expect(response.status).toBe(200);
+    const listed = (await response.json<{ id: string; type: string; account: { id: string } }[]>()).map((n) => ({
+      id: n.id,
+      type: n.type,
+      from: n.account.id,
+    }));
+    return { rows, events: events.map((e) => e.subject), pushes, listed };
+  }
+
+  async function requested(remote: boolean) {
+    const t = await setup({ locked: true });
+    if (remote) {
+      expect((await followFrom(t)).result).toMatchObject({ reason: "follow-requested" });
+      return { t, from: t.r };
+    }
+    const bob = t.w.bob;
+    const response = await t.w.h.request(`/api/v1/accounts/${t.w.alice.id}/follow`, bearer(bob.token, json({})));
+    expect(await response.json()).toMatchObject({ requested: true });
+    return { t, from: bob.id };
+  }
+
+  it.each([
+    ["a remote", true],
+    ["a local", false],
+  ])(
+    "%s requester admitted unfiltered: one follow, listed, streamed, pushed to the subscription that wants it",
+    async (_, remote) => {
+      const { t, from } = await requested(remote);
+      expect((await rowsFrom(t, from)).map((n) => n.type)).toEqual(["follow_request"]);
+      await subscribed(t);
+      await api(t, `/api/v1/follow_requests/${from}/authorize`);
+      const after = await written(t, from);
+      expect(after.rows).toEqual([{ id: expect.any(String), type: "follow", filtered: 0 }]);
+      const id = after.rows[0]!.id;
+      expect(after.listed).toEqual([{ id, type: "follow", from }]);
+      expect(after.events).toEqual([id]);
+      // The follower policy admits the requester only once it follows: the notification was written after the answer.
+      expect(after.pushes).toEqual([{ notification: id, alerts: '{"follow":true}' }]);
+    },
+  );
+
+  // for_not_followers judges the follow's age from the authorization, as Mastodon's new Follow is created then
+  // (follow_request.rb:34-45, notify_service.rb:45-48): a request older than three days is no older follow. Kopje keeps
+  // the request's time on the follow (audience.ts notFollowerSql), so the request is aged to show the rule ran.
+  it.each([
+    ["filter", "a fresh", false],
+    ["filter", "a four-day-old", true],
+    ["drop", "a four-day-old", true],
+  ] as const)("for_not_followers %s, %s request: the follow is a new follower's", async (choice, _, aged) => {
+    const { t, from } = await requested(false);
+    await sql(
+      t.store,
+      "INSERT INTO notification_policies (account_id, for_not_followers) VALUES (?, ?)",
+      t.w.alice.id,
+      choice,
+    );
+    if (aged) {
+      await sql(
+        t.store,
+        "UPDATE follows SET created_at = ? WHERE account_id = ? AND target_account_id = ?",
+        new Date(NOW - 4 * 24 * 60 * 60 * 1000).toISOString(),
+        from,
+        t.w.alice.id,
+      );
+    }
+    await subscribed(t);
+    await api(t, `/api/v1/follow_requests/${from}/authorize`);
+    expect(
+      await sql(
+        t.store,
+        "SELECT state FROM follows WHERE account_id = ? AND target_account_id = ?",
+        from,
+        t.w.alice.id,
+      ),
+    ).toEqual([{ state: "accepted" }]);
+    expect(await written(t, from)).toEqual({
+      rows: choice === "filter" ? [{ id: expect.any(String), type: "follow", filtered: 1 }] : [],
+      events: [],
+      pushes: [],
+      listed: [],
+    });
+  });
+
+  it("writes nothing while the requester blocks alice; the block reached the request", async () => {
+    const { t } = await requested(true);
+    const block = await receive(t.store, t.rUri, {
+      id: `${REMOTE}/blocks/${++sequence}`,
+      type: "Block",
+      object: t.aliceUri,
+    });
+    expect(block).toMatchObject({ applied: true, reason: "blocked" });
+    await subscribed(t);
+    await api(t, `/api/v1/follow_requests/${t.r}/authorize`);
+    expect(
+      await sql(t.store, "SELECT state FROM follows WHERE account_id = ? AND target_account_id = ?", t.r, t.w.alice.id),
+    ).toEqual([{ state: "accepted" }]);
+    expect(await written(t, t.r)).toEqual({ rows: [], events: [], pushes: [], listed: [] });
+  });
 });
