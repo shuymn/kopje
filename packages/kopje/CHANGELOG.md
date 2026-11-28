@@ -8,6 +8,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Changed
+
+- `POST` and `PUT /api/v1/statuses` no longer read a scalar `media_ids` (`media_ids=<id>` or `"media_ids": "<id>"`) as a
+  list of one. As in Mastodon, the scalar is read as not sent: a new status is posted without media, and an edit removes
+  its media if the status it leaves is valid: an edit that would leave no text, no media and no quote answers 422
+  `Validation failed: Text can't be blank` and keeps the status as it was.
+
 ## [0.9.0] - 2026-11-28
 
 A minor release, published under the npm dist-tag `latest`. A remote account that has moved is shown as moved once a
