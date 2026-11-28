@@ -663,9 +663,11 @@ describe("ranking queries with stale statistics (RES-7)", () => {
       // bob's newest 2,500 (the polls of alice's newest votes among them) and carol's newest 2,500 alice saved.
       expect([before[i]!.candidates, candidates]).toEqual([2 * LIBRARY_SOURCE_LIMIT, 2 * LIBRARY_SOURCE_LIMIT]);
       const author = i === 0 ? "(account_id=?)" : "(account_id=? AND id<?)";
-      expect(
-        plan.filter((detail) => /^SEARCH statuses USING (COVERING )?INDEX statuses_account_originals /.test(detail)),
-      ).toEqual([expect.stringMatching(new RegExp(` ${author.replace(/[()?]/g, "\\$&")}$`))]);
+      const authorWindow = plan.filter((detail) =>
+        /^SEARCH statuses USING (COVERING )?INDEX statuses_account_originals /.test(detail),
+      );
+      expect(authorWindow).toHaveLength(1);
+      expect(authorWindow[0]!.endsWith(` ${author}`)).toBe(true);
       const votes = plan.findIndex((detail) =>
         /^SEARCH poll_votes USING (COVERING )?INDEX poll_votes_account \(account_id=\?\)$/.test(detail),
       );
