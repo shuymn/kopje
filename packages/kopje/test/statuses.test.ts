@@ -2364,6 +2364,75 @@ describe("media_ids (PostStatusService#validate_media!, MEDIA-1)", () => {
     expect(formEdit.status).toBe(200);
     expect((await formEdit.json<Status>()).media_attachments).toEqual([]);
   });
+
+  it("reads a scalar media_ids as none sent, as strong parameters drop it, and a list as before", async () => {
+    const h: Pair = await community(["alice", "bob"]);
+    const { alice } = h.users;
+    const [U, V, W] = [ID, "100000000000000002", "100000000000000003"];
+    for (const id of [U, V, W]) {
+      await insertMedia(h, alice.id, id);
+    }
+    const rows = () =>
+      sql(h.store, "SELECT id, status_id FROM media_attachments WHERE id IN (?, ?, ?) ORDER BY id", U, V, W);
+    const send = async (init: RequestInit, path = "") => {
+      const response = await h.request(`/api/v1/statuses${path}`, bearer(alice.token, init));
+      return { status: response.status, body: await response.json<Status>() };
+    };
+    const blank = { status: 422, body: { error: "Validation failed: Text can't be blank" } };
+    // A status whose media an edit starts from, attached through a JSON list.
+    let held = 0;
+    const withMedia = async (text: string) => {
+      const id = `2${String(++held).padStart(17, "0")}`;
+      await insertMedia(h, alice.id, id);
+      const status = await post(h, alice, { status: text, media_ids: [id] });
+      expect(status).toMatchObject({ media_attachments: [{ id }] });
+      return { path: `/${status.id}`, id };
+    };
+    const scalars: [string, (text: string, method: string) => RequestInit][] = [
+      ["form media_ids=U", (text, method) => form({ status: text, media_ids: U }, { method })],
+      [
+        "form media_ids=U&media_ids=V",
+        (text, method) => form(Object.entries({ status: text, media_ids: U }).concat([["media_ids", V]]), { method }),
+      ],
+      ["JSON string", (text, method) => json({ status: text, media_ids: U }, { method })],
+      [
+        "JSON number",
+        (text, method) => ({ ...json({}, { method }), body: `{"status":${JSON.stringify(text)},"media_ids":${W}}` }),
+      ],
+    ];
+    for (const [kind, init] of scalars) {
+      expect(await send(init("scalar", "POST")), kind).toMatchObject({ status: 200, body: { media_attachments: [] } });
+      expect(await send(init("", "POST")), kind).toEqual(blank);
+      const edited = await withMedia("text");
+      expect(await send(init("text", "PUT"), edited.path), kind).toMatchObject({
+        status: 200,
+        body: { media_attachments: [] },
+      });
+      // UpdateStatusService replaces the media, then the status has no text and no media to keep it.
+      const mediaOnly = await withMedia("");
+      expect(await send(init("", "PUT"), mediaOnly.path), kind).toEqual(blank);
+      const kept = await getJson<Status>(h, `/api/v1/statuses${mediaOnly.path}`, alice.token);
+      expect(kept.body, kind).toMatchObject({ media_attachments: [{ id: mediaOnly.id }] });
+      expect(await rows(), kind).toEqual([U, V, W].map((id) => ({ id, status_id: null })));
+    }
+    // The same uploads attach when sent as a form list, on a post and on an edit.
+    const attached = await send(
+      form([
+        ["status", "list"],
+        ["media_ids[]", U],
+        ["media_ids[]", V],
+      ]),
+    );
+    expect(attached).toMatchObject({ status: 200, body: { media_attachments: [{ id: U }, { id: V }] } });
+    const edited = await withMedia("text");
+    const replaced = await send(form({ status: "text", "media_ids[]": W }, { method: "PUT" }), edited.path);
+    expect(replaced).toMatchObject({ status: 200, body: { media_attachments: [{ id: W }] } });
+    expect(await rows()).toEqual([
+      { id: U, status_id: attached.body.id },
+      { id: V, status_id: attached.body.id },
+      { id: W, status_id: edited.path.slice(1) },
+    ]);
+  });
 });
 
 describe("allowed_mentions (PostStatusService#safeguard_mentions!)", () => {
