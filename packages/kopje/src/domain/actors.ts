@@ -17,6 +17,7 @@ import { availableLocalSql, availableSql, followListsShownSql } from "./audience
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
 import { taggedUrl } from "./featured-tags";
 import type { FollowerSigner } from "./follower-signer";
+import { ACTIVE_HALFYEAR_DAYS, activeCountSql, activeWindow } from "./instance";
 import { instanceDomainOf } from "./instance-domain";
 import { readOperation, writeOperation } from "./operation";
 import { listedTagName, listedTagNameSql } from "./tag-bounds";
@@ -387,34 +388,36 @@ export const featuredTagsOfActor = readOperation<
 
 export type NodeInfoUsage = { users: number; activeMonth: number; activeHalfyear: number; localPosts: number };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+type NodeInfoAccounts = Omit<NodeInfoUsage, "localPosts">;
 
-// Usage for NodeInfo. users and the active counts are the available local accounts (availableLocalSql), so neither
-// active count exceeds users; an account is active when it posted in the window. Posting is NodeInfo's signal, not
-// local_accounts.active_on (an account's last authenticated request, migration 0059), which /api/v2/instance counts.
-// localPosts counts every local account's original statuses, of every visibility, a suspended account's included, as
-// Mastodon's local_posts and /api/v1/instance's status count include them. Each count walks the local rows
-// (operator-sized, a deployment assumption of the threat model) and reads only local statuses (RES-7). Each available
-// account is probed newest first by id through statuses_account and stops at its first status in the window, so when
-// the account's highest-id status is in the window its older history is not read. No index orders an account's
-// statuses by published_at, and imported ids need not follow it, so the probe walks every status with a higher id than
-// the account's first in the window, and the whole history of an account with none in it (#1479). localPosts walks
-// each account's statuses_account_originals prefix: statuses_count is no substitute, as it counts boosts and leaves
-// direct and limited statuses out.
-export function nodeInfoUsageOf(db: Db, now: number): NodeInfoUsage {
-  const since = (days: number) => new Date(now - days * DAY_MS).toISOString();
-  const active = (days: number) =>
-    db.first<{ n: number }>(
-      `SELECT count(*) AS n FROM local_accounts l
-			WHERE ${availableLocalSql("l")} AND (SELECT 1 FROM statuses s INDEXED BY statuses_account
-				WHERE s.account_id = l.account_id AND s.published_at >= ? ORDER BY s.id DESC LIMIT 1) IS NOT NULL`,
-      since(days),
-    )?.n ?? 0;
+// NodeInfo's user counts, in one walk of the local accounts (operator-sized, a deployment assumption of the threat
+// model). users and the active counts are the available local accounts (availableLocalSql), so neither active count
+// exceeds users. The active counts are the accounts whose active_on is within ACTIVE_DAYS and ACTIVE_HALFYEAR_DAYS UTC
+// days ending today, as /api/v2/instance's active_month counts them (instance.ts activeCountSql), so they change with
+// `now`'s UTC day alone; no status is read for them.
+export function nodeInfoAccountsOf(db: Db, now: number): NodeInfoAccounts {
+  const [monthStart, today] = activeWindow(now);
+  const [halfyearStart] = activeWindow(now, ACTIVE_HALFYEAR_DAYS);
+  const accounts = db.first<{ users: number; month: number; halfyear: number }>(
+    `SELECT COUNT(*) AS users, ${activeCountSql("?1", "?3")} AS month, ${activeCountSql("?2", "?3")} AS halfyear
+			FROM local_accounts l WHERE ${availableLocalSql("l")}`,
+    monthStart,
+    halfyearStart,
+    today,
+  );
   return {
-    users:
-      db.first<{ n: number }>(`SELECT count(*) AS n FROM local_accounts l WHERE ${availableLocalSql("l")}`)?.n ?? 0,
-    activeMonth: active(30),
-    activeHalfyear: active(180),
+    users: accounts?.users ?? 0,
+    activeMonth: accounts?.month ?? 0,
+    activeHalfyear: accounts?.halfyear ?? 0,
+  };
+}
+
+// Usage for NodeInfo: the user counts (nodeInfoAccountsOf) and localPosts, every local account's original statuses,
+// of every visibility, a suspended account's included, walking each account's statuses_account_originals prefix
+// (RES-7).
+export function nodeInfoUsageOf(db: Db, now: number): NodeInfoUsage {
+  return {
+    ...nodeInfoAccountsOf(db, now),
     localPosts:
       db.first<{ n: number }>(
         `SELECT count(*) AS n

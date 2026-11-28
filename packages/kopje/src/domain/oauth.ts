@@ -71,17 +71,31 @@ export type RegisterAppInput = {
 
 // RES-6, the storage budget of anonymous app registration. A pending app is one no user has authorized:
 // oauth_clients.authorized (migration 0086_authorized_apps) is set by markAuthorized when a user's first code is issued
-// for it, and stays set when its codes and tokens go, as Mastodon 4.5.11 never removes an application (revocation and
-// Vacuum::AccessTokensVacuum remove tokens only). At most MAX_PENDING_APPS pending apps are kept: when the budget is
-// full, unused ones (no token of any kind) older than UNUSED_APP_TTL_MS go first, then the oldest pending ones older
-// than EVICTION_GRACE_MS (so a client in the middle of its first login keeps its registration), app tokens and all:
-// anyone can get an app token without a user, so app tokens cannot protect an app, or the budget could be filled for
-// good. An authorized app is never counted or removed. If nothing can go, the registration is refused (429). The cron
-// removes unused pending apps after UNUSED_APP_TTL_MS as well (sweepOAuth). The web UI's own client is never counted or
-// removed.
+// for it, and stays set when its codes and tokens go: Mastodon v4.7.5's cron removes no application and its
+// registration evicts none (vacuum_scheduler.rb has no application vacuum; an owner can still delete one in Settings).
+// At most MAX_PENDING_APPS pending apps are kept, and no cron removes one: when the budget is full, a registration
+// removes only as many as its insert needs, unused ones (no token of any kind) older than UNUSED_APP_TTL_MS first,
+// oldest first, then the oldest pending ones older than EVICTION_GRACE_MS (so a client in the middle of its first login
+// keeps its registration), app tokens and all: anyone can get an app token without a user, so app tokens cannot protect
+// an app, or the budget could be filled for good. An authorized app is never counted or removed. If nothing can go, the
+// registration is refused (429). The web UI's own client is never counted or removed.
+//
+// A restored Store can hold more pending apps than the budget: upgrading a dump taken before 0086 leaves pending every
+// app that then held no user's code or token, and a later export carries that excess forward. One registration removes
+// at most OAUTH_SWEEP_BATCH of them, by both passes together, and reads at most PENDING_READ_CAP pending apps in each
+// count and in its unused pass; it answers 429 while the budget stays full, so the backlog goes over several
+// registrations. In such a Store the unused pass sees only the oldest PENDING_READ_CAP apps past the day, so eviction
+// can take older token holders before unused apps behind them.
 export const MAX_PENDING_APPS = 500;
 export const UNUSED_APP_TTL_MS = 24 * 60 * 60 * 1000;
 export const EVICTION_GRACE_MS = 60 * 60 * 1000;
+
+// At most this many rows of each kind are removed per cron run, and apps per registration.
+export const OAUTH_SWEEP_BATCH = 500;
+
+// Past MAX_PENDING_APPS + OAUTH_SWEEP_BATCH pending apps, one registration's removals cannot make room, so neither the
+// count nor the unused pass needs to read further.
+export const PENDING_READ_CAP = MAX_PENDING_APPS + OAUTH_SWEEP_BATCH;
 
 // instance_settings name of the web UI's own OAuth client (domain/web-session.ts).
 export const WEB_CLIENT_SETTING = "web_client_id";
@@ -100,7 +114,11 @@ function pendingAppsSql(extra = ""): string {
 			${extra}`;
 }
 
-const UNUSED = "AND NOT EXISTS (SELECT 1 FROM oauth_tokens u INDEXED BY oauth_tokens_client WHERE u.client_id = c.id)";
+// Registration's unused pass: the oldest PENDING_READ_CAP pending apps older than ?1 by the partial index (?3), and of
+// those the unused ones, oldest first, at most ?2. The cap counts raw candidates, before the token check.
+const UNUSED_PASS_SQL = `FROM (SELECT c.id, c.created_at ${pendingAppsSql("AND c.created_at < ?1")}
+		ORDER BY c.created_at, c.id LIMIT ?3) c
+	WHERE NOT EXISTS (SELECT 1 FROM oauth_tokens u INDEXED BY oauth_tokens_client WHERE u.client_id = c.id) ORDER BY c.created_at, c.id LIMIT ?2`;
 
 // Records that a user authorized the app (RES-6), in the transaction that writes the user's code (issueCode): every
 // user token is exchanged from a code (exchangeCode, the web session's consumeCode), so none exists without one; an app
@@ -122,7 +140,11 @@ function deleteClients(db: Db, where: string, ...params: SqlStorageValue[]): num
 }
 
 function pendingApps(db: Db): number {
-  return db.first<{ n: number }>(`SELECT COUNT(*) AS n ${pendingAppsSql()}`)?.n ?? 0;
+  const row = db.first<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM (SELECT 1 ${pendingAppsSql()} LIMIT ?)`,
+    PENDING_READ_CAP,
+  );
+  return row?.n ?? 0;
 }
 
 export type Registered = { status: "ok"; client: Client } | { status: "over_budget" };
@@ -132,18 +154,26 @@ export const registerApp = sessionOperation<RegisterAppInput, Registered | Suspe
   if (refused !== null) {
     return refused;
   }
-  if (pendingApps(db) >= MAX_PENDING_APPS) {
-    deleteClients(db, pendingAppsSql(`${UNUSED} AND c.created_at < ?`), iso(input.now - UNUSED_APP_TTL_MS));
-  }
-  const excess = pendingApps(db) - MAX_PENDING_APPS + 1;
+  let excess = pendingApps(db) - MAX_PENDING_APPS + 1;
   if (excess > 0) {
-    deleteClients(
+    const unused = deleteClients(
       db,
-      `${pendingAppsSql("AND c.created_at < ?1")} ORDER BY c.created_at, c.id LIMIT ?2`,
-      iso(input.now - EVICTION_GRACE_MS),
-      excess,
+      UNUSED_PASS_SQL,
+      iso(input.now - UNUSED_APP_TTL_MS),
+      Math.min(excess, OAUTH_SWEEP_BATCH),
+      PENDING_READ_CAP,
     );
-    if (pendingApps(db) >= MAX_PENDING_APPS) {
+    excess = pendingApps(db) - MAX_PENDING_APPS + 1;
+    const budget = OAUTH_SWEEP_BATCH - unused;
+    if (excess > 0 && budget > 0) {
+      deleteClients(
+        db,
+        `${pendingAppsSql("AND c.created_at < ?1")} ORDER BY c.created_at, c.id LIMIT ?2`,
+        iso(input.now - EVICTION_GRACE_MS),
+        Math.min(excess, budget),
+      );
+    }
+    if (excess > 0 && pendingApps(db) >= MAX_PENDING_APPS) {
       return { status: "over_budget" };
     }
   }
@@ -254,29 +284,17 @@ export const introspectToken = readOperation<
   return { status: "ok", token: inspect(db, targetHash, now) };
 });
 
-// At most this many rows of each kind are removed per cron run.
-export const OAUTH_SWEEP_BATCH = 500;
-
-// The cron (jobs/scheduled.ts): unused pending apps older than UNUSED_APP_TTL_MS, codes and access tokens (web
-// sessions) past their expiry, and expired sign-in attempts and browser families (domain/web-session.ts). Bounded per
-// run.
-export const sweepOAuth = writeOperation<{ now: number }, { apps: number; tokens: number; webState: number }>(
-  (db, { now }) => {
-    const apps = deleteClients(
-      db,
-      `${pendingAppsSql(`${UNUSED} AND c.created_at < ?1`)} LIMIT ?2`,
-      iso(now - UNUSED_APP_TTL_MS),
-      OAUTH_SWEEP_BATCH,
-    );
-    const tokens = db.all(
-      `DELETE FROM oauth_tokens WHERE token_hash IN (SELECT token_hash FROM oauth_tokens
+// The cron (jobs/scheduled.ts): codes and access tokens (web sessions) past their expiry, and expired sign-in attempts
+// and browser families (domain/web-state.ts). Bounded per run. It removes no app (RES-6).
+export const sweepOAuth = writeOperation<{ now: number }, { tokens: number; webState: number }>((db, { now }) => {
+  const tokens = db.all(
+    `DELETE FROM oauth_tokens WHERE token_hash IN (SELECT token_hash FROM oauth_tokens
 			WHERE expires_at IS NOT NULL AND expires_at <= ? LIMIT ?) RETURNING token_hash`,
-      iso(now),
-      OAUTH_SWEEP_BATCH,
-    ).length;
-    return { apps, tokens, webState: sweepWebState(db, now, OAUTH_SWEEP_BATCH) };
-  },
-);
+    iso(now),
+    OAUTH_SWEEP_BATCH,
+  ).length;
+  return { tokens, webState: sweepWebState(db, now, OAUTH_SWEEP_BATCH) };
+});
 
 // instance_settings names written by /setup step 3.
 export const ACCESS_TEAM_DOMAIN = "access_team_domain";

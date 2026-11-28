@@ -28,6 +28,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials).
 - An account's `created_at` is midnight UTC of its creation day, and a local account's actor publishes that midnight as
   `published`, as Mastodon does. The admin API's own `created_at` stays exact.
+- NodeInfo's `usage.users.activeMonth` and `activeHalfyear` count the local accounts that signed in (an authenticated
+  API request or the settings page) on one of the last 29 and 169 UTC days, Mastodon's windows, instead of those that
+  posted in the last 30 and 180 days. `activeMonth` counts as `/api/v2/instance`'s `active_month` does, so two fresh
+  responses on the same UTC day, with no account change between them, give the same number. An account whose sign-ins
+  an earlier release did not record counts from its next one.
 
 ### Fixed
 
@@ -38,6 +43,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Authorizing a follow request through the API (`POST /api/v1/follow_requests/:id/authorize`) writes a `follow`
   notification from the new follower, pushed and streamed as any other, as Mastodon does. Unlocking the account still
   writes none.
+- The cron no longer removes an app that no user has authorized a day after it registers, so a client that keeps its
+  registration can sign in with it later, as on Mastodon. Such an app is removed only when a registration finds 500 of
+  them stored, and then only as many as the new one needs: the oldest unused ones older than a day first, then the
+  oldest older than an hour. A Store restored with more than 500 such apps (upgraded from a dump taken before migration
+  0086, which leaves pending the apps that then held no user's code or token, or exported since) loses at most 500 of
+  them a registration, and registration answers 429 until fewer than 500 remain. In such a Store a registration looks
+  for unused apps only among the oldest 1,000 older than a day, so it can remove older apps holding app tokens before
+  unused ones behind them.
 - A local status's Note gives each attachment's `focalPoint` when a focus was set (`0,0` included), with the
   `focalPoint` term in its context, so other servers crop thumbnails around the focus. It also gives each attachment's
   `width`, `height` and `duration`, whatever its type, as Mastodon does. A dimension is given only as a whole number of

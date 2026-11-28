@@ -125,22 +125,12 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'the account search\'s candidates (findAccountIds, src/domain/accounts.ts): the newest accounts are read newest first up to ACCOUNT_RECENT_LIMIT (5,000), and every local account is one: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
-    id: "382565ddce9f80fa",
+    id: "a4524774e362a846",
     scans: ["local_accounts: SCAN l"],
-    site: "src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> < src/domain/federation-reads.ts#<anonymous>",
+    site: "src/domain/actors.ts#nodeInfoAccountsOf < src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> < src/domain/federation-reads.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'NodeInfo counts the available local accounts (nodeInfoUsageOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
-  },
-  {
-    id: "3be2de1ba3e95caa",
-    scans: ["local_accounts: SCAN l"],
-    site: "src/domain/actors.ts#active < src/domain/actors.ts#nodeInfoUsageOf < src/domain/federation-reads.ts#<anonymous> < src/domain/federation-reads.ts#<anonymous>",
-    disposition: "deliberate",
-    reason:
-      'NodeInfo\'s active users walk the local accounts, each available one probed newest first by statuses_account (nodeInfoUsageOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
-    witness:
-      'test/nodeinfo-usage.test.ts ("counts an active account without reading its older history, with stale statistics"; "NodeInfo\'s active probe beside main\'s (RES-7)")',
+      'NodeInfo counts the available local accounts and their active days in one walk (nodeInfoAccountsOf, src/domain/actors.ts): local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "a22117d33a2816a7",
@@ -1230,11 +1220,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "7e7121a3e8e907cd",
+    id: "985ef6db27678bcf",
     scans: ["oauth_clients: SCAN c USING COVERING INDEX oauth_clients_pending"],
     site: "src/domain/oauth.ts#pendingApps < src/domain/oauth.ts#<anonymous> in registerApp",
-    disposition: "pending",
-    issue: "#1468 group 9",
+    disposition: "bounded",
+    reason:
+      "the count reads at most PENDING_READ_CAP + 1 entries of the partial index (its LIMIT, src/domain/oauth.ts, and the web client's entry, which it passes over) and one settings seek, also over a restored Store with more pending apps",
+    witness:
+      'test/apps-budget.test.ts ("reads at most PENDING_READ_CAP pending apps and removes at most OAUTH_SWEEP_BATCH from a restored backlog")',
   },
   {
     id: "4ad13738b4c4f7ef",

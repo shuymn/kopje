@@ -251,13 +251,13 @@ export async function answerInstanceActivity(
 
 // RES-6: records the UTC day of a user's authenticated API or web request (local_accounts.active_on, migration
 // 0059_contact_and_activity), as Mastodon's UserTrackingConcern records a sign-in, for the instance's
-// usage.users.active_month (instance.ts). A session operation, admitted while the Store is readonly. The day only
-// moves forward and an equal or later stamp writes nothing, so an account's row is written at most once per UTC day
-// whichever token or isolate asks, and a delayed request of an earlier day never moves it back. An invalid, expired
-// or stale token, a suspended account and an app token write nothing. Both seeks are by key (the token, then the
-// account). The same request records the day's login for GET /api/v1/instance/activity (recordLogin, one key insert,
-// nothing when the day is recorded), whether or not active_on moved. No stream turn follows it (StreamHub#written
-// skips it).
+// usage.users.active_month (instance.ts) and NodeInfo's activeMonth and activeHalfyear (actors.ts). A session
+// operation, admitted while the Store is readonly. The day only moves forward and an equal or later stamp writes
+// nothing, so an account's row is written at most once per UTC day whichever token or isolate asks, and a delayed
+// request of an earlier day never moves it back. An invalid, expired or stale token, a suspended account and an app
+// token write nothing. Both seeks are by key (the token, then the account). The same request records the day's login
+// for GET /api/v1/instance/activity (recordLogin, one key insert, nothing when the day is recorded), whether or not
+// active_on moved. No stream turn follows it (StreamHub#written skips it).
 export const noteActivity = sessionOperation<{ tokenHash: string; now: number }, void>((db, { tokenHash, now }) => {
   const auth = authorize(db, { tokenHash, scope: null, now });
   if (auth.status !== "ok" || auth.viewer.accountId === null) {

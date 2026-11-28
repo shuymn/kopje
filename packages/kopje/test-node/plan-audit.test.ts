@@ -445,12 +445,6 @@ describe("plan audit residuals", () => {
       2,
     ],
     ["the follow walk of a collection page", "src/domain/actors.ts#<anonymous> in getCollection", "follows: SCAN f", 5],
-    [
-      "NodeInfo's active users",
-      "src/domain/actors.ts#active < src/domain/actors.ts#nodeInfoUsageOf",
-      "statuses: SCAN s",
-      1,
-    ],
     ["NodeInfo's local posts", "src/domain/actors.ts#nodeInfoUsageOf", "statuses: SCAN s", 1],
     ["the staged actor Update rewrite", "src/domain/deliveries.ts#enqueueActivity", "outbound_activities: SCAN o", 8],
     ["the field-link candidates", "src/domain/field-links.ts#linkCandidates", "local_accounts: SCAN l", 1],
