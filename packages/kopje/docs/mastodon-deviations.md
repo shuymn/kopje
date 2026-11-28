@@ -729,15 +729,17 @@ Accounts (the `Account` and credential account entities):
   checks the account when it fetches them. Search always fetches the account.
 - `source.follow_requests_count` counts, among the account's newest 120 pending follow requests, those of available
   accounts (R1 in `docs/visibility.md`), at most 40, as the first page of `GET /api/v1/follow_requests` lists them.
-  Mastodon 4.7.5 counts up to 40 requests of accounts that are not suspended (`suspended_at`) among all of them
-  (`credential_account_serializer.rb:17`). The counts differ in two ways.
+  Mastodon 4.7.5 counts up to 40 requests of accounts that are neither suspended (`suspended_at`) nor pending deletion
+  (`requested_deletion_at`) among all of them (`credential_account_serializer.rb:17`, `account/suspensions.rb:7-9`). The
+  counts differ in two ways.
   - **The window.** When more than 80 of the newest 120 requesters are unavailable, Kopje's count is lower. An
     individual suspension keeps a requester's request pending, while a `suspend` block and a deleted account's purge
     remove it. Counting among all of them would let the stored requests of suspended accounts make every
     `verify_credentials` read grow without a bound (RES-7).
   - **What unavailable means.** Kopje also leaves out a requester whose deletion has started or that a `suspend` block
-    covers, from that moment. Mastodon counts it until its purge removes the request, or until the block's suspension
-    of the domain's accounts reaches it.
+    covers, from that moment. Mastodon already leaves out an account marked pending deletion (`requested_deletion_at`),
+    and otherwise counts a requester until its purge removes the request or until the block's suspension of the domain's
+    accounts reaches it.
 
   Accepted, 2026-11-15.
 
@@ -1998,13 +2000,16 @@ Streaming (`status.update` and `delete`; Mastodon's `FanOutOnWriteService`, `Rem
 - A status deletion streams `delete` for at most 40 boosts of that status per listening viewer on `user` and list
   streams (those by the viewer and the accounts it follows; `CAPTURE_LIMITS.boosts`, R32 in
   [visibility.md](visibility.md)). Mastodon v4.7.5 removes every reblog of a deleted status without a cap
-  (`app/services/remove_status_service.rb:109-117`), publishing a `delete` event for each to home and list streams
-  (`app/lib/feed_manager.rb:90-95,117-122`). Accepted, 2026-10-16.
+  (`app/services/remove_status_service.rb:109-117`), and for each reblog publishes a `delete` event to a home or list
+  stream only when `remove_from_feed` removes it from that feed (which returns false when an aggregated reblog is not in
+  the feed; `app/lib/feed_manager.rb:85-95,112-122,585-592`). Accepted, 2026-10-16.
 - Purging a deleted account sends no streaming `delete` event (R32 in [visibility.md](visibility.md)). Mastodon v4.7.5's
-  `DeleteAccountService#purge_statuses!` (`app/services/delete_account_service.rb:165-171`) calls
-  `BatchedRemoveStatusService` (`app/services/batched_remove_status_service.rb:46-102`), which publishes `delete` events
-  for the account's statuses and reblogs on home and list streams, and on public and hashtag streams for public statuses
-  from the last two weeks. Accepted, 2026-10-16.
+  `DeleteAccountService#purge_statuses!` (`app/services/delete_account_service.rb:165-171`) keeps statuses referenced by
+  unresolved reports out of the batch (marking them `deleted_at` instead) and passes the rest to
+  `BatchedRemoveStatusService` (`app/services/batched_remove_status_service.rb:35-102`), which removes those statuses
+  and their reblogs and, unless `skip_side_effects` is set, publishes `delete` events on home and list streams when
+  `remove_from_feed` removes each from that feed, and on public and hashtag streams for public statuses passed to the
+  batch from the last two weeks. Accepted, 2026-10-16.
 
 Pinned statuses (`StatusPin`, the actor's `featured` collection):
 
