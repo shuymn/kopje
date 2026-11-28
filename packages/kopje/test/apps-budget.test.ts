@@ -9,6 +9,7 @@ import {
   OAUTH_SWEEP_BATCH,
   PENDING_READ_CAP,
   registerApp as registerAppOperation,
+  type RegisterAppInput,
   sweepOAuth,
   UNUSED_APP_TTL_MS,
 } from "../src/domain/oauth";
@@ -65,9 +66,9 @@ function registeredAt(store: StoreStub, app: App, at: number): Promise<unknown> 
   return sql(store, "UPDATE oauth_clients SET created_at = ? WHERE id = ?", new Date(at).toISOString(), app.client_id);
 }
 
-// A client_credentials request of `app`.
-function appTokenRequest(h: ApiHarness, app: App): Promise<Response> {
-  return h.request(
+// The access token of a client_credentials request of `app`.
+async function appToken(h: ApiHarness, app: App): Promise<string> {
+  const response = await h.request(
     "/oauth/token",
     json({
       grant_type: "client_credentials",
@@ -76,12 +77,16 @@ function appTokenRequest(h: ApiHarness, app: App): Promise<Response> {
       scope: "read",
     }),
   );
-}
-
-async function appToken(h: ApiHarness, app: App): Promise<string> {
-  const response = await appTokenRequest(h, app);
   expect(response.status).toBe(200);
   return (await response.json<{ access_token: string }>()).access_token;
+}
+
+// An app token for each app `where` selects, its hash `prefix` and the app's id.
+function seedAppTokens(store: StoreStub, prefix: string, where = "1"): Promise<unknown> {
+  return sql(
+    store,
+    `INSERT INTO oauth_tokens (token_hash, kind, client_id, scopes) SELECT '${prefix}' || id, 'access', id, 'read' FROM oauth_clients WHERE ${where}`,
+  );
 }
 
 // One run of the cron (jobs/scheduled.ts) at `now`.
@@ -91,6 +96,20 @@ function cron(h: ApiHarness, now = NOW): Promise<unknown> {
     now: () => now,
     store: () => h.store,
   });
+}
+
+// A full budget of pending apps after a cron run at NOW: A unused and 3 days old, B unused and a minute short of a day,
+// and 498 recent; alice can authorize either.
+async function agedPair(options: { scopes?: string } = {}): Promise<{ h: ApiHarness; a: App; b: App }> {
+  const h = await apiHarness();
+  await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
+  const a = await registerApp(h, options);
+  const b = await registerApp(h, options);
+  await registeredAt(h.store, a, NOW - 3 * UNUSED_APP_TTL_MS);
+  await registeredAt(h.store, b, NOW - UNUSED_APP_TTL_MS + 60 * 1000);
+  await fill(h.store, MAX_PENDING_APPS - 2, NOW);
+  await cron(h);
+  return { h, a, b };
 }
 
 describe("app registration budget (RES-6)", () => {
@@ -164,10 +183,7 @@ describe("app registration budget (RES-6)", () => {
     const h = await apiHarness();
     // An attacker fills the budget with apps that each hold an app token.
     await fill(h.store, MAX_PENDING_APPS, NOW - 1000, "flood");
-    await sql(
-      h.store,
-      "INSERT INTO oauth_tokens (token_hash, kind, client_id, scopes) SELECT 'h-' || id, 'access', id, 'read' FROM oauth_clients",
-    );
+    await seedAppTokens(h.store, "h-");
     expect((await h.request("/api/v1/apps", json(APP))).status).toBe(429);
     expect(await count(h.store)).toBe(MAX_PENDING_APPS);
     // An hour later the oldest goes for each new registration; the bound holds.
@@ -238,19 +254,11 @@ describe("app registration budget (RES-6)", () => {
     expect(await count(h.store, `id = '${app.client_id}' AND authorized = 1`)).toBe(1);
   });
 
-  // 500 pending apps: A unused and 3 days old, B unused and a minute short of a day at the cron's run, 498 recent. Two
-  // minutes later B is past the day, and C's registration needs one slot: A, the oldest, goes and B stays, as when the
-  // cron removed A. A second registration then takes B, as today's code does.
+  // B is a minute short of its day at the cron's run, so the cron keeps it under either rule, and past it at a
+  // registration two minutes later.
   it("keeps an app past the day until a registration needs its slot, removing the oldest unused one first", async () => {
     const scenario = async () => {
-      const h = await apiHarness();
-      await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
-      const a = await registerApp(h);
-      const b = await registerApp(h);
-      await registeredAt(h.store, a, NOW - 3 * UNUSED_APP_TTL_MS);
-      await registeredAt(h.store, b, NOW - UNUSED_APP_TTL_MS + 60 * 1000);
-      await fill(h.store, MAX_PENDING_APPS - 2, NOW);
-      await cron(h);
+      const { h, a, b } = await agedPair();
       h.now.mockReturnValue(NOW + 2 * 60 * 1000);
       expect((await h.request("/api/v1/apps", json(APP))).status).toBe(200);
       expect(await count(h.store, `id = '${a.client_id}'`)).toBe(0);
@@ -296,14 +304,7 @@ describe("app registration budget (RES-6)", () => {
   // (the cron no longer removed it), so C's registration takes B, unused and just past its day, which the cron would
   // have removed at its next run.
   it("removes the next unused app past its day at a full registration once an older one got an app token", async () => {
-    const h = await apiHarness();
-    await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
-    const a = await registerApp(h, { scopes: "read" });
-    const b = await registerApp(h, { scopes: "read" });
-    await registeredAt(h.store, a, NOW - 3 * UNUSED_APP_TTL_MS);
-    await registeredAt(h.store, b, NOW - UNUSED_APP_TTL_MS + 60 * 1000);
-    await fill(h.store, MAX_PENDING_APPS - 2, NOW);
-    await cron(h);
+    const { h, a, b } = await agedPair({ scopes: "read" });
     h.now.mockReturnValue(NOW + 60 * 1000);
     const aToken = await appToken(h, a);
     expect((await consentPage(h, b, { scope: "read" })).status).toBe(200);
@@ -316,7 +317,7 @@ describe("app registration budget (RES-6)", () => {
     expect(await count(h.store, "authorized = 0")).toBe(MAX_PENDING_APPS);
   });
 
-  // A restored Store over budget (a dump taken before 0086 leaves every app pending): the cron keeps the backlog, and
+  // A restored Store over budget (an upgraded pre-0086 dump, or a later export of one): the cron keeps the backlog, and
   // each registration removes at most OAUTH_SWEEP_BATCH of it and answers 429 until one fits.
   it(
     "brings a restored backlog under budget over several registrations, at most OAUTH_SWEEP_BATCH each",
@@ -356,10 +357,7 @@ describe("app registration budget (RES-6)", () => {
     const h = await apiHarness();
     await fill(h.store, 250, NOW - 3 * UNUSED_APP_TTL_MS, "unused");
     await fill(h.store, 751, NOW - 2 * UNUSED_APP_TTL_MS, "held");
-    await sql(
-      h.store,
-      "INSERT INTO oauth_tokens (token_hash, kind, client_id, scopes) SELECT 'a-' || id, 'access', id, 'read' FROM oauth_clients WHERE id LIKE 'held-%'",
-    );
+    await seedAppTokens(h.store, "a-", "id LIKE 'held-%'");
     expect((await h.request("/api/v1/apps", json(APP))).status).toBe(429);
     expect(await count(h.store, "id LIKE 'unused-%'")).toBe(0);
     expect(await count(h.store, "id = 'held-249'")).toBe(0);
@@ -372,10 +370,7 @@ describe("app registration budget (RES-6)", () => {
   it("evicts older token holders before unused apps it does not reach in a restored backlog", async () => {
     const h = await apiHarness();
     await fill(h.store, PENDING_READ_CAP, NOW - 3 * UNUSED_APP_TTL_MS, "held");
-    await sql(
-      h.store,
-      "INSERT INTO oauth_tokens (token_hash, kind, client_id, scopes) SELECT 'a-' || id, 'access', id, 'read' FROM oauth_clients",
-    );
+    await seedAppTokens(h.store, "a-");
     await fill(h.store, 2, NOW - 2 * UNUSED_APP_TTL_MS, "unused");
     expect((await h.request("/api/v1/apps", json(APP))).status).toBe(429);
     expect(await count(h.store, "id LIKE 'unused-%'")).toBe(2);
@@ -445,6 +440,16 @@ describe("app registration budget (RES-6)", () => {
 // it is a pending candidate too. The cron's sweep reads no app.
 describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
   const AUTHORIZED = 3 * MAX_PENDING_APPS;
+  const registration = (phase: string): RegisterAppInput => ({
+    clientId: `new-${phase}`,
+    secret: "s",
+    name: "n",
+    redirectUris: ["https://n.example/cb"],
+    website: null,
+    scopes: ["read"],
+    now: NOW,
+    credential: null,
+  });
   const UNUSED_PASS_WALK = "SEARCH c USING COVERING INDEX oauth_clients_pending (created_at<?)";
   const UNUSED_PASS_TOKENS = "SEARCH u USING COVERING INDEX oauth_tokens_client (client_id=?)";
 
@@ -467,22 +472,7 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
     const pattern = /oauth_clients/;
     const { after } = await staleStatistics(h, {
       capture: async (phase) => ({
-        registered: await plannedRun(
-          h,
-          pattern,
-          registerAppOperation,
-          {
-            clientId: `new-${phase}`,
-            secret: "s",
-            name: "n",
-            redirectUris: ["https://n.example/cb"],
-            website: null,
-            scopes: ["read"],
-            now: NOW,
-            credential: null,
-          },
-          true,
-        ),
+        registered: await plannedRun(h, pattern, registerAppOperation, registration(phase), true),
         swept: await plannedRun(h, pattern, sweepOAuth, { now: NOW }, true),
         marked: await plannedRun(
           h,
@@ -518,11 +508,7 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
         );
         // MAX_PENDING_APPS beside the web client (small-0), which the budget does not count: it is full.
         await fill(h.store, MAX_PENDING_APPS, NOW - 2 * UNUSED_APP_TTL_MS, "pending");
-        await sql(
-          h.store,
-          `INSERT INTO oauth_tokens (token_hash, kind, client_id, scopes)
-					SELECT 'a-' || id, 'access', id, 'read' FROM oauth_clients WHERE authorized = 0`,
-        );
+        await seedAppTokens(h.store, "a-", "authorized = 0");
       },
     });
     expect(after.registered.result).toMatchObject({ status: "ok" });
@@ -572,18 +558,8 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
       const BACKLOG = 10 * PENDING_READ_CAP;
       await fill(h.store, 2, NOW - 2 * UNUSED_APP_TTL_MS, "small");
       const pattern = /oauth_clients/;
-      const input = (phase: string) => ({
-        clientId: `new-${phase}`,
-        secret: "s",
-        name: "n",
-        redirectUris: ["https://n.example/cb"],
-        website: null,
-        scopes: ["read"],
-        now: NOW,
-        credential: null,
-      });
       const { after } = await staleStatistics(h, {
-        capture: (phase) => plannedRun(h, pattern, registerAppOperation, input(phase), true),
+        capture: (phase) => plannedRun(h, pattern, registerAppOperation, registration(phase), true),
         grow: async () => {
           await sql(h.store, "DELETE FROM oauth_clients");
           await sql(
@@ -599,10 +575,7 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
             h.store,
             "INSERT OR REPLACE INTO instance_settings (name, value) VALUES ('web_client_id', 'web-0')",
           );
-          await sql(
-            h.store,
-            "INSERT INTO oauth_tokens (token_hash, kind, client_id, scopes) SELECT 'a-' || id, 'access', id, 'read' FROM oauth_clients",
-          );
+          await seedAppTokens(h.store, "a-");
         },
       });
       expect(after.result).toEqual({ status: "over_budget" });

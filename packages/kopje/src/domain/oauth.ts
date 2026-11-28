@@ -114,13 +114,11 @@ function pendingAppsSql(extra = ""): string {
 			${extra}`;
 }
 
-const UNUSED = "NOT EXISTS (SELECT 1 FROM oauth_tokens u INDEXED BY oauth_tokens_client WHERE u.client_id = c.id)";
-
 // Registration's unused pass: the oldest PENDING_READ_CAP pending apps older than ?1 by the partial index (?3), and of
 // those the unused ones, oldest first, at most ?2. The cap counts raw candidates, before the token check.
 const UNUSED_PASS_SQL = `FROM (SELECT c.id, c.created_at ${pendingAppsSql("AND c.created_at < ?1")}
 		ORDER BY c.created_at, c.id LIMIT ?3) c
-	WHERE ${UNUSED} ORDER BY c.created_at, c.id LIMIT ?2`;
+	WHERE NOT EXISTS (SELECT 1 FROM oauth_tokens u INDEXED BY oauth_tokens_client WHERE u.client_id = c.id) ORDER BY c.created_at, c.id LIMIT ?2`;
 
 // Records that a user authorized the app (RES-6), in the transaction that writes the user's code (issueCode): every
 // user token is exchanged from a code (exchangeCode, the web session's consumeCode), so none exists without one; an app
@@ -141,7 +139,6 @@ function deleteClients(db: Db, where: string, ...params: SqlStorageValue[]): num
   ).length;
 }
 
-// The pending apps, counted up to PENDING_READ_CAP.
 function pendingApps(db: Db): number {
   const row = db.first<{ n: number }>(
     `SELECT COUNT(*) AS n FROM (SELECT 1 ${pendingAppsSql()} LIMIT ?)`,
@@ -157,7 +154,6 @@ export const registerApp = sessionOperation<RegisterAppInput, Registered | Suspe
   if (refused !== null) {
     return refused;
   }
-  // Each pass removes at most what the insert still needs, oldest first, and both together at most OAUTH_SWEEP_BATCH.
   let excess = pendingApps(db) - MAX_PENDING_APPS + 1;
   if (excess > 0) {
     const unused = deleteClients(
