@@ -71,14 +71,14 @@ export type RegisterAppInput = {
 
 // RES-6, the storage budget of anonymous app registration. A pending app is one no user has authorized:
 // oauth_clients.authorized (migration 0086_authorized_apps) is set by markAuthorized when a user's first code is issued
-// for it, and stays set when its codes and tokens go, as Mastodon 4.5.11 never removes an application (revocation and
-// Vacuum::AccessTokensVacuum remove tokens only). At most MAX_PENDING_APPS pending apps are kept: when the budget is
-// full, unused ones (no token of any kind) older than UNUSED_APP_TTL_MS go first, then the oldest pending ones older
-// than EVICTION_GRACE_MS (so a client in the middle of its first login keeps its registration), app tokens and all:
-// anyone can get an app token without a user, so app tokens cannot protect an app, or the budget could be filled for
-// good. An authorized app is never counted or removed. If nothing can go, the registration is refused (429). The cron
-// removes unused pending apps after UNUSED_APP_TTL_MS as well (sweepOAuth). The web UI's own client is never counted or
-// removed.
+// for it, and stays set when its codes and tokens go, as Mastodon v4.7.5 never removes an application (its vacuum list,
+// vacuum_scheduler.rb, has none; revocation and Vacuum::AccessTokensVacuum remove tokens only). At most
+// MAX_PENDING_APPS pending apps are kept, and no cron removes one: when the budget is full, a registration removes only
+// as many as its insert needs, unused ones (no token of any kind) older than UNUSED_APP_TTL_MS first, oldest first, then
+// the oldest pending ones older than EVICTION_GRACE_MS (so a client in the middle of its first login keeps its
+// registration), app tokens and all: anyone can get an app token without a user, so app tokens cannot protect an app,
+// or the budget could be filled for good. An authorized app is never counted or removed. If nothing can go, the
+// registration is refused (429). The web UI's own client is never counted or removed.
 export const MAX_PENDING_APPS = 500;
 export const UNUSED_APP_TTL_MS = 24 * 60 * 60 * 1000;
 export const EVICTION_GRACE_MS = 60 * 60 * 1000;
@@ -132,10 +132,17 @@ export const registerApp = sessionOperation<RegisterAppInput, Registered | Suspe
   if (refused !== null) {
     return refused;
   }
-  if (pendingApps(db) >= MAX_PENDING_APPS) {
-    deleteClients(db, pendingAppsSql(`${UNUSED} AND c.created_at < ?`), iso(input.now - UNUSED_APP_TTL_MS));
+  // Each pass removes at most what the insert still needs, oldest first.
+  let excess = pendingApps(db) - MAX_PENDING_APPS + 1;
+  if (excess > 0) {
+    deleteClients(
+      db,
+      `${pendingAppsSql(`${UNUSED} AND c.created_at < ?1`)} ORDER BY c.created_at, c.id LIMIT ?2`,
+      iso(input.now - UNUSED_APP_TTL_MS),
+      excess,
+    );
+    excess = pendingApps(db) - MAX_PENDING_APPS + 1;
   }
-  const excess = pendingApps(db) - MAX_PENDING_APPS + 1;
   if (excess > 0) {
     deleteClients(
       db,
@@ -255,28 +262,19 @@ export const introspectToken = readOperation<
 });
 
 // At most this many rows of each kind are removed per cron run.
-export const OAUTH_SWEEP_BATCH = 500;
+const OAUTH_SWEEP_BATCH = 500;
 
-// The cron (jobs/scheduled.ts): unused pending apps older than UNUSED_APP_TTL_MS, codes and access tokens (web
-// sessions) past their expiry, and expired sign-in attempts and browser families (domain/web-session.ts). Bounded per
-// run.
-export const sweepOAuth = writeOperation<{ now: number }, { apps: number; tokens: number; webState: number }>(
-  (db, { now }) => {
-    const apps = deleteClients(
-      db,
-      `${pendingAppsSql(`${UNUSED} AND c.created_at < ?1`)} LIMIT ?2`,
-      iso(now - UNUSED_APP_TTL_MS),
-      OAUTH_SWEEP_BATCH,
-    );
-    const tokens = db.all(
-      `DELETE FROM oauth_tokens WHERE token_hash IN (SELECT token_hash FROM oauth_tokens
+// The cron (jobs/scheduled.ts): codes and access tokens (web sessions) past their expiry, and expired sign-in attempts
+// and browser families (domain/web-state.ts). Bounded per run. It removes no app (RES-6).
+export const sweepOAuth = writeOperation<{ now: number }, { tokens: number; webState: number }>((db, { now }) => {
+  const tokens = db.all(
+    `DELETE FROM oauth_tokens WHERE token_hash IN (SELECT token_hash FROM oauth_tokens
 			WHERE expires_at IS NOT NULL AND expires_at <= ? LIMIT ?) RETURNING token_hash`,
-      iso(now),
-      OAUTH_SWEEP_BATCH,
-    ).length;
-    return { apps, tokens, webState: sweepWebState(db, now, OAUTH_SWEEP_BATCH) };
-  },
-);
+    iso(now),
+    OAUTH_SWEEP_BATCH,
+  ).length;
+  return { tokens, webState: sweepWebState(db, now, OAUTH_SWEEP_BATCH) };
+});
 
 // instance_settings names written by /setup step 3.
 export const ACCESS_TEAM_DOMAIN = "access_team_domain";

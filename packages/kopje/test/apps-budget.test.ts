@@ -6,7 +6,6 @@ import {
   EVICTION_GRACE_MS,
   issueCode,
   MAX_PENDING_APPS,
-  OAUTH_SWEEP_BATCH,
   registerApp as registerAppOperation,
   sweepOAuth,
   UNUSED_APP_TTL_MS,
@@ -15,6 +14,8 @@ import { handleScheduled } from "../src/jobs/scheduled";
 import type { StoreStub } from "../src/platform/store-client";
 import {
   apiHarness,
+  type ApiHarness,
+  type App,
   authorizationCode,
   bearer,
   exchange,
@@ -30,7 +31,8 @@ import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { csrfOf, postForm, signIn } from "./web-helpers";
 
 // RES-6 for POST /api/v1/apps: a per-IP rate limit (the Rate Limiting binding) and a storage budget of
-// never-authorized apps, with expiry of unused ones (Kopje's own) and a visible refusal; an authorized app is kept.
+// never-authorized apps, from which a full registration removes only what it needs, with a visible refusal; the cron
+// removes no app, and an authorized app is kept.
 
 const APP = { client_name: "Flood", redirect_uris: "https://flood.example/cb", scopes: "read" };
 
@@ -56,6 +58,38 @@ async function count(store: StoreStub, where = "1"): Promise<number> {
   return row?.n ?? 0;
 }
 
+function registeredAt(store: StoreStub, app: App, at: number): Promise<unknown> {
+  return sql(store, "UPDATE oauth_clients SET created_at = ? WHERE id = ?", new Date(at).toISOString(), app.client_id);
+}
+
+// A client_credentials request of `app`.
+function appTokenRequest(h: ApiHarness, app: App): Promise<Response> {
+  return h.request(
+    "/oauth/token",
+    json({
+      grant_type: "client_credentials",
+      client_id: app.client_id,
+      client_secret: app.client_secret,
+      scope: "read",
+    }),
+  );
+}
+
+async function appToken(h: ApiHarness, app: App): Promise<string> {
+  const response = await appTokenRequest(h, app);
+  expect(response.status).toBe(200);
+  return (await response.json<{ access_token: string }>()).access_token;
+}
+
+// One run of the cron (jobs/scheduled.ts) at `now`.
+function cron(h: ApiHarness, now = NOW): Promise<unknown> {
+  return handleScheduled({ ...env, MAINTENANCE: "off" } as unknown as Env, {
+    build: () => env.CF_VERSION_METADATA.id,
+    now: () => now,
+    store: () => h.store,
+  });
+}
+
 describe("app registration budget (RES-6)", () => {
   it("limits registrations per client IP before reading the body", async () => {
     const blocked = limiter((key) => key !== "203.0.113.9");
@@ -77,12 +111,14 @@ describe("app registration budget (RES-6)", () => {
     expect(await count(h.store)).toBe(MAX_PENDING_APPS);
   });
 
-  it("removes unused apps older than a day first, then evicts the oldest never-authorized one", async () => {
+  it("removes the oldest unused app older than a day first, only as many as it needs, then evicts the oldest never-authorized one", async () => {
     const h = await apiHarness();
     await fill(h.store, 10, NOW - UNUSED_APP_TTL_MS - 1000, "old");
     await fill(h.store, MAX_PENDING_APPS - 10, NOW - EVICTION_GRACE_MS + 1000);
     expect((await h.request("/api/v1/apps", json(APP))).status).toBe(200);
-    expect(await count(h.store, "id LIKE 'old-%'")).toBe(0);
+    expect(await count(h.store, "id = 'old-0'")).toBe(0);
+    expect(await count(h.store, "id LIKE 'old-%'")).toBe(9);
+    expect(await count(h.store, "authorized = 0")).toBe(MAX_PENDING_APPS);
 
     // Now full of recent ones and one older than the grace period: an unused one goes.
     const h2 = await apiHarness();
@@ -96,16 +132,7 @@ describe("app registration budget (RES-6)", () => {
   it("evicts an app whose only token is an app token, which stops working (accepted risk)", async () => {
     const h = await apiHarness();
     const holder = await registerApp(h, { scopes: "read" });
-    const token = await h.request(
-      "/oauth/token",
-      json({
-        grant_type: "client_credentials",
-        client_id: holder.client_id,
-        client_secret: holder.client_secret,
-        scope: "read",
-      }),
-    );
-    const { access_token } = await token.json<{ access_token: string }>();
+    const access_token = await appToken(h, holder);
     expect((await h.request("/api/v1/apps/verify_credentials", bearer(access_token))).status).toBe(200);
     await sql(
       h.store,
@@ -162,12 +189,15 @@ describe("app registration budget (RES-6)", () => {
     expect((await h.request("/api/v1/accounts/verify_credentials", bearer(token))).status).toBe(200);
   });
 
-  it("sweeps unused apps after a day and expired codes and sessions from the cron", async () => {
+  it("removes no app from the cron, and removes expired codes and sessions", async () => {
     const h = await apiHarness();
     await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
     const used = await registerApp(h);
     await login(h, { app: used });
-    await fill(h.store, 3, NOW - UNUSED_APP_TTL_MS - 1000, "old");
+    const holder = await registerApp(h, { scopes: "read" });
+    const held = await appToken(h, holder);
+    await registeredAt(h.store, holder, NOW - 2 * UNUSED_APP_TTL_MS);
+    await fill(h.store, 3, NOW - UNUSED_APP_TTL_MS - 60 * 60 * 1000, "old");
     await fill(h.store, 2, NOW - 1000, "new");
     await sql(
       h.store,
@@ -176,15 +206,86 @@ describe("app registration budget (RES-6)", () => {
       used.client_id,
       new Date(NOW - 1).toISOString(),
     );
-    await handleScheduled({ ...env, MAINTENANCE: "off" } as unknown as Env, {
-      build: () => env.CF_VERSION_METADATA.id,
-      now: () => NOW,
-      store: () => h.store,
-    });
-    expect(await count(h.store, "id LIKE 'old-%'")).toBe(0);
+    await sql(
+      h.store,
+      "INSERT INTO kopje_state (name, value) VALUES ('web_login:expired', ?)",
+      JSON.stringify({ expiresAt: NOW - 1 }),
+    );
+    await cron(h);
+    // The run swept: the expired code and sign-in attempt are gone.
+    expect(await sql(h.store, "SELECT token_hash FROM oauth_tokens WHERE token_hash = 'expired'")).toEqual([]);
+    expect(await sql(h.store, "SELECT name FROM kopje_state WHERE name = 'web_login:expired'")).toEqual([]);
+    // Every app stays: the token holder and its token, the unused ones a day old, the recent ones and the authorized.
+    expect(await count(h.store, `id = '${holder.client_id}'`)).toBe(1);
+    expect((await h.request("/api/v1/apps/verify_credentials", bearer(held))).status).toBe(200);
+    expect(await count(h.store, "id LIKE 'old-%'")).toBe(3);
     expect(await count(h.store, "id LIKE 'new-%'")).toBe(2);
     expect(await count(h.store, `id = '${used.client_id}'`)).toBe(1);
-    expect(await sql(h.store, "SELECT token_hash FROM oauth_tokens WHERE token_hash = 'expired'")).toEqual([]);
+    expect(await count(h.store)).toBe(7);
+  });
+
+  it("authorizes an app registered two days earlier and never used, after the cron, by the same client_id", async () => {
+    const h = await apiHarness();
+    await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
+    const app = await registerApp(h);
+    await registeredAt(h.store, app, NOW - 2 * UNUSED_APP_TTL_MS);
+    await cron(h);
+    const { token } = await login(h, { app });
+    expect((await h.request("/api/v1/accounts/verify_credentials", bearer(token))).status).toBe(200);
+    expect(await count(h.store, `id = '${app.client_id}' AND authorized = 1`)).toBe(1);
+  });
+
+  // 500 pending apps: A unused and 3 days old, B unused and a minute short of a day at the cron's run, 498 recent. Two
+  // minutes later B is past the day, and C's registration needs one slot: A, the oldest, goes and B stays, as when the
+  // cron removed A. A second registration then takes B, as today's code does.
+  it("keeps an app past the day until a registration needs its slot, removing the oldest unused one first", async () => {
+    const scenario = async () => {
+      const h = await apiHarness();
+      await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
+      const a = await registerApp(h);
+      const b = await registerApp(h);
+      await registeredAt(h.store, a, NOW - 3 * UNUSED_APP_TTL_MS);
+      await registeredAt(h.store, b, NOW - UNUSED_APP_TTL_MS + 60 * 1000);
+      await fill(h.store, MAX_PENDING_APPS - 2, NOW);
+      await cron(h);
+      h.now.mockReturnValue(NOW + 2 * 60 * 1000);
+      expect((await h.request("/api/v1/apps", json(APP))).status).toBe(200);
+      expect(await count(h.store, `id = '${a.client_id}'`)).toBe(0);
+      expect(await count(h.store, `id = '${b.client_id}'`)).toBe(1);
+      expect(await count(h.store, "authorized = 0")).toBe(MAX_PENDING_APPS);
+      return { h, b };
+    };
+
+    const { h, b } = await scenario();
+    const { token } = await login(h, { app: b });
+    expect((await h.request("/api/v1/accounts/verify_credentials", bearer(token))).status).toBe(200);
+    expect(await count(h.store, `id = '${b.client_id}' AND authorized = 1`)).toBe(1);
+
+    const second = await scenario();
+    expect((await second.h.request("/api/v1/apps", json(APP))).status).toBe(200);
+    expect(await count(second.h.store, `id = '${second.b.client_id}'`)).toBe(0);
+    expect(await count(second.h.store, "authorized = 0")).toBe(MAX_PENDING_APPS);
+  });
+
+  // Accepted risk (docs/threat-model.md, app tokens under registration pressure): an unused app the cron used to remove
+  // now keeps its registration and can get an app token, and a full budget's eviction then takes the oldest
+  // token-holding app in its place.
+  it("lets an aged unused app get an app token, and a full registration then evicts the oldest token holder", async () => {
+    const h = await apiHarness();
+    const b = await registerApp(h, { scopes: "read" });
+    const bToken = await appToken(h, b);
+    const a = await registerApp(h, { scopes: "read" });
+    await registeredAt(h.store, b, NOW - 4 * UNUSED_APP_TTL_MS);
+    await registeredAt(h.store, a, NOW - 3 * UNUSED_APP_TTL_MS);
+    await fill(h.store, MAX_PENDING_APPS - 2, NOW);
+    await cron(h);
+    const aToken = await appToken(h, a);
+    expect((await h.request("/api/v1/apps", json(APP))).status).toBe(200);
+    expect(await count(h.store, `id = '${a.client_id}'`)).toBe(1);
+    expect((await h.request("/api/v1/apps/verify_credentials", bearer(aToken))).status).toBe(200);
+    expect(await count(h.store, `id = '${b.client_id}'`)).toBe(0);
+    expect((await h.request("/api/v1/apps/verify_credentials", bearer(bToken))).status).toBe(401);
+    expect(await count(h.store, "authorized = 0")).toBe(MAX_PENDING_APPS);
   });
 
   // RES-6: an app a user authorized stays registered after every token is gone, as Mastodon never removes one; a
@@ -205,13 +306,13 @@ describe("app registration budget (RES-6)", () => {
     expect(await count(h.store, `id = '${app.client_id}'`)).toBe(1);
     expect(await sql(h.store, "SELECT token_hash FROM oauth_tokens WHERE client_id = ?", app.client_id)).toEqual([]);
     await sql(h.store, "UPDATE oauth_clients SET created_at = ?", new Date(NOW - 2 * UNUSED_APP_TTL_MS).toISOString());
-    // A never-authorized app of the same age, which the sweep removes: the sweep ran over both.
+    // A never-authorized app of the same age, which the sweep keeps too.
     await fill(h.store, 1, NOW - 2 * UNUSED_APP_TTL_MS, "old");
     const swept = await runInDurableObject(h.store, (_instance, state) =>
       sweepOAuth.run(state.storage.sql, { now: NOW }),
     );
-    expect(swept).toEqual({ apps: 1, tokens: 0, webState: 0 });
-    expect(await count(h.store, "id LIKE 'old-%'")).toBe(0);
+    expect(swept).toEqual({ tokens: 0, webState: 0 });
+    expect(await count(h.store, "id LIKE 'old-%'")).toBe(1);
     expect(await count(h.store, `id = '${app.client_id}'`)).toBe(1);
     const again = await login(h, { app });
     expect((await h.request("/api/v1/accounts/verify_credentials", bearer(again.token))).status).toBe(200);
@@ -243,10 +344,12 @@ describe("app registration budget (RES-6)", () => {
 
 // RES-7 for the budget's statements: authorized apps, each with a user's token, grown after ANALYZE, are never read.
 // Every input at its worst: MAX_PENDING_APPS pending apps (the budget full), each older than the day and holding an app
-// token, so the expiry pass reads every one and removes none and eviction runs; the web client not yet authorized, so
-// it is a pending candidate too.
+// token, so the unused pass reads every one and removes none and eviction runs; the web client not yet authorized, so
+// it is a pending candidate too. The cron's sweep reads no app.
 describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
   const AUTHORIZED = 3 * MAX_PENDING_APPS;
+  const UNUSED_PASS_WALK = "SEARCH c USING COVERING INDEX oauth_clients_pending (created_at<?)";
+  const UNUSED_PASS_TOKENS = "SEARCH u USING COVERING INDEX oauth_tokens_client (client_id=?)";
 
   it("walks the pending apps by their partial index and marks an app by its key", { timeout: 60_000 }, async () => {
     const h = await apiHarness();
@@ -315,36 +418,34 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
       },
     });
     expect(after.registered.result).toMatchObject({ status: "ok" });
-    // The budget was full: the expiry pass removed none (each holds an app token), and eviction took the oldest.
+    // The budget was full: the unused pass removed none (each holds an app token), and eviction took the oldest.
     expect(await count(h.store, "id = 'pending-0'")).toBe(0);
     expect(await count(h.store, "id LIKE 'authorized-%'")).toBe(AUTHORIZED);
-    expect(after.swept.result).toEqual({ apps: 0, tokens: 0, webState: 0 });
+    expect(after.swept.result).toEqual({ tokens: 0, webState: 0 });
     expect(after.marked.result).toEqual({ status: "ok" });
     expect(await count(h.store, "id = 'new-after' AND authorized = 1")).toBe(1);
 
-    // The budget's walks of the pending set, and the reads and writes of one app by its key.
+    // The budget's walks of the pending set, and the reads and writes of one app by its key. The sweep names no app.
     const walks = (query: string) => query.includes("oauth_clients_pending");
-    const statements = [...after.registered.plans, ...after.swept.plans, ...after.marked.plans];
+    const statements = [...after.registered.plans, ...after.marked.plans];
     expect(after.registered.plans.some((p) => walks(p.query))).toBe(true);
-    expect(after.swept.plans.some((p) => walks(p.query))).toBe(true);
+    expect(after.swept.plans).toEqual([]);
     expect(after.marked.plans.some((p) => p.query.startsWith("UPDATE"))).toBe(true);
-    // Then the sweep's other worst: its batch filled with unused apps (their app tokens gone, one more aged app), each
-    // removed by its key.
-    await sql(h.store, "DELETE FROM oauth_tokens WHERE token_hash LIKE 'a-%'");
-    await fill(h.store, 1, NOW - 2 * UNUSED_APP_TTL_MS, "extra");
-    const drained = await plannedRun(h, pattern, sweepOAuth, { now: NOW }, true);
-    expect(drained.result).toEqual({ apps: OAUTH_SWEEP_BATCH, tokens: 0, webState: 0 });
-    expect(await count(h.store, "id LIKE 'authorized-%'")).toBe(AUTHORIZED);
-    expect(drained.plans.some((p) => walks(p.query))).toBe(true);
-    statements.push(...drained.plans);
+    // The unused pass walks the index in its order, oldest first, and stops at what the insert needs: no sort.
+    const unusedPass = after.registered.plans.filter(
+      (p) => p.query.startsWith("DELETE") && p.query.includes("oauth_tokens u"),
+    );
+    expect(unusedPass).toHaveLength(1);
+    expect(unusedPass[0]!.plan).toEqual(expect.arrayContaining([UNUSED_PASS_WALK, UNUSED_PASS_TOKENS]));
+    expect(unusedPass[0]!.plan.join(" | ")).not.toMatch(/SCAN|TEMP B-TREE/);
     for (const statement of statements) {
       if (walks(statement.query)) {
         expect(statement.plan.join(" | "), statement.query).toMatch(/USING (?:COVERING )?INDEX oauth_clients_pending/);
         expect(scansOf(statement.plan, ["oauth_clients", "oauth_tokens", "u"]), statement.query).toEqual([]);
-        // Per pending candidate (MAX_PENDING_APPS and the web client): its index entry and, in the expiry pass and
-        // the sweep, one seek of its tokens (the first hit ends it); a removed one at most four more (its row by key,
-        // its index entries and the foreign-key check of its tokens); the web client's setting is one seek. Measured
-        // 502, 1,004 and 3,002 (the drained sweep), the same with ten times as many authorized apps: none is read.
+        // Per pending candidate (MAX_PENDING_APPS and the web client): its index entry and, in the unused pass, one
+        // seek of its tokens (the first hit ends it); a removed one at most four more (its row by key, its index
+        // entries and the foreign-key check of its tokens); the web client's setting is one seek. Measured 502 and
+        // 1,004, the same with ten times as many authorized apps: none is read.
         expect(statement.rows, statement.query).toBeLessThanOrEqual(6 * (MAX_PENDING_APPS + 1) + 2);
       } else {
         expect(statement.plan, statement.query).toEqual(
