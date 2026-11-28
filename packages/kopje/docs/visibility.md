@@ -190,8 +190,9 @@ R15 also has a policy part, the recipient's notification policy (`notificationPo
 `0095_notification_policy_bots`), which `notify` applies as it writes: for each of its conditions the recipient chooses
 accept, filter or drop (`notification_policies`, Mastodon's defaults without a row: private mentions and limited
 accounts filtered, the rest, bots included, accepted). The conditions are a sender the recipient does not follow; a
-sender that has not followed the recipient for three days; an account younger than 30 days the recipient does not
-follow; a mention in a direct status from an account the recipient does not follow that answers none of the recipient's
+sender that has not followed the recipient for three days (a follow counts from its request, and the `follow`
+notification of an authorized request from the acceptance, when Mastodon creates the `Follow`); an account younger
+than 30 days the recipient does not follow; a mention in a direct status from an account the recipient does not follow that answers none of the recipient's
 private mentions of the sender (the walk up the thread reads the parent and at most 100 statuses above it, as
 Mastodon's); a notification its writer marks limited from an account the recipient does not follow: a mention a remote
 `Create` tags without addressing its recipient (not in `to` or `cc`, and not delivered to the recipient's own inbox;

@@ -106,6 +106,9 @@ export type NotifyInput = {
   // applies. Set only for a remote Create's tagged mention of a local account it does not address
   // (remote-statuses.ts notifyCreated).
   limited?: boolean;
+  // The follow notification of an authorized request (answerFollowRequest): the policy's for_not_followers condition
+  // counts the follow from its acceptance, as Mastodon's Follow is created then (notFollowerSql).
+  newFollower?: boolean;
   now: number;
 };
 
@@ -173,13 +176,14 @@ export function notify(db: Db, input: NotifyInput): void {
   const policy = !FILTERABLE_TYPES.includes(input.type)
     ? "accept"
     : (db.first<{ policy: PolicyChoice }>(
-        `SELECT ${notificationPolicySql("?1", "?2", "?3", "?4", "?5", "?6")} AS policy`,
+        `SELECT ${notificationPolicySql("?1", "?2", "?3", "?4", "?5", "?6", "?7")} AS policy`,
         input.recipientId,
         input.type,
         input.fromId,
         input.statusId,
         now,
         input.limited === true ? 1 : 0,
+        input.newFollower === true ? 1 : 0,
       )?.policy ?? "accept");
   if (policy === "drop") {
     return;

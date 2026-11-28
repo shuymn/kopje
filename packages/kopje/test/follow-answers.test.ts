@@ -1842,18 +1842,63 @@ describe("authorizing a request through the API notifies the new follower", () =
   it.each([
     ["a remote", true],
     ["a local", false],
-  ])("%s requester: one follow, listed, streamed, pushed to the subscription that wants it", async (_, remote) => {
-    const { t, from } = await requested(remote);
-    expect((await written(t, from)).rows.map((n) => n.type)).toEqual(["follow_request"]);
+  ])(
+    "%s requester admitted unfiltered: one follow, listed, streamed, pushed to the subscription that wants it",
+    async (_, remote) => {
+      const { t, from } = await requested(remote);
+      expect((await written(t, from)).rows.map((n) => n.type)).toEqual(["follow_request"]);
+      await subscribed(t);
+      await api(t, `/api/v1/follow_requests/${from}/authorize`);
+      const after = await written(t, from);
+      expect(after.rows).toEqual([{ id: expect.any(String), type: "follow", filtered: 0 }]);
+      const id = after.rows[0]!.id;
+      expect(after.listed).toEqual([{ id, type: "follow", from }]);
+      expect(after.events).toEqual([id]);
+      // The follower policy admits the requester only once it follows: the notification was written after the answer.
+      expect(after.pushes).toEqual([{ notification: id, alerts: '{"follow":true}' }]);
+    },
+  );
+
+  // for_not_followers judges the follow's age from the authorization, as Mastodon's new Follow is created then
+  // (follow_request.rb:34-45, notify_service.rb:51-54): a request older than three days is no older follow. Kopje keeps
+  // the request's time on the follow (audience.ts notFollowerSql), so the request is aged to show the rule ran.
+  it.each([
+    ["filter", "a fresh", false],
+    ["filter", "a four-day-old", true],
+    ["drop", "a four-day-old", true],
+  ] as const)("for_not_followers %s, %s request: the follow is a new follower's", async (choice, _, aged) => {
+    const { t, from } = await requested(false);
+    await sql(
+      t.store,
+      "INSERT INTO notification_policies (account_id, for_not_followers) VALUES (?, ?)",
+      t.w.alice.id,
+      choice,
+    );
+    if (aged) {
+      await sql(
+        t.store,
+        "UPDATE follows SET created_at = ? WHERE account_id = ? AND target_account_id = ?",
+        new Date(NOW - 4 * 24 * 60 * 60 * 1000).toISOString(),
+        from,
+        t.w.alice.id,
+      );
+    }
     await subscribed(t);
     await api(t, `/api/v1/follow_requests/${from}/authorize`);
-    const after = await written(t, from);
-    expect(after.rows).toEqual([{ id: expect.any(String), type: "follow", filtered: 0 }]);
-    const id = after.rows[0]!.id;
-    expect(after.listed).toEqual([{ id, type: "follow", from }]);
-    expect(after.events).toEqual([id]);
-    // The follower policy admits the requester only once it follows: the notification was written after the answer.
-    expect(after.pushes).toEqual([{ notification: id, alerts: '{"follow":true}' }]);
+    expect(
+      await sql(
+        t.store,
+        "SELECT state FROM follows WHERE account_id = ? AND target_account_id = ?",
+        from,
+        t.w.alice.id,
+      ),
+    ).toEqual([{ state: "accepted" }]);
+    expect(await written(t, from)).toEqual({
+      rows: choice === "filter" ? [{ id: expect.any(String), type: "follow", filtered: 1 }] : [],
+      events: [],
+      pushes: [],
+      listed: [],
+    });
   });
 
   it("writes nothing while the requester blocks alice; the block reached the request", async () => {

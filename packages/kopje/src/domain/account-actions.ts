@@ -472,7 +472,7 @@ export const answerFollowRequest = userWriteOperation<
     return { status: answered };
   }
   if (decision === "authorize") {
-    notify(db, { recipientId: viewerId, type: "follow", fromId: requesterId, statusId: null, now });
+    notify(db, { recipientId: viewerId, type: "follow", fromId: requesterId, statusId: null, newFollower: true, now });
   }
   return relationshipResult(db, viewerId, requesterId, now);
 });
