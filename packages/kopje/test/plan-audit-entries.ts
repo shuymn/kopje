@@ -14,7 +14,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     reason: "account_invitations holds at most 10 rows (account_invitations_cap, migration 0081_account_invitations)",
   },
   {
-    id: "a0807e986c993c30",
+    id: "2bb5d5f4c137ffcc",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountRowsOf < src/domain/accounts.ts#accountsOf < src/domain/status-presenter.ts#<anonymous> < src/domain/status-presenter.ts#hydrate < src/domain/status-presenter.ts#present",
     disposition: "deliberate",
@@ -22,7 +22,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "23040441cf2e88d3",
+    id: "fc65ab338a40fe7b",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountRow < src/domain/accounts.ts#<anonymous>",
     disposition: "deliberate",
@@ -30,7 +30,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "d028b2c0f0567c6c",
+    id: "64d3a41b9c90fe3f",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#presentAccountsById < src/domain/accounts.ts#<anonymous> < src/domain/auth.ts#unlessSuspended < src/domain/accounts.ts#<anonymous>",
     disposition: "deliberate",
@@ -38,7 +38,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "9d861d7840a9c0ec",
+    id: "0bf0809681aba059",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#addressRow < src/domain/accounts.ts#accountByAddress < src/domain/instance.ts#contactAccount < src/domain/instance.ts#<anonymous>",
     disposition: "deliberate",
@@ -46,7 +46,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "ff16852e6f015df1",
+    id: "bcfb08bc141bbf13",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#accountByLookup < src/domain/web-pages/profile.ts#remoteTagged < src/domain/web-pages/profile.ts#profilePageWithin < src/domain/web-pages/profile.ts#<anonymous> < src/domain/web-pages/site.ts#<anonymous>",
     disposition: "deliberate",
@@ -62,7 +62,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "c is remoteAttachmentSql's subquery over one account's attachment, at most MAX_REMOTE_FIELDS entries (src/domain/account-columns.ts)",
   },
   {
-    id: "7ca52215e3c3d95d",
+    id: "2ea7708678b0953c",
     scans: ["?: SCAN c"],
     site: "src/domain/accounts.ts#addressRow < src/domain/accounts.ts#accountByAddress < src/domain/instance.ts#contactAccount < src/domain/instance.ts#<anonymous>",
     disposition: "deliberate",
