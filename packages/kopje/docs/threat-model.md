@@ -4738,11 +4738,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   permanent answer (Mastodon's general rule: 4xx except 401, 408 and 429, and 501; Mastodon also treats 401 as permanent
   for a permanently unavailable sender), judged on the RFC 9421 retry's answer when the draft-cavage POST is answered
   400 or 401 (a retry the deadline leaves no room for fails as transient; NET-2; `test/delivery-post.test.ts` ("settles
-  by the second answer", "knocks again on the next attempt")), except that a shared-inbox 404, 405 or 410 (from either
-  the first POST or the RFC 9421 retry) still retries immediately at an eligible personal inbox on the same origin while
-  attempts remain (`personalFallback` and `forwardFallback` in `src/domain/deliveries.ts`, NET-2), and are listed and
-  retried through
-  `/admin/deliveries` and `kopje-admin deliveries`; in maintenance nothing is claimed, so no attempt is counted. An
+  by the second answer", "knocks again on the next attempt")), except that on a 404, 405 or 410 (from either the first
+  POST or the RFC 9421 retry) an eligible delivery (from a shared inbox or a changed personal inbox) can move in place
+  and become due immediately at the new personal inbox on the same origin while attempts remain (`personalFallback` and
+  `forwardFallback` in `src/domain/deliveries.ts`, NET-2), and are listed and retried through `/admin/deliveries` and
+  `kopje-admin deliveries`; in maintenance nothing is claimed, so no attempt is counted. An
   activity a later one about the same object follows (an `Undo`, `Delete` or `Update`) is superseded and never sent
   again: naming it answers 409 `superseded`, and `--all` skips it, choosing eligible rows before its batch limit and
   continuing from the cursor it returns (`test/delivery-regressions.test.ts` ("refuses to retry a Like that its Undo
