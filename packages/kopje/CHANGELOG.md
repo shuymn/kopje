@@ -41,7 +41,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - The cron no longer removes an app that no user has authorized a day after it registers, so a client that keeps its
   registration can sign in with it later, as on Mastodon. Such an app is removed only when a registration finds 500 of
   them stored, and then only as many as the new one needs: the oldest unused ones older than a day first, then the
-  oldest older than an hour.
+  oldest older than an hour. A Store restored with more than 500 such apps (from a dump taken before migration 0086)
+  loses at most 500 of them a registration, and registration answers 429 until fewer than 500 remain.
 
 ## [0.9.0] - 2026-11-28
 

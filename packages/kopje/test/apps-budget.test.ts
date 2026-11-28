@@ -6,6 +6,8 @@ import {
   EVICTION_GRACE_MS,
   issueCode,
   MAX_PENDING_APPS,
+  OAUTH_SWEEP_BATCH,
+  PENDING_READ_CAP,
   registerApp as registerAppOperation,
   sweepOAuth,
   UNUSED_APP_TTL_MS,
@@ -18,6 +20,7 @@ import {
   type App,
   authorizationCode,
   bearer,
+  consentPage,
   exchange,
   form,
   json,
@@ -27,7 +30,7 @@ import {
   sql,
 } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
+import { plannedRun, type PlannedStatement, scansOf, staleStatistics } from "./read-helpers";
 import { csrfOf, postForm, signIn } from "./web-helpers";
 
 // RES-6 for POST /api/v1/apps: a per-IP rate limit (the Rate Limiting binding) and a storage budget of
@@ -288,6 +291,65 @@ describe("app registration budget (RES-6)", () => {
     expect(await count(h.store, "authorized = 0")).toBe(MAX_PENDING_APPS);
   });
 
+  // Accepted risk (docs/threat-model.md, apps removed under registration pressure): the app a full registration removes
+  // can differ from the one the cron used to remove. A, unused and 3 days old, gets an app token a minute after the cron
+  // (the cron no longer removed it), so C's registration takes B, unused and just past its day, which the cron would
+  // have removed at its next run.
+  it("removes the next unused app past its day at a full registration once an older one got an app token", async () => {
+    const h = await apiHarness();
+    await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
+    const a = await registerApp(h, { scopes: "read" });
+    const b = await registerApp(h, { scopes: "read" });
+    await registeredAt(h.store, a, NOW - 3 * UNUSED_APP_TTL_MS);
+    await registeredAt(h.store, b, NOW - UNUSED_APP_TTL_MS + 60 * 1000);
+    await fill(h.store, MAX_PENDING_APPS - 2, NOW);
+    await cron(h);
+    h.now.mockReturnValue(NOW + 60 * 1000);
+    const aToken = await appToken(h, a);
+    expect((await consentPage(h, b, { scope: "read" })).status).toBe(200);
+    h.now.mockReturnValue(NOW + 2 * 60 * 1000);
+    expect((await h.request("/api/v1/apps", json(APP))).status).toBe(200);
+    expect(await count(h.store, `id = '${b.client_id}'`)).toBe(0);
+    expect((await consentPage(h, b, { scope: "read" })).status).toBe(400);
+    expect(await count(h.store, `id = '${a.client_id}'`)).toBe(1);
+    expect((await h.request("/api/v1/apps/verify_credentials", bearer(aToken))).status).toBe(200);
+    expect(await count(h.store, "authorized = 0")).toBe(MAX_PENDING_APPS);
+  });
+
+  // A restored Store over budget (a dump taken before 0086 leaves every app pending): the cron keeps the backlog, and
+  // each registration removes at most OAUTH_SWEEP_BATCH of it and answers 429 until one fits.
+  it(
+    "brings a restored backlog under budget over several registrations, at most OAUTH_SWEEP_BATCH each",
+    { timeout: 60_000 },
+    async () => {
+      const h = await apiHarness();
+      const backlog = MAX_PENDING_APPS + 2 * OAUTH_SWEEP_BATCH;
+      await fill(h.store, backlog, NOW - 2 * UNUSED_APP_TTL_MS, "restored");
+      for (const at of [NOW, NOW + 5 * 60 * 1000, NOW + 10 * 60 * 1000]) {
+        await cron(h, at);
+      }
+      expect(await count(h.store)).toBe(backlog);
+      h.now.mockReturnValue(NOW + 15 * 60 * 1000);
+      const steps: { status: number; removed: number; inserted: number }[] = [];
+      const restored = () => count(h.store, "id LIKE 'restored-%'");
+      const registered = () => count(h.store, "id NOT LIKE 'restored-%'");
+      for (let i = 0; i < 3; i++) {
+        const [kept, added] = [await restored(), await registered()];
+        const status = (await h.request("/api/v1/apps", json(APP))).status;
+        steps.push({ status, removed: kept - (await restored()), inserted: (await registered()) - added });
+      }
+      expect(steps).toEqual([
+        { status: 429, removed: OAUTH_SWEEP_BATCH, inserted: 0 },
+        { status: 429, removed: OAUTH_SWEEP_BATCH, inserted: 0 },
+        { status: 200, removed: 1, inserted: 1 },
+      ]);
+      // The oldest went first.
+      expect(await count(h.store, `id = 'restored-${2 * OAUTH_SWEEP_BATCH}'`)).toBe(0);
+      expect(await count(h.store, `id = 'restored-${2 * OAUTH_SWEEP_BATCH + 1}'`)).toBe(1);
+      expect(await count(h.store, "authorized = 0")).toBe(MAX_PENDING_APPS);
+    },
+  );
+
   // RES-6: an app a user authorized stays registered after every token is gone, as Mastodon never removes one; a
   // client that kept its client_id signs in with it again, and its statuses keep showing it.
   it("keeps an app whose authorization was revoked past the sweep, and authorizes it again by the same client_id", async () => {
@@ -350,6 +412,17 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
   const AUTHORIZED = 3 * MAX_PENDING_APPS;
   const UNUSED_PASS_WALK = "SEARCH c USING COVERING INDEX oauth_clients_pending (created_at<?)";
   const UNUSED_PASS_TOKENS = "SEARCH u USING COVERING INDEX oauth_tokens_client (client_id=?)";
+
+  // The unused pass reads its candidates by the index in its order, oldest first, in a co-routine (the only SCAN is of
+  // that co-routine), checks their tokens outside it, and needs no sort.
+  function expectUnusedPassPlan(plans: PlannedStatement[]): void {
+    const unusedPass = plans.filter((p) => p.query.startsWith("DELETE") && p.query.includes("oauth_tokens u"));
+    expect(unusedPass).toHaveLength(1);
+    const plan = unusedPass[0]!.plan;
+    expect(plan).toEqual(expect.arrayContaining(["CO-ROUTINE c", UNUSED_PASS_WALK, "SCAN c", UNUSED_PASS_TOKENS]));
+    expect(plan.filter((line) => line.includes("SCAN"))).toEqual(["SCAN c"]);
+    expect(plan.join(" | ")).not.toMatch(/TEMP B-TREE/);
+  }
 
   it("walks the pending apps by their partial index and marks an app by its key", { timeout: 60_000 }, async () => {
     const h = await apiHarness();
@@ -431,13 +504,7 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
     expect(after.registered.plans.some((p) => walks(p.query))).toBe(true);
     expect(after.swept.plans).toEqual([]);
     expect(after.marked.plans.some((p) => p.query.startsWith("UPDATE"))).toBe(true);
-    // The unused pass walks the index in its order, oldest first, and stops at what the insert needs: no sort.
-    const unusedPass = after.registered.plans.filter(
-      (p) => p.query.startsWith("DELETE") && p.query.includes("oauth_tokens u"),
-    );
-    expect(unusedPass).toHaveLength(1);
-    expect(unusedPass[0]!.plan).toEqual(expect.arrayContaining([UNUSED_PASS_WALK, UNUSED_PASS_TOKENS]));
-    expect(unusedPass[0]!.plan.join(" | ")).not.toMatch(/SCAN|TEMP B-TREE/);
+    expectUnusedPassPlan(after.registered.plans);
     for (const statement of statements) {
       if (walks(statement.query)) {
         expect(statement.plan.join(" | "), statement.query).toMatch(/USING (?:COVERING )?INDEX oauth_clients_pending/);
@@ -457,4 +524,68 @@ describe("app budget reads with stale statistics (RES-6, RES-7)", () => {
       }
     }
   });
+
+  // A restored Store's backlog of 10 × PENDING_READ_CAP pending apps, every one older than the day and holding an app
+  // token: each count reads up to its cap, the unused pass reads its cap of candidates and removes none, and eviction
+  // removes its OAUTH_SWEEP_BATCH, the registration's whole budget, and refuses. No read grows with the backlog.
+  it(
+    "reads at most PENDING_READ_CAP pending apps and removes at most OAUTH_SWEEP_BATCH from a restored backlog",
+    { timeout: 60_000 },
+    async () => {
+      const h = await apiHarness();
+      const BACKLOG = 10 * PENDING_READ_CAP;
+      await fill(h.store, 2, NOW - 2 * UNUSED_APP_TTL_MS, "small");
+      const pattern = /oauth_clients/;
+      const input = (phase: string) => ({
+        clientId: `new-${phase}`,
+        secret: "s",
+        name: "n",
+        redirectUris: ["https://n.example/cb"],
+        website: null,
+        scopes: ["read"],
+        now: NOW,
+        credential: null,
+      });
+      const { after } = await staleStatistics(h, {
+        capture: (phase) => plannedRun(h, pattern, registerAppOperation, input(phase), true),
+        grow: async () => {
+          await sql(h.store, "DELETE FROM oauth_clients");
+          await sql(
+            h.store,
+            `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+					INSERT INTO oauth_clients (id, secret, name, redirect_uris, scopes, created_at)
+					SELECT 'backlog-' || i, 's', 'b', 'https://b.example/cb', 'read', strftime('%Y-%m-%dT%H:%M:%fZ', ?2 / 1000.0 + i / 1000.0, 'unixepoch') FROM n`,
+            BACKLOG,
+            NOW - 2 * UNUSED_APP_TTL_MS,
+          );
+          await sql(
+            h.store,
+            "INSERT INTO oauth_tokens (token_hash, kind, client_id, scopes) SELECT 'a-' || id, 'access', id, 'read' FROM oauth_clients",
+          );
+        },
+      });
+      expect(after.result).toEqual({ status: "over_budget" });
+      expect(await count(h.store)).toBe(BACKLOG - OAUTH_SWEEP_BATCH);
+      expect(await count(h.store, `id = 'backlog-${OAUTH_SWEEP_BATCH - 1}'`)).toBe(0);
+      expect(await count(h.store, `id = 'backlog-${OAUTH_SWEEP_BATCH}'`)).toBe(1);
+      expectUnusedPassPlan(after.plans);
+      // Three counts, the unused pass and eviction, each by the partial index and no table scan.
+      const counts = after.plans.filter((p) => p.query.startsWith("SELECT COUNT"));
+      const deletes = after.plans.filter((p) => p.query.startsWith("DELETE"));
+      expect([counts.length, deletes.length, after.plans.length]).toEqual([3, 2, 5]);
+      for (const statement of after.plans) {
+        expect(statement.plan.join(" | "), statement.query).toMatch(/USING (?:COVERING )?INDEX oauth_clients_pending/);
+        expect(scansOf(statement.plan, ["oauth_clients", "oauth_tokens", "u"]), statement.query).toEqual([]);
+      }
+      // A count reads its cap of index entries (measured 1,000 each); the unused pass its cap of candidates and one seek
+      // of each one's tokens (2,002); eviction, for each of its OAUTH_SWEEP_BATCH apps, its index entry, its row by key,
+      // its index entries and its one token's row and index entries (5,000).
+      for (const statement of counts) {
+        expect(statement.rows, statement.query).toBeLessThanOrEqual(PENDING_READ_CAP + 1);
+      }
+      const [unusedPass, eviction] = deletes;
+      expect(unusedPass!.rows).toBeLessThanOrEqual(2 * PENDING_READ_CAP + 2);
+      expect(eviction!.rows).toBeLessThanOrEqual(10 * OAUTH_SWEEP_BATCH + 2);
+    },
+  );
 });

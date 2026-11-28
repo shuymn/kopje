@@ -2009,11 +2009,12 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   these are the characters that end or split an HTML attribute or a URL in common parsers. Registration trims
   surrounding whitespace before it validates, so only inner whitespace is refused there. Mastodon's UrlValidator
   (`Addressable::URI.parse`, an http(s) scheme and a host) may accept some of them.
-- Kopje removes an app no user has authorized only when a registration finds 500 such apps stored and evicts it
-  (threat-model.md RES-6); Mastodon removes an app only when its owner deletes it and bounds registration by its
-  throttle alone (`rack_attack.rb:112-114`). An app a user authorized is never removed, so the statuses posted through
-  it keep showing it. A status or scheduled status whose app is gone all the same (one a dump or a legacy import names)
-  shows `application: null`, and such a scheduled status is published; Mastodon drops it.
+- Kopje removes an app no user has authorized only when a registration finds 500 such apps stored and evicts it (a Store
+  restored with more loses at most 500 a registration, which answers 429 until fewer than 500 remain: threat-model.md
+  RES-6). Mastodon removes an app only when its owner deletes it and bounds registration by its throttle alone
+  (`rack_attack.rb:112-114`). An app a user authorized is never removed, so the statuses posted through it keep showing
+  it. A status or scheduled status whose app is gone all the same (one a dump or a legacy import names) shows
+  `application: null`, and such a scheduled status is published; Mastodon drops it.
 - An edit whose only change is `quote_approval_policy` stores the policy, sends an `Update`, notifies as an edit does
   and sends `status.update`, but records no history entry and leaves `edited_at` as it was: the policy is not part of a
   status's versions, as with `PUT /api/v1/statuses/:id/interaction_policy`. Mastodon counts such a change as an edit
