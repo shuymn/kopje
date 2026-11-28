@@ -85,13 +85,15 @@ function readAttempts(parts: number): number {
 // Run just before a writer clears the account's pending bit while its read may be under way (the claim's
 // reconciliation, a verified Move): the claim the move part opened, once charged, is counted off, so the claims left
 // are exactly a read's without a move (moveOpened): the streak is still the opened one while nothing else is read
-// through and the bit is set. Returns whether one was counted off. The read's end settles the bit as progress, which
+// through and the bit is set. Only an integer count is lowered: an edited dump may hold a fractional one, which
+// collection_syncs' CHECK takes and the lowered value would not pass. Returns whether one was counted off. The read's end settles the bit as progress, which
 // starts the count again, so it needs none.
 export function countOffMoveClaim(db: Db, accountId: string): boolean {
   return (
     db.run(
       `UPDATE collection_syncs SET attempts = attempts - 1
-			WHERE account_id = ?1 AND attempts > 0 AND refresh = 0 AND generation > read_through AND parts_read = 0
+			WHERE account_id = ?1 AND typeof(attempts) = 'integer' AND attempts > 0 AND refresh = 0
+				AND generation > read_through AND parts_read = 0
 				AND collections_read = 0 AND (SELECT move_pending FROM accounts WHERE id = ?1) = 1`,
       accountId,
     ) > 0

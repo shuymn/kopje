@@ -404,6 +404,35 @@ describe("the move part", () => {
     ]);
   });
 
+  // An edited dump's fractional count (collection_syncs' CHECK takes 0.5) is not lowered, so neither writer that clears
+  // the bit fails.
+  it.each([["the claim's reconciliation"], ["a verified Move"]])(
+    "clears the bit through %s beside a fractional count of attempts",
+    async (clear) => {
+      const t = await setup();
+      const { bob, bobId, dest } = await pendingBob(t);
+      await sql(t.store, "UPDATE collection_syncs SET attempts = 0.5, due_at = ? WHERE account_id = ?", NOW - 1, bobId);
+      if (clear === "a verified Move") {
+        const d = await mastodonActor(t.web, "d", { key: 4 });
+        t.web.serve(d.uri, { ...d.document, alsoKnownAs: [bob.uri] });
+        const move = {
+          "@context": AS,
+          id: `${bob.uri}#moves/1`,
+          type: "Move",
+          actor: bob.uri,
+          object: bob.uri,
+          target: d.uri,
+        };
+        expect(await t.post(bob, move)).toBe(202);
+        expect(await moveState(t, bob.uri)).toMatchObject({ moved: d.uri, pending: 0 });
+      } else {
+        expect(await t.post(dest, follow(dest, 1))).toBe(202);
+        expect(await claim(t)).toMatchObject({ phase: "read", accountUri: bob.uri, movedTo: null });
+        expect(await moveState(t, bob.uri)).toMatchObject({ moved: DEST, pending: 0 });
+      }
+    },
+  );
+
   // Mastodon takes the destination only when the document's literal id is the URL it fetched (json_ld_helper.rb
   // fetch_resource: json['id'] == uri), so one naming the same URL in another spelling is refused.
   it("refuses a destination whose document spells its id otherwise than the URL fetched", async () => {
