@@ -4245,9 +4245,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the value already stored, so a write never fails on it, and the reads use it only inside the SQL that decides whether
   a focus shows
   (`focusShownSql` in `src/domain/status-rows.ts`), the REST presenter and the Note's `Document` (`statusFacts` in
-  `src/domain/activities.ts`) alike, so a status read takes no more columns (`test/migrations.test.ts`
-  ("media_focus_given"), `test/dump-import.test.ts` ("round-trips media focus_given"), `test/media.test.ts` ("writes a
-  %s's size, duration and focus: given, given 0,0, none, and a legacy point")).
+  `src/domain/activities.ts`) alike, so `focus_given` stays out of every result: a read projects only `focus_x`, NULL
+  where no focus shows, and `focus_y` (`test/migrations.test.ts` ("media_focus_given"), `test/dump-import.test.ts`
+  ("round-trips media focus_given"), `test/media.test.ts` ("writes a %s's size, duration and focus: given, given 0,0,
+  none, and a legacy point")).
   _Enforced (main)_ for static images: `accounts.avatar_static_url` and `header_static_url` hold NULL or text of at
   most 512 bytes without NUL, on a local row whose image is set; the triggers `accounts_static_images_insert` and
   `accounts_static_images_update` of migration `0061_account_static_images` refuse any other value, imports included,

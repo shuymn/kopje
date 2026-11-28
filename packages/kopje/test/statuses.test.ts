@@ -1652,10 +1652,11 @@ describe("review regressions", () => {
     ]);
   });
 
-  // C4.5 (#1565): an edit that changes only a focus is an edit, and its Update carries the new focalPoint (read after
-  // the edit's write) with an updated later than the last edit's, which Mastodon applies as an explicit update
-  // (process_status_update_service.rb:30).
-  it("sends an Update with the new focalPoint when an edit changes only a focus", async () => {
+  // C4.5 (#1565): a later edit that changes only a focus is an edit, and its Update carries the new focalPoint (read
+  // after the edit's write) with its later updated, which Mastodon applies as an explicit update
+  // (process_status_update_service.rb:30). Two edits in one millisecond carry the same updated (edited_at is a
+  // millisecond time), a limit this test does not cover.
+  it("sends an Update with the new focalPoint when a later edit changes only a focus", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
     await remoteFollows(h.store, await remoteAccount(h.store, "fan", "fans.example"), alice.id);

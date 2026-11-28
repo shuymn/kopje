@@ -1278,7 +1278,8 @@ describe("media lifecycle", () => {
   });
 
   // C4.1, C4.6, C4.7 (#1565): an image's size and its focus, as MediaAttachmentSerializer writes them, in the Create and
-  // in every surface that serves the Note, with the focalPoint term as a list; Kopje's receiver reads them back.
+  // in every surface that serves the Note, with the focalPoint term as a list; Kopje's parser reads back the focus and
+  // each edge.
   it("presents media in statuses with meta, and publishes its type, size and focus in the Note", async () => {
     const h = await users();
     const { alice } = h.users;
@@ -1327,7 +1328,7 @@ describe("media lifecycle", () => {
       expect(attachment).toEqual([document]);
       expect((context as Served["@context"])[1]).toMatchObject(TERM);
     }
-    // Kopje's receiver (federation/remote-status.ts mediaOf) reads the same focus and size back.
+    // Kopje's parser (federation/remote-status.ts mediaOf) reads back the same focus and each edge.
     expect(parseRemoteStatus(served)?.media).toEqual([
       expect.objectContaining({ focus: { x: 0.5, y: -0.25 }, width, height }),
     ]);
