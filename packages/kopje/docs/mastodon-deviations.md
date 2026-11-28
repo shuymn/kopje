@@ -1733,10 +1733,14 @@ Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, a
   static PNG it generates. Only PNG, GIF and WebP below 256 KiB from https URLs are cached; anything else, an emoji not
   fetched yet and one whose fetch failed keep the remote URL, where Mastodon does not save an emoji whose image fails.
   While a domain block with `reject_media` rules the account's stored domain, none is listed, as Mastodon's.
-- Only the first 16 entries of a status's, an account's or a moved-to account's snapshot show their cached copy; the
-  others keep their remote URLs. Reading more with each row would pass the Store's memory bound for a page.
-- An entry's JSON is measured with the URLs it shows, so a snapshot near its byte bound may drop its last entries once
-  its emoji are cached.
+- In a status's, an account's or a moved-to account's snapshot, only the first 16 snapshot positions with a valid
+  cached pair show their cached copy; an entry at a later position, or with no valid pair, keeps its remote URLs.
+  Reading more with each row would pass the Store's memory bound for a page.
+- An entry's JSON is measured with the URLs it shows, and entries are shown while they fit the presenter's byte bound.
+  Where the instance's cached URLs are longer than an object's remote ones, a snapshot near its bound can show fewer
+  entries once its emoji are cached; Mastodon lists every one with its own copy. A snapshot is sure to show every
+  entry it was stored with only at the bound it was stored under: a moved-to account's emoji are shown within 2,048
+  bytes, where an account's snapshot is stored within 6,144, so it can show fewer of them, cached or not.
 - Edit history (`StatusEdit`) keeps each version's remote URLs, and lists none under a block with `reject_media`.
 - A cached emoji is deleted 90 days after the last snapshot that names it was stored, and once a domain block covers
   its domain or rejects its media, each when the cron's validity walk reaches it (500 slots a round); Mastodon keeps an
