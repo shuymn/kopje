@@ -1973,27 +1973,32 @@ describe("account moves", () => {
     }
   });
 
-  // R21 judges each follower a Move carries: a target that has itself moved is not followable, so the follower keeps
-  // the source and its lists and nothing is sent (Mastodon's UnfollowFollowWorker rescues FollowService's
-  // NotPermittedError); blocks and mutes are carried anyway (move_worker.rb:21-22). The Move stores the target's
-  // fetched document first, so whether the target has moved is its literal movedTo's reading (collection-requests.ts
-  // namedMove): a relative one names no account, though carol is stored where it would resolve against the target's
-  // id, and one with a fragment names carol.
-  it("keeps the followers of the source when the Move's target has moved, and moves them when it has not", async () => {
+  // Move admission (moveTargetHeldSql): a target that has itself moved, or whose move is being resolved
+  // (accounts.move_pending: its fresh document names, as its movedTo, an account Kopje does not hold), is held, so the
+  // job covers no follower (bound '0'), not only R21's refusal of each: the follower keeps the source and its lists and
+  // nothing is sent (Mastodon's UnfollowFollowWorker rescues FollowService's NotPermittedError; the pending transfer
+  // cannot wait for the collection sync that resolves it). The source's move is set and blocks and mutes are carried
+  // in every case (move_worker.rb:21-22). The Move stores the target's fetched document first, so whether the target
+  // has moved is its literal movedTo's reading (collection-requests.ts namedMove): a relative one names no account,
+  // though carol is stored where it would resolve against the target's id, and one with a fragment names carol. The
+  // control is the target naming no destination.
+  it("holds the followers of the source when the Move's target has moved or its move is being resolved", async () => {
     const CAROL = "https://new.example/users/carol";
-    const cases: [string, Record<string, unknown>, boolean][] = [
-      ["carol", { movedTo: CAROL }, true],
-      ["carol with a fragment", { movedTo: `${CAROL}#main` }, true],
-      ["none", {}, false],
-      ["relative", { movedTo: "/users/carol" }, false],
+    const cases: [string, Record<string, unknown>, { moved: string | null; pending: number }][] = [
+      ["carol", { movedTo: CAROL }, { moved: CAROL, pending: 0 }],
+      ["carol with a fragment", { movedTo: `${CAROL}#main` }, { moved: CAROL, pending: 0 }],
+      ["an unknown destination", { movedTo: "https://other.example/users/dest" }, { moved: null, pending: 1 }],
+      ["none", {}, { moved: null, pending: 0 }],
+      ["relative", { movedTo: "/users/carol" }, { moved: null, pending: 0 }],
     ];
-    for (const [label, moved, targetMoved] of cases) {
+    for (const [label, named, target] of cases) {
+      const held = target.moved !== null || target.pending === 1;
       const t = await setup();
       const bob = await mastodonActor(t.web, "bob");
       const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
       const carol = await mastodonActor(t.web, "carol", { origin: "https://new.example", key: 3 });
       await t.post(carol, follow(carol, DAVE_URI));
-      t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri], ...moved });
+      t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri], ...named });
       await t.post(bob, follow(bob, DAVE_URI));
       const bobId = (await accountId(t.store, bob.uri))!;
       await sql(
@@ -2008,84 +2013,36 @@ describe("account moves", () => {
       const before = (await outbound(t.store)).length;
       expect(await t.post(bob, moveActivity(bob, bob2.uri))).toBe(202);
       const bob2Id = (await accountId(t.store, bob2.uri))!;
-      expect([label, await movedTo(t.store, bob2.uri)]).toEqual([label, targetMoved ? carol.uri : null]);
-      // A moved target is held at admission (moveTargetHeldSql): the job covers no follower, not only R21's refusal.
+      const [pending] = await sql<{ move_pending: number }>(
+        t.store,
+        "SELECT move_pending FROM accounts WHERE id = ?",
+        bob2Id,
+      );
+      expect([label, { moved: await movedTo(t.store, bob2.uri), pending: pending?.move_pending }]).toEqual([
+        label,
+        target,
+      ]);
       expect(
         await sql(t.store, "SELECT bound, done_at IS NOT NULL AS done FROM inbound_jobs WHERE kind = 'move'"),
         label,
-      ).toEqual([{ bound: targetMoved ? "0" : expect.not.stringMatching(/^0$/), done: 1 }]);
+      ).toEqual([{ bound: held ? "0" : expect.not.stringMatching(/^0$/), done: 1 }]);
+      expect(await movedTo(t.store, bob.uri), label).toBe(bob2.uri);
       const sent = (await outbound(t.store)).slice(before).map((o) => o.activity.type);
       const members = await sql(t.store, "SELECT account_id FROM list_accounts ORDER BY account_id");
-      if (targetMoved) {
-        expect(
-          (await follows(t.store)).filter((f) => f.account_id === ALICE),
-          label,
-        ).toEqual([{ account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null }]);
+      const alice = (await follows(t.store)).filter((f) => f.account_id === ALICE);
+      if (held) {
+        expect(alice, label).toEqual([{ account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null }]);
         expect(sent, label).toEqual([]);
         expect(members, label).toEqual([{ account_id: bobId }]);
       } else {
-        expect(
-          (await follows(t.store)).filter((f) => f.account_id === ALICE),
-          label,
-        ).toEqual([expect.objectContaining({ target_account_id: bob2Id, state: "pending" })]);
+        expect(alice, label).toEqual([expect.objectContaining({ target_account_id: bob2Id, state: "pending" })]);
         expect(sent, label).toEqual(["Undo", "Follow"]);
         expect(members, label).toEqual([{ account_id: bob2Id }]);
       }
-      expect(await sql(t.store, "SELECT target_account_id FROM mutes WHERE account_id = ? ORDER BY id", DAVE)).toEqual([
-        { target_account_id: bobId },
-        { target_account_id: bob2Id },
-      ]);
-    }
-  });
-
-  // A target whose fresh document names, as its movedTo, an account Kopje does not hold has its move being resolved
-  // (accounts.move_pending): the transfer cannot wait for the collection sync that resolves it, so the job covers no
-  // follower (bound '0') and the follower keeps the source; the source's move is set and blocks and mutes are carried
-  // as for any verified Move. The control is the same target naming no destination.
-  it("moves no follower to a target whose move is being resolved, and admits the job covering none", async () => {
-    for (const pending of [true, false]) {
-      const t = await setup();
-      const bob = await mastodonActor(t.web, "bob");
-      const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
-      const named = pending ? { movedTo: "https://other.example/users/dest" } : {};
-      t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri], ...named });
-      await t.post(bob, follow(bob, DAVE_URI));
-      const bobId = (await accountId(t.store, bob.uri))!;
-      await sql(
-        t.store,
-        "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted')",
-        ALICE,
-        bobId,
-      );
-      await sql(t.store, "INSERT INTO mutes (account_id, target_account_id) VALUES (?, ?)", DAVE, bobId);
-      const before = (await outbound(t.store)).length;
-      expect(await t.post(bob, moveActivity(bob, bob2.uri))).toBe(202);
-      const bob2Id = (await accountId(t.store, bob2.uri))!;
-      expect(await sql(t.store, "SELECT move_pending FROM accounts WHERE id = ?", bob2Id)).toEqual([
-        { move_pending: pending ? 1 : 0 },
-      ]);
-      const jobs = await sql<{ bound: string; done: number }>(
-        t.store,
-        "SELECT bound, done_at IS NOT NULL AS done FROM inbound_jobs WHERE kind = 'move'",
-      );
-      expect([pending, jobs]).toEqual([
-        pending,
-        [{ bound: pending ? "0" : expect.not.stringMatching(/^0$/), done: 1 }],
-      ]);
-      expect(await movedTo(t.store, bob.uri)).toBe(bob2.uri);
-      const sent = (await outbound(t.store)).slice(before).map((o) => o.activity.type);
-      const alice = (await follows(t.store)).filter((f) => f.account_id === ALICE);
-      if (pending) {
-        expect(alice).toEqual([{ account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null }]);
-        expect(sent).toEqual([]);
-      } else {
-        expect(alice).toEqual([expect.objectContaining({ target_account_id: bob2Id, state: "pending" })]);
-        expect(sent).toEqual(["Undo", "Follow"]);
-      }
-      expect(await sql(t.store, "SELECT target_account_id FROM mutes WHERE account_id = ? ORDER BY id", DAVE)).toEqual([
-        { target_account_id: bobId },
-        { target_account_id: bob2Id },
-      ]);
+      expect(
+        await sql(t.store, "SELECT target_account_id FROM mutes WHERE account_id = ? ORDER BY id", DAVE),
+        label,
+      ).toEqual([{ target_account_id: bobId }, { target_account_id: bob2Id }]);
     }
   });
 
