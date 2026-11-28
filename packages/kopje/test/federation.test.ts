@@ -627,6 +627,7 @@ describe("NodeInfo", () => {
         `INSERT INTO statuses (id, uri, account_id, visibility, published_at) VALUES
 				('333333333333333333', 'https://social.example/ap/o/1', '${ALICE}', 'public', '2026-10-05T00:00:00.000Z')`,
       );
+      state.storage.sql.exec(`UPDATE local_accounts SET active_on = '2026-10-05' WHERE account_id = '${ALICE}'`);
     });
     return i;
   }
@@ -660,6 +661,46 @@ describe("NodeInfo", () => {
       usage: { users: { total: 1, activeMonth: 1, activeHalfyear: 1 }, localPosts: 1, localComments: 0 },
       metadata: {},
     });
+  });
+
+  // Both count the available local accounts with active_on in the 29 UTC days ending today, at the clock both requests
+  // read (the harness's NOW, 2026-10-12): Alice (never active), and one each on the window's first day and the day
+  // before it, today, half a year ago, tomorrow (an imported later day), and today but suspended (twice, one empty).
+  it("answers activeMonth as /api/v2/instance answers active_month", async () => {
+    const { json, store } = await instance();
+    await runInDurableObject(store, (_instance, state) => {
+      for (const [i, [activeOn, suspendedAt]] of [
+        ["2026-10-12", null],
+        ["2026-09-14", null],
+        ["2026-09-13", null],
+        ["2026-04-27", null],
+        ["2026-04-26", null],
+        ["2026-10-13", null],
+        ["2026-10-12", "2026-10-01T00:00:00.000Z"],
+        ["2026-10-12", ""],
+      ].entries()) {
+        const id = String(500000000000000000n + BigInt(i));
+        state.storage.sql.exec(
+          "INSERT INTO accounts (id, uri, username) VALUES (?1, 'https://social.example/ap/users/u' || ?2, 'u' || ?2)",
+          id,
+          i,
+        );
+        state.storage.sql.exec(
+          `INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey, active_on, suspended_at)
+					VALUES (?1, ?1 || '@mail.example', X'00', X'00', 'k', ?2, ?3)`,
+          id,
+          activeOn,
+          suspendedAt,
+        );
+      }
+    });
+    const { body } = await json("/nodeinfo/2.1");
+    const instanceV2 = await json("/api/v2/instance", {});
+    expect(instanceV2.status).toBe(200);
+    expect((body as { usage: unknown }).usage).toMatchObject({
+      users: { total: 7, activeMonth: 2, activeHalfyear: 4 },
+    });
+    expect((instanceV2.body as { usage: { users: { active_month: number } } }).usage.users.active_month).toBe(2);
   });
 
   it("serves 2.0 without the 2.1-only software fields", async () => {

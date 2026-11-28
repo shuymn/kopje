@@ -213,12 +213,11 @@ describe("snapshot render order", () => {
     const { store } = await healthyInstance();
     const day = 24 * 60 * 60 * 1000;
     // After the render time of the snapshot healthyInstance kept (NOW), so only the two renders below compete.
-    const posted = NOW;
+    const active = NOW;
     await runInDurableObject(store, (_instance, state) => {
       state.storage.sql.exec(
-        `INSERT INTO statuses (id, uri, account_id, visibility, published_at) VALUES
-				('333333333333333333', 'https://social.example/ap/o/1', '111111111111111111', 'public', ?)`,
-        new Date(posted).toISOString(),
+        "UPDATE local_accounts SET active_on = ? WHERE account_id = '111111111111111111'",
+        new Date(active).toISOString().slice(0, 10),
       );
     });
     const render = async (now: number) => {
@@ -231,8 +230,8 @@ describe("snapshot render order", () => {
         renderedAt: now,
       };
     };
-    const early = await render(posted + 29 * day); // the post still counts as active this month
-    const late = await render(posted + 31 * day); // it has aged out
+    const early = await render(active + 28 * day); // the day is still in the month's window
+    const late = await render(active + 31 * day); // it has aged out
     expect(early.body).not.toBe(late.body);
 
     expect(await store.saveSnapshot(BUILD, late)).toBe(true);

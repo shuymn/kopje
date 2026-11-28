@@ -28,6 +28,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials).
 - An account's `created_at` is midnight UTC of its creation day, and a local account's actor publishes that midnight as
   `published`, as Mastodon does. The admin API's own `created_at` stays exact.
+- NodeInfo's `usage.users.activeMonth` and `activeHalfyear` count the local accounts that signed in (an authenticated
+  API request or the settings page) on one of the last 29 and 169 UTC days, as Mastodon does and as `/api/v2/instance`'s
+  `active_month` already counts, instead of those that posted in the last 30 and 180 days. An account whose sign-ins an
+  earlier release did not record counts from its next one.
 
 ### Fixed
 

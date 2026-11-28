@@ -101,7 +101,7 @@ export const ROWS_1468: readonly Row1468[] = [
   {
     group: 1,
     statement: "NodeInfo usage (found by the audit)",
-    sites: ["src/domain/actors.ts#nodeInfoUsageOf", "src/domain/actors.ts#active"],
+    sites: ["src/domain/actors.ts#nodeInfoUsageOf"],
     status: "fixed",
   },
   {
