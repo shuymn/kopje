@@ -5,6 +5,7 @@ import { Db } from "../src/db/sql";
 import {
   CARD_CLAIM_WALK,
   CARD_CREATOR_CHARS,
+  CARD_DONOR_CANDIDATES,
   CARD_EXPIRE_BATCH,
   CARD_EXPIRE_MS,
   CARD_FRESH_MS,
@@ -50,10 +51,19 @@ import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD, deferred } from "./helpers";
 import { linkCardRoundMemory } from "./memory-model";
-import { measuredStatements, plannedRun, scansOf, staleStatistics } from "./read-helpers";
+import { measuredStatements, type PlannedStatement, plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { community, post } from "./status-helpers";
 
 // The cron's link card round (federation/link-cards.ts) over the Store's claim and record (domain/link-cards.ts).
+
+// The rows the donor copy reads for one target, by case, as workerd counts them: with no fresh copy of its URL, the
+// target row and the fresh index's empty range, as a miss reads at claim (no status read: the eligibility is judged
+// only for a candidate); with CARD_DONOR_CANDIDATES unusable ones, those donors too (their images' key seeks find no
+// row, and no candidate reaches the eligibility); with a usable one among them, its status's eligibility and
+// cardPublicSql's row as well.
+const EMPTY_RANGE_ROWS = 4;
+const EIGHT_UNUSABLE_ROWS = EMPTY_RANGE_ROWS + CARD_DONOR_CANDIDATES - 1;
+const HIT_ROWS = EIGHT_UNUSABLE_ROWS + 4;
 
 // The 5-minute cron's rounds a day: the network claims a day at most.
 const CARD_DAY_ROUNDS = (24 * 60) / 5;
@@ -190,6 +200,80 @@ function held(w: Awaited<ReturnType<typeof world>>, url = SITE) {
   return { gate, reached };
 }
 
+// Sets the due times of the rows of `ids` strictly increasing in the opposite order to the ids: the first is due at
+// NOW - 1, the last earliest, so neither the ids' order nor either direction of it picks the latest due.
+async function dueOpposite(w: Awaited<ReturnType<typeof world>>, ids: readonly string[]) {
+  for (const [rank, id] of ids.entries()) {
+    await sql(w.h.store, "UPDATE status_cards SET due_at = ?1 WHERE status_id = ?2", NOW - rank - 1, id);
+  }
+}
+
+// A status of alice's linking `url`, its row attached as fetched at `fetchedAt` (no image): a donor for the URL.
+async function donor(w: Awaited<ReturnType<typeof world>>, url: string, fetchedAt: number) {
+  const id = await w.postLink(url);
+  await sql(
+    w.h.store,
+    "UPDATE status_cards SET title = 'Donor', fetched_at = ?1, due_at = NULL, attempts = 0 WHERE status_id = ?2",
+    fetchedAt,
+    id,
+  );
+  return id;
+}
+
+// `count` rows of statuses of their own (ids 7…), enqueued at 0, so expired, and due far later, so only the expiry
+// reads them.
+async function expiredRows(w: Awaited<ReturnType<typeof world>>, count: number, url: string) {
+  await sql(
+    w.h.store,
+    `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+			SELECT printf('7%017d', i), 'https://kopje.test/s/' || i, ?2, 'public', 'x', '2026-10-12T00:00:00.000Z' FROM n`,
+    count,
+    w.alice.id,
+  );
+  await sql(
+    w.h.store,
+    `INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation)
+			SELECT id, ?1, ?2, 0, 1 FROM statuses WHERE id GLOB '7*'`,
+    url,
+    NOW + 10 * CARD_EXPIRE_MS,
+  );
+}
+
+// `count` rows of statuses of their own (ids 8…) due before every other row (from 1 on), given up, and `count` rows of
+// statuses of their own (ids 9…) due a day after NOW: the walk's index grown on both sides of what is due.
+async function grownRows(w: Awaited<ReturnType<typeof world>>, count: number) {
+  for (const prefix of ["8", "9"]) {
+    await sql(
+      w.h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+				SELECT printf('${prefix}%017d', i), 'https://kopje.test/s/${prefix}' || i, ?2, 'public', 'x',
+					'2026-10-12T00:00:00.000Z' FROM n`,
+      count,
+      w.alice.id,
+    );
+  }
+  await sql(
+    w.h.store,
+    `INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation, claim, attempts)
+			SELECT id, 'https://grown.example/' || id, CASE WHEN id GLOB '8*' THEN CAST(substr(id, 2) AS INTEGER) ELSE ?1 END,
+				?2, 1, CASE WHEN id GLOB '8*' THEN 2 ELSE 0 END, CASE WHEN id GLOB '8*' THEN 2 ELSE 0 END
+			FROM statuses WHERE id GLOB '8*' OR id GLOB '9*'`,
+    NOW + CARD_EXPIRE_MS,
+    NOW,
+  );
+}
+
+// Runs `write` with the trigger `name` dropped, then creates it again as it was: a row past its stored bound, as an
+// import with the triggers bypassed leaves it.
+async function bypassingBounds(w: Awaited<ReturnType<typeof world>>, name: string, write: () => Promise<unknown>) {
+  const [trigger] = await sql<{ sql: string }>(w.h.store, "SELECT sql FROM sqlite_master WHERE name = ?", name);
+  await sql(w.h.store, `DROP TRIGGER ${name}`);
+  await write();
+  await sql(w.h.store, trigger!.sql);
+}
+
 // A cached oEmbed endpoint's template, and the endpoint cache as stored (card_oembed_endpoints).
 const TEMPLATE = "https://provider.example/oembed?url={url}&format=json";
 const cache = (w: Awaited<ReturnType<typeof world>>) =>
@@ -233,11 +317,11 @@ describe("the link card round", () => {
       await w.postLink("https://site.example:8443/port"),
     ];
     expect(await w.round()).toMatchObject({ claimed: 4, attached: 0, none: 4 });
-    // The port was refused before any network step.
+    // The port was refused before any network step; the rows, due at once, are claimed from the latest status.
     expect(w.requests).toEqual([
-      "GET https://site.example/blank",
-      "GET https://site.example/json",
       "GET https://site.example/missing",
+      "GET https://site.example/json",
+      "GET https://site.example/blank",
     ]);
     for (const id of ids) {
       expect(await w.row(id)).toBeUndefined();
@@ -261,38 +345,64 @@ describe("the link card round", () => {
     expect(await w.row(first)).toMatchObject({ fetched_at: NOW });
   });
 
-  it("claims the first CARD_ROUND_CLAIMS rows of seven and leaves the seventh untouched", async () => {
+  it("claims the CARD_ROUND_CLAIMS latest due rows of seven and leaves the earliest untouched", async () => {
     const w = await world();
     const ids: string[] = [];
     for (let i = 0; i < CARD_ROUND_CLAIMS + 1; i++) {
       ids.push(await w.postLink(`https://site${i}.example/`));
     }
+    await dueOpposite(w, ids);
     const claimed = await w.op(claimCards, { now: w.clock.t });
     expect(claimed.claims.map((c) => c.statusId)).toEqual(ids.slice(0, CARD_ROUND_CLAIMS));
-    expect(await w.row(ids.at(-1)!)).toMatchObject({ due_at: NOW, claim: 0, attempts: 0 });
+    expect(await w.row(ids.at(-1)!)).toMatchObject({ due_at: NOW - ids.length, claim: 0, attempts: 0 });
     for (const id of ids.slice(0, CARD_ROUND_CLAIMS)) {
       expect(await w.row(id)).toMatchObject({ due_at: NOW + CARD_HOLD_MS, claim: 1, attempts: 1 });
     }
   });
 
-  it("defers a row whose URL another row holds, within one walk and across rounds", async () => {
+  it("claims a row due latest whatever the number of older rows due, its status the earliest", async () => {
+    const w = await world();
+    const target = await w.postLink("https://target.example/");
+    const older: string[] = [];
+    for (let i = 0; i < CARD_CLAIM_WALK; i++) {
+      older.push(await w.postLink(`https://site${i}.example/`));
+    }
+    // The target is due at NOW; the 64 rows of later statuses before it.
+    await dueOpposite(w, older);
+    const { claims } = await w.op(claimCards, { now: w.clock.t });
+    expect(claims.map((c) => c.statusId)).toEqual([target, ...older.slice(0, CARD_ROUND_CLAIMS - 1)]);
+  });
+
+  it("defers a row whose URL another row holds, within one walk and across rounds, then walks it first", async () => {
     const w = await world();
     const { gate, reached } = held(w);
     const a = await w.postLink(SITE);
     const b = await w.postLink(SITE);
     const first = w.round();
     await reached.promise;
-    // The same walk deferred b to a's hold; a second round, while a's fetch is held, defers c as well.
-    expect(await w.row(b)).toMatchObject({ due_at: NOW + CARD_HOLD_MS, attempts: 0, claim: 0 });
+    // The walk claimed b, the latest, and deferred a to b's hold; a second round, while b's fetch is held, defers c as
+    // well.
+    expect(await w.row(b)).toMatchObject({ attempts: 1, claim: 1 });
+    expect(await w.row(a)).toMatchObject({ due_at: NOW + CARD_HOLD_MS, attempts: 0, claim: 0 });
     w.clock.t += 1000;
     const c = await w.postLink(SITE);
     expect(await w.round()).toMatchObject({ claimed: 0 });
     expect(await w.row(c)).toMatchObject({ due_at: NOW + CARD_HOLD_MS, attempts: 0 });
     gate.resolve();
     expect(await first).toMatchObject({ claimed: 1, attached: 1 });
+    // Six other rows, due before the hold ends.
+    w.clock.t = NOW + 2000;
+    const others: string[] = [];
+    for (let i = 0; i < CARD_ROUND_CLAIMS; i++) {
+      others.push(await w.postLink(`https://site${i}.example/`));
+    }
+    w.setRoutes(Object.fromEntries(others.map((_, i) => [`https://site${i}.example/`, page()])));
     w.clock.t = NOW + CARD_HOLD_MS;
-    expect(await w.round()).toMatchObject({ claimed: 0 });
-    // The copies keep the donor's fetched_at, the time a's record landed.
+    // At the hold's end the deferred rows are due latest: walked first, they copy b's card, and the six are claimed.
+    const claimed = await w.op(claimCards, { now: w.clock.t });
+    expect(claimed).toMatchObject({ attached: 2, deferred: 0 });
+    expect(claimed.claims.map((x) => x.statusId)).toEqual(others.toReversed());
+    // The copies keep the donor's fetched_at, the time b's record landed.
     for (const id of [a, b, c]) {
       expect(await w.row(id)).toMatchObject({ title: "Site title", fetched_at: NOW + 1000, due_at: null });
     }
@@ -345,7 +455,8 @@ describe("the link card round", () => {
       const running = w.round();
       await both.promise;
       // Two fetches in flight, four not started, as the fetches' deadline passes.
-      w.clock.t = start + CARD_FETCHES_MS + 1;
+      const deadline = start + CARD_FETCHES_MS + 1;
+      w.clock.t = deadline;
       gate.resolve();
       expect(await running, `pass ${pass}`).toEqual({
         claimed: CARD_ROUND_CLAIMS,
@@ -356,18 +467,119 @@ describe("the link card round", () => {
         lost: 0,
       });
       for (const id of ids) {
-        expect(await w.row(id), `pass ${pass}`).toMatchObject({ attempts: 0, fetched_at: null, claim: pass });
+        // Released, the row is due at the release.
+        expect(await w.row(id), `pass ${pass}`).toMatchObject({
+          attempts: 0,
+          fetched_at: null,
+          claim: pass,
+          due_at: deadline,
+        });
       }
       w.clock.t += 1000;
     }
+    // Released at the deadline, they are due then: claimed again before six rows of later statuses due before it.
+    const released = w.clock.t - 1000;
+    const others: string[] = [];
+    for (let i = 0; i < CARD_ROUND_CLAIMS; i++) {
+      others.push(await w.postLink(`https://other${i}.example/`));
+    }
+    await sql(
+      w.h.store,
+      `UPDATE status_cards SET due_at = ?1 WHERE status_id IN (${others.map(() => "?").join(", ")})`,
+      released - 1,
+      ...others,
+    );
+    const { claims } = await w.op(claimCards, { now: w.clock.t });
+    expect(claims.map((c) => c.statusId).toSorted()).toEqual(ids.toSorted());
   });
 
-  it("expires a pending row after a day, never claiming it", async () => {
+  it("expires a pending row after a day, attaching a fresh donor's card or deleting it, never claiming it", async () => {
+    const w = await world();
+    const url = (name: string) => `https://${name}.example/`;
+    const ids: Record<string, string> = {};
+    for (const name of ["attached", "none", "ineligible", "past", "open", "edge"]) {
+      ids[name] = await w.postLink(url(name));
+    }
+    // Fresh donors; the ineligible row's has no image, so only the eligibility refuses it.
+    for (const name of ["attached", "ineligible", "past", "open"]) {
+      await donor(w, url(name), NOW + 1);
+    }
+    const now = NOW + CARD_EXPIRE_MS + 1;
+    // Due far later, so only the expiry reads them; the open hold its own; the edge enqueued exactly a day before.
+    await sql(w.h.store, "UPDATE status_cards SET due_at = ?1 WHERE due_at IS NOT NULL", NOW + 10 * CARD_EXPIRE_MS);
+    await sql(w.h.store, "UPDATE status_cards SET attempts = 1, due_at = ?1 WHERE status_id = ?2", now + 1, ids.open!);
+    await sql(
+      w.h.store,
+      "UPDATE status_cards SET enqueued_at = ?1 WHERE status_id = ?2",
+      now - CARD_EXPIRE_MS,
+      ids.edge!,
+    );
+    await sql(
+      w.h.store,
+      `INSERT INTO media_attachments (id, account_id, status_id, type, url)
+				VALUES ('700000000000000001', ?1, ?2, 'image', 'https://kopje.test/m.png')`,
+      w.alice.id,
+      ids.ineligible!,
+    );
+    await bypassingBounds(w, "status_cards_bounds_update", () =>
+      sql(w.h.store, "UPDATE status_cards SET generation = -1 WHERE status_id = ?", ids.past!),
+    );
+    expect(await w.op(claimCards, { now })).toMatchObject({ attached: 1, expired: 3, givenUp: 0, claims: [] });
+    expect(await w.row(ids.attached!)).toMatchObject({
+      title: "Donor",
+      fetched_at: NOW + 1,
+      due_at: null,
+      attempts: 0,
+    });
+    for (const name of ["none", "ineligible", "past"]) {
+      expect(await w.row(ids[name]!), name).toBeUndefined();
+    }
+    expect(await w.row(ids.open!)).toMatchObject({ attempts: 1, due_at: now + 1, fetched_at: null });
+    expect(await w.row(ids.edge!)).toMatchObject({ due_at: NOW + 10 * CARD_EXPIRE_MS, fetched_at: null });
+    expect(w.requests).toEqual([]);
+  });
+
+  it("handles an expired row the walk meets past the expiry's batch as the expiry does, before giving it up", async () => {
     const w = await world();
     const id = await w.postLink(SITE);
+    await donor(w, SITE, NOW + 1);
+    // CARD_EXPIRE_BATCH expired rows enqueued before it, of statuses of their own, due far later.
+    await expiredRows(w, CARD_EXPIRE_BATCH, "https://site.example/old");
+    await sql(w.h.store, "UPDATE status_cards SET claim = 2, attempts = 2 WHERE status_id = ?", id);
+    // A row enqueued exactly a day before, due: not expired, so claimed.
+    const now = NOW + CARD_EXPIRE_MS + 1;
+    const edge = await w.postLink("https://edge.example/");
+    await sql(
+      w.h.store,
+      "UPDATE status_cards SET enqueued_at = ?1, due_at = ?2 WHERE status_id = ?3",
+      now - CARD_EXPIRE_MS,
+      NOW,
+      edge,
+    );
+    const claimed = await w.op(claimCards, { now });
+    expect(claimed).toMatchObject({
+      expired: CARD_EXPIRE_BATCH,
+      attached: 1,
+      givenUp: 0,
+      claims: [{ statusId: edge }],
+    });
+    expect(await w.row(id)).toMatchObject({ title: "Donor", fetched_at: NOW + 1, due_at: null, attempts: 0 });
+  });
+
+  it("attaches at expiry a row whose claim ended unrecorded, and refuses that claim's late record", async () => {
+    const w = await world();
+    const id = await w.postLink(SITE);
+    const [claim] = (await w.op(claimCards, { now: NOW })).claims;
+    expect(claim).toMatchObject({ statusId: id, token: 1 });
+    await donor(w, SITE, NOW + 1);
     w.clock.t = NOW + CARD_EXPIRE_MS + 1;
-    expect(await w.op(claimCards, { now: w.clock.t })).toMatchObject({ expired: 1, claims: [] });
-    expect(await w.row(id)).toBeUndefined();
+    expect(await w.op(claimCards, { now: w.clock.t })).toMatchObject({ attached: 1, expired: 0, claims: [] });
+    expect(await w.row(id)).toMatchObject({ title: "Donor", claim: 1, attempts: 0, due_at: null });
+    const fields = { title: "Late", description: "", authorName: "", authorUrl: "", providerName: "", providerUrl: "" };
+    const outcome = { kind: "card" as const, fields: { ...fields, language: null, publishedAt: null, ...LINK } };
+    expect(await w.op(recordCard, { ...claim!, outcome, now: w.clock.t })).toEqual({ held: false });
+    expect(await w.row(id)).toMatchObject({ title: "Donor", fetched_at: NOW + 1 });
+    expect(w.requests).toEqual([]);
   });
 });
 
@@ -452,7 +664,8 @@ describe("the fences of a record", () => {
     const w = await world();
     const kept = await w.postLink(SITE);
     const dropped = await w.postLink("https://site.example/nul");
-    const claims = (await w.op(claimCards, { now: w.clock.t })).claims;
+    const { claims } = await w.op(claimCards, { now: w.clock.t });
+    const claimOf = (id: string) => claims.find((c) => c.statusId === id)!;
     const card = (title: string) => ({
       kind: "card" as const,
       fields: {
@@ -467,10 +680,12 @@ describe("the fences of a record", () => {
         ...LINK,
       },
     });
-    expect(await w.op(recordCard, { ...claims[0]!, outcome: card("a\u0080\u0000b"), now: w.clock.t })).toEqual({
+    expect(await w.op(recordCard, { ...claimOf(kept), outcome: card("a\u0080\u0000b"), now: w.clock.t })).toEqual({
       held: true,
     });
-    expect(await w.op(recordCard, { ...claims[1]!, outcome: card("\u0000"), now: w.clock.t })).toEqual({ held: true });
+    expect(await w.op(recordCard, { ...claimOf(dropped), outcome: card("\u0000"), now: w.clock.t })).toEqual({
+      held: true,
+    });
     expect(await w.row(kept)).toMatchObject({ title: "a\u0080b", description: "\u009fd", fetched_at: NOW });
     expect(await w.row(dropped)).toBeUndefined();
   });
@@ -868,7 +1083,9 @@ describe("the stored embed and the oEmbed endpoint cache (0069_card_embeds)", ()
     for (let i = 0; i < 6; i++) {
       ids.push(await w.postLink(`https://site${i}.example/`));
     }
-    const claims = (await w.op(claimCards, { now: w.clock.t })).claims;
+    // In the order of ids (a claim takes the latest status first).
+    const claims = (await w.op(claimCards, { now: w.clock.t })).claims.toReversed();
+    expect(claims.map((c) => c.statusId)).toEqual(ids);
     const records: Partial<CardFields>[] = [
       {
         type: "video",
@@ -957,7 +1174,9 @@ describe("the stored embed and the oEmbed endpoint cache (0069_card_embeds)", ()
     for (let i = 0; i < 5; i++) {
       ids.push(await w.postLink(`https://site${i}.example/`));
     }
-    const claims = (await w.op(claimCards, { now: w.clock.t })).claims;
+    // In the order of ids (a claim takes the latest status first).
+    const claims = (await w.op(claimCards, { now: w.clock.t })).claims.toReversed();
+    expect(claims.map((c) => c.statusId)).toEqual(ids);
     const record = (
       i: number,
       outcome: Parameters<typeof recordCard.run>[1]["outcome"],
@@ -1005,11 +1224,12 @@ describe("the stored embed and the oEmbed endpoint cache (0069_card_embeds)", ()
       await w.postLink(`https://${url}`);
     }
     const claims = (await w.op(claimCards, { now })).claims;
+    // The latest status first.
     expect(claims.map((c) => [c.url, c.oembed])).toEqual([
-      ["https://live.example/a", TEMPLATE],
-      ["https://expired.example/a", null],
-      ["https://future.example/a", null],
       ["https://live.example/b", TEMPLATE],
+      ["https://future.example/a", null],
+      ["https://expired.example/a", null],
+      ["https://live.example/a", TEMPLATE],
     ]);
   });
 
@@ -1224,50 +1444,180 @@ describe("the bounds of a round", () => {
     expect(2 * (CARD_OUTPUT_MAX_UNITS - outputMaxUnits({ ...SCAN_LIMITS, relMe: 0, links: 0 }))).toBe(409_600);
   });
 
-  it("walks at most CARD_CLAIM_WALK due rows, deleting each one given up, the 65th left for the next claim", async () => {
-    const w = await world();
-    const ids: string[] = [];
-    for (let i = 0; i < CARD_CLAIM_WALK + 1; i++) {
-      ids.push(await w.postLink(`https://site.example/${i}`));
-    }
-    await sql(w.h.store, "UPDATE status_cards SET attempts = 2");
-    const claim = () =>
-      plannedRun(w.h, /FROM status_cards INDEXED BY status_cards_due WHERE due_at <= \?1\s+ORDER BY/, claimCards, {
-        now: w.clock.t,
+  it(
+    "walks at most CARD_CLAIM_WALK due rows from the latest, deleting each one given up, the earliest left for the next claim",
+    { timeout: 120_000 },
+    async () => {
+      const w = await world();
+      const ids: string[] = [];
+      for (let i = 0; i < CARD_CLAIM_WALK + 1; i++) {
+        ids.push(await w.postLink(`https://site.example/${i}`));
+      }
+      await dueOpposite(w, ids);
+      await sql(w.h.store, "UPDATE status_cards SET attempts = 2");
+      const walk = /^SELECT .* FROM status_cards INDEXED BY status_cards_due WHERE due_at <= \?1\s+ORDER BY/s;
+      const { before, after } = await staleStatistics(w.h, {
+        capture: async () => {
+          const { result, plans } = await plannedRun(w.h, walk, claimCards, { now: w.clock.t });
+          return { result, plans, earliest: await w.row(ids.at(-1)!) };
+        },
+        // Many more rows due earlier than the earliest, given up, and as many pending ones due later than the claim.
+        grow: () => grownRows(w, 5_000),
       });
-    const first = await claim();
-    expect(first.result).toMatchObject({ givenUp: CARD_CLAIM_WALK, claims: [] });
-    expect(first.plans[0]?.rows).toBe(CARD_CLAIM_WALK);
-    expect(await w.row(ids.at(-1)!)).toMatchObject({ attempts: 2 });
-    expect((await claim()).result).toMatchObject({ givenUp: 1 });
-    expect(await sql(w.h.store, "SELECT count(*) AS n FROM status_cards")).toEqual([{ n: 0 }]);
-  });
+      // The 64 latest due deleted, the earliest kept; the next claim deletes it with 63 grown rows due before it.
+      expect(before.result).toMatchObject({ givenUp: CARD_CLAIM_WALK, claims: [] });
+      expect(before.earliest).toMatchObject({ attempts: 2, due_at: NOW - ids.length });
+      expect(after.result).toMatchObject({ givenUp: CARD_CLAIM_WALK, claims: [] });
+      expect(after.earliest).toBeUndefined();
+      for (const { plans } of [before, after]) {
+        expect(plans).toHaveLength(1);
+        const [{ plan, rows }] = plans as [PlannedStatement];
+        // The due index walked backward: no sort, and only the rows the walk takes.
+        expect(plan.join(" | ")).toMatch(
+          /^SEARCH status_cards USING (COVERING )?INDEX status_cards_due \(due_at<\?\)$/,
+        );
+        expect(rows).toBe(CARD_CLAIM_WALK);
+      }
+      expect(await sql(w.h.store, "SELECT count(*) AS n FROM status_cards WHERE due_at <= ?", w.clock.t)).toEqual([
+        { n: 5_000 - (CARD_CLAIM_WALK - 1) },
+      ]);
+    },
+  );
 
-  it("expires at most CARD_EXPIRE_BATCH rows a claim", { timeout: 60_000 }, async () => {
+  it(
+    "deletes a walked row whose projection fails among the same rows the walk takes, by the due index backward",
+    { timeout: 120_000 },
+    async () => {
+      const w = await world();
+      const ids: string[] = [];
+      for (let i = 0; i < CARD_CLAIM_WALK + CARD_ROUND_CLAIMS; i++) {
+        ids.push(await w.postLink(`https://site${i}.example/`));
+      }
+      await dueOpposite(w, ids);
+      // The latest due row's url past its stored rule: outside the earliest 64 rows.
+      const pastUrl = (id: string) =>
+        bypassingBounds(w, "status_cards_bounds_update", () =>
+          sql(w.h.store, "UPDATE status_cards SET url = 'https://site.example/b|c' WHERE status_id = ?", id),
+        );
+      const remove = /^DELETE FROM status_cards WHERE status_id IN \(SELECT status_id FROM status_cards INDEXED BY/;
+      const { before, after } = await staleStatistics(w.h, {
+        capture: async (phase) => {
+          // Before: the latest due; after: the latest still due once the first claim claimed six.
+          const past = phase === "before" ? ids[0]! : ids[1 + CARD_ROUND_CLAIMS]!;
+          await pastUrl(past);
+          const { result, plans } = await plannedRun(w.h, remove, claimCards, { now: w.clock.t });
+          return { past, result, plans, row: await w.row(past) };
+        },
+        grow: () => grownRows(w, 5_000),
+      });
+      for (const [phase, { past, result, plans, row }] of Object.entries({ before, after })) {
+        expect(row, phase).toBeUndefined();
+        const next = ids.indexOf(past) + 1;
+        expect(
+          result.claims.map((c) => c.statusId),
+          phase,
+        ).toEqual(ids.slice(next, next + CARD_ROUND_CLAIMS));
+        expect(plans, phase).toHaveLength(1);
+        expect(plans[0]!.plan.join(" | "), phase).toMatch(
+          /SEARCH status_cards USING (COVERING )?INDEX status_cards_due \(due_at<\?\)/,
+        );
+        expect(plans[0]!.plan.join(" | "), phase).not.toMatch(/TEMP B-TREE/);
+      }
+    },
+  );
+
+  it("expires at most CARD_EXPIRE_BATCH rows a claim", { timeout: 120_000 }, async () => {
     const w = await world();
     const status = await w.postLink(SITE);
-    // Expired rows of statuses of their own, due far later, so only the expiry reads them.
-    await sql(
-      w.h.store,
-      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
-			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
-			SELECT printf('7%017d', i), 'https://kopje.test/s/' || i, ?2, 'public', 'x', '2026-10-12T00:00:00.000Z' FROM n`,
-      CARD_EXPIRE_BATCH + 1,
-      w.alice.id,
-    );
-    await sql(
-      w.h.store,
-      `INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation)
-			SELECT id, 'https://site.example/old', ?1, 0, 1 FROM statuses WHERE id GLOB '7*'`,
-      NOW + 10 * CARD_EXPIRE_MS,
-    );
-    w.clock.t = NOW + CARD_EXPIRE_MS - 1;
-    const first = await w.op(claimCards, { now: w.clock.t });
-    expect(first).toMatchObject({ expired: CARD_EXPIRE_BATCH });
-    expect(
-      await sql(w.h.store, "SELECT count(*) AS n FROM status_cards WHERE url = 'https://site.example/old'"),
-    ).toEqual([{ n: 1 }]);
-    expect((await w.op(claimCards, { now: w.clock.t })).expired).toBe(1);
+    const now = NOW + CARD_EXPIRE_MS - 1;
+    // One more than the batch, written out: the 501st is left.
+    const targets = 501;
+    const donors = 5_000;
+    // Target i (ids 7…, https://t.example/<i>) enqueued at i, due far later, so only the expiry reads it. Donor j (ids
+    // 6…) of target 2 + (j - 1) % 500, fetched within the window, newest first by j, its image failed (an image_id
+    // with no card_images row). Target 1 has no donor. Target 2's 8 newest donors have failed images and its 9th is
+    // usable (no image); target 3's 8th newest is usable.
+    const target = (i: number) => `7${String(i).padStart(17, "0")}`;
+    const grow = async () => {
+      await sql(
+        w.h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+				SELECT printf('7%017d', i), 'https://kopje.test/s/7' || i, ?3, 'public', 'x', '2026-10-12T00:00:00.000Z' FROM n
+				UNION ALL SELECT printf('6%017d', i), 'https://kopje.test/s/6' || i, ?3, 'public', 'x', '2026-10-12T00:00:00.000Z'
+				FROM n WHERE i <= ?2`,
+        Math.max(targets, donors),
+        donors,
+        w.alice.id,
+      );
+      await sql(
+        w.h.store,
+        `INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation)
+				SELECT id, 'https://t.example/' || CAST(substr(id, 2) AS INTEGER), ?1, CAST(substr(id, 2) AS INTEGER), 1
+				FROM statuses WHERE id GLOB '7*'`,
+        NOW + 10 * CARD_EXPIRE_MS,
+      );
+      await sql(
+        w.h.store,
+        `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, image_url, image_id)
+				SELECT id, 'https://t.example/' || (2 + (CAST(substr(id, 2) AS INTEGER) - 1) % CAST(?1 AS INTEGER)), 0, 1, 't',
+					?2 - CAST(substr(id, 2) AS INTEGER), 'https://img.example/x.png', '5' || substr(id, 2)
+				FROM statuses WHERE id GLOB '6*'`,
+        CARD_EXPIRE_BATCH,
+        NOW - 1000,
+      );
+      // The donors of target 2 and 3 newest first: j, j + 500, ….
+      const usable = (j: number) =>
+        sql(
+          w.h.store,
+          "UPDATE status_cards SET image_url = '', image_id = NULL WHERE status_id = ?",
+          `6${String(j).padStart(17, "0")}`,
+        );
+      await usable(1 + 8 * CARD_EXPIRE_BATCH);
+      await usable(2 + 7 * CARD_EXPIRE_BATCH);
+    };
+    const changes = async () => (await sql<{ n: number }>(w.h.store, "SELECT total_changes() AS n"))[0]!.n;
+    const { after } = await staleStatistics(w.h, {
+      capture: async (phase) => {
+        if (phase === "before") {
+          return null;
+        }
+        const before = await changes();
+        const run = await plannedRun(w.h, /status_cards/, claimCards, { now }, true);
+        return { ...run, written: (await changes()) - before };
+      },
+      grow,
+    });
+    const { result, plans, written } = after!;
+    expect(result).toMatchObject({ expired: CARD_EXPIRE_BATCH - 1, attached: 1, claims: [{ statusId: status }] });
+    expect(written).toBeLessThanOrEqual(CARD_EXPIRE_BATCH + CARD_CLAIM_WALK + OEMBED_EXPIRE_BATCH);
+    for (const { query, plan } of plans) {
+      // ps also names availableSql's recursive CTE over the author's domain suffixes (bounded), not a table.
+      const scans = scansOf(plan, ["status_cards", "t", "f", "h", "i", "ce", "cm", "cq", "pl", "pa", "ps"]);
+      expect(
+        scans.filter((detail) => detail !== "SCAN ps"),
+        `${query}\n${plan.join("\n")}`,
+      ).toEqual([]);
+    }
+    const copies = (i: number) =>
+      plans.filter(({ query, params }) => query.includes("CROSS JOIN status_cards f") && params[0] === target(i));
+    const rowsOf = (i: number) => copies(i).map(({ rows }) => rows);
+    // Each target copied once, the 501st not reached.
+    expect([1, 2, 3, CARD_EXPIRE_BATCH, targets].map((i) => copies(i).length)).toEqual([1, 1, 1, 1, 0]);
+    expect(await w.row(target(targets))).toMatchObject({ fetched_at: null });
+    // Empty range: the target row and the fresh index's range; no eligibility read.
+    expect(rowsOf(1)).toEqual([EMPTY_RANGE_ROWS]);
+    expect(await w.row(target(1))).toBeUndefined();
+    // Eight unusable donors read, their images by key, one eligibility: the usable 9th not seen.
+    expect(rowsOf(2)).toEqual([EIGHT_UNUSABLE_ROWS]);
+    expect(await w.row(target(2))).toBeUndefined();
+    // A hit: as many, then cardPublicSql's row and the copy.
+    expect(rowsOf(3)).toEqual([HIT_ROWS]);
+    expect(await w.row(target(3))).toMatchObject({
+      title: "t",
+      due_at: null,
+      fetched_at: NOW - 1000 - (2 + 7 * CARD_EXPIRE_BATCH),
+    });
     expect(await w.row(status)).toMatchObject({ attempts: 1 });
   });
 
@@ -1316,8 +1666,13 @@ describe("the bounds of a round", () => {
       const statements = /status_cards/;
       const { before, after } = await staleStatistics(w.h, {
         capture: async () => {
-          // The hit row first in the walk's order, ahead of the grown rows.
-          await sql(w.h.store, "UPDATE status_cards SET claim = 0, attempts = 0, due_at = 0 WHERE status_id = ?", hit);
+          // The hit row first in the walk's order, due latest.
+          await sql(
+            w.h.store,
+            "UPDATE status_cards SET claim = 0, attempts = 0, due_at = ?2 WHERE status_id = ?1",
+            hit,
+            w.clock.t,
+          );
           return (await plannedRun(w.h, statements, claimCards, { now: w.clock.t })).plans;
         },
         grow: async () => {
@@ -1342,8 +1697,11 @@ describe("the bounds of a round", () => {
       });
       for (const plans of [before, after]) {
         for (const { query, plan } of plans) {
+          // ps also names availableSql's recursive CTE over the author's domain suffixes (bounded), not a table.
           expect(
-            scansOf(plan, ["status_cards", "t", "f", "h", "ce", "cm", "cq", "pl", "pa", "ps"]),
+            scansOf(plan, ["status_cards", "t", "f", "h", "ce", "cm", "cq", "pl", "pa", "ps"]).filter(
+              (detail) => detail !== "SCAN ps",
+            ),
             `${query}\n${plan.join("\n")}`,
           ).toEqual([]);
         }
@@ -1356,7 +1714,12 @@ describe("the bounds of a round", () => {
       }
       // Hits: the 'after' walk claimed six of the grown rows, so their holds are open; then a copy is made fresh.
       const first = async () => {
-        await sql(w.h.store, "UPDATE status_cards SET claim = 0, attempts = 0, due_at = 0 WHERE status_id = ?", hit);
+        await sql(
+          w.h.store,
+          "UPDATE status_cards SET claim = 0, attempts = 0, due_at = ?2 WHERE status_id = ?1",
+          hit,
+          w.clock.t,
+        );
         const run = await plannedRun(w.h, /CROSS JOIN status_cards [fh] INDEXED BY/, claimCards, { now: w.clock.t });
         return run.plans.slice(0, 2).map(({ query, rows }) => [query.includes("status_cards_fresh"), rows]);
       };
@@ -1370,7 +1733,8 @@ describe("the bounds of a round", () => {
         "UPDATE status_cards SET fetched_at = ?1 WHERE status_id = (SELECT min(id) FROM statuses WHERE id GLOB '9*')",
         NOW,
       );
-      expect((await first()).slice(0, 1)).toEqual([[true, 5]]);
+      // The hit reads the status's eligibility too (the donor stage's), and cardPublicSql's row.
+      expect((await first()).slice(0, 1)).toEqual([[true, 8]]);
       expect(await w.row(hit)).toMatchObject({ due_at: null, fetched_at: NOW, title: "t" });
     },
   );

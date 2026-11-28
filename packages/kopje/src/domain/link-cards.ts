@@ -67,10 +67,13 @@ import { parseStatusText } from "./status-text";
 //   round refuses what else the sink does (web-page.ts webPageUrlRefusal: a port, an IP literal) before any network
 //   step.
 // - A claim (claimCards, one per cron round) first expires at most CARD_EXPIRE_BATCH pending rows enqueued more than
-//   CARD_EXPIRE_MS ago (never one whose hold is open), then walks at most CARD_CLAIM_WALK due rows by
-//   (due_at, status_id), in order, until CARD_ROUND_CLAIMS are claimed; the rows after that point are untouched. Each
-//   row walked makes progress: it is deleted (expired, ineligible, CARD_MAX_ATTEMPTS claims never finished, or a token
-//   past SAFE_INTEGER_MAX), attached from another status's fresh copy of the same URL (fetched within CARD_FRESH_MS,
+//   CARD_EXPIRE_MS ago (never one whose hold is open), attaching a fresh copy or deleting each (expireCard), then walks
+//   at most CARD_CLAIM_WALK due rows by (due_at, status_id) from the latest, until CARD_ROUND_CLAIMS are claimed; the
+//   rows after that point are untouched. The latest first, so a new status's card comes within a round while more
+//   links are due than the rounds fetch; under such a backlog the oldest rows wait and expire instead
+//   (docs/mastodon-deviations.md, "Link previews"). Each row walked makes progress: an expired one is handled as the
+//   expiry handles it; any other is deleted (CARD_MAX_ATTEMPTS claims never finished, ineligible, or a token past
+//   SAFE_INTEGER_MAX), attached from another status's fresh copy of the same URL (fetched within CARD_FRESH_MS,
 //   Mastodon's 14-day reuse, keeping its fetched_at), deferred to the end of another row's open hold on the same URL
 //   (Mastodon's fetch:<url> lock, across rounds), or claimed for CARD_HOLD_MS (a new claim token, one more attempt).
 // - The fence: recordCard applies only while the claim token, the generation, an open claim (attempts > 0) and a
@@ -351,6 +354,17 @@ const WALKED = `${STATUS_ID_SQL} AS id,
 	${storedCountSql("attempts", CARD_MAX_ATTEMPTS)} AS attempts, ${storedCountSql("claim")} AS claim,
 	${storedCountSql("generation")} AS generation, ${storedCountSql("enqueued_at")} AS enqueued`;
 
+// Whether a projection of WALKED fails for the row (it is NULL).
+const WALKED_FAILS = `(${STATUS_ID_SQL} IS NULL OR ${cardUrlPastSql("url", false)}
+	OR ${storedCountSql("attempts", CARD_MAX_ATTEMPTS)} IS NULL OR ${storedCountSql("claim")} IS NULL
+	OR ${storedCountSql("generation")} IS NULL OR ${storedCountSql("enqueued_at")} IS NULL)`;
+
+// The walk's rows, the due ones from the latest: both statements that read it (the walk and the delete of the rows
+// whose projection fails) take this tail, so with the same ?1 in one transaction they pick the same rows. A backward
+// walk of status_cards_due, without a sort.
+const WALK_SQL = `FROM status_cards INDEXED BY ${CARD_DUE_INDEX} WHERE due_at <= ?1
+	ORDER BY due_at DESC, status_id DESC LIMIT ${CARD_CLAIM_WALK}`;
+
 const CARD_FIELDS = [
   "title",
   "description",
@@ -382,9 +396,10 @@ export const CARD_DONOR_CANDIDATES = 8;
 // nothing. The inner stage takes at most CARD_DONOR_CANDIDATES raw candidates by the fresh index, latest first; outside
 // it a candidate qualifies without an image, or with an image row that is pending or was stored after ?2 (a key seek of
 // card_images: CARD_FRESH_MS holds through a copy too); one whose image failed (a dangling image_id) or is older does
-// not, so the claim fetches the card again (Mastodon's missing_image?, narrowed). public comes from the target's status
-// and the copied final URL, never from the donor: a donor fetched before 0071_link_trends (no final URL) gives a copy
-// that never trends.
+// not, so the claim fetches the card again (Mastodon's missing_image?, narrowed). The target's status must be eligible
+// now (R43, VIS-32): judged inside the donor stage, after the image alternatives, so only for a candidate, whatever
+// join order the planner picks. public comes from the target's status and the copied final URL, never from the donor:
+// a donor fetched before 0071_link_trends (no final URL) gives a copy that never trends.
 const DONOR_COPY_SQL = `UPDATE status_cards SET ${CARD_FIELDS.map((f) => `${f} = d.${f}`).join(", ")},
 		due_at = NULL, attempts = 0, public = CASE WHEN d.final_url <> '' AND ${cardPublicSql("?1")} THEN 1 ELSE 0 END
 	FROM (SELECT ${CARD_FIELDS.map((f) => `c.${f}`).join(", ")}
@@ -392,10 +407,23 @@ const DONOR_COPY_SQL = `UPDATE status_cards SET ${CARD_FIELDS.map((f) => `${f} =
 			FROM status_cards t CROSS JOIN status_cards f INDEXED BY ${CARD_FRESH_INDEX} ON f.url = t.url
 			WHERE t.status_id = ?1 AND CAST(f.url AS BLOB) = CAST(t.url AS BLOB) AND f.fetched_at > ?2
 			ORDER BY f.fetched_at DESC LIMIT ${CARD_DONOR_CANDIDATES}) c
-		WHERE c.image_url = '' OR (c.image_id IS NOT NULL AND EXISTS (SELECT 1 FROM card_images i WHERE i.id = c.image_id
-			AND (i.due_at IS NOT NULL OR i.stored_at > ?2)))
+		WHERE (c.image_url = '' OR (c.image_id IS NOT NULL AND EXISTS (SELECT 1 FROM card_images i WHERE i.id = c.image_id
+			AND (i.due_at IS NOT NULL OR i.stored_at > ?2)))) AND ${cardEligibleSql("?1")}
 		ORDER BY c.fetched_at DESC LIMIT 1) d
 	WHERE status_cards.status_id = ?1`;
+
+// The terminal rule for a row pending past CARD_EXPIRE_MS (by the expiry batch or the walk; never one with an open
+// hold of its own): attached from another status's fresh copy of its URL (DONOR_COPY_SQL) when every projection of
+// WALKED holds for it (`ok`), else deleted by its key. A row whose stored values fail the projection is never updated:
+// status_cards_bounds_update would abort the claim. True when it was attached. A late record of its claim is refused
+// by the fence (the copy sets attempts 0 and fetched_at).
+function expireCard(db: Db, id: SqlStorageValue, ok: boolean, now: number): boolean {
+  if (ok && db.run(DONOR_COPY_SQL, id, now - CARD_FRESH_MS) > 0) {
+    return true;
+  }
+  db.run("DELETE FROM status_cards WHERE status_id = ?", id);
+  return false;
+}
 
 // The cached template of `host` as read: live (expires_at > now) and within the TTL window (a row written for the far
 // future, an import's, is not), the template NULL past its stored rule. One primary-key seek.
@@ -412,14 +440,19 @@ export const claimCards = writeOperation<{ now: number }, CardClaims>((db, { now
   }
   out.domain = domain;
   const cutoff = now - CARD_EXPIRE_MS;
-  // The first CARD_EXPIRE_BATCH pending rows past the cutoff by the expiry index, those with an open hold kept.
-  out.expired = db.run(
-    `DELETE FROM status_cards WHERE status_id IN (SELECT status_id FROM status_cards INDEXED BY ${CARD_EXPIRY_INDEX}
-				WHERE due_at IS NOT NULL AND enqueued_at < ?1 ORDER BY enqueued_at LIMIT ${CARD_EXPIRE_BATCH})
-			AND NOT (attempts > 0 AND due_at > ?2)`,
+  // The first CARD_EXPIRE_BATCH pending rows past the cutoff by the expiry index, those with an open hold kept, each
+  // by its stored key.
+  const expiring = db.all<{ id: SqlStorageValue; ok: number }>(
+    `SELECT id, ok FROM (SELECT status_id AS id, NOT ${WALKED_FAILS} AS ok, attempts, due_at
+			FROM status_cards INDEXED BY ${CARD_EXPIRY_INDEX}
+			WHERE due_at IS NOT NULL AND enqueued_at < ?1 ORDER BY enqueued_at LIMIT ${CARD_EXPIRE_BATCH})
+		WHERE NOT (attempts > 0 AND due_at > ?2)`,
     cutoff,
     now,
   );
+  for (const { id, ok } of expiring) {
+    out[expireCard(db, id, ok === 1, now) ? "attached" : "expired"]++;
+  }
   // At most OEMBED_EXPIRE_BATCH cached endpoints by the expiry index: the expired first, then with the rest those
   // written for past the TTL window (an import's), latest first.
   const expiredEndpoints = db.run(
@@ -435,20 +468,10 @@ export const claimCards = writeOperation<{ now: number }, CardClaims>((db, { now
       now + OEMBED_ENDPOINT_TTL_MS,
     );
   }
-  const walk = db.all<Walked>(
-    `SELECT ${WALKED} FROM status_cards INDEXED BY ${CARD_DUE_INDEX} WHERE due_at <= ?1
-		ORDER BY due_at, status_id LIMIT ${CARD_CLAIM_WALK}`,
-    now,
-  );
+  const walk = db.all<Walked>(`SELECT ${WALKED} ${WALK_SQL}`, now);
   // A row whose projection fails (never, under the triggers) is deleted in SQL among the same walk, by its own key.
   if (walk.some((row) => Object.values(row).includes(null))) {
-    db.run(
-      `DELETE FROM status_cards WHERE status_id IN (SELECT status_id FROM status_cards INDEXED BY ${CARD_DUE_INDEX}
-				WHERE due_at <= ?1 ORDER BY due_at, status_id LIMIT ${CARD_CLAIM_WALK})
-			AND (${STATUS_ID_SQL} IS NULL OR ${cardUrlPastSql("url", false)} OR ${storedCountSql("attempts", CARD_MAX_ATTEMPTS)} IS NULL
-				OR ${storedCountSql("claim")} IS NULL OR ${storedCountSql("generation")} IS NULL OR ${storedCountSql("enqueued_at")} IS NULL)`,
-      now,
-    );
+    db.run(`DELETE FROM status_cards WHERE status_id IN (SELECT status_id ${WALK_SQL}) AND ${WALKED_FAILS}`, now);
   }
   for (const row of walk) {
     const { id, url, attempts, claim, generation, enqueued } = row;
@@ -462,16 +485,17 @@ export const claimCards = writeOperation<{ now: number }, CardClaims>((db, { now
     ) {
       continue;
     }
+    // Expired before given up: such a row is handled as the expiry batch handles it, whatever its attempts.
+    if (enqueued < cutoff) {
+      out[expireCard(db, id, true, now) ? "attached" : "expired"]++;
+      continue;
+    }
     if (attempts >= CARD_MAX_ATTEMPTS) {
       out.givenUp++;
       deleteCard(db, id);
       continue;
     }
-    if (
-      enqueued < cutoff ||
-      claim + 1 > SAFE_INTEGER_MAX ||
-      db.first(`SELECT ${cardEligibleSql("?1")} AS e`, id)?.e !== 1
-    ) {
+    if (claim + 1 > SAFE_INTEGER_MAX || db.first(`SELECT ${cardEligibleSql("?1")} AS e`, id)?.e !== 1) {
       deleteCard(db, id);
       continue;
     }

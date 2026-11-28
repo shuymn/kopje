@@ -1964,18 +1964,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/account-warning-dump.test.ts`.
 
 - **VIS-32: a link card is fetched and held only for a public or unlisted original.** A status's card (R43,
-  `status_cards`, migration `0067_status_cards`) is enqueued, claimed and recorded only while `cardEligibleSql` holds
-  (an original, public or unlisted, by an available author, with no shown attachment and no quote), so no private,
-  direct or limited status's link is ever requested (Mastodon fetches every visibility: docs/mastodon-deviations.md,
-  "Link previews"). The one place a stored status becomes ineligible by visibility, the hide step of a remote delete,
-  deletes its row in the same step; edits never change a visibility. The linked site learns that the instance holds a
-  public status naming it, as a reader of that status would. A card is presented only on a public or unlisted status,
-  whatever a row holds (an import's), never on a boost's own row or a quoted status, and with each text and URL judged
-  as decoded (`presentCard` in `src/domain/status-presenter.ts`). Its `missing_attribution` is presented to a signed-in
-  viewer only, and is `true` only for the viewer the card's unverified author is: no viewer learns that a page names
-  another account. A local status's Note (the object endpoint, the outbox, the featured collection, every `Create` and
-  `Update`) lists the card's URL as a FEP-8967 `Link` only where the card is presented: an attached row, judged by the
-  presenter's own rule (`shownCardUrl`, shared with `presentCard`; `statusFacts` in `src/domain/activities.ts`).
+  `status_cards`, migration `0067_status_cards`) is enqueued, claimed, recorded and copied from another status's card
+  only while `cardEligibleSql` holds (an original, public or unlisted, by an available author, with no shown attachment
+  and no quote), so no private, direct or limited status's link is ever requested (Mastodon fetches every visibility:
+  docs/mastodon-deviations.md, "Link previews"). The one place a stored status becomes ineligible by visibility, the
+  hide step of a remote delete, deletes its row in the same step; edits never change a visibility. The linked site
+  learns that the instance holds a public status naming it, as a reader of that status would. A card is presented only
+  on a public or unlisted status, whatever a row holds (an import's), never on a boost's own row or a quoted status, and
+  with each text and URL judged as decoded (`presentCard` in `src/domain/status-presenter.ts`). Its
+  `missing_attribution` is presented to a signed-in viewer only, and is `true` only for the viewer the card's unverified
+  author is: no viewer learns that a page names another account. A local status's Note (the object endpoint, the outbox,
+  the featured collection, every `Create` and `Update`) lists the card's URL as a FEP-8967 `Link` only where the card is
+  presented: an attached row, judged by the presenter's own rule (`shownCardUrl`, shared with `presentCard`;
+  `statusFacts` in `src/domain/activities.ts`).
   _Enforced (main):_ `cardEligibleSql` in `src/domain/audience.ts`, `src/domain/link-cards.ts`, `deleteStatusBatch` in
   `src/domain/inbox.ts`;
   `test/link-cards.test.ts` ("enqueues public and unlisted posts only, and resets on a text edit", "enqueues a remote
@@ -4572,10 +4573,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/dump-import.test.ts` ("round-trips an account's pins at its limit"). _Enforced (main)_ for status cards: one
   `status_cards` row per status
   (its primary key), deleted with the status inside its final delete's reservation and by the hide step of a remote
-  delete; a pending row is dropped a day after it was enqueued, at most 500 a claim (an open hold kept until it ends),
-  and a claim that never finished is given up after 2 (`src/domain/link-cards.ts`; `test/link-card-rounds.test.ts`
+  delete; a pending row is attached from a fresh copy of its URL or dropped a day after it was enqueued, at most 500 a
+  claim in the expiry batch and up to 64 more that the claim's walk meets (an open hold kept until it ends), and a
+  claim that never finished is given up after 2 (`src/domain/link-cards.ts`; `test/link-card-rounds.test.ts`
   ("expires at most CARD_EXPIRE_BATCH rows a claim", "keeps an open hold past the expiry, so a later round still
-  defers its URL"), `test/cascade-guard.test.ts` ("trend and card rows within a batch"),
+  defers its URL", "expires a pending row after a day, attaching a fresh donor's card or deleting it, never claiming
+  it", "handles an expired row the walk meets past the expiry's batch as the expiry does, before giving it up"),
+  `test/cascade-guard.test.ts` ("trend and card rows within a batch"),
   `test/link-cards.test.ts` ("deletes the card with the hide when %i rows are left")). The index the mention test
   seeks (`accounts_url`, migration `0111_account_urls`) holds one entry per remote account that stores a url: that
   url, at most 2,048 bytes as stored, and its rowid, with SQLite's record and B-tree page overhead on top, so it grows
@@ -5081,12 +5085,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   most 4,096 bytes, one at a time, and nothing else is kept between anchors (`test/link-cards.test.ts` ("reads the
   mention test's candidates by index under stale statistics, flat past MENTION_URL_ACCOUNTS", "skips a mention's
   profile link past MAX_STATUS_MENTION_ROWS silent rows with smaller account ids", "skips a current mention's profile
-  link at an Update after an import grew the status past its mention rows")). Its claim expires at most 500 pending
-  rows, then walks at most 64 due rows by
-  `(due_at, status_id)` in order and stops at 6 claims, leaving the rest untouched; each row walked is deleted, attached
-  from another status's fresh copy (an existence-gated update by key: no donor writes nothing), deferred to another
-  row's open hold on its URL, or claimed for 5 minutes (twice the round); with at most 100 cached oEmbed endpoints
-  expired, a claim writes at most 664 rows, and each claimed row reads its host's cached template by key. The URL
+  link at an Update after an import grew the status past its mention rows")). Its claim's expiry batch takes at most
+  500 pending rows past the day, each attached from a fresh copy of its URL when a qualifying donor is among its 8
+  newest copies and its status is eligible (eligibility judged only for a candidate), or else deleted, then walks at
+  most 64 due rows by `(due_at, status_id)` from the latest and stops at 6 claims, leaving the rest untouched; an
+  expired row the walk meets, up to 64 beyond the batch, is handled by the same rule, and each other row walked is
+  deleted, attached from another status's fresh copy (an existence-gated update by key: no donor writes nothing),
+  deferred to another row's open hold on its URL, or claimed for 5 minutes (twice the round); the walk and the delete
+  of the walked rows whose stored values fail their projection take one tail, a backward walk of `status_cards_due`
+  without a sort; with at most 100 cached oEmbed endpoints expired, a claim writes at most 664 rows, and each claimed
+  row reads its host's cached template by key. The URL
   lookups seek `status_cards_fresh` on `(url, fetched_at > cutoff)` and `status_cards_claimed` on `(url, due_at > now)`
   with the partial index's own predicate, so stale copies and expired holds of the URL are not read, after `ANALYZE`
   and growth alike. A claim makes at most two GET chains (up to eight HTTP GETs, each chain at most 3 redirects), 3
@@ -5104,10 +5112,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   units, and the expanded URL: 1,205,335 bytes); 2,773,112 bytes a claim, 8,319,336 for the three at once; lol-html's
   native buffers, `JSON.parse`'s internals and htmlparser2's parser state are not counted, and the prefix's, the body's
   and the scan's caps are counted as they are read
-  (`src/domain/link-cards.ts`, `src/federation/link-cards.ts`; `test/link-card-rounds.test.ts` ("claims the first
-  CARD_ROUND_CLAIMS rows of seven and leaves the seventh untouched", "walks at most CARD_CLAIM_WALK due rows, deleting
-  each one given up, the 65th left for the next claim", "defers a row whose URL another row holds, within one walk and
-  across rounds", "deletes a row whose next token would pass SAFE_INTEGER_MAX, and claims one that reaches it", "reads
+  (`src/domain/link-cards.ts`, `src/federation/link-cards.ts`; `test/link-card-rounds.test.ts` ("claims the
+  CARD_ROUND_CLAIMS latest due rows of seven and leaves the earliest untouched", "walks at most CARD_CLAIM_WALK due rows
+  from the latest, deleting each one given up, the earliest left for the next claim", "deletes a walked row whose
+  projection fails among the same rows the walk takes, by the due index backward", "expires at most CARD_EXPIRE_BATCH
+  rows a claim", "expires a pending row after a day, attaching a fresh donor's card or deleting it, never claiming
+  it", "defers a row whose URL another row holds, within one walk and across rounds, then walks it first", "deletes a
+  row whose next token would pass SAFE_INTEGER_MAX, and claims one that reaches it", "reads
   a bounded number of rows for each lookup by URL, after ANALYZE and growth, hit and miss", "derives its budgets and
   hold", "computes the memory model of a round from its bounds", "the cold path: %s", "the cached path
   fetches the endpoint first, then on a fallback the page only, and never writes")).
