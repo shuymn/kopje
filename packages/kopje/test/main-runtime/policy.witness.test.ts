@@ -86,6 +86,23 @@ function withoutAdded(columns: readonly string[]): NonNullable<Baseline["result"
   };
 }
 
+// #1564 D5: the account read presents created_at as the creation day's midnight UTC when it is a stored time
+// (account-columns.ts createdAtSql), where main's text reads it as stored: main's rows compared at that midnight, so
+// every other value is still main's. Every world stores its accounts' times as Date#toISOString writes them.
+const CREATED_AT_MIDNIGHT = "|| 'T00:00:00.000Z', a.created_at) AS created_at";
+const STORED_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+function atMidnight(base: Baseline["result"]): NonNullable<Baseline["result"]> {
+  return {
+    main: (rows: SqlRow[], params: readonly SqlStorageValue[]) =>
+      ((base?.main(rows, params) ?? rows) as SqlRow[]).map((row) =>
+        typeof row.created_at === "string" && STORED_TIME.test(row.created_at)
+          ? { ...row, created_at: `${row.created_at.slice(0, 10)}T00:00:00.000Z` }
+          : row,
+      ),
+    mine: base?.mine ?? ((rows: SqlRow[]) => rows),
+  };
+}
+
 // R (statusRowBoundSql) counts the author account row of each status row an item reads by
 // rowHeapSql(ACCOUNT_COLUMN_MAP), and so the added columns, which main's text does not count: VALUE_BYTES and twice
 // its value's UTF-8 bytes for each, and VALUE_BYTES + 2 for each added verdict, ADDED_ROW_BYTES for an account that
@@ -184,8 +201,8 @@ const itemRows = (ids: readonly string[]) => {
 };
 
 // How a pair's rows compare: a window's through each side's post-processing; R's and the account read's without what
-// the added columns add, and R's without the feature_approval answers. Any other statement that counts an added
-// column fails.
+// the added columns add, and R's without the feature_approval answers; the account read's with main's created_at at
+// its midnight. Any other statement that counts an added column fails.
 function resultOf(key: string, main: string, mine: string): Baseline["result"] {
   if (main.includes("f(bound) AS")) {
     return windowResult(main, mine);
@@ -198,7 +215,8 @@ function resultOf(key: string, main: string, mine: string): Baseline["result"] {
     return rWithoutAdded(itemRows);
   }
   const added = addedSinceBase(main, mine);
-  return added.length > 0 ? withoutAdded(added) : undefined;
+  const result = added.length > 0 ? withoutAdded(added) : undefined;
+  return mine.includes(CREATED_AT_MIDNIGHT) && !main.includes(CREATED_AT_MIDNIGHT) ? atMidnight(result) : result;
 }
 
 type Plan = { witness: PlanWitness; expected: string[] };

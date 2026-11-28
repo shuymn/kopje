@@ -8,6 +8,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Changed
+
+- An account's `created_at` is midnight UTC of its creation day, and a local account's actor publishes that midnight as
+  `published`, as Mastodon does. The admin API's own `created_at` stays exact.
+
 ## [0.9.0] - 2026-11-28
 
 A minor release, published under the npm dist-tag `latest`. A remote account that has moved is shown as moved once a

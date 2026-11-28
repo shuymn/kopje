@@ -6281,7 +6281,7 @@ logs (6.01 MB escaped, 4.64 MB raw, the fill of the largest SQLite read) are mea
 | Boost of a quote                                                 | 7,480,627         | 6,037,893       | 6,059,222         | 2,199     | 7,650 | 72.2%          |
 | Conversation: 12 participants presented, its last status a quote | 8,883,677         | 7,338,022       | 7,396,167         | 2,191     | 9,149 | 88.2%          |
 | Notification group: 8 sample accounts, its status a quote        | 8,259,816         | 6,768,045       | 6,811,930         | 2,191     | 8,306 | 81.2%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,569,884         | 6,231,588       | 6,254,323         | 2,158     | 7,599 | 74.6%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,569,956         | 6,231,588       | 6,254,323         | 2,158     | 7,599 | 74.6%          |
 | An admin.report notification of that report                      | 2,374,257         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
 | A moderation_warning notification, its local account at bounds   | 134,442           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,442           | 294,759         | 365,154           | 8         | 701   | 4.4%           |

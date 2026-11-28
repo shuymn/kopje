@@ -1,5 +1,6 @@
 import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { isoTimeSql } from "../platform/stored-bounds";
 import { type Account, accountsOf, presentFor, type PresentInput } from "./accounts";
 import { EVERYONE_ROLE, OWNER_ROLE, type Role } from "./auth";
 
@@ -11,8 +12,9 @@ import { EVERYONE_ROLE, OWNER_ROLE, type Role } from "./auth";
 //     locale null (Kopje stores none); its role (Owner for the OAuth admin, the default role for every other);
 //   - a remote account (no User): email, confirmed, disabled, approved, locale and role null, which is what
 //     Account's delegation to a missing user gives (app/models/account.rb:173-191, allow_nil);
-//   - both: ip null and ips [], invite_request null; created_by_application_id and invited_by_account_id absent (their
-//     conditions never hold); suspended when the account is unavailable (R1), as the nested account shows it;
+//   - both: created_at the exact stored time (the serializer's attribute, where the nested account shows its day), read
+//     only when it is one (isoTimeSql), else the nested account's; ip null and ips [], invite_request null;
+//     created_by_application_id and invited_by_account_id absent (their conditions never hold); suspended when the account is unavailable (R1), as the nested account shows it;
 //     username as the nested account shows it, but '! <id>' for an invalidated handle (accounts.ts shownHandle): the
 //     username Mastodon's invalidate_username! stores and its serializer shows (Account#username), where the nested
 //     account shows the placeholder.
@@ -50,8 +52,10 @@ export function* adminAccountStream(
     const slice = ids.slice(next, next + chunk);
     const rows = new Map(
       db
-        .all<{ id: string; domain: string | null; email: string | null }>(
-          `SELECT a.id, a.domain, l.email FROM json_each(?1) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.value
+        .all<{ id: string; domain: string | null; email: string | null; exact_created_at: string | null }>(
+          `SELECT a.id, a.domain, l.email,
+						CASE WHEN ${isoTimeSql("a.created_at")} IS NOT NULL THEN a.created_at END AS exact_created_at
+					FROM json_each(?1) c CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.value
 						LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id`,
           JSON.stringify([...new Set(slice)]),
         )
@@ -70,7 +74,7 @@ export function* adminAccountStream(
         id: row.id,
         username: account.invalid_handle === true ? `! ${account.id}` : account.username,
         domain: row.domain,
-        created_at: account.created_at,
+        created_at: row.exact_created_at ?? account.created_at,
         email: local ? row.email : null,
         ip: null,
         confirmed: local ? true : null,

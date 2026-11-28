@@ -221,7 +221,13 @@ describe("GET /api/v1/admin/reports/:id", () => {
       comment: "spam",
       rule_ids: ["2"],
     });
+    // A creation time past midnight: the admin entity shows it exactly, its nested account the day's midnight.
+    await sql(h.store, "UPDATE accounts SET created_at = '2026-10-12T13:14:15.678Z' WHERE id = ?", carol);
     const body = await reportOf(h, id, admin);
+    expect([
+      body.target_account.created_at,
+      (body.target_account.account as { created_at: string }).created_at,
+    ]).toEqual(["2026-10-12T13:14:15.678Z", "2026-10-12T00:00:00.000Z"]);
     expect(Object.keys(body)).toEqual([
       "id",
       "action_taken",

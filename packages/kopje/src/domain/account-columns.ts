@@ -127,7 +127,7 @@ export const ACCOUNT_COLUMN_MAP = {
   followers_count: presentedCountSql("a.followers_count"),
   following_count: presentedCountSql("a.following_count"),
   statuses_count: presentedCountSql("a.statuses_count"),
-  created_at: "a.created_at",
+  created_at: createdAtSql("a.created_at"),
   available: availableJoinedSql("a", "l"),
   last_status_at: lastStatusAtSql("a"),
   local_fields: presentedLocalFieldsSql("l.fields"),
@@ -151,6 +151,12 @@ export const LOCAL_ROW_JOIN = `LEFT JOIN local_accounts l INDEXED BY ${LOCAL_ACC
 // (isoTimeSql, its length first), so one that is not a stored time is presented as it is today.
 export function createdDaySql(column: string): string {
   return `CASE WHEN ${isoTimeSql(column)} IS NOT NULL THEN substr(${column}, 1, 10) END`;
+}
+
+// An Account's created_at (REST::AccountSerializer#created_at): the creation day's midnight UTC (createdDaySql), else
+// the stored value. Both are 24 bytes for a stored time, so the row reads no more than the stored column.
+function createdAtSql(column: string): string {
+  return `COALESCE(${createdDaySql(column)} || 'T00:00:00.000Z', ${column})`;
 }
 
 // The date of the account `a`'s newest status its followers reach.
@@ -202,7 +208,8 @@ const MOVED_COLUMN_MAP = {
   followers_count: presentedCountSql("m.followers_count"),
   following_count: presentedCountSql("m.following_count"),
   statuses_count: presentedCountSql("m.statuses_count"),
-  created_at: textCut("m.created_at", POINT_BYTES * MOVED_CREATED_AT_LIMIT),
+  // Judged on the stored value, before the cut: a value the cut would make a stored time is not one.
+  created_at: textCut(createdAtSql("m.created_at"), POINT_BYTES * MOVED_CREATED_AT_LIMIT),
   available: availableJoinedSql("m", "ml"),
   last_status_at: byteCut(lastStatusAtSql("m"), POINT_BYTES * MOVED_LAST_STATUS_AT_LIMIT),
   hide_collections: movedFlag("COALESCE(ml.hide_collections, m.hide_collections)"),
