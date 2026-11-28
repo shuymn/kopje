@@ -13,7 +13,7 @@ import { sha256Hex } from "../src/security/tokens";
 import { bearer, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, runStoreJobs, drainDeliveries } from "./helpers";
-import { LOCAL } from "./inbox-helpers";
+import { actorDefaults, LOCAL } from "./inbox-helpers";
 import { storeReceive } from "./inbox-store-helpers";
 import { runs } from "./policy-world";
 import {
@@ -534,29 +534,12 @@ async function receive(w: World, actor: string, msg: Msg, label: string): Promis
 // R's actor as a search fetches it. Its revision never holds (null: no stored row expected), so the Store keeps R's
 // stored row (storeResolved's superseded document) and the search tests only the status.
 const R_ACTOR: RemoteActorInput = {
+  ...actorDefaults(),
   uri: R,
   claim: { username: "r", domain: new URL(R_ORIGIN).host },
   confirmed: null,
-  actorType: "Person",
   displayName: "",
-  note: "",
-  url: null,
-  avatarUrl: null,
-  headerUrl: null,
-  locked: false,
-  discoverable: null,
-  indexable: false,
   inboxUrl: null,
-  sharedInboxUrl: null,
-  published: null,
-  keys: [],
-  emojiTags: [],
-  raw: "{}",
-  avatarDescription: "",
-  headerDescription: "",
-  showFeatured: null,
-  showMedia: null,
-  showRepliesInMedia: null,
 };
 
 // L's search of `uri` with resolve=true, through the Store's resolution (the Worker's fetch replaced by what R's

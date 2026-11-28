@@ -487,9 +487,9 @@ function storeActor(
   if (row !== undefined) {
     // The account's move as its document states it (ID-4), set or cleared by every store, an unchanged document's
     // included (Mastodon's ProcessAccountService: process_account_service.rb:293), written once the row is stored, by
-    // its id: the literal movedTo (collection-requests.ts namedMove) naming a stored account (moveTargetSql). One Kopje
+    // its id: the literal movedTo (collection-requests.ts namedMove) naming a stored account (moveTarget). One Kopje
     // does not know is pending (accounts.move_pending) when the sync may fetch it (fetchableMove), as Mastodon fetches it
-    // (process_account_service.rb:516-520): the sync's move part resolves it (remote-collections.ts). The move and the
+    // (process_account_service.rb:516-519): the sync's move part resolves it (remote-collections.ts). The move and the
     // bit are written in this one statement, so no intermediate row passes their bound (0125_account_move_pending).
     const target = moveTarget(db, namedMove(actor.raw, actor.uri), row.id);
     pending = target === null && fetchableMove(actor.raw, actor.uri, origin) !== null;

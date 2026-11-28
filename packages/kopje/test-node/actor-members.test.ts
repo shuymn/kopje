@@ -16,8 +16,8 @@ import { editOnce, guardFixtures, parse, type Source, sources, walk } from "./so
 const FILES = ["src/federation/remote-actor.ts", "src/federation/inbound.ts"];
 const INVENTORY_FILE = "src/federation/remote-actor.ts";
 
-// The Fedify Actor accessors Kopje reads, each with the member of the document it reads. getActorTypeName reads the
-// type.
+// The Fedify Actor accessors the guard recognizes, each with the member of the document it reads (one whose member
+// FEDIFY_MEMBERS lacks is a read the guard refuses, such as successorId). getActorTypeName reads the type.
 const ACCESSORS: Readonly<Record<string, string>> = {
   id: "id",
   preferredUsername: "preferredUsername",
