@@ -121,8 +121,7 @@ export const resolveInteraction = userWriteOperation.atStoreTime("storeNow")<Res
 export type FollowOutcome = "followed" | "requested" | "already_requested" | "refused" | "pending" | "not_found";
 
 // The outcome, and the account it is about as the Store knows it (null when there is none to name).
-// jobsPending: a jobs round is asked for (the pending outcome's collection sync).
-export type WebFollowResult = { outcome: FollowOutcome; account: Account | null; jobsPending: boolean };
+export type WebFollowResult = { outcome: FollowOutcome; account: Account | null };
 
 export type WebFollowInput = { target: string; now: number; present: ResolveInput["present"] };
 
@@ -133,7 +132,7 @@ export type WebFollowInput = { target: string; now: number; present: ResolveInpu
 export const webFollow = userWriteOperation<WebFollowInput, WebFollowResult>((db, input, { accountId }) => {
   const targetId = resolveAccountId(db, input.target);
   if (targetId === null) {
-    return { outcome: "not_found", account: null, jobsPending: false };
+    return { outcome: "not_found", account: null };
   }
   const before = db.first<{ state: string }>(
     "SELECT state FROM follows WHERE account_id = ? AND target_account_id = ?",
@@ -144,11 +143,10 @@ export const webFollow = userWriteOperation<WebFollowInput, WebFollowResult>((db
   const named = (outcome: FollowOutcome): WebFollowResult => ({
     outcome,
     account: presentAccountById(db, targetId, presentFor(input.present, accountId)) ?? null,
-    jobsPending: outcome === "pending",
   });
   switch (result.status) {
     case "not_found":
-      return { outcome: "not_found", account: null, jobsPending: false };
+      return { outcome: "not_found", account: null };
     case "pending":
       return named("pending");
     case "forbidden":

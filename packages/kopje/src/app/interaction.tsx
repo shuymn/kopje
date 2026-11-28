@@ -194,9 +194,9 @@ export function interactionRoutes(deps: InteractionDeps): Hono<WebEnv> {
     if (result.status !== "ok") {
       return toLogin(c, target, result.status);
     }
-    const { outcome, account, jobsPending } = result.value;
+    const { outcome, account } = result.value;
     // The account's move is resolved by its collection sync in a jobs round, as after the follow API's 503.
-    if (jobsPending) {
+    if (outcome === "pending") {
       requestJobsSoon(c, deps);
     }
     // A follow or request may have recorded a Follow to deliver: ring once it has committed, as app.ts does after an

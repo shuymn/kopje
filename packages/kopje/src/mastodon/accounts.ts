@@ -614,10 +614,8 @@ export const follow: ApiHandler = withParams(async (c, deps, p) => {
     now: deps.now(),
   };
   const result = authorized(await storeCall(c, deps, (s, b) => s.follow(b, input)));
-  if ("jobsPending" in result && result.jobsPending) {
-    requestJobsSoon(c, deps);
-  }
   if (result.status === "pending") {
+    requestJobsSoon(c, deps);
     // The target's move is being resolved by its collection sync, which the jobs round runs; Mastodon resolves it
     // inline and answers 503 with this body when the fetch fails (docs/mastodon-deviations.md).
     return mastodonError(503, "Remote data could not be fetched");
