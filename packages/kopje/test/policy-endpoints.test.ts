@@ -411,28 +411,22 @@ describe("the status read endpoints agree with the model of their rules", () => 
   // list have moved, so the moved branch of the suggestions and of the link timeline runs whatever the generator drew:
   // the first case of a fixed seed that has both.
   it("leaves out a moved account's suggestion and link post, as the model does", async () => {
-    const found = (() => {
-      for (const sample of fc.sample(caseArb, { seed: 1561, numRuns: 400 })) {
-        const c = { ...sample, world: { ...sample.world, moves: [] } };
-        const m = new PolicyModel(c.world);
-        const remote = (x: number) => c.world.accounts[x]?.local === false;
-        const discoverable = (x: number) => c.discoverable[x] === 1;
-        const suggested = c.world.accounts
-          .flatMap((account, viewer) => (account.local ? m.suggestions(viewer, discoverable, SUGGESTION_WINDOWS) : []))
-          .find(remote);
-        const copies = publicCopies(c.world);
-        const linked = c.world.statuses.findIndex(
-          (status, st) =>
-            APPROVED_LINKS.has(linkOf(st)) &&
-            remote(status.author) &&
-            m.linkTimeline(linkOf(st), copies, discoverable, null).includes(st),
-        );
-        if (suggested !== undefined && linked >= 0) {
-          return { c, suggested, linked, copies, discoverable };
-        }
-      }
-      return undefined;
-    })();
+    const found = firstBaseline((c) => {
+      const m = new PolicyModel(c.world);
+      const remote = (x: number) => c.world.accounts[x]?.local === false;
+      const discoverable = (x: number) => c.discoverable[x] === 1;
+      const suggested = c.world.accounts
+        .flatMap((account, viewer) => (account.local ? m.suggestions(viewer, discoverable, SUGGESTION_WINDOWS) : []))
+        .find(remote);
+      const copies = publicCopies(c.world);
+      const linked = c.world.statuses.findIndex(
+        (status, st) =>
+          APPROVED_LINKS.has(linkOf(st)) &&
+          remote(status.author) &&
+          m.linkTimeline(linkOf(st), copies, discoverable, null).includes(st),
+      );
+      return suggested !== undefined && linked >= 0 ? { c, suggested, linked, copies, discoverable } : undefined;
+    });
     expect(found).toBeDefined();
     const { c, suggested, linked, copies, discoverable } = found!;
     const author = c.world.statuses[linked]!.author;
@@ -459,7 +453,54 @@ describe("the status read endpoints agree with the model of their rules", () => 
     );
     expect(problems).toEqual([]);
   }, 120_000);
+
+  // A fixed case in which an account some viewer would be suggested has its move being resolved
+  // (accounts.move_pending), so the pending branch of the suggestions runs whatever the generator drew: the first case
+  // of a fixed seed that has one.
+  it("leaves out a suggestion whose move is being resolved, as the model does", async () => {
+    const found = firstBaseline((c) => {
+      const m = new PolicyModel(c.world);
+      const discoverable = (x: number) => c.discoverable[x] === 1;
+      // A viewer check() reads suggestions for: a local account that is not suspended.
+      const suggested = c.world.accounts
+        .flatMap((account, viewer) =>
+          account.local && !account.suspended ? m.suggestions(viewer, discoverable, SUGGESTION_WINDOWS) : [],
+        )
+        .find((x) => c.world.accounts[x]?.local === false);
+      return suggested === undefined ? undefined : { c, suggested, discoverable };
+    });
+    expect(found).toBeDefined();
+    const { c, suggested, discoverable } = found!;
+    const pending: Case = { ...c, world: { ...c.world, pending: [suggested] } };
+    const m = new PolicyModel(pending.world);
+    expect(
+      c.world.accounts.some(
+        (account, viewer) =>
+          account.local &&
+          !account.suspended &&
+          m.suggestions(viewer, discoverable, SUGGESTION_WINDOWS).includes(suggested),
+      ),
+    ).toBe(false);
+    const { problems, stored } = await runInDurableObject(store, (_instance, state) => ({
+      problems: check(state.storage.sql, pending),
+      stored: state.storage.sql.exec("SELECT id FROM accounts WHERE move_pending = 1").toArray(),
+    }));
+    expect(stored).toEqual([{ id: accountId(suggested) }]);
+    expect(problems).toEqual([]);
+  }, 120_000);
 });
+
+// What `pick` finds in the first of the fixed seed's cases it finds anything in, each read with no move and no move
+// being resolved, so a witness adds the ones it needs.
+function firstBaseline<T>(pick: (c: Case) => T | undefined): T | undefined {
+  for (const sample of fc.sample(caseArb, { seed: 1561, numRuns: 400 })) {
+    const found = pick({ ...sample, world: { ...sample.world, moves: [], pending: [] } });
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
+}
 
 // The Store's suggestion windows (suggestions.ts), as the model takes them.
 const SUGGESTION_WINDOWS = {

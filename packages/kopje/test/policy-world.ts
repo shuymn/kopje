@@ -17,7 +17,8 @@ import type { RepliesPolicy } from "../src/domain/lists";
 // self-quotes among them, of statuses of every visibility, and quotes whose quoted status is gone; some statuses
 // withdrawn (their removal under way); and each original's
 // quote policy (R36), any combination of Mastodon's flags; and local accounts' dismissed suggestions (R39); and at most
-// one remote account's move (accounts.moved_to_account_id) to another account of the world. Accounts, statuses and
+// one remote account's move (accounts.moved_to_account_id) to another account of the world, and at most one other
+// remote account whose move is being resolved (accounts.move_pending). Accounts, statuses and
 // lists are referred to by index; writeWorld gives them fixed ids.
 
 declare module "vitest" {
@@ -160,6 +161,8 @@ export type World = {
   // Moves (accounts.moved_to_account_id): each of a remote account to another account, which always exists; at most
   // one a world.
   moves: { from: number; to: number }[];
+  // Remote accounts whose move is being resolved (accounts.move_pending), none of them moved; at most one a world.
+  pending: number[];
   now: string;
 };
 
@@ -378,6 +381,14 @@ export const worldArb: fc.Arbitrary<World> = fc
       ].filter((f) => f.from !== f.to),
       pair,
     );
+    // A remote account's move to another account, drawn from bits already drawn (a new field of the raw generator
+    // would change the worlds the fixed seeds of the other properties give): with an odd number of blocks, from the
+    // first block's draw.
+    const moves = (raw.blocks.length % 2 === 1 ? raw.blocks.slice(0, 1) : []).map((m) => {
+      const from = LOCALS + (m.from % raw.remotes.length);
+      const others = accounts.flatMap((_, x) => (x === from ? [] : [x]));
+      return { from, to: others[m.to % others.length]! };
+    });
     return {
       accounts,
       statuses,
@@ -472,13 +483,12 @@ export const worldArb: fc.Arbitrary<World> = fc
         raw.dismissals.map((d) => ({ owner: d.owner % LOCALS, target: d.target % n })),
         (d) => `${d.owner}:${d.target}`,
       ),
-      // A remote account's move to another account, drawn from bits already drawn (a new field would change the worlds
-      // the fixed seeds of the other properties give): with an odd number of blocks, from the first block's draw.
-      moves: (raw.blocks.length % 2 === 1 ? raw.blocks.slice(0, 1) : []).map((m) => {
-        const from = LOCALS + (m.from % raw.remotes.length);
-        const others = accounts.flatMap((_, x) => (x === from ? [] : [x]));
-        return { from, to: others[m.to % others.length]! };
-      }),
+      moves,
+      // As the move: with two or three blocks past a multiple of four, the remote account of the first block's target
+      // draw, unless it is the moved one (the bound of 0125_account_move_pending holds a pending account unmoved).
+      pending: (raw.blocks.length % 4 >= 2 ? raw.blocks.slice(0, 1) : [])
+        .map((b) => LOCALS + (b.to % raw.remotes.length))
+        .filter((x) => !moves.some((m) => m.from === x)),
       now: raw.now,
     };
   });
@@ -632,6 +642,9 @@ export function writeWorld(sql: SqlStorage, world: World): void {
   // Written after every account, as the 0060 triggers accept it: another account's id, on a remote row.
   for (const m of world.moves) {
     sql.exec("UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", accountId(m.to), accountId(m.from));
+  }
+  for (const x of world.pending) {
+    sql.exec("UPDATE accounts SET move_pending = 1 WHERE id = ?", accountId(x));
   }
   for (const d of world.dismissals) {
     sql.exec(

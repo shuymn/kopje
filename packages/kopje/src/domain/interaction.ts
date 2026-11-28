@@ -118,7 +118,7 @@ export const resolveInteraction = userWriteOperation.atStoreTime("storeNow")<Res
   }
 });
 
-export type FollowOutcome = "followed" | "requested" | "already_requested" | "refused" | "not_found";
+export type FollowOutcome = "followed" | "requested" | "already_requested" | "refused" | "pending" | "not_found";
 
 // The outcome, and the account it is about as the Store knows it (null when there is none to name).
 export type WebFollowResult = { outcome: FollowOutcome; account: Account | null };
@@ -127,7 +127,8 @@ export type WebFollowInput = { target: string; now: number; present: ResolveInpu
 
 // The follow of /authorize_interaction/follow. followed: the follow is in effect (it may have been already); requested:
 // a request was sent now; already_requested: one was pending before; refused: the follow service forbade it (a move,
-// a block or a domain block) or the follow limit refused it; not_found: no such account, or it is not available.
+// a block or a domain block) or the follow limit refused it; pending: the account's move is being resolved, so nothing
+// was written (the caller rings the jobs round that resolves it); not_found: no such account, or it is not available.
 export const webFollow = userWriteOperation<WebFollowInput, WebFollowResult>((db, input, { accountId }) => {
   const targetId = resolveAccountId(db, input.target);
   if (targetId === null) {
@@ -146,6 +147,8 @@ export const webFollow = userWriteOperation<WebFollowInput, WebFollowResult>((db
   switch (result.status) {
     case "not_found":
       return { outcome: "not_found", account: null };
+    case "pending":
+      return named("pending");
     case "forbidden":
     case "invalid":
     case "unavailable":

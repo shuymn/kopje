@@ -186,6 +186,8 @@ export const STRINGS: Messages = {
     alreadyRequested: (account) => ["A follow request to ", account, " is already waiting for approval."],
     refusedTitle: "Cannot follow",
     refused: (account) => [account, " cannot be followed from your account."],
+    pendingTitle: "Checking the account",
+    pending: (account) => ["This server is still checking ", account, ". Try again in a moment."],
   },
   remote: {
     follow: "Follow",

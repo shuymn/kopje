@@ -645,6 +645,28 @@ Accounts (the `Account` and credential account entities):
   shows its target, so an imported id naming no account, or a target whose domain passes 253 bytes, is no move. A `Move`
   whose target has itself moved leaves each follower on the source with its lists, as Mastodon's `UnfollowFollowWorker`
   does, and a follow request held for an account that has moved since is not sent while the move lasts.
+- While an account's move is being resolved (its stored document names, as its `movedTo`, an account Kopje does not
+  hold and may fetch, and its collection sync has not yet settled that fetch), following it answers 503 `Remote data
+  could not be fetched`, also to change the options of an existing follow, after the 404 of an unavailable account and
+  the 403 of a refused one; nothing is written, and the jobs round that resolves the move is asked for.
+  `/authorize_interaction` shows the account as still being checked, and a held follow request to it is not sent until
+  the move settles. Mastodon fetches the destination while it processes the account and answers the follow 200 or 403
+  (`FetchRemoteAccountService`; its 503 with this body is a failed fetch, `error_handling.rb:22-24`). Once the move
+  resolves, following answers 403; once it settles with nothing (the destination refused or gone, or the read given up
+  `MAX_SYNC_ATTEMPTS` claims after its opening claim or its last progress), the follow is judged as for any
+  account. The state lasts one read of the account's collection sync, so a fresh store of the account's document that
+  still names an unresolved destination starts it again, and another request for the sync renews its attempts: a peer
+  that keeps sending profile updates or collection changes while its destination keeps failing, or that stores its
+  document again before each fetch of the destination completes (a fetch whose read was overtaken is not used), keeps
+  the account in this state.
+- A verified `Move` whose target's own move is being resolved moves no follower: the job is admitted covering none, and
+  a batch after a first one moves none once the target's move is being resolved or set, so the followers left keep the
+  source with its lists; the source's move is set and blocks and mutes are carried as for any `Move`. A new `Move`
+  stores the target's document afresh, which can leave its move being resolved again. Mastodon fetches the destination
+  while it processes the target, so when that destination proves gone or has itself moved, Mastodon finds no moved
+  account and moves the followers to the target (`move_worker.rb`, `follow_service.rb:18`), where Kopje keeps them on
+  the source (`test/inbox.test.ts`, "keeps the follower on the source when the target's destination then proves
+  gone").
 - A remote actor's document is stored only while the Store revision read before its fetch holds (ID-1 in
   `docs/threat-model.md`): a document fetched before another store of the actor committed is not stored. Mastodon
   serializes the processing of one account (`process_account_service.rb:30`) but stores whatever document it processes

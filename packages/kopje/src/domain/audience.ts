@@ -441,6 +441,15 @@ function movedSql(x: string): string {
 		WHERE pmv.id = ${x} AND ${movedTargetShownSql("pmt")})`;
 }
 
+// R21 for a Move's transfer as a whole: whether the Move's target `x` takes no follower, because it has moved
+// (movedSql) or a move of it is being resolved (accounts.move_pending, which its collection sync settles). A transfer
+// cannot wait for that resolution, so it moves none, as R21 would refuse each follower once the target has moved
+// (docs/mastodon-deviations.md, Accounts). Key lookups of `x` only.
+export function moveTargetHeldSql(x: string): string {
+  return `(${movedSql(x)} OR EXISTS (SELECT 1 FROM main.accounts pmp INDEXED BY ${ACCOUNTS_ID_INDEX}
+		WHERE pmp.id = ${x} AND pmp.move_pending = 1))`;
+}
+
 // R21 (FollowService): whether `viewer` may follow the account `x`: it is available and someone else, has not moved,
 // neither blocks the other, and the viewer does not block its domain.
 export function followableBySql(x: string, viewer: string): string {
@@ -489,11 +498,13 @@ export function suggestionSourceSql(owner: string, viewer: string): string {
 
 // R39: whether the account whose accounts row `a` is in scope is a candidate for the suggestions of `viewer`: someone
 // else, discoverable (accounts.discoverable = 1), not moved to a target the presenter shows (movedTargetShownSql: the
-// target sought by key from a.moved_to_account_id, only when it is set), neither followed nor requested by the viewer
+// target sought by key from a.moved_to_account_id, only when it is set) and with no move being resolved
+// (a.move_pending, on the row already read; the bound of 0125_account_move_pending never sets it beside a move, so the
+// two terms never both read), neither followed nor requested by the viewer
 // (a follow in either state, one seek of follows_pair), and not dismissed by them (follow_recommendation_mutes). R12
 // (listedForSql) judges each candidate after this.
 export function suggestionCandidateSql(a: string, viewer: string): string {
-  return `(${a}.id <> ${viewer} AND ${a}.discoverable = 1
+  return `(${a}.id <> ${viewer} AND ${a}.discoverable = 1 AND ${a}.move_pending = 0
 		AND CASE WHEN ${a}.moved_to_account_id IS NULL THEN 1 ELSE NOT EXISTS (SELECT 1 FROM main.accounts pmt
 			INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE pmt.id = ${a}.moved_to_account_id AND ${movedTargetShownSql("pmt")}) END
 		AND NOT EXISTS (SELECT 1 FROM main.follows pf WHERE pf.account_id = ${viewer} AND pf.target_account_id = ${a}.id)

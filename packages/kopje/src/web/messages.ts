@@ -228,6 +228,9 @@ export type Messages = {
     alreadyRequested: (account: Child) => Child;
     refusedTitle: string;
     refused: (account: Child) => Child;
+    // The account's move is being resolved: nothing was followed yet.
+    pendingTitle: string;
+    pending: (account: Child) => Child;
   };
   // Following or interacting from another server: the profile's Follow and the status's Open on your
   // server, their dialogs and the handoff pages (/@username/interact, /@username/:id/interact).

@@ -1107,10 +1107,12 @@ describe("POST /authorize_interaction/follow", () => {
     return { form, follow: () => postForm(t, browser, "/authorize_interaction/follow", form) };
   }
 
-  async function outcome(response: Response): Promise<string> {
+  // The page's heading and its whole text, parsed once.
+  async function outcome(response: Response): Promise<{ heading: string; page: string }> {
     expect(response.status).toBe(200);
     expect(headersOf(response)).toEqual(PRIVATE_HEADERS);
-    return text(query(parseHtml(await response.text()), "h1")[0]!);
+    const document = parseHtml(await response.text());
+    return { heading: text(query(document, "h1")[0]!), page: text(document) };
   }
 
   it("requests a remote follow and wakes delivery at once; a second follow is already requested", async () => {
@@ -1119,13 +1121,13 @@ describe("POST /authorize_interaction/follow", () => {
     const { follow } = await followed(t, browser, servedNote(t).id);
     expect(t.doorbell).not.toHaveBeenCalled();
     const first = await follow();
-    expect(await outcome(first)).toBe("Follow requested");
+    expect((await outcome(first)).heading).toBe("Follow requested");
     expect(t.doorbell).toHaveBeenCalledTimes(1);
     expect(await sql(t.store, "SELECT state FROM follows WHERE account_id = ?", t.aliceId)).toEqual([
       { state: "pending" },
     ]);
     const second = await follow();
-    expect(await outcome(second)).toBe("Follow requested");
+    expect((await outcome(second)).heading).toBe("Follow requested");
     expect(t.doorbell).toHaveBeenCalledTimes(1);
   });
 
@@ -1138,32 +1140,49 @@ describe("POST /authorize_interaction/follow", () => {
     expect(t.web.fetched).toEqual([]);
     const page = await local.follow();
     // Each outcome names the account the Store followed, never the form's text.
-    expect(text(parseHtml(await page.clone().text()))).toContain("You are following carol (@carol@kopje.test).");
-    expect(await outcome(page)).toBe("Following");
+    const following = await outcome(page);
+    expect(following.page).toContain("You are following carol (@carol@kopje.test).");
+    expect(following.heading).toBe("Following");
     expect(t.doorbell).toHaveBeenCalledTimes(1);
 
     const remote = await followed(t, browser, servedNote(t).id);
     await remote.follow();
-    const again = await remote.follow();
-    expect(text(parseHtml(await again.clone().text()))).toMatch(
-      /A follow request to .+ \(@bob@mastodon\.example\) is already waiting for approval\./,
-    );
+    const again = await outcome(await remote.follow());
+    expect(again.page).toMatch(/A follow request to .+ \(@bob@mastodon\.example\) is already waiting for approval\./);
     expect(t.doorbell).toHaveBeenCalledTimes(2);
 
     // carol blocks alice: refused, and nothing is woken.
     await sql(t.store, "DELETE FROM follows WHERE target_account_id = ?", carolId);
     await sql(t.store, "INSERT INTO blocks (account_id, target_account_id) VALUES (?, ?)", carolId, t.aliceId);
-    const refused = await local.follow();
-    expect(text(parseHtml(await refused.clone().text()))).toContain(
-      "carol (@carol@kopje.test) cannot be followed from your account.",
-    );
-    expect(await outcome(refused)).toBe("Cannot follow");
+    const refused = await outcome(await local.follow());
+    expect(refused.page).toContain("carol (@carol@kopje.test) cannot be followed from your account.");
+    expect(refused.heading).toBe("Cannot follow");
     const missing = local.form;
     missing.set("account_id", "999999999999999999");
     const notFound = await postForm(t, browser, "/authorize_interaction/follow", missing);
-    expect(await outcome(notFound)).toBe("Not found");
+    expect((await outcome(notFound)).heading).toBe("Not found");
     expect(t.doorbell).toHaveBeenCalledTimes(2);
     expect(await sql(t.store, "SELECT 1 FROM follows WHERE target_account_id = ?", carolId)).toEqual([]);
+  });
+
+  // An account whose move is being resolved (accounts.move_pending) is held, as the follow API answers 503: nothing is
+  // written and the jobs round that resolves the move is asked for. Once it settles with nothing, the follow goes on.
+  it("tells a pending move apart and asks for the round that resolves it", async () => {
+    const t = await world();
+    const browser = await signIn(t);
+    t.web.serve(t.bob.uri, { ...t.bob.document, movedTo: "https://other.example/users/dest" });
+    const { follow } = await followed(t, browser, t.bob.uri);
+    expect(t.jobs).toHaveBeenCalledTimes(1);
+    const held = await outcome(await follow());
+    expect(held.page).toMatch(/This server is still checking .+ \(@bob@mastodon\.example\)\. Try again in a moment\./);
+    expect(held.heading).toBe("Checking the account");
+    expect(t.jobs).toHaveBeenCalledTimes(2);
+    expect(t.doorbell).not.toHaveBeenCalled();
+    expect(await sql(t.store, "SELECT 1 FROM follows WHERE account_id = ?", t.aliceId)).toEqual([]);
+    await sql(t.store, "UPDATE accounts SET move_pending = 0 WHERE uri = ?", t.bob.uri);
+    expect((await outcome(await follow())).heading).toBe("Follow requested");
+    expect(t.jobs).toHaveBeenCalledTimes(2);
+    expect(t.doorbell).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a missing, null or foreign Origin and a missing or wrong token, writing and waking nothing", async () => {

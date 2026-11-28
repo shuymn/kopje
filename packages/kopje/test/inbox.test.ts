@@ -5,10 +5,11 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { forwardSubject } from "../src/domain/deliveries";
-import { inboxGate, KEY_REFRESH_MS, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
+import { inboxGate, KEY_REFRESH_MS, MOVE_BATCH, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
 import { type RemoteActorInput, SWEEP_BATCH, upsertRemoteActor } from "../src/domain/remote-actors";
 import { webfingerUrl } from "../src/domain/remote-statuses";
 import { MAX_RETRACTIONS_PER_ACTOR, RETRACTION_TTL_MS } from "../src/domain/retractions";
+import { syncCollections } from "../src/federation/collections";
 import { verifySpooledRequest } from "../src/federation/inbound";
 import { handleQueue } from "../src/jobs/queue";
 import { sha256Hex } from "../src/platform/sha256";
@@ -53,6 +54,7 @@ import {
   multikeyActor,
   rfc9421Init,
 } from "./key-forms-helpers";
+import { moveActivity, updated } from "./move-helpers";
 
 // Inbound activities about actors and relationships, end to end through the app: signed requests from synthetic
 // Mastodon- and Misskey-shaped servers, the Store's effects, and the threat model's inbound negative cases. Test names
@@ -1687,26 +1689,6 @@ describe("account moves", () => {
       "SELECT m.uri AS moved FROM accounts a LEFT JOIN accounts m ON m.id = a.moved_to_account_id WHERE a.uri = ?",
       uri,
     ).then((rows) => rows[0]?.moved);
-  // A fresh document of `actor` stored through an Update, as any refresh stores it.
-  const refresh = async (t: Setup, actor: TestActor, document: Record<string, unknown>, n: number) => {
-    t.web.serve(actor.uri, document);
-    const update = {
-      "@context": AS,
-      id: `${actor.uri}#updates/${n}`,
-      type: "Update",
-      actor: actor.uri,
-      object: document,
-    };
-    expect(await t.post(actor, update)).toBe(202);
-  };
-  const moveOf = (actor: TestActor, target: TestActor, n: number) => ({
-    "@context": AS,
-    id: `${actor.uri}#moves/${n}`,
-    type: "Move",
-    actor: actor.uri,
-    object: actor.uri,
-    target: target.uri,
-  });
   const ageKeys = (t: Setup) => sql(t.store, "UPDATE remote_keys SET fetched_at = ?", NOW - KEY_REFRESH_MS - 1);
 
   it("sets it from the document's movedTo naming a stored account, and clears it from one naming none", async () => {
@@ -1715,12 +1697,13 @@ describe("account moves", () => {
     const carol = await mastodonActor(t.web, "carol", { key: 2 });
     await t.post(carol, follow(carol, DAVE_URI));
     await t.post(bob, follow(bob, DAVE_URI));
-    await refresh(t, bob, { ...bob.document, movedTo: carol.uri }, 1);
+    await updated(t, bob, { ...bob.document, movedTo: carol.uri }, 1);
     expect(await movedTo(t.store, bob.uri)).toBe(carol.uri);
-    // Kopje does not fetch an unknown account to resolve it (Mastodon does).
-    await refresh(t, bob, { ...bob.document, movedTo: `${MASTODON}/users/unknown` }, 2);
+    // One naming an account Kopje does not hold clears it at once; the collection sync may fetch that account later
+    // (test/collection-move-fetch.test.ts).
+    await updated(t, bob, { ...bob.document, movedTo: `${MASTODON}/users/unknown` }, 2);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
-    await refresh(t, bob, { ...bob.document, movedTo: bob.uri }, 3);
+    await updated(t, bob, { ...bob.document, movedTo: bob.uri }, 3);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
     // Named as an array or an object with an id: the first value and the id are read (collection-requests.ts
     // namedMove).
@@ -1728,21 +1711,21 @@ describe("account moves", () => {
       [4, { ...bob.document, movedTo: [carol.uri] }],
       [5, { ...bob.document, movedTo: { id: carol.uri } }],
     ] as const) {
-      await refresh(t, bob, { ...bob.document, movedTo: null }, 10 + n);
+      await updated(t, bob, { ...bob.document, movedTo: null }, 10 + n);
       expect(await movedTo(t.store, bob.uri)).toBeNull();
-      await refresh(t, bob, document, n);
+      await updated(t, bob, document, n);
       expect(await movedTo(t.store, bob.uri), String(n)).toBe(carol.uri);
     }
     // Spelled as the expanded property, it is not read, as Mastodon reads only `movedTo` (collection-requests.ts
     // namedMove).
     const { movedTo: _literal, ...unmoved } = bob.document;
-    await refresh(t, bob, { ...unmoved, "https://www.w3.org/ns/activitystreams#movedTo": { "@id": carol.uri } }, 6);
+    await updated(t, bob, { ...unmoved, "https://www.w3.org/ns/activitystreams#movedTo": { "@id": carol.uri } }, 6);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
-    await refresh(t, bob, bob.document, 7);
+    await updated(t, bob, bob.document, 7);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
     // An account being purged is not named.
     await sql(t.store, "UPDATE accounts SET deleted_at = '2026-01-01T00:00:00.000Z' WHERE uri = ?", carol.uri);
-    await refresh(t, bob, { ...bob.document, movedTo: carol.uri }, 8);
+    await updated(t, bob, { ...bob.document, movedTo: carol.uri }, 8);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
   });
 
@@ -1773,9 +1756,9 @@ describe("account moves", () => {
     for (const [value, expected] of cases) {
       const label = JSON.stringify(value);
       // From the other state first, so each store is seen writing the move.
-      await refresh(t, bob, { ...bob.document, movedTo: expected === null ? carol.uri : null }, ++n);
+      await updated(t, bob, { ...bob.document, movedTo: expected === null ? carol.uri : null }, ++n);
       expect(await movedTo(t.store, bob.uri), label).toBe(expected === null ? carol.uri : null);
-      await refresh(t, bob, { ...bob.document, movedTo: value }, ++n);
+      await updated(t, bob, { ...bob.document, movedTo: value }, ++n);
       expect(await movedTo(t.store, bob.uri), label).toBe(expected);
     }
   });
@@ -1834,12 +1817,12 @@ describe("account moves", () => {
     ];
     let n = 0;
     for (const [label, document, earlier, now] of cases) {
-      await refresh(t, bob, document, ++n);
+      await updated(t, bob, document, ++n);
       // The move an earlier reading stored for this document.
       await sql(t.store, "UPDATE accounts SET moved_to_account_id = ? WHERE id = ?", earlier, bobId);
       expect(await shown(), label).toBe(earlier ?? undefined);
       await live(earlier, `${label}, before`);
-      await refresh(t, bob, document, ++n);
+      await updated(t, bob, document, ++n);
       expect(await movedTo(t.store, bob.uri), label).toBe(now === null ? null : carol.uri);
       expect(await shown(), label).toBe(now ?? undefined);
       await live(now, label);
@@ -1854,7 +1837,7 @@ describe("account moves", () => {
     await t.post(carol, follow(carol, DAVE_URI));
     await t.post(erin, follow(erin, DAVE_URI));
     await t.post(bob, follow(bob, DAVE_URI));
-    await refresh(t, bob, { ...bob.document, movedTo: carol.uri }, 1);
+    await updated(t, bob, { ...bob.document, movedTo: carol.uri }, 1);
     const input = (target: string): RemoteActorInput => ({
       ...actorDefaults(),
       uri: bob.uri,
@@ -1886,7 +1869,7 @@ describe("account moves", () => {
     const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
     t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri] });
     await t.post(bob, follow(bob, DAVE_URI));
-    const move = moveOf(bob, bob2, 1);
+    const move = moveActivity(bob, bob2.uri);
     expect(await t.post(bob, move)).toBe(202);
     expect(await movedTo(t.store, bob.uri)).toBe(bob2.uri);
     // Its document now names none, but the key is cached, so it is not fetched: the replay is the known Move.
@@ -1903,7 +1886,7 @@ describe("account moves", () => {
     t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri] });
     t.web.serve(bob3.uri, { ...bob3.document, alsoKnownAs: [bob.uri] });
     await t.post(bob, follow(bob, DAVE_URI));
-    const toBob2 = moveOf(bob, bob2, 1);
+    const toBob2 = moveActivity(bob, bob2.uri);
     expect(await t.post(bob, toBob2)).toBe(202);
     // A replay with a fresh document that names no move clears it; the known Move does not restore it.
     t.web.serve(bob.uri, bob.document);
@@ -1916,7 +1899,7 @@ describe("account moves", () => {
     expect(await t.post(bob, toBob2)).toBe(202);
     expect(await movedTo(t.store, bob.uri)).toBe(bob2.uri);
     // A later Move to bob3, then the earlier one replayed with a cached key: bob3 stays.
-    expect(await t.post(bob, moveOf(bob, bob3, 2))).toBe(202);
+    expect(await t.post(bob, moveActivity(bob, bob3.uri, 2))).toBe(202);
     expect(await movedTo(t.store, bob.uri)).toBe(bob3.uri);
     expect(await t.post(bob, toBob2)).toBe(202);
     expect(await movedTo(t.store, bob.uri)).toBe(bob3.uri);
@@ -1991,27 +1974,32 @@ describe("account moves", () => {
     }
   });
 
-  // R21 judges each follower a Move carries: a target that has itself moved is not followable, so the follower keeps
-  // the source and its lists and nothing is sent (Mastodon's UnfollowFollowWorker rescues FollowService's
-  // NotPermittedError); blocks and mutes are carried anyway (move_worker.rb:21-22). The Move stores the target's
-  // fetched document first, so whether the target has moved is its literal movedTo's reading (collection-requests.ts
-  // namedMove): a relative one names no account, though carol is stored where it would resolve against the target's
-  // id, and one with a fragment names carol.
-  it("keeps the followers of the source when the Move's target has moved, and moves them when it has not", async () => {
+  // Move admission (moveTargetHeldSql): a target that has itself moved, or whose move is being resolved
+  // (accounts.move_pending: its fresh document names, as its movedTo, a fetchable account Kopje does not hold), is
+  // held, so the job covers no follower (bound '0'), not only R21's refusal of each: the follower keeps the source and
+  // its lists and no Follow or Undo(Follow) is sent (Mastodon's UnfollowFollowWorker rescues FollowService's
+  // NotPermittedError; the pending transfer cannot wait for the collection sync that resolves it). The source's move is
+  // set and blocks and mutes are carried in every case (move_worker.rb:21-22). The Move stores the target's fetched
+  // document first, so whether the target has moved is its literal movedTo's reading (collection-requests.ts
+  // namedMove): a relative one names no account, though carol is stored where it would resolve against the target's id,
+  // and one with a fragment names carol. The control is the target naming no destination.
+  it("holds the followers of the source when the Move's target has moved or its move is being resolved", async () => {
     const CAROL = "https://new.example/users/carol";
-    const cases: [string, Record<string, unknown>, boolean][] = [
-      ["carol", { movedTo: CAROL }, true],
-      ["carol with a fragment", { movedTo: `${CAROL}#main` }, true],
-      ["none", {}, false],
-      ["relative", { movedTo: "/users/carol" }, false],
+    const cases: [string, Record<string, unknown>, { moved: string | null; pending: number }][] = [
+      ["carol", { movedTo: CAROL }, { moved: CAROL, pending: 0 }],
+      ["carol with a fragment", { movedTo: `${CAROL}#main` }, { moved: CAROL, pending: 0 }],
+      ["an unknown destination", { movedTo: "https://other.example/users/dest" }, { moved: null, pending: 1 }],
+      ["none", {}, { moved: null, pending: 0 }],
+      ["relative", { movedTo: "/users/carol" }, { moved: null, pending: 0 }],
     ];
-    for (const [label, moved, targetMoved] of cases) {
+    for (const [label, named, target] of cases) {
+      const held = target.moved !== null || target.pending === 1;
       const t = await setup();
       const bob = await mastodonActor(t.web, "bob");
       const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
       const carol = await mastodonActor(t.web, "carol", { origin: "https://new.example", key: 3 });
       await t.post(carol, follow(carol, DAVE_URI));
-      t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri], ...moved });
+      t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri], ...named });
       await t.post(bob, follow(bob, DAVE_URI));
       const bobId = (await accountId(t.store, bob.uri))!;
       await sql(
@@ -2024,31 +2012,127 @@ describe("account moves", () => {
       await sql(t.store, "INSERT INTO list_accounts (list_id, account_id) VALUES ('700000000000000001', ?)", bobId);
       await sql(t.store, "INSERT INTO mutes (account_id, target_account_id) VALUES (?, ?)", DAVE, bobId);
       const before = (await outbound(t.store)).length;
-      expect(await t.post(bob, moveOf(bob, bob2, 1))).toBe(202);
+      expect(await t.post(bob, moveActivity(bob, bob2.uri))).toBe(202);
       const bob2Id = (await accountId(t.store, bob2.uri))!;
-      expect([label, await movedTo(t.store, bob2.uri)]).toEqual([label, targetMoved ? carol.uri : null]);
+      const [pending] = await sql<{ move_pending: number }>(
+        t.store,
+        "SELECT move_pending FROM accounts WHERE id = ?",
+        bob2Id,
+      );
+      expect([label, { moved: await movedTo(t.store, bob2.uri), pending: pending?.move_pending }]).toEqual([
+        label,
+        target,
+      ]);
+      expect(
+        await sql(t.store, "SELECT bound, done_at IS NOT NULL AS done FROM inbound_jobs WHERE kind = 'move'"),
+        label,
+      ).toEqual([{ bound: held ? "0" : expect.not.stringMatching(/^0$/), done: 1 }]);
+      expect(await movedTo(t.store, bob.uri), label).toBe(bob2.uri);
       const sent = (await outbound(t.store)).slice(before).map((o) => o.activity.type);
       const members = await sql(t.store, "SELECT account_id FROM list_accounts ORDER BY account_id");
-      if (targetMoved) {
-        expect(
-          (await follows(t.store)).filter((f) => f.account_id === ALICE),
-          label,
-        ).toEqual([{ account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null }]);
+      const alice = (await follows(t.store)).filter((f) => f.account_id === ALICE);
+      if (held) {
+        expect(alice, label).toEqual([{ account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null }]);
         expect(sent, label).toEqual([]);
         expect(members, label).toEqual([{ account_id: bobId }]);
       } else {
-        expect(
-          (await follows(t.store)).filter((f) => f.account_id === ALICE),
-          label,
-        ).toEqual([expect.objectContaining({ target_account_id: bob2Id, state: "pending" })]);
+        expect(alice, label).toEqual([expect.objectContaining({ target_account_id: bob2Id, state: "pending" })]);
         expect(sent, label).toEqual(["Undo", "Follow"]);
         expect(members, label).toEqual([{ account_id: bob2Id }]);
       }
-      expect(await sql(t.store, "SELECT target_account_id FROM mutes WHERE account_id = ? ORDER BY id", DAVE)).toEqual([
-        { target_account_id: bobId },
-        { target_account_id: bob2Id },
-      ]);
+      expect(
+        await sql(t.store, "SELECT target_account_id FROM mutes WHERE account_id = ? ORDER BY id", DAVE),
+        label,
+      ).toEqual([{ target_account_id: bobId }, { target_account_id: bob2Id }]);
     }
+  });
+
+  // Each batch reads the target again: once its move is being resolved or set after the first batch, the next batch
+  // moves no follower and the job ends, so the followers left keep the source. The control stores the target's
+  // document again naming no destination, and the last follower moves.
+  it.each([
+    ["names no destination", null, MOVE_BATCH + 1],
+    ["names an account Kopje does not hold", "https://other.example/users/dest", MOVE_BATCH],
+    ["names a stored account", "https://new.example/users/carol", MOVE_BATCH],
+  ] as const)("stops between batches when the target's document then %s", async (_name, movedTo, moved) => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
+    const carol = await mastodonActor(t.web, "carol", { origin: "https://new.example", key: 3 });
+    await t.post(carol, follow(carol, DAVE_URI));
+    t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri] });
+    await t.post(bob, follow(bob, DAVE_URI));
+    const bobId = (await accountId(t.store, bob.uri))!;
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+			INSERT INTO accounts (id, uri, username, domain) SELECT printf('5%017d', i), ? || i, 'u' || i, NULL FROM n`,
+      MOVE_BATCH + 1,
+      `${LOCAL}/ap/users/u`,
+    );
+    await sql(
+      t.store,
+      `INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey)
+			SELECT id, username || '@mail.example', x'00', x'00', 'k' FROM accounts WHERE id GLOB '5*'`,
+    );
+    await sql(
+      t.store,
+      "INSERT INTO follows (account_id, target_account_id, state) SELECT id, ?, 'accepted' FROM accounts WHERE id GLOB '5*'",
+      bobId,
+    );
+    const toBob2 = async () =>
+      (
+        await sql<{ n: number }>(
+          t.store,
+          "SELECT count(*) AS n FROM follows f JOIN accounts a ON a.id = f.target_account_id WHERE a.uri = ?",
+          bob2.uri,
+        )
+      )[0]!.n;
+    expect(await t.post(bob, moveActivity(bob, bob2.uri))).toBe(202);
+    expect(await toBob2()).toBe(MOVE_BATCH);
+    await updated(t, bob2, { ...bob2.document, alsoKnownAs: [bob.uri], ...(movedTo === null ? {} : { movedTo }) }, 1);
+    await settle(t.store);
+    expect(await toBob2()).toBe(moved);
+    expect(await sql(t.store, "SELECT 1 FROM inbound_jobs WHERE kind = 'move' AND done_at IS NULL")).toEqual([]);
+  });
+
+  // The recorded deviation (docs/mastodon-deviations.md, Accounts): the target's destination proves gone after the job
+  // was admitted covering no follower, so the target's move settles with nothing, yet the follower stays on the source;
+  // Mastodon, finding no moved account, would move it to the target.
+  it("keeps the follower on the source when the target's destination then proves gone", async () => {
+    const t = await setup();
+    const DEST = "https://other.example/users/dest";
+    const bob = await mastodonActor(t.web, "bob");
+    const bob2 = await mastodonActor(t.web, "bob2", { origin: "https://new.example", key: 2, extra: {} });
+    t.web.serve(bob2.uri, { ...bob2.document, alsoKnownAs: [bob.uri], movedTo: DEST });
+    t.web.fail(DEST, 404);
+    await t.post(bob, follow(bob, DAVE_URI));
+    const bobId = (await accountId(t.store, bob.uri))!;
+    await sql(
+      t.store,
+      "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted')",
+      ALICE,
+      bobId,
+    );
+    expect(await t.post(bob, moveActivity(bob, bob2.uri))).toBe(202);
+    const from = t.web.fetched.length;
+    for (let call = 0; call < 10 && (await sql(t.store, "SELECT 1 FROM collection_syncs")).length > 0; call++) {
+      await syncCollections(
+        t.env,
+        inboxDeps(() => t.store, t.web.loader),
+      );
+    }
+    expect(t.web.fetched.slice(from)).toContain(DEST);
+    expect(
+      await sql(t.store, "SELECT move_pending, moved_to_account_id FROM accounts WHERE uri = ?", bob2.uri),
+    ).toEqual([{ move_pending: 0, moved_to_account_id: null }]);
+    await settle(t.store);
+    expect((await follows(t.store)).filter((f) => f.account_id === ALICE)).toEqual([
+      { account_id: ALICE, target_account_id: bobId, state: "accepted", uri: null },
+    ]);
+    expect(
+      await sql(t.store, "SELECT bound, done_at IS NOT NULL AS done FROM inbound_jobs WHERE kind = 'move'"),
+    ).toEqual([{ bound: "0", done: 1 }]);
   });
 
   it("names no account being purged, by a document or by a Move", async () => {
@@ -2073,8 +2157,8 @@ describe("account moves", () => {
     const deletion = { "@context": AS, id: `${bob2.uri}#delete`, type: "Delete", actor: bob2.uri, object: bob2.uri };
     expect(await t.post(bob2, deletion)).toBe(202);
     expect(await accountId(t.store, bob2.uri)).toBe(bob2Id);
-    await refresh(t, bob, { ...bob.document, movedTo: bob2.uri }, 1);
-    expect(await t.post(bob, moveOf(bob, bob2, 1))).toBe(202);
+    await updated(t, bob, { ...bob.document, movedTo: bob2.uri }, 1);
+    expect(await t.post(bob, moveActivity(bob, bob2.uri))).toBe(202);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
   });
 });
