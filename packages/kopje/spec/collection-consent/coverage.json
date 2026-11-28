@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "a76edb9cad3547f1159d1d1eb4c7751a5ca38900",
+  "confirmed": "813d18de17ff1b3020764e8693a3364c056ffcda",
   "files": [
     {
       "path": "src/store.ts",
@@ -12,7 +12,7 @@
       "path": "src/domain/inbox.ts",
       "functions": ["receiveActivity", "startActorDeletion", "purgeBatch"],
       "spec": "CollectionConsent.tla RecvRes and Touch: which of CollectionConsentKopje.tla's operators an inbound activity runs, when it is ignored, and that every valid push of R's collections outdates a read under way, a no-op one included; OwnerGone and KPurge: an actor Delete writes R's tombstone and runs the first purge batch in its own transaction, which reaches C or not, and later batches purge the rest",
-      "blob": "99964b650fd4048158f0ab32df04e58da8ef6f29"
+      "blob": "17e36c3efcf462f173029d5d81fd517535023e36"
     },
     {
       "path": "src/federation/inbound.ts",
@@ -118,7 +118,7 @@
       "path": "src/domain/audience.ts",
       "functions": ["collectionItemShownSql", "inCollectionsSql", "availableSql"],
       "spec": "CollectionConsentKopje.tla Shown, MemberDetail, InCollections and LAvail (R45 and L's availability)",
-      "blob": "f93652fc7f4722e30b3be31fa9554f24755cc0e5"
+      "blob": "32fd4144496d69b92806ef35b3c6b630497ccf08"
     },
     {
       "path": "src/federation/featured-collections.ts",
