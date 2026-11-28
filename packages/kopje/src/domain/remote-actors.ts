@@ -483,9 +483,9 @@ function storeActor(
   const row = remoteAccount(db, actor.uri);
   if (row !== undefined) {
     // The account's move as its document states it (ID-4), set or cleared by every store, an unchanged document's
-    // included (Mastodon's ProcessAccountService: process_account_service.rb:166), written once the row is stored, by
+    // included (Mastodon's ProcessAccountService: process_account_service.rb:293), written once the row is stored, by
     // its id: the literal movedTo (collection-requests.ts namedMove) naming a stored account (moveTargetSql); one Kopje
-    // does not know reads as none, as it is not fetched (process_account_service.rb:310-314 fetches it).
+    // does not know reads as none, as it is not fetched (process_account_service.rb:516-519 fetches it).
     db.run(
       `UPDATE accounts SET moved_to_account_id = ${moveTargetSql("?2", "?1")} WHERE id = ?1 AND domain IS NOT NULL`,
       row.id,

@@ -84,7 +84,9 @@ export async function loadActor(
 // invalid language map), where Mastodon 4.7 reads every member by its literal spelling (`@json[...]`) and stores the
 // account. Every member outside this inventory, in any spelling, is read from the document's JSON by spelling
 // (profileUrl, profileImage, collection-requests.ts collectionUri and namedMove, sharedInboxUri, claimedHandle,
-// emojiCandidates, remoteActorInput's flags) or not at all.
+// emojiCandidates, remoteActorInput's flags) or not at all. So the literal top-level `movedTo` is never handed to
+// Fedify; a kept member a context maps to `as:movedTo` still is, and Kopje reads no move from it (namedMove reads the
+// literal key alone, as Mastodon does).
 const FEDIFY_MEMBERS: Readonly<Record<string, string>> = {
   "@context": "JSON-LD expansion",
   id: "lookupObject's id check (ID-2), readActor",
