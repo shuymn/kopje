@@ -211,12 +211,7 @@ against their own instance. TLS is assumed between all parties.
   `src/federation/remote-actor.ts`; every other member, in any spelling, Kopje reads by its spelling as Mastodon does,
   or not at all), also one it loads itself while verifying an HTTP signature, live, on replay and in the rollback drain
   (a key at the actor's URL, or a key document and its owner's: `actorViewLoader`), so a member Kopje does not read from
-  Fedify refuses neither the actor nor its keys; keeping members out never adds a key or changes the id
-  (`test/remote-actor-images.test.ts`, "verifies a signature by an actor whose icon is not an Image", "verifies a key
-  Fedify fetches itself, by an actor whose icon is not an Image", "verifies a signature by an actor whose … is
-  unreadable, its key at the actor's URL", "verifies a key document served at the key's URL";
-  `test/remote-actor-view.test.ts`, "hands Fedify only the inventory"; `test/remote-actor-url.test.ts`, "verifies such
-  an actor's signature by its key alone, and applies only its own document").
+  Fedify refuses neither the actor nor its keys; keeping members out never adds a key or changes the id.
   A key id the Store does not hold fresh, or whose
   stored key fails, is resolved from the document at that id, as Kopje reads an actor's keys, and its owner judged as
   for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature verifies with an RSA or Ed25519 key, the algorithm
@@ -234,8 +229,13 @@ against their own instance. TLS is assumed between all parties.
   "RFC 9421 signature leaves out a required component", "holds the rollback drain's check of a spooled request to the
   same rule"), `test-node/fedify-usage.test.ts` ("reads Signature-Input with the one structured-field-values Fedify
   resolves"), `test/inbox-regressions.test.ts` ("stored keys, rotation and ownership", "refuses a gone actor's
-  Delete signed with another account's stale stored key"); `ownKeys` in `src/federation/remote-actor.ts`,
-  `src/federation/key-entries.ts`; `test/inbox-key-forms.test.ts` ("a draft-cavage signature naming a key that is not
+  Delete signed with another account's stale stored key"); `ownKeys`, `fedifyActorView` and `actorViewLoader` in
+  `src/federation/remote-actor.ts`, `src/federation/key-entries.ts`; `test/remote-actor-images.test.ts` ("verifies a
+  signature by an actor whose icon is not an Image", "verifies a key Fedify fetches itself, by an actor whose icon is
+  not an Image", "verifies a signature by an actor whose … is unreadable, its key at the actor's URL", "verifies a key
+  document served at the key's URL"), `test/remote-actor-view.test.ts` ("hands Fedify only the inventory"),
+  `test/remote-actor-url.test.ts` ("verifies such an actor's signature by its key alone, and applies only its own
+  document"), `test/inbox-key-forms.test.ts` ("a draft-cavage signature naming a key that is not
   RSA", "the keys of an actor's document", "the keys read per actor", "a document whose context gives publicKey another
   meaning", "RFC 9421 signatures by an Ed25519 key", "a key replaced under the same id", "a draft-cavage signature
   naming an Ed25519 key Kopje serves"), `test/key-entries.test.ts` ("which contexts give the key properties their
@@ -1750,7 +1750,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   guards"), `test/setup-access.test.ts`. Reports (manage_reports): anyone but the OAuth admin is refused
   before a report is read, so not even its existence is disclosed; the admin sees every report with its accounts (local
   emails included) and only the statuses its reporter may still see (R37); every admin write, and every Access repair
-  below, writes its moderation log row (`admin_actions`, actor, account and client or Access identity, newest 10,000
+  (AUTH-5), writes its moderation log row (`admin_actions`, actor, account and client or Access identity, newest 10,000
   kept) in its own transaction, read only through Access (`GET /admin/moderation-log`). `listAdminReports`,
   `getAdminReport`, `updateAdminReport` and `actOnReport` in `src/domain/reports.ts`, `adminAccountStream` in
   `src/domain/admin-account-presenter.ts`, `src/domain/moderation-log.ts`, migration `0029_admin_reports`;
@@ -1853,10 +1853,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `postMentionGate` or `editMentionGate`, for its first address only, a poll refresh's `reservePollRefresh`)
   comes with that answer and is spent on that request alone; every other request, redirect hops and RFC 9421 retries
   included, reads it anew (`fetchPreparation` in `src/domain/fetch-preparation.ts`, `refusesHost` in
-  `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", "asks the domain
-  policy again before the retry", `test/inbox.test.ts` "Store calls on the inbox cold path",
-  `test/search-resolution-store-calls.test.ts`, `test/poll-refresh-store-calls.test.ts`;
-  `test/mention-resolution-races.test.ts` ("spends the gate's verdict on the first request only")). Its inbound
+  `src/federation/federation.ts`). Its inbound
   activity is ignored before any fetch but `Delete`, `DeleteActor`, `Undo` and `Reject` verified with a key already
   stored. A block's `reject_media`, whatever its severity, keeps media out of the remote media cache (MEDIA-7;
   [visibility.md](visibility.md), "Instance domain blocks"), and the presenters withhold the media of the accounts it
@@ -1915,12 +1912,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/remote-suspension-deliveries.test.ts`. For held Rejects: `HOLD_REJECT` in `src/domain/deliveries.ts`,
   `replayReject` in `src/domain/handshake-replays.ts`, migration `0092_reject_replays`; `test/reject-replays.test.ts`.
   For domains: `src/domain/instance-domain-blocks.ts`, `hostCoveredSql` and `availableSql` in `src/domain/audience.ts`,
-  the fetch policy in `src/federation/loader.ts`, the inbound path in `src/federation/inbound.ts`, the domain job in
+  `fetchPreparation` in `src/domain/fetch-preparation.ts`, `refusesHost` in `src/federation/federation.ts`, the fetch
+  policy in `src/federation/loader.ts`, the inbound path in `src/federation/inbound.ts`, the domain job in
   `src/domain/remote-suspension.ts`, the admin API in `src/domain/admin-domain-blocks.ts`, `mediaRejectedSql` in
   `src/domain/audience.ts` and `slotEligibleSql` in `src/domain/remote-media.ts` for `reject_media`, with
   `presentedMediaRejectedSql` in `src/domain/audience.ts` and `withheldMedia` in `src/domain/status-presenter.ts` for
   the presenters, migrations `0046_instance_domain_blocks` and `0124_reject_media_blocks`;
-  `test/instance-domain-blocks.test.ts`, `test/remote-media-reject.test.ts`,
+  `test/signed-fetch.test.ts` ("fetch preparations in the loaders", "asks the domain policy again before the retry"),
+  `test/inbox.test.ts` ("Store calls on the inbox cold path"), `test/search-resolution-store-calls.test.ts`,
+  `test/poll-refresh-store-calls.test.ts`, `test/mention-resolution-races.test.ts` ("spends the gate's verdict on the
+  first request only"), `test/instance-domain-blocks.test.ts`, `test/remote-media-reject.test.ts`,
   `test/remote-media-reject-presenter.test.ts`, `test/web-reject-media.test.ts`, `test/streaming/reject-media.test.ts`,
   `test/domain-job.test.ts`, `test/admin-domain-blocks-replay.test.ts`, `test/instance-domain-blocks-inbound.test.ts`,
   `test/read-windows.test.ts`, `test/policy-oracle.test.ts` (against `available` and `covered` in
@@ -1983,8 +1984,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   found only while its owner is available; it is shown to a viewer the owner does not block, and listed among the
   owner's collections only when discoverable or to the owner. A member is shown only while available, accepted (or
   pending, to the owner), and not blocked by the viewer; an account's memberships (`in_collections`) are listed to that
-  account only. An account is added only with its consent: local, available, discoverable, unlocked or followed by the
-  owner (or the owner itself), with no block either way. A local account's block of another revokes the blocker's
+  account only. An account is added only with its consent (`mayFeatureSql`): available, with no block either way, and
+  either local (discoverable, and unlocked, followed by the owner, or the owner itself) or remote with a stored
+  `canFeature` that grants `automatic` or `manual` to the owner (added `pending` and asked with a `FeatureRequest`,
+  ID-6). A local account's block of another revokes the blocker's
   memberships of the blocked account's collections and deletes the blocked account's memberships of the blocker's
   collections, as Mastodon's `BlockService#handle_collections` does; an inbound `Block` changes no membership, and R45
   hides the blocked side's view. A member alone revokes its membership, which keeps the row (and the collection) but no
@@ -4732,9 +4735,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a
-  permanent answer (Mastodon's rule: 4xx except 401, 408 and 429, and 501) to the RFC 9421 retry when the draft-cavage
-  POST is answered 400 or 401 (NET-2; `test/delivery-post.test.ts` ("settles by the second answer", "knocks again on
-  the next attempt")), and are listed and retried through
+  permanent answer (Mastodon's rule: 4xx except 401, 408 and 429, and 501), judged on the RFC 9421 retry's answer when
+  the draft-cavage POST is answered 400 or 401 (a retry the deadline leaves no room for fails as transient; NET-2;
+  `test/delivery-post.test.ts` ("settles by the second answer", "knocks again on the next attempt")), and are listed and
+  retried through
   `/admin/deliveries` and `kopje-admin deliveries`; in maintenance nothing is claimed, so no attempt is counted. An
   activity a later one about the same object follows (an `Undo`, `Delete` or `Update`) is superseded and never sent
   again: naming it answers 409 `superseded`, and `--all` skips it, choosing eligible rows before its batch limit and
@@ -5199,8 +5203,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   uploads once the monthly Images budget is reserved", "stops one account at its monthly share", "answers 503 when the
   transformation allowance is used up"), `test/media-reconcile.test.ts` ("spends no transformation on a reservation
   that expired", "charges the budgets of the month the transformations run in").
-  _Enforced (main)_ for the Store's side of a video or audio upload's processing (#1828), with no route calling it yet
-  (the upload route's clauses come with #1828's upload route): one upload is charged one unit of
+  _Enforced (main)_ for a video or audio upload's processing (`src/domain/media-processing.ts`,
+  `src/mastodon/media-av.ts`): one upload is charged one unit of
   `MEDIA_UPLOAD_MONTHLY_JOBS`, per UTC month of the Store's clock, by its queue (`queueNormalize`) and never by a
   repeat or a refund, so a queued upload finishes whatever the budget becomes; the staging answers `spent` and charges
   nothing. A queued job gets one allocation (`allocate` in `src/domain/media-processing.ts`): its `deadline_at` is fixed
@@ -6756,8 +6760,8 @@ so the Store isolate's 128 MB holds them together.
   `fetchSignerOf` in `src/domain/actors.ts`, the one home of this rule, read by `fetchSigner` and by the fetch
   preparation of `inboxGate`, of a `receiveActivity` need, of `resolutionGate` (a search resolution, the instance
   actor), of `postMentionGate` and `editMentionGate` (a post's or an edit's mention resolution, the instance actor) and
-  of `reservePollRefresh`; `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
-  `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch"). The move part of that sync
+  of `reservePollRefresh`; `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`). The move
+  part of that sync
   fetches another account, the destination a stored document's `movedTo` names, for no recipient: the instance actor
   signs it and the WebFinger requests that confirm its handle go unsigned, while the source's collections keep the
   follower's key (`readMoved` in `src/federation/collections.ts`; `test/collection-move-fetch.test.ts`). A replies
@@ -6775,7 +6779,8 @@ so the Store isolate's 128 MB holds them together.
   at most that request's fetches, and the next Store round refuses what they bring (`test/quote-requests.test.ts`);
   activities by their author's key. The instance key never signs an activity attributed to a user: the one activity it
   signs is a forwarded report's `Flag`, whose actor is the instance actor (Mastodon's `Account.representative`).
-  _Enforced (main)_ for fetches: `src/federation/federation.ts`; `test/signed-fetch.test.ts` ("signed fetches"),
+  _Enforced (main)_ for fetches: `src/federation/federation.ts`; `test/signed-fetch.test.ts` ("signed fetches", "the
+  signer of a fetch"), `test/remote-collections.test.ts`,
   `test/poll-refresh.test.ts` ("signs a public or unlisted post's fetch as the instance actor, another's as the
   reader", "a refused fetch answers the stored poll and waits a minute").
   Activities: _Enforced (main):_ a delivery is signed with the key of its lane's account, its RFC 9421 retry included,
