@@ -9,6 +9,7 @@ import {
   type CollectionSync,
   MAX_SYNC_ATTEMPTS,
   type MoveOutcome,
+  PART_MOVED,
   SYNC_LEASE_MS,
   SYNC_RETRY_MS,
 } from "../src/domain/remote-collections";
@@ -19,7 +20,18 @@ import { inboxDeps, NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD, runStoreJobs } from "./helpers";
 import { actorDefaults, confirmedAs, LOCAL, MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
-import { AS, DAVE, DAVE_URI, followed, mastodonNote, OTHER, type Setup, setup } from "./inbox-status-helpers";
+import {
+  accountId,
+  AS,
+  DAVE,
+  DAVE_URI,
+  followed,
+  mastodonNote,
+  OTHER,
+  type Setup,
+  setup,
+} from "./inbox-status-helpers";
+import { moveActivity, updated } from "./move-helpers";
 
 // The move part of a remote account's collection sync (domain/remote-collections.ts PART_MOVED,
 // federation/collections.ts readMoved): a stored document's movedTo naming an account Kopje does not hold is fetched one
@@ -42,28 +54,22 @@ function moveState(t: Setup, uri: string): Promise<MoveState | undefined> {
   ).then((rows) => rows[0]);
 }
 
-const storedUri = (t: Setup, uri: string) =>
-  sql<{ id: string }>(t.store, "SELECT id FROM accounts WHERE uri = ?", uri).then((rows) => rows[0]?.id);
-
 const fetchesOf = (t: Setup, url: string, from = 0) => t.web.fetched.slice(from).filter((u) => u === url).length;
 
 const at = (t: Setup, now = NOW) => ({ ...inboxDeps(() => t.store, t.web.loader), now: () => now });
 
 // Bob, stored (followed by alice, who signs his collections) with a document whose movedTo names DEST; and the
-// destination served, unless `served` is false. Bob's collections answer 404, so his other parts read through at once.
+// destination served. Bob's collections answer 404, so his other parts read through at once.
 async function pendingBob(
   t: Setup,
-  options: { served?: boolean; movedTo?: string; extra?: Record<string, unknown> } = {},
+  options: { movedTo?: string; extra?: Record<string, unknown> } = {},
 ): Promise<{ bob: TestActor; bobId: string; dest: TestActor }> {
   const dest = await mastodonActor(t.web, "dest", { origin: OTHER, key: 3 });
-  if (options.served === false) {
-    t.web.served.delete(DEST);
-  }
   const bob = await mastodonActor(t.web, "bob");
   t.web.serve(bob.uri, { ...bob.document, movedTo: options.movedTo ?? DEST, ...options.extra });
   const bobId = await followed(t, bob);
   expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 1 });
-  expect(await storedUri(t, DEST)).toBeUndefined();
+  expect(await accountId(t.store, DEST)).toBeUndefined();
   return { bob, bobId, dest };
 }
 
@@ -81,18 +87,6 @@ async function syncUntilDone(t: Setup, calls = 10): Promise<void> {
 
 function follow(actor: TestActor, n: number) {
   return { "@context": AS, id: `${actor.uri}#follows/${n}`, type: "Follow", actor: actor.uri, object: DAVE_URI };
-}
-
-async function updated(t: Setup, actor: TestActor, document: Record<string, unknown>, n: number): Promise<void> {
-  t.web.serve(actor.uri, document);
-  const update = {
-    "@context": AS,
-    id: `${actor.uri}#updates/${n}`,
-    type: "Update",
-    actor: actor.uri,
-    object: document,
-  };
-  expect(await t.post(actor, update)).toBe(202);
 }
 
 // The destination as the Worker hands it over: its document with its claim confirmed.
@@ -115,15 +109,21 @@ async function claim(t: Setup, now = NOW): Promise<CollectionSync> {
   return sync;
 }
 
-// The read's end of `sync` with every other part read and `move` as the move part's outcome.
-function complete(t: Setup, sync: CollectionSync, move: MoveOutcome | null, now = NOW) {
+// The read's end of `sync` with `parts` (every other part, by default) read and `move` as the move part's outcome.
+function complete(
+  t: Setup,
+  sync: CollectionSync,
+  move: MoveOutcome | null,
+  now = NOW,
+  parts = ALL_PARTS & ~PART_MOVED,
+) {
   return t.store.completeCollectionRead(BUILD, {
     now,
     origin: LOCAL,
     accountUri: sync.accountUri,
     generation: sync.generation,
     token: sync.token,
-    parts: 15,
+    parts,
     pins: null,
     tags: null,
     hideCollections: null,
@@ -168,12 +168,12 @@ describe("the move part", () => {
     const from = t.web.fetched.length;
     await syncUntilDone(t);
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: stored ? DEST : null, pending: 0 });
-    expect(await storedUri(t, DEST)).toEqual(stored ? expect.any(String) : undefined);
+    expect(await accountId(t.store, DEST)).toEqual(stored ? expect.any(String) : undefined);
     expect(fetchesOf(t, DEST, from)).toBe(1);
     expect(fetchesOf(t, bob.uri, from)).toBe(0);
   });
 
-  it("loads a transient destination once a claim, and gives it up with the read after MAX_SYNC_ATTEMPTS", async () => {
+  it("loads a transient destination once a claim, and gives it up with the read after MAX_SYNC_ATTEMPTS claims without progress", async () => {
     const t = await setup();
     const { bob } = await pendingBob(t);
     t.web.fail(DEST, 503);
@@ -213,22 +213,7 @@ describe("the move part", () => {
     const t = await setup();
     const { bob } = await pendingBob(t);
     const sync = await claim(t);
-    await t.store.completeCollectionRead(BUILD, {
-      now: NOW,
-      origin: LOCAL,
-      accountUri: sync.accountUri,
-      generation: sync.generation,
-      token: sync.token,
-      parts: ALL_PARTS,
-      pins: null,
-      tags: null,
-      hideCollections: null,
-      counts: { statuses: null, following: null, followers: null },
-      collections: null,
-      movedTo: sync.movedTo,
-      sourceRevision: sync.sourceRevision,
-      move: { kind: "failed", final: false },
-    });
+    await complete(t, sync, { kind: "failed", final: false }, NOW, ALL_PARTS);
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 1 });
     expect(await sql(t.store, "SELECT generation > read_through AS unread FROM collection_syncs")).toEqual([
       { unread: 1 },
@@ -306,8 +291,9 @@ describe("the move part", () => {
   });
 
   // A featured collection that needs a whole round's budget (its collection and first page each behind three
-  // redirects) keeps the full-budget first turn a read without a move gives it, through the real loaders: the move's
-  // destination answers 503 first, and the other parts spend what is left of each round.
+  // redirects) keeps the full-budget first turn a read without a move gives it, through the real loaders: in the
+  // opening claim the move's destination answers 503 first, and the featured collection then has the claim after it
+  // whole.
   it("keeps a full-budget first turn for a featured collection that needs a whole round", async () => {
     const t = await setup();
     const { bob, bobId } = await failingBob(t);
@@ -352,14 +338,7 @@ describe("the move part", () => {
     } else {
       const d = await mastodonActor(t.web, "d", { key: 4 });
       t.web.serve(d.uri, { ...d.document, alsoKnownAs: [bob.uri] });
-      const move = {
-        "@context": AS,
-        id: `${bob.uri}#moves/1`,
-        type: "Move",
-        actor: bob.uri,
-        object: bob.uri,
-        target: d.uri,
-      };
+      const move = moveActivity(bob, d.uri);
       expect(await t.post(bob, move)).toBe(202);
       expect(await moveState(t, bob.uri)).toMatchObject({ moved: d.uri, pending: 0 });
     }
@@ -389,14 +368,7 @@ describe("the move part", () => {
     await sql(t.store, `UPDATE collection_syncs SET attempts = 2, ${set} WHERE account_id = ?`, bobId);
     const d = await mastodonActor(t.web, "d", { key: 4 });
     t.web.serve(d.uri, { ...d.document, alsoKnownAs: [bob.uri] });
-    const move = {
-      "@context": AS,
-      id: `${bob.uri}#moves/1`,
-      type: "Move",
-      actor: bob.uri,
-      object: bob.uri,
-      target: d.uri,
-    };
+    const move = moveActivity(bob, d.uri);
     expect(await t.post(bob, move)).toBe(202);
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: d.uri, pending: 0 });
     expect(await sql(t.store, "SELECT attempts FROM collection_syncs WHERE account_id = ?", bobId)).toEqual([
@@ -415,14 +387,7 @@ describe("the move part", () => {
       if (clear === "a verified Move") {
         const d = await mastodonActor(t.web, "d", { key: 4 });
         t.web.serve(d.uri, { ...d.document, alsoKnownAs: [bob.uri] });
-        const move = {
-          "@context": AS,
-          id: `${bob.uri}#moves/1`,
-          type: "Move",
-          actor: bob.uri,
-          object: bob.uri,
-          target: d.uri,
-        };
+        const move = moveActivity(bob, d.uri);
         expect(await t.post(bob, move)).toBe(202);
         expect(await moveState(t, bob.uri)).toMatchObject({ moved: d.uri, pending: 0 });
       } else {
@@ -440,7 +405,7 @@ describe("the move part", () => {
     const { bob, dest } = await pendingBob(t);
     t.web.serve(DEST, { ...dest.document, id: "https://OTHER.example:443/users/dest" });
     await syncUntilDone(t);
-    expect(await storedUri(t, DEST)).toBeUndefined();
+    expect(await accountId(t.store, DEST)).toBeUndefined();
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 0 });
   });
 
@@ -454,7 +419,7 @@ describe("the move part", () => {
     await syncUntilDone(t);
     expect(t.web.fetched.slice(from)).not.toContain(moved);
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 0 });
-    expect(await storedUri(t, DEST)).toBeUndefined();
+    expect(await accountId(t.store, DEST)).toBeUndefined();
   });
 
   // NET-4: the sync's loaders never read the signed-document cache, the instance actor's included.
@@ -488,7 +453,7 @@ describe("the move part", () => {
     await sql(t.store, "INSERT INTO mutes (account_id, target_account_id) VALUES (?, ?)", DAVE, bobId);
     await syncUntilDone(t);
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: DEST });
-    const destId = (await storedUri(t, DEST))!;
+    const destId = (await accountId(t.store, DEST))!;
     const of = () =>
       sql(
         t.store,
@@ -499,14 +464,7 @@ describe("the move part", () => {
       );
     expect(await of()).toEqual([{ follows: 0, blocks: 0, mutes: 0 }]);
     t.web.serve(DEST, { ...dest.document, alsoKnownAs: [bob.uri] });
-    const move = {
-      "@context": AS,
-      id: `${bob.uri}#moves/1`,
-      type: "Move",
-      actor: bob.uri,
-      object: bob.uri,
-      target: DEST,
-    };
+    const move = moveActivity(bob, DEST);
     expect(await t.post(bob, move)).toBe(202);
     expect(await of()).toEqual([{ follows: 1, blocks: 1, mutes: 1 }]);
   });
@@ -533,7 +491,7 @@ describe("the move part and the destination's host blocked", () => {
     await blockDomain(t.store, "other.example");
     held.release();
     await round;
-    expect(await storedUri(t, DEST)).toBeUndefined();
+    expect(await accountId(t.store, DEST)).toBeUndefined();
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 0 });
   });
 
@@ -545,7 +503,7 @@ describe("the move part and the destination's host blocked", () => {
     const sync = await claim(t);
     await blockDomain(t.store, "other.example");
     await complete(t, sync, { kind: "moved", document: destination() });
-    expect(await storedUri(t, DEST)).toBeUndefined();
+    expect(await accountId(t.store, DEST)).toBeUndefined();
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 0 });
   });
 
@@ -660,7 +618,7 @@ describe("the move part's fences", () => {
     expect(sync.movedTo).toBe(DEST);
     await updated(t, bob, document(bob), 1);
     await complete(t, sync, { kind: "moved", document: destination() });
-    expect(await storedUri(t, DEST)).toBeUndefined();
+    expect(await accountId(t.store, DEST)).toBeUndefined();
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: null });
   });
 
@@ -670,18 +628,11 @@ describe("the move part's fences", () => {
     const d = await mastodonActor(t.web, "d", { key: 4 });
     t.web.serve(d.uri, { ...d.document, alsoKnownAs: [bob.uri] });
     const sync = await claim(t);
-    const move = {
-      "@context": AS,
-      id: `${bob.uri}#moves/1`,
-      type: "Move",
-      actor: bob.uri,
-      object: bob.uri,
-      target: d.uri,
-    };
+    const move = moveActivity(bob, d.uri);
     expect(await t.post(bob, move)).toBe(202);
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: d.uri, pending: 0 });
     await complete(t, sync, { kind: "moved", document: destination() });
-    expect(await storedUri(t, DEST)).toBeUndefined();
+    expect(await accountId(t.store, DEST)).toBeUndefined();
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: d.uri, pending: 0 });
     // D deletes itself: the purge clears bob's move, and nothing pending is left to resolve the older declaration.
     expect(
@@ -701,8 +652,8 @@ describe("the move part's fences", () => {
     const { bob } = await pendingBob(t);
     const other = `${OTHER}/users/impostor`;
     await complete(t, await claim(t), { kind: "moved", document: destination(other) });
-    expect(await storedUri(t, other)).toBeUndefined();
-    expect(await storedUri(t, DEST)).toBeUndefined();
+    expect(await accountId(t.store, other)).toBeUndefined();
+    expect(await accountId(t.store, DEST)).toBeUndefined();
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 0 });
   });
 
@@ -730,7 +681,7 @@ describe("the move part's fences", () => {
     const second = await claim(t, NOW + SYNC_LEASE_MS);
     expect(second.movedTo).toBe(DEST);
     await complete(t, first, { kind: "moved", document: destination() }, NOW + SYNC_LEASE_MS);
-    expect(await storedUri(t, DEST)).toBeUndefined();
+    expect(await accountId(t.store, DEST)).toBeUndefined();
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 1 });
     await complete(t, second, { kind: "moved", document: destination() }, NOW + SYNC_LEASE_MS);
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: DEST, pending: 0 });

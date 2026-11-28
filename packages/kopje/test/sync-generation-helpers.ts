@@ -13,10 +13,11 @@ import { MAX_REDIRECTS, REQUEST_MAX_FETCHES } from "../src/federation/loader";
 // with it, before its read), MAX_SYNC_ATTEMPTS per read part (each claim after one without progress starts with
 // another part) and one more, the claim a pending move opens (moveOpened), and MAX_SYNC_ATTEMPTS per pin row.
 export function generationRequests(network: { documents: number; redirects: number }, sends = 1) {
+  const networkRequests = network.documents * (1 + network.redirects) * sends;
   const parts = [
     PART_DOCUMENTS.moved * (1 + MAX_REDIRECTS) * sends,
     PART_DOCUMENTS.featured * (1 + MAX_REDIRECTS) * sends,
-    network.documents * (1 + network.redirects) * sends,
+    networkRequests,
     PART_DOCUMENTS.tags * (1 + MAX_REDIRECTS) * sends,
     PART_DOCUMENTS.collections * (1 + COLLECTIONS_CAPS.maxRedirects) * sends,
   ];
@@ -27,10 +28,11 @@ export function generationRequests(network: { documents: number; redirects: numb
     parts.reduce((sum, n) => sum + n, 0),
   );
   const pinClaims = MAX_REMOTE_PINS * MAX_SYNC_ATTEMPTS;
+  const networkPerRound = Math.min(REQUEST_MAX_FETCHES, networkRequests);
   return {
     readClaims,
-    networkPerRound: Math.min(REQUEST_MAX_FETCHES, parts[2]!),
-    networkPerGeneration: readClaims * Math.min(REQUEST_MAX_FETCHES, parts[2]!),
+    networkPerRound,
+    networkPerGeneration: readClaims * networkPerRound,
     networkHealthy: network.documents,
     perCall: COLLECTION_SYNCS_PER_ROUND * REQUEST_MAX_FETCHES,
     perGeneration: (documentClaims + readClaims) * readRound + pinClaims * REQUEST_MAX_FETCHES,

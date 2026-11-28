@@ -67,7 +67,7 @@ import {
 } from "./inbox-status-helpers";
 import { storeReceive } from "./inbox-store-helpers";
 import { quoting, serveFeatured, serveStamp } from "./quote-helpers";
-import { generationRequests } from "./sync-generation-helpers";
+import { generationRequests, NETWORK_READ } from "./sync-generation-helpers";
 
 // A remote account's pinned statuses, featured hashtags and hide_collections (Mastodon 4.5's ActivityPub::Activity::Add
 // and Remove, FetchFeaturedCollectionService, FetchFeaturedTagsCollectionService and
@@ -2531,7 +2531,7 @@ describe("the network part within one round", () => {
 describe("the requests of one generation", () => {
   it("bounds them before and after the network part reads the outbox", () => {
     const before = generationRequests({ documents: 2, redirects: MAX_REDIRECTS });
-    const network = { documents: PART_DOCUMENTS.network, redirects: NETWORK_CAPS.maxRedirects };
+    const network = NETWORK_READ;
     const after = generationRequests(network);
     // Every hop answered 400 or 401 to draft-cavage and sent again with RFC 9421 (loader.ts RETRY_STATUSES).
     const retried = generationRequests(network, 2);
@@ -2553,10 +2553,7 @@ describe("the requests of one generation", () => {
   it("bounds the quote chain's author documents with their destinations", () => {
     const documents = 1 + QUOTE_HOPS * QUOTE_AUTHOR_FETCHES;
     const generations = documents * 2;
-    const { perGeneration } = generationRequests({
-      documents: PART_DOCUMENTS.network,
-      redirects: NETWORK_CAPS.maxRedirects,
-    });
+    const { perGeneration } = generationRequests(NETWORK_READ);
     expect({
       documents,
       generations,

@@ -66,6 +66,7 @@ import {
 } from "./inbox-status-helpers";
 import { storeReceive, writtenBy } from "./inbox-store-helpers";
 import { ML_DSA_44_MULTIBASE } from "./key-forms-helpers";
+import { jobsRung } from "./move-helpers";
 import { contexts, deliveryDeps, quoteAccept } from "./quote-helpers";
 import { type PlannedStatement, plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { seedReceipts } from "./status-helpers";
@@ -526,7 +527,7 @@ describe("the jobs round a proof that cannot be verified now leaves", () => {
     expect(await sql(w.t.store, "SELECT move_pending FROM accounts WHERE uri = ?", rotated.uri)).toEqual([
       { move_pending: 1 },
     ]);
-    expect(h.queue.pending.some((message) => (message.body as { kind?: string }).kind === "inbound-jobs")).toBe(true);
+    expect(jobsRung(h.queue)).toBe(true);
   });
 });
 

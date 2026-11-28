@@ -9,6 +9,7 @@ import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
 import { LOCAL, mastodonActor, type TestActor } from "./inbox-helpers";
 import { AS, followed, OTHER, type Setup, setup } from "./inbox-status-helpers";
+import { moveActivity, updated } from "./move-helpers";
 
 // A remote account whose stored document names, as its movedTo, an account Kopje does not know (accounts.move_pending,
 // migration 0125_account_move_pending): the store marks the move pending and asks for the collection sync, whose move
@@ -32,19 +33,6 @@ function moveState(t: Setup, uri: string): Promise<MoveState | undefined> {
 function bare(actor: TestActor, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const { following: _a, followers: _b, outbox: _c, featured: _d, featuredTags: _e, ...rest } = actor.document;
   return { ...rest, ...extra };
-}
-
-// A fresh document of `actor` stored through its Update.
-async function updated(t: Setup, actor: TestActor, document: Record<string, unknown>, n: number): Promise<void> {
-  t.web.serve(actor.uri, document);
-  const update = {
-    "@context": AS,
-    id: `${actor.uri}#updates/${n}`,
-    type: "Update",
-    actor: actor.uri,
-    object: document,
-  };
-  expect(await t.post(actor, update)).toBe(202);
 }
 
 describe("a pending move at the store", () => {
@@ -99,14 +87,7 @@ describe("a pending move ended by a verified Move", () => {
     t.web.serve(bob.uri, bare(bob, { movedTo: DEST }));
     await followed(t, bob);
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 1 });
-    const move = {
-      "@context": AS,
-      id: `${bob.uri}#moves/1`,
-      type: "Move",
-      actor: bob.uri,
-      object: bob.uri,
-      target: bob2.uri,
-    };
+    const move = moveActivity(bob, bob2.uri);
     expect(await t.post(bob, move)).toBe(202);
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: bob2.uri, pending: 0 });
   });
