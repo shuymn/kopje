@@ -5328,8 +5328,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `MAX_SYNC_ATTEMPTS`, whose first turn is the move part's, and the claims after it rotate the other parts as a read
   without a move does, the move part last (`readCollections`), so every other part keeps the full-budget first turns
   it has without a move. It costs nothing when no move is pending; when one is, it loads the destination once a read
-  claim, as the instance actor (DATA-7), with no redirect (`MOVED_CAPS`) and the loader's 1 MiB body limit, and its WebFinger answers, each
-  following up to `MAX_REDIRECTS`, share the round's 8 fetches, 2 MiB and deadline. Accepted: a destination whose
+  claim, as the instance actor (DATA-7), with no redirect (`MOVED_CAPS`) and the loader's 1 MiB body limit, and its
+  WebFinger answers, each following up to `MAX_REDIRECTS`, share the round's 8 fetches, 2 MiB and deadline. Accepted: a destination whose
   WebFinger answers redirect several times, together pass the bytes left, or whose document names contexts that are not
   preloaded spends the round as a failure that may pass, and is given up with the read. A destination it stores names
   no move of its own, so a stored destination with collections requests its own generation (one naming none requests
