@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "4b8d65c6acba759d87603d9b187bbeef63fd9cfd",
+  "confirmed": "c02dfedb078d84f3ca5214b6a5bde32dfb8b957b",
   "files": [
     {
       "path": "src/store.ts",
@@ -12,7 +12,7 @@
       "path": "src/domain/inbox.ts",
       "functions": ["receiveActivity", "startActorDeletion", "purgeBatch"],
       "spec": "CollectionConsent.tla RecvRes and Touch: which of CollectionConsentKopje.tla's operators an inbound activity runs, when it is ignored, and that every valid push of R's collections outdates a read under way, a no-op one included; OwnerGone and KPurge: an actor Delete writes R's tombstone and runs the first purge batch in its own transaction, which reaches C or not, and later batches purge the rest",
-      "blob": "99964b650fd4048158f0ab32df04e58da8ef6f29"
+      "blob": "35f60fa28ad40a87146560d63ab20877e03836ef"
     },
     {
       "path": "src/federation/inbound.ts",
@@ -57,7 +57,7 @@
       "path": "src/domain/remote-collections.ts",
       "functions": ["claimCollectionSync", "endRound", "roundAccount", "completeCollectionRead"],
       "spec": "CollectionConsent.tla KClaim, KApply, KLease and KStale: a read's claim (a new token; the request kept until a completion reads it through), its completion, its outdated check and its claim token, which only a new claim replaces (a lease's end alone fences nothing)",
-      "blob": "3aeeaf1352fb0b46d14a17e6d996b40b5091341f"
+      "blob": "36680f11ab2a105066d5eb524000bc14ea22b671"
     },
     {
       "path": "src/federation/collections.ts",
