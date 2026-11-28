@@ -69,11 +69,10 @@ import { parseStatusText } from "./status-text";
 // - A claim (claimCards, one per cron round) first expires at most CARD_EXPIRE_BATCH pending rows enqueued more than
 //   CARD_EXPIRE_MS ago (never one whose hold is open), attaching a fresh copy or deleting each (expireCard), then walks
 //   at most CARD_CLAIM_WALK due rows by (due_at, status_id) from the latest, until CARD_ROUND_CLAIMS are claimed; the
-//   rows after that point are untouched. The latest first, so a new status's card comes within a round while more
-//   links are due than the rounds fetch; under such a backlog the oldest rows wait and expire instead
-//   (docs/mastodon-deviations.md, "Link previews"). Each row walked makes progress: an expired one is handled as the
-//   expiry handles it; any other is deleted (CARD_MAX_ATTEMPTS claims never finished, ineligible, or a token past
-//   SAFE_INTEGER_MAX), attached from another status's fresh copy of the same URL (fetched within CARD_FRESH_MS,
+//   rows after that point are untouched. The newest due rows take priority, and under a backlog older rows may expire
+//   unfetched (docs/mastodon-deviations.md, "Link previews"). Each row walked makes progress: an expired one is handled
+//   as the expiry handles it; any other is deleted (CARD_MAX_ATTEMPTS claims never finished, ineligible, or a token
+//   past SAFE_INTEGER_MAX), attached from another status's fresh copy of the same URL (fetched within CARD_FRESH_MS,
 //   Mastodon's 14-day reuse, keeping its fetched_at), deferred to the end of another row's open hold on the same URL
 //   (Mastodon's fetch:<url> lock, across rounds), or claimed for CARD_HOLD_MS (a new claim token, one more attempt).
 // - The fence: recordCard applies only while the claim token, the generation, an open claim (attempts > 0) and a
@@ -285,8 +284,8 @@ export function enqueueCard(db: Db, statusId: string, link: string | null, now: 
   }
 }
 
-// The status's row deleted: one row at most.
-export function deleteCard(db: Db, statusId: string): void {
+// The status's row deleted: one row at most. `statusId` may be a key as stored, bound back unchanged.
+export function deleteCard(db: Db, statusId: SqlStorageValue): void {
   db.run("DELETE FROM status_cards WHERE status_id = ?", statusId);
 }
 
@@ -415,14 +414,14 @@ const DONOR_COPY_SQL = `UPDATE status_cards SET ${CARD_FIELDS.map((f) => `${f} =
 // The terminal rule for a row pending past CARD_EXPIRE_MS (by the expiry batch or the walk; never one with an open
 // hold of its own): attached from another status's fresh copy of its URL (DONOR_COPY_SQL) when every projection of
 // WALKED holds for it (`ok`), else deleted by its key. A row whose stored values fail the projection is never updated:
-// status_cards_bounds_update would abort the claim. True when it was attached. A late record of its claim is refused
-// by the fence (the copy sets attempts 0 and fetched_at).
-function expireCard(db: Db, id: SqlStorageValue, ok: boolean, now: number): boolean {
+// status_cards_bounds_update would abort the claim. Answers the CardClaims counter it adds to. A late record of its
+// claim is refused by the fence (the copy sets attempts 0 and fetched_at).
+function expireCard(db: Db, id: SqlStorageValue, ok: boolean, now: number): "attached" | "expired" {
   if (ok && db.run(DONOR_COPY_SQL, id, now - CARD_FRESH_MS) > 0) {
-    return true;
+    return "attached";
   }
-  db.run("DELETE FROM status_cards WHERE status_id = ?", id);
-  return false;
+  deleteCard(db, id);
+  return "expired";
 }
 
 // The cached template of `host` as read: live (expires_at > now) and within the TTL window (a row written for the far
@@ -451,7 +450,7 @@ export const claimCards = writeOperation<{ now: number }, CardClaims>((db, { now
     now,
   );
   for (const { id, ok } of expiring) {
-    out[expireCard(db, id, ok === 1, now) ? "attached" : "expired"]++;
+    out[expireCard(db, id, ok === 1, now)]++;
   }
   // At most OEMBED_EXPIRE_BATCH cached endpoints by the expiry index: the expired first, then with the rest those
   // written for past the TTL window (an import's), latest first.
@@ -487,7 +486,7 @@ export const claimCards = writeOperation<{ now: number }, CardClaims>((db, { now
     }
     // Expired before given up: such a row is handled as the expiry batch handles it, whatever its attempts.
     if (enqueued < cutoff) {
-      out[expireCard(db, id, true, now) ? "attached" : "expired"]++;
+      out[expireCard(db, id, true, now)]++;
       continue;
     }
     if (attempts >= CARD_MAX_ATTEMPTS) {

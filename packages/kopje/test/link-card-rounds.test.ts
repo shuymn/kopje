@@ -56,11 +56,11 @@ import { community, post } from "./status-helpers";
 
 // The cron's link card round (federation/link-cards.ts) over the Store's claim and record (domain/link-cards.ts).
 
-// The rows the donor copy reads for one target, by case, as workerd counts them: with no fresh copy of its URL, the
+// The rows one copy attempt reads for its target, by case, as workerd counts them: with no fresh copy of its URL, the
 // target row and the fresh index's empty range, as a miss reads at claim (no status read: the eligibility is judged
 // only for a candidate); with CARD_DONOR_CANDIDATES unusable ones, those donors too (their images' key seeks find no
-// row, and no candidate reaches the eligibility); with a usable one among them, its status's eligibility and
-// cardPublicSql's row as well.
+// row, and no candidate reaches the eligibility; a 9th is past the candidates); with a usable one among them, its
+// status's eligibility as well.
 const EMPTY_RANGE_ROWS = 4;
 const EIGHT_UNUSABLE_ROWS = EMPTY_RANGE_ROWS + CARD_DONOR_CANDIDATES - 1;
 const HIT_ROWS = EIGHT_UNUSABLE_ROWS + 4;
@@ -83,6 +83,19 @@ const LINK = {
   finalUrl: "",
   creator: null,
 } as const;
+// A card's fields as a round extracts them, `extra` replacing any.
+const cardFields = (extra: Partial<CardFields> = {}): CardFields => ({
+  title: "Title",
+  description: "",
+  authorName: "",
+  authorUrl: "",
+  providerName: "",
+  providerUrl: "",
+  language: null,
+  publishedAt: null,
+  ...LINK,
+  ...extra,
+});
 const HTML = { "content-type": "text/html; charset=utf-8" };
 const PAGE = '<html lang="en"><head><title> Site title </title><meta name="description" content="About"></head></html>';
 
@@ -200,8 +213,8 @@ function held(w: Awaited<ReturnType<typeof world>>, url = SITE) {
   return { gate, reached };
 }
 
-// Sets the due times of the rows of `ids` strictly increasing in the opposite order to the ids: the first is due at
-// NOW - 1, the last earliest, so neither the ids' order nor either direction of it picks the latest due.
+// Sets the due times of the rows of `ids` (in increasing id order) to decrease as the ids increase: the first is due
+// at NOW - 1, the last earliest.
 async function dueOpposite(w: Awaited<ReturnType<typeof world>>, ids: readonly string[]) {
   for (const [rank, id] of ids.entries()) {
     await sql(w.h.store, "UPDATE status_cards SET due_at = ?1 WHERE status_id = ?2", NOW - rank - 1, id);
@@ -217,7 +230,6 @@ async function donor(w: Awaited<ReturnType<typeof world>>, url: string, fetchedA
     fetchedAt,
     id,
   );
-  return id;
 }
 
 // `count` rows of statuses of their own (ids 7…), enqueued at 0, so expired, and due far later, so only the expiry
@@ -240,19 +252,24 @@ async function expiredRows(w: Awaited<ReturnType<typeof world>>, count: number, 
   );
 }
 
+// `count` public statuses of alice's, ids `prefix` then i (1 to count) padded to 18 digits.
+function prefixedStatuses(w: Awaited<ReturnType<typeof world>>, prefix: string, count: number) {
+  return sql(
+    w.h.store,
+    `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+			SELECT printf('${prefix}%017d', i), 'https://kopje.test/s/${prefix}' || i, ?2, 'public', 'x',
+				'2026-10-12T00:00:00.000Z' FROM n`,
+    count,
+    w.alice.id,
+  );
+}
+
 // `count` rows of statuses of their own (ids 8…) due before every other row (from 1 on), given up, and `count` rows of
 // statuses of their own (ids 9…) due a day after NOW: the walk's index grown on both sides of what is due.
 async function grownRows(w: Awaited<ReturnType<typeof world>>, count: number) {
   for (const prefix of ["8", "9"]) {
-    await sql(
-      w.h.store,
-      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
-				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
-				SELECT printf('${prefix}%017d', i), 'https://kopje.test/s/${prefix}' || i, ?2, 'public', 'x',
-					'2026-10-12T00:00:00.000Z' FROM n`,
-      count,
-      w.alice.id,
-    );
+    await prefixedStatuses(w, prefix, count);
   }
   await sql(
     w.h.store,
@@ -396,7 +413,6 @@ describe("the link card round", () => {
     for (let i = 0; i < CARD_ROUND_CLAIMS; i++) {
       others.push(await w.postLink(`https://site${i}.example/`));
     }
-    w.setRoutes(Object.fromEntries(others.map((_, i) => [`https://site${i}.example/`, page()])));
     w.clock.t = NOW + CARD_HOLD_MS;
     // At the hold's end the deferred rows are due latest: walked first, they copy b's card, and the six are claimed.
     const claimed = await w.op(claimCards, { now: w.clock.t });
@@ -575,8 +591,7 @@ describe("the link card round", () => {
     w.clock.t = NOW + CARD_EXPIRE_MS + 1;
     expect(await w.op(claimCards, { now: w.clock.t })).toMatchObject({ attached: 1, expired: 0, claims: [] });
     expect(await w.row(id)).toMatchObject({ title: "Donor", claim: 1, attempts: 0, due_at: null });
-    const fields = { title: "Late", description: "", authorName: "", authorUrl: "", providerName: "", providerUrl: "" };
-    const outcome = { kind: "card" as const, fields: { ...fields, language: null, publishedAt: null, ...LINK } };
+    const outcome = { kind: "card" as const, fields: cardFields({ title: "Late" }) };
     expect(await w.op(recordCard, { ...claim!, outcome, now: w.clock.t })).toEqual({ held: false });
     expect(await w.row(id)).toMatchObject({ title: "Donor", fetched_at: NOW + 1 });
     expect(w.requests).toEqual([]);
@@ -697,8 +712,7 @@ describe("the fences of a record", () => {
     w.clock.t += CARD_HOLD_MS;
     const current = (await w.op(claimCards, { now: w.clock.t })).claims[0]!;
     expect(current.token).toBe(old.token + 1);
-    const fields = { title: "t", description: "", authorName: "", authorUrl: "", providerName: "", providerUrl: "" };
-    const outcome = { kind: "card" as const, fields: { ...fields, language: null, publishedAt: null, ...LINK } };
+    const outcome = { kind: "card" as const, fields: cardFields({ title: "t" }) };
     expect(await w.op(recordCard, { ...old, outcome, now: w.clock.t })).toEqual({ held: false });
     expect(await w.row(id)).toMatchObject({ attempts: 2, fetched_at: null });
     // A claim never recorded twice is given up.
@@ -1038,18 +1052,6 @@ describe("the admission of each hop in either chain", () => {
 });
 
 describe("the stored embed and the oEmbed endpoint cache (0069_card_embeds)", () => {
-  const fields = (extra: Partial<CardFields> = {}): CardFields => ({
-    title: "Title",
-    description: "",
-    authorName: "",
-    authorUrl: "",
-    providerName: "",
-    providerUrl: "",
-    language: null,
-    publishedAt: null,
-    ...LINK,
-    ...extra,
-  });
   type Embed = {
     card_type: number;
     width: number;
@@ -1103,7 +1105,7 @@ describe("the stored embed and the oEmbed endpoint cache (0069_card_embeds)", ()
     ];
     for (const [i, extra] of records.entries()) {
       expect(
-        await w.op(recordCard, { ...claims[i]!, outcome: { kind: "card", fields: fields(extra) }, now: w.clock.t }),
+        await w.op(recordCard, { ...claims[i]!, outcome: { kind: "card", fields: cardFields(extra) }, now: w.clock.t }),
       ).toEqual({
         held: true,
       });
@@ -1131,7 +1133,7 @@ describe("the stored embed and the oEmbed endpoint cache (0069_card_embeds)", ()
     const w = await world();
     const first = await w.postLink(SITE);
     const [claim] = (await w.op(claimCards, { now: w.clock.t })).claims;
-    const video = fields({
+    const video = cardFields({
       type: "video",
       width: 4,
       height: 3,
@@ -1183,7 +1185,7 @@ describe("the stored embed and the oEmbed endpoint cache (0069_card_embeds)", ()
       endpoint: unknown,
       extra = {},
     ) => w.op(recordCard, { ...claims[i]!, outcome, endpoint: endpoint as never, now: w.clock.t, ...extra });
-    await record(0, { kind: "card", fields: fields() }, { host: "a.example", template: TEMPLATE });
+    await record(0, { kind: "card", fields: cardFields() }, { host: "a.example", template: TEMPLATE });
     await record(1, { kind: "none" }, { host: "b.example", template: TEMPLATE });
     await record(2, { kind: "unattempted" }, { host: "c.example", template: TEMPLATE });
     expect(await w.row(ids[2]!)).toMatchObject({ attempts: 0, fetched_at: null });
@@ -1543,12 +1545,14 @@ describe("the bounds of a round", () => {
         w.h.store,
         `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
 				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
-				SELECT printf('7%017d', i), 'https://kopje.test/s/7' || i, ?3, 'public', 'x', '2026-10-12T00:00:00.000Z' FROM n
+				SELECT printf('7%017d', i), 'https://kopje.test/s/7' || i, ?3, 'public', 'x', '2026-10-12T00:00:00.000Z'
+				FROM n WHERE i <= ?4
 				UNION ALL SELECT printf('6%017d', i), 'https://kopje.test/s/6' || i, ?3, 'public', 'x', '2026-10-12T00:00:00.000Z'
 				FROM n WHERE i <= ?2`,
         Math.max(targets, donors),
         donors,
         w.alice.id,
+        targets,
       );
       await sql(
         w.h.store,
@@ -1608,10 +1612,10 @@ describe("the bounds of a round", () => {
     // Empty range: the target row and the fresh index's range; no eligibility read.
     expect(rowsOf(1)).toEqual([EMPTY_RANGE_ROWS]);
     expect(await w.row(target(1))).toBeUndefined();
-    // Eight unusable donors read, their images by key, one eligibility: the usable 9th not seen.
+    // Eight unusable donors read and their images by key, no eligibility: the usable 9th not seen.
     expect(rowsOf(2)).toEqual([EIGHT_UNUSABLE_ROWS]);
     expect(await w.row(target(2))).toBeUndefined();
-    // A hit: as many, then cardPublicSql's row and the copy.
+    // A hit: as many, then the status's eligibility and the copy.
     expect(rowsOf(3)).toEqual([HIT_ROWS]);
     expect(await w.row(target(3))).toMatchObject({
       title: "t",
@@ -1653,26 +1657,19 @@ describe("the bounds of a round", () => {
       const w = await world();
       const hit = await w.postLink(SITE);
       const grown = 5_000;
-      const statuses = (prefix: string) =>
+      const statuses = (prefix: string) => prefixedStatuses(w, prefix, grown);
+      // The hit row first in the walk's order, due latest, pending and unclaimed.
+      const reset = () =>
         sql(
           w.h.store,
-          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
-				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
-				SELECT printf('${prefix}%017d', i), 'https://kopje.test/s/${prefix}' || i, ?2, 'public', 'x',
-					'2026-10-12T00:00:00.000Z' FROM n`,
-          grown,
-          w.alice.id,
+          "UPDATE status_cards SET claim = 0, attempts = 0, due_at = ?2 WHERE status_id = ?1",
+          hit,
+          w.clock.t,
         );
       const statements = /status_cards/;
       const { before, after } = await staleStatistics(w.h, {
         capture: async () => {
-          // The hit row first in the walk's order, due latest.
-          await sql(
-            w.h.store,
-            "UPDATE status_cards SET claim = 0, attempts = 0, due_at = ?2 WHERE status_id = ?1",
-            hit,
-            w.clock.t,
-          );
+          await reset();
           return (await plannedRun(w.h, statements, claimCards, { now: w.clock.t })).plans;
         },
         grow: async () => {
@@ -1712,14 +1709,10 @@ describe("the bounds of a round", () => {
         // the URL are not met (a range seek on due_at and on fetched_at).
         expect(lookups.map(({ rows }) => rows)).toEqual([4, 2]);
       }
-      // Hits: the 'after' walk claimed six of the grown rows, so their holds are open; then a copy is made fresh.
+      // Hits: the 'after' claim took the hit row and deferred 63 older grown rows of its URL, which keep attempts = 1,
+      // so their holds are open; then a copy is made fresh.
       const first = async () => {
-        await sql(
-          w.h.store,
-          "UPDATE status_cards SET claim = 0, attempts = 0, due_at = ?2 WHERE status_id = ?1",
-          hit,
-          w.clock.t,
-        );
+        await reset();
         const run = await plannedRun(w.h, /CROSS JOIN status_cards [fh] INDEXED BY/, claimCards, { now: w.clock.t });
         return run.plans.slice(0, 2).map(({ query, rows }) => [query.includes("status_cards_fresh"), rows]);
       };
@@ -1733,7 +1726,7 @@ describe("the bounds of a round", () => {
         "UPDATE status_cards SET fetched_at = ?1 WHERE status_id = (SELECT min(id) FROM statuses WHERE id GLOB '9*')",
         NOW,
       );
-      // The hit reads the status's eligibility too (the donor stage's), and cardPublicSql's row.
+      // The hit reads the status's eligibility too (the donor stage's).
       expect((await first()).slice(0, 1)).toEqual([[true, 8]]);
       expect(await w.row(hit)).toMatchObject({ due_at: null, fetched_at: NOW, title: "t" });
     },
@@ -1931,18 +1924,6 @@ describe("the unverified author (0098_card_attribution)", () => {
         id,
       )
     )[0];
-  const fields = (extra: Partial<CardFields>): CardFields => ({
-    title: "Title",
-    description: "",
-    authorName: "",
-    authorUrl: "",
-    providerName: "",
-    providerUrl: "",
-    language: null,
-    publishedAt: null,
-    ...LINK,
-    ...extra,
-  });
   const setDomains = (w: CardWorld, list: unknown) =>
     sql(
       w.h.store,
@@ -1960,7 +1941,7 @@ describe("the unverified author (0098_card_attribution)", () => {
   };
   const recorded = async (w: CardWorld, extra: Partial<CardFields>) => {
     const { id, claim } = await claimOne(w);
-    const outcome = { kind: "card" as const, fields: fields(extra) };
+    const outcome = { kind: "card" as const, fields: cardFields(extra) };
     expect(await w.op(recordCard, { ...claim, outcome, now: w.clock.t })).toEqual({ held: true });
     return (await authorOf(w, id))!;
   };
@@ -2077,7 +2058,7 @@ describe("the unverified author (0098_card_attribution)", () => {
       const measured = async (list: unknown) => {
         await setDomains(w, list);
         const { id, claim } = await claimOne(w);
-        const outcome = { kind: "card" as const, fields: fields({ creator, finalUrl }) };
+        const outcome = { kind: "card" as const, fields: cardFields({ creator, finalUrl }) };
         const { output, statements } = await measuredStatements(
           w.h,
           recordCard,
