@@ -1,14 +1,16 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MIGRATIONS } from "../src/db/migrations";
 import { createSnapshotSaver, SNAPSHOT_SAVE_INTERVAL_MS } from "../src/federation/snapshot";
 import type { StoreStub } from "../src/platform/store-client";
 import { storeMaintenanceError } from "../src/platform/store-errors";
 import { SNAPSHOT_MAX_BODY_BYTES } from "../src/platform/store-kernel";
+import { bearer, sql } from "./api-helpers";
 import { harness, NOW } from "./app-helpers";
 import { fixtureKeyGen, LEGACY, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
 import { BUILD, freshStore, migratedStore, testKernel } from "./helpers";
+import { community, seedStatus } from "./status-helpers";
 
 const DOMAIN = "social.example";
 const STATIC = { kind: "static" } as const;
@@ -237,6 +239,72 @@ describe("snapshot render order", () => {
     expect(await store.saveSnapshot(BUILD, late)).toBe(true);
     expect(await store.saveSnapshot(BUILD, early)).toBe(false);
     expect((await store.rescueSnapshot(BUILD, "path:/nodeinfo/2.1"))?.body).toBe(late.body);
+  });
+});
+
+// A NodeInfo rendered a second before UTC midnight and saved after it, once a sign-in has moved Alice's active_on to
+// the new day: the count at the render's `now` leaves the new day out, and the count at the Store's own time, which the
+// save also takes, matches the render. Alice is active on 2026-06-01 and posted on 2026-05-31. The Worker's clock is
+// the harness's `now`, and the Store's clock the faked Date.
+describe("a NodeInfo saved after UTC midnight", () => {
+  const BEFORE = Date.parse("2026-06-01T23:59:59Z");
+  const AFTER = BEFORE + 1_000;
+  const KEY = "path:/nodeinfo/2.1";
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function rendered() {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(BEFORE);
+    const h = await community(["alice"]);
+    h.now.mockReturnValue(BEFORE);
+    await sql(h.store, "UPDATE local_accounts SET active_on = '2026-06-01' WHERE account_id = ?", h.users.alice.id);
+    const status = await seedStatus(h.store, {
+      accountId: h.users.alice.id,
+      visibility: "public",
+      published: Date.parse("2026-05-31T00:00:00Z"),
+    });
+    const usage = await h.store.nodeInfoUsage(BUILD, { now: BEFORE });
+    expect(usage).toEqual({ users: 1, activeMonth: 1, activeHalfyear: 1, localPosts: 1 });
+    const body = JSON.stringify(usage);
+    // After midnight, Alice's authenticated request records the new day.
+    vi.setSystemTime(AFTER);
+    h.now.mockReturnValue(AFTER);
+    expect((await h.request("/api/v1/preferences", bearer(h.users.alice.token))).status).toBe(200);
+    expect(await sql(h.store, "SELECT active_on FROM local_accounts")).toEqual([{ active_on: "2026-06-02" }]);
+    // The count at the render's `now` no longer matches.
+    expect(await h.store.nodeInfoUsage(BUILD, { now: BEFORE })).toMatchObject({ activeMonth: 0, activeHalfyear: 0 });
+    const save = () =>
+      h.store.saveSnapshot(BUILD, {
+        key: KEY,
+        contentType: "application/json",
+        body,
+        renderedAt: BEFORE,
+        source: { kind: "nodeinfo", now: BEFORE, rendered: body },
+      });
+    return { h, status, usage, body, save };
+  }
+
+  it("keeps the render when the usage at the Store's time still matches it", async () => {
+    const { h, usage, body, save } = await rendered();
+    expect(await h.store.nodeInfoUsage(BUILD, { now: AFTER })).toEqual(usage);
+    expect(await save()).toBe(true);
+    expect((await h.store.rescueSnapshot(BUILD, KEY))?.body).toBe(body);
+  });
+
+  it("refuses the render when the usage matches it at neither time", async () => {
+    const { h, status, save } = await rendered();
+    await sql(h.store, "DELETE FROM statuses WHERE id = ?", status);
+    expect(await h.store.nodeInfoUsage(BUILD, { now: AFTER })).toEqual({
+      users: 1,
+      activeMonth: 1,
+      activeHalfyear: 1,
+      localPosts: 0,
+    });
+    expect(await save()).toBe(false);
+    expect(await h.store.rescueSnapshot(BUILD, KEY)).toBeNull();
   });
 });
 

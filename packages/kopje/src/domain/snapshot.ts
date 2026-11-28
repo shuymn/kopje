@@ -18,17 +18,22 @@ export type SnapshotSource =
   | { kind: "nodeinfo"; now: number; rendered: string }
   | { kind: "static" };
 
-// The source as the Store holds it now, in the form the Worker renders it from (JSON of the same read).
-function currentSource(db: Db, source: SnapshotSource): string | null {
+// Whether the source as the Store holds it now, in the form the Worker renders it from (JSON of the same read), is the
+// one the body was rendered from. A NodeInfo usage is counted at its render's `now`, and when that differs, at the
+// Store's own time `storeNow`: a sign-in after UTC midnight moves an active_on past the render's day, which the count
+// at the render's `now` leaves out, though the render still matches the usage as it stands. A body matching neither
+// count is refused.
+function sourceMatches(db: Db, source: Exclude<SnapshotSource, { kind: "static" }>, storeNow: number): boolean {
   switch (source.kind) {
     case "actor":
-      return JSON.stringify(localActorOf(db, source.username));
+      return JSON.stringify(localActorOf(db, source.username)) === source.rendered;
     case "instance-actor":
-      return readInstanceKey(db)?.pubkey ?? null;
+      return (readInstanceKey(db)?.pubkey ?? null) === source.rendered;
     case "nodeinfo":
-      return JSON.stringify(nodeInfoUsageOf(db, source.now));
-    case "static":
-      return null;
+      return (
+        JSON.stringify(nodeInfoUsageOf(db, source.now)) === source.rendered ||
+        JSON.stringify(nodeInfoUsageOf(db, storeNow)) === source.rendered
+      );
   }
 }
 
@@ -36,12 +41,12 @@ function currentSource(db: Db, source: SnapshotSource): string | null {
 // which the Store serves through readSnapshot while it refuses domain operations. Writes only when the body changed,
 // so a steady document costs a read and no row write.
 //
-// A body is kept only if its source still matches the Store in this transaction. Saves run in the background and may
-// arrive late, from any isolate; a document rendered before a key rotation or a profile edit is thereby refused
-// instead of replacing the newer one (false).
+// A body is kept only if its source still matches the Store in this transaction (sourceMatches; storeNow is the
+// Store's own time, atStoreTime). Saves run in the background and may arrive late, from any isolate; a document
+// rendered before a key rotation or a profile edit is thereby refused instead of replacing the newer one (false).
 //
 // A matching source is not enough where the answer also depends on time: a NodeInfo rendered earlier can recompute
-// the same from its own `now` after a post has aged out of the active window. So each key also keeps the render time
+// the same from its own `now` after an account's active day has left the window. So each key also keeps the render time
 // of what it holds (renderedAt, the Worker's clock when it rendered), and an older render is refused. This applies to
 // every key, which keeps the rule uniform.
 //
@@ -49,14 +54,14 @@ function currentSource(db: Db, source: SnapshotSource): string | null {
 // kept snapshot of its key with an empty one, so the rescue path answers 503 instead of an outdated document while
 // the render time stays. A kept body records the domain of this transaction, the one it was rendered on, by which the
 // rescue path judges the request's host (WEB-6).
-export const saveSnapshot = writeOperation<
-  { key: string; source: SnapshotSource; renderedAt: number } & Snapshot,
+export const saveSnapshot = writeOperation.atStoreTime("storeNow")<
+  { key: string; source: SnapshotSource; renderedAt: number; storeNow: number } & Snapshot,
   boolean
->((db, { key, contentType, body, source, renderedAt }) => {
+>((db, { key, contentType, body, source, renderedAt, storeNow }) => {
   if (!isSnapshotKey(key)) {
     return false;
   }
-  if (source.kind !== "static" && currentSource(db, source) !== source.rendered) {
+  if (source.kind !== "static" && !sourceMatches(db, source, storeNow)) {
     return false;
   }
   const name = `${SNAPSHOT_STATE_PREFIX}${key}`;

@@ -663,10 +663,11 @@ describe("NodeInfo", () => {
     });
   });
 
-  // Both count the available local accounts with active_on in the 29 UTC days ending today, at the clock both requests
+  // Two fresh origin responses on the same UTC day and account state (a cached response of an earlier day may differ):
+  // both count the available local accounts with active_on in the 29 UTC days ending today, at the clock both requests
   // read (the harness's NOW, 2026-10-12): Alice (never active), and one each on the window's first day and the day
   // before it, today, half a year ago, tomorrow (an imported later day), and today but suspended (twice, one empty).
-  it("answers activeMonth as /api/v2/instance answers active_month", async () => {
+  it("answers activeMonth as a fresh /api/v2/instance of the same day answers active_month", async () => {
     const { json, store } = await instance();
     await runInDurableObject(store, (_instance, state) => {
       for (const [i, [activeOn, suspendedAt]] of [

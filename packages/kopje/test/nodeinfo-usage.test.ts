@@ -96,6 +96,11 @@ describe("NodeInfo usage", () => {
         localPosts: 0,
       });
     }
+    // Tomorrow's stamp alone, at the last millisecond of today: the totals above would not show a window moved a day
+    // forward, which trades the first day's account for it.
+    const tomorrow = await migratedStore();
+    await accountsWith(tomorrow, [{ activeOn: "2026-06-02" }]);
+    expect(await usageAt(tomorrow, LATE)).toMatchObject({ users: 1, activeMonth: 0, activeHalfyear: 0 });
   });
 
   // RES-7: the account counts are one walk of local_accounts that reads no status, however many statuses an account
