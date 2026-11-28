@@ -1,5 +1,3 @@
-import { Temporal } from "temporal-polyfill";
-
 import { attributionDomainsSql, displayNameReadSql, presentedLocalFieldsSql } from "../platform/stored-bounds";
 
 // A local actor's row as ACTOR_ROW_COLUMN_MAP selects it, from accounts a and local_accounts l: what the actor endpoint
@@ -59,23 +57,17 @@ export const ACTOR_ROW_COLUMN_MAP = {
   emojis: "a.emojis",
 } as const satisfies Record<keyof ActorRow, string>;
 
-// The midnight UTC of the day the time `value` names, as ActivityPub::ActorSerializer#published writes an actor's
-// creation (created_at.midnight.iso8601), or null when `value` is not an instant as a whole: Temporal.Instant.from,
-// as Fedify reads the published it is given, so an offset names its UTC day and an hour or a day that does not exist
-// names none. The one judgment of the endpoint and every Update (actorPublished) and of the rescue path's kept
-// documents (federation/snapshot.ts).
-export function publishedDay(value: string): string | null {
-  let instant: string;
-  try {
-    instant = Temporal.Instant.from(value).toString();
-  } catch {
-    return null;
-  }
-  return `${instant.slice(0, instant.indexOf("T"))}T00:00:00Z`;
-}
+// A stored time as Kopje's writers store it (Date#toISOString): the 24-byte ISO form that Date reads back as itself,
+// the rule account-columns.ts createdDaySql applies in SQL (isoTimeSql), so the actor and the Account judge a value
+// alike (test/account-created-at.test.ts compares the two).
+const STORED_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-// The actor's `published`: its creation day's midnight UTC (publishedDay), or the stored value when it is not an
-// instant, as before #1564.
+// The actor's `published`, as ActivityPub::ActorSerializer#published writes it (created_at.midnight.iso8601): the
+// midnight UTC of its creation day when the stored value is a stored time, else the stored value, as before #1564.
+// The one judgment of the actor endpoint and every Update(Person).
 export function actorPublished(createdAt: string): string {
-  return publishedDay(createdAt) ?? createdAt;
+  const ms = STORED_TIME.test(createdAt) ? Date.parse(createdAt) : NaN;
+  return Number.isFinite(ms) && new Date(ms).toISOString() === createdAt
+    ? `${createdAt.slice(0, 10)}T00:00:00Z`
+    : createdAt;
 }

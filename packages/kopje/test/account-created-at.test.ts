@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 
 import { rowHeapSql } from "../src/db/columns";
 import { Db } from "../src/db/sql";
-import { ACCOUNT_COLUMN_MAP } from "../src/domain/account-columns";
+import { ACCOUNT_COLUMN_MAP, createdDaySql } from "../src/domain/account-columns";
 import type { Account } from "../src/domain/accounts";
+import { actorPublished } from "../src/domain/actor-row";
 import { adminAccountStream } from "../src/domain/admin-account-presenter";
 import { sql } from "./api-helpers";
 import { community, follow, getJson, remoteAccount, seedStatus } from "./status-helpers";
@@ -94,6 +95,41 @@ describe("an account's created_at", () => {
       await created(carol, stored);
       expect((await shown(carol)).created_at, stored).toBe(day);
     }
+  });
+
+  // The actor (actor-row.ts actorPublished) judges in the Worker what createdDaySql judges in SQL, so the actor and
+  // the Account agree on every stored value: its day for a stored time, else the value as stored.
+  it("is judged alike for the actor and the Account", async () => {
+    const { h } = await fixture();
+    const values = [
+      EXACT,
+      MIDNIGHT,
+      "0099-01-01T23:59:59.999Z",
+      "0000-01-01T00:00:00.000Z",
+      "2026-10-12T00:15:00+01:00",
+      "2026-10-12 13:14:15",
+      `${EXACT}junk`,
+      "2026-10-12T13:14:15Z",
+      "2026-10-12T24:00:00.000Z",
+      "2026-10-12T99:14:15.678Z",
+      "2026-02-30T13:14:15.678Z",
+      "2026-10-12T13:14:60.000Z",
+      "-000001-12-31T23:15:00.000Z",
+      "２026-10-12T13:14:15.678Z",
+      "",
+    ];
+    const days = await runInDurableObject(h.store, (_instance, state) =>
+      values.map(
+        (value) =>
+          state.storage.sql
+            .exec<{ day: string | null }>(`SELECT ${createdDaySql("v.c")} AS day FROM (SELECT ?1 AS c) v`, value)
+            .one().day,
+      ),
+    );
+    expect(days.filter((day) => day !== null)).toHaveLength(4);
+    expect(values.map((value) => actorPublished(value))).toEqual(
+      values.map((value, i) => (days[i] === null ? value : `${days[i]}T00:00:00Z`)),
+    );
   });
 
   // engineering.md, "Stored values": the value is judged as stored, before the moved-to account's cut.
