@@ -52,14 +52,14 @@ const at = (t: Setup, now = NOW) => ({ ...inboxDeps(() => t.store, t.web.loader)
 // destination served, unless `served` is false. Bob's collections answer 404, so his other parts read through at once.
 async function pendingBob(
   t: Setup,
-  options: { served?: boolean; movedTo?: string } = {},
+  options: { served?: boolean; movedTo?: string; extra?: Record<string, unknown> } = {},
 ): Promise<{ bob: TestActor; bobId: string; dest: TestActor }> {
   const dest = await mastodonActor(t.web, "dest", { origin: OTHER, key: 3 });
   if (options.served === false) {
     t.web.served.delete(DEST);
   }
   const bob = await mastodonActor(t.web, "bob");
-  t.web.serve(bob.uri, { ...bob.document, movedTo: options.movedTo ?? DEST });
+  t.web.serve(bob.uri, { ...bob.document, movedTo: options.movedTo ?? DEST, ...options.extra });
   const bobId = await followed(t, bob);
   expect(await moveState(t, bob.uri)).toMatchObject({ moved: null, pending: 1 });
   expect(await storedUri(t, DEST)).toBeUndefined();
@@ -244,6 +244,29 @@ describe("the move part", () => {
     await syncCollections(t.env, at(t));
     expect(t.web.fetched[from]).toBe(DEST);
     expect(await moveState(t, bob.uri)).toMatchObject({ moved: DEST, pending: 0 });
+  });
+
+  // The move's turn is the generation's first claim alone: the claims after it start with the other parts as a read
+  // without a move does (featured, network, featuredTags), so a move that keeps failing takes no first turn from them.
+  it("goes first in the generation's first claim only, and the other parts keep the first turns of the claims after", async () => {
+    const t = await setup();
+    const collections = `${MASTODON}/users/bob/collections/collections`;
+    const { bob } = await pendingBob(t, { extra: { featuredCollections: collections } });
+    t.web.fail(DEST, 503);
+    for (const path of ["collections/featured", "collections/tags", "following", "followers", "outbox"]) {
+      t.web.fail(`${bob.uri}/${path}`, 503);
+    }
+    t.web.fail(collections, 503);
+    const firsts: string[] = [];
+    let now = NOW;
+    for (let round = 1; round <= MAX_SYNC_ATTEMPTS; round++) {
+      const from = t.web.fetched.length;
+      await syncCollections(t.env, at(t, now));
+      firsts.push(t.web.fetched[from]!);
+      expect(fetchesOf(t, DEST, from), String(round)).toBe(1);
+      now += SYNC_RETRY_MS;
+    }
+    expect(firsts).toEqual([DEST, `${bob.uri}/following`, `${bob.uri}/collections/tags`]);
   });
 
   it("follows no redirect: a destination that redirects settles with nothing", async () => {

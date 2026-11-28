@@ -5324,6 +5324,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   document is stored. One generation makes at most 624 requests: 3 document-part claims (a refresh asked with it,
   `MAX_SYNC_ATTEMPTS`), 15 read claims (5 parts × `MAX_SYNC_ATTEMPTS`) and 60 pin claims (`MAX_REMOTE_PINS` ×
   `MAX_SYNC_ATTEMPTS`), each of 8 fetches. The move part (`PART_MOVED`) goes first in each generation's first claim and
+  last in every other, so the other parts keep the first turns of the claims after (`readCollections`), and it
   costs nothing when no move is pending; when one is, it loads the destination once a read claim, as the instance actor
   (DATA-7), with no redirect (`MOVED_CAPS`) and the loader's 1 MiB body limit, and its WebFinger answers, each
   following up to `MAX_REDIRECTS`, share the round's 8 fetches, 2 MiB and deadline. Accepted: a destination whose

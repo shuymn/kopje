@@ -403,9 +403,9 @@ const PART_READS: [
   number,
   (sync: CollectionSync, origin: string | null, loaders: ReadLoaders, out: ReadOut) => Promise<void>,
 ][] = [
-  // The move part goes first, so attempt 1 of every generation starts with it: four parts that keep failing never take
-  // every claim before it. With nothing to fetch it costs nothing. Its bit is the Store's (move_pending), never set
-  // here.
+  // The move part, first in the generation's first claim and last in every other (readCollections): four parts that
+  // keep failing never take every claim before it, and it takes no first turn from them after. With nothing to fetch
+  // it costs nothing. Its bit is the Store's (move_pending), never set here.
   [
     PART_MOVED,
     async (sync, _origin, loaders, out) => {
@@ -464,7 +464,9 @@ const PART_READS: [
 // Phase 1: what a round reads of one account's collections: the parts not read through yet, in the order of PART_READS,
 // starting from the one the round's attempt names. A round after one without progress starts
 // with the next unread part, so each gets a round where it goes first with the whole budget (a part that keeps failing
-// does not spend every round's budget before a healthy one) before MAX_SYNC_ATTEMPTS gives the read up.
+// does not spend every round's budget before a healthy one) before MAX_SYNC_ATTEMPTS gives the read up. The move part
+// is outside that rotation: it goes first in the generation's first claim (its first attempt, with no other part read
+// through yet) and last in every other, so the other parts keep the first turns a read without a move gives them.
 async function readCollections(sync: CollectionSync, loaders: ReadLoaders): Promise<ReadOut> {
   const origin = originOf(sync.accountUri);
   const out: ReadOut = {
@@ -479,8 +481,12 @@ async function readCollections(sync: CollectionSync, loaders: ReadLoaders): Prom
   const unread = PART_READS.filter(
     ([part]) => (sync.parts & part) === 0 && !(part === PART_TAGS && sync.featuredTags === null),
   );
-  const first = unread.length === 0 ? 0 : (Math.max(sync.attempt, 1) - 1) % unread.length;
-  for (const [, read] of [...unread.slice(first), ...unread.slice(0, first)]) {
+  const move = unread.filter(([part]) => part === PART_MOVED);
+  const others = unread.filter(([part]) => part !== PART_MOVED);
+  const first = others.length === 0 ? 0 : (Math.max(sync.attempt, 1) - 1) % others.length;
+  const rotated = [...others.slice(first), ...others.slice(0, first)];
+  const opening = sync.attempt <= 1 && (sync.parts & ~PART_MOVED) === 0;
+  for (const [, read] of opening ? [...move, ...rotated] : [...rotated, ...move]) {
     await read(sync, origin, loaders, out);
   }
   return out;
