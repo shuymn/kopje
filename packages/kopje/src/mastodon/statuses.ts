@@ -123,12 +123,13 @@ function pollOf(p: Params): PollInput | string | undefined {
 
 // What POST and PUT share: text, spoiler, sensitive, language, media and a poll, with Mastodon's request validation:
 // the number of media first (PostStatusService#validate_media!'s too_many), then the text, then the poll. Which ids
-// are usable is the Store's (statuses.ts mediaToAttach), checked after these. An empty entry is no id, so JSON
-// `media_ids: []` (which the parser reads as one empty entry) removes an edit's media.
+// are usable is the Store's (statuses.ts mediaToAttach), checked after these. media_ids is read only as a list: strong
+// parameters permit `media_ids: []` and drop a scalar (statuses_controller.rb:145), so `media_ids=<id>` is no media,
+// which removes an edit's media as an absent list does. An empty entry (a form's `media_ids[]=`) is no id.
 function composition(p: Params): Composition | string {
   const text = p.get("status") ?? "";
   const spoilerText = p.get("spoiler_text") ?? "";
-  const mediaIds = p.getAll("media_ids").filter((id) => id !== "");
+  const mediaIds = (p.list("media_ids") ?? []).filter((id) => id !== "");
   if (mediaIds.length > MAX_MEDIA_ATTACHMENTS) {
     return TOO_MANY_FILES;
   }

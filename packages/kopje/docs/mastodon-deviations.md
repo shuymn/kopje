@@ -553,7 +553,7 @@ Accounts (the `Account` and credential account entities):
 - An account whose handle another account has taken (its stored username is `! <id>`, as Mastodon's
   `invalidate_username!` writes it) shows `invalid_handle`, its id as `username` and `<id>@handle.invalid` as `acct`,
   as Mastodon 4.7 does, and `GET /api/v1/accounts/lookup` finds it by that placeholder. No other address names it:
-  lookup, an account search's exact match, a new post's mention and the web's featured hashtag page ignore
+  lookup, an account search's exact match, a new post's mention and the account's tagged route ignore
   `! <id>@<domain>`, where Mastodon's lookup matches the stored username as given (`Account.find_remote`,
   `finder_concern.rb:27-35`); an account search can still list it among its username-prefix and recent matches, by its
   search text. A search with `resolve=true` of `<id>@handle.invalid` answers as without `resolve`,
@@ -1386,8 +1386,8 @@ Hashtags (the `Tag` entity):
 - `/@user/featured` (the Featured tab of Mastodon's web app, which serves its single-page app there) is an HTML page of
   a local account's featured hashtags and the accounts it endorses, as `GET /api/v1/accounts/:id/featured_tags` and
   `/endorsements` list them to an anonymous client, the endorsements paged by account id. A featured hashtag links to
-  the instance's hashtag page (`/tags/:name`), not to the account's posts with it (`/@user/tagged/:tag`), and shows at
-  most ten hashtags, the first by id, though an import may hold more.
+  the page its `url` names, the account's posts with it, and has no link when that page does not serve its stored name.
+  The tab shows at most ten hashtags, the first by id, though an import may hold more.
 
 Admin account actions (`POST /api/v1/admin/accounts/:account_id/action`):
 
@@ -1733,10 +1733,24 @@ Custom emoji (the `CustomEmoji` entities of a status, its poll and an account, a
   static PNG it generates. Only PNG, GIF and WebP below 256 KiB from https URLs are cached; anything else, an emoji not
   fetched yet and one whose fetch failed keep the remote URL, where Mastodon does not save an emoji whose image fails.
   While a domain block with `reject_media` rules the account's stored domain, none is listed, as Mastodon's.
-- Only the first 16 entries of a status's, an account's or a moved-to account's snapshot show their cached copy; the
-  others keep their remote URLs. Reading more with each row would pass the Store's memory bound for a page.
-- An entry's JSON is measured with the URLs it shows, so a snapshot near its byte bound may drop its last entries once
-  its emoji are cached.
+- In a status's, an account's or a moved-to account's snapshot, only the first 16 snapshot positions with a valid
+  cached pair show their cached copy; an entry at a later position, or with no valid pair, keeps its remote URLs.
+  Reading more with each row would pass the Store's memory bound for a page.
+- A snapshot is presented in its stored order. Each entry considered has its URL normalized again, and an entry whose
+  URL no longer passes is dropped. A moved-to account keeps only the entries its display name, cut at 100 code points,
+  references. An entry at one of the first 16 positions with a valid cached pair takes its cached URLs. The entries are
+  then shown until adding the next, measured with the URLs it shows, would take the array past the presenter's byte
+  bound, and at most 64. A poll shows those of the status's presented entries its options reference, so an entry past
+  the status's cut is missing from the poll even when it alone would fit. The bound is 12,288 bytes for a status, its
+  poll and an edit-history version, 6,144 for an account and 2,048 for a moved-to account. Mastodon lists the emoji it
+  resolves, each with its own copy, with no byte bound.
+- A stored snapshot can show fewer entries than it holds: once its emoji are cached, where the cached URLs are longer
+  than the remote ones; where normalizing grows an imported URL; and as a moved-to account, whose bound is below the
+  6,144 bytes an account's snapshot is stored within. For example, take 12 one-character shortcodes with 200-byte
+  remote URLs, all referenced by the display name. They are stored in 2,509 bytes and shown whole on the account
+  itself, in 5,617 bytes uncached. As a moved-to account, 4 of them show uncached. Once each has a cached pair on
+  `https://kopje.test` with a 43-character token, 8 show with a WebP file and still, and 9 with a static PNG (one URL
+  for both).
 - Edit history (`StatusEdit`) keeps each version's remote URLs, and lists none under a block with `reject_media`.
 - A cached emoji is deleted 90 days after the last snapshot that names it was stored, and once a domain block covers
   its domain or rejects its media, each when the cron's validity walk reaches it (500 slots a round); Mastodon keeps an

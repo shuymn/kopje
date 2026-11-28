@@ -38,7 +38,7 @@ import { BUILD } from "./helpers";
 import { fullestFields, MAX_BIO, movedAtCaps } from "./profile-fixtures";
 import { expectFullPages, shownAccounts, viaRoute, walkPages, walkProfile } from "./profile-page-helpers";
 import { observedSql, type PlannedStatement, plannedSql, scansOf, staleStatistics } from "./read-helpers";
-import { community } from "./status-helpers";
+import { community, seedStatus } from "./status-helpers";
 import { accessibleName, attr, closest, one, parseHtml, query, text } from "./web-dom";
 import { render } from "./web-fixtures";
 import { countedHarness } from "./web-helpers";
@@ -59,7 +59,7 @@ const ACCOUNT_JSON_MAX = 150_022;
 // web-pages/featured.ts): an id of 18 digits; a name within the list's bound (TAG_NAME_JSON_BYTES as JSON); its tagged
 // URL on the instance origin, a username of USERNAME_LIMIT escaping characters and the stored name percent-encoded (at
 // most 1,024 UTF-8 bytes, 3 bytes each); a count of 16 digits; a date cut to 10 UTF-16 code units, each escaped to 6
-// bytes; and the hashtag page's name within the same bound as the name.
+// bytes; and the stored key within the same bound as the name.
 const FEATURED_TAG_JSON_MAX =
   jsonBytes({
     featured: {
@@ -69,7 +69,7 @@ const FEATURED_TAG_JSON_MAX =
       statuses_count: "9".repeat(16),
       last_status_at: C.repeat(10),
     },
-    tag: "",
+    key: "",
   }) +
   2 * TAG_NAME_JSON_BYTES +
   1;
@@ -368,11 +368,12 @@ describe("the Featured tab’s endorsed accounts at their ends", () => {
 });
 
 describe("the Featured tab’s hashtags", () => {
-  it("shows at most ten, as the API lists them, each linked to its hashtag page with the API’s count", async () => {
+  it("shows at most ten, as the API lists them, each linked to the account’s tagged page with the API’s count", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
     // Twelve rows, as an import may hold (a writer keeps ten): the page shows the first ten by id. Among them a
-    // spelling of a name (its page is the normalized one) and an imported name that is not a hashtag (no page).
+    // spelling of a name (its key is the normalized one) and an imported display name that is not a hashtag, whose key
+    // is one (the key is linked).
     const rows = [
       { name: "cafe", display: "Café", count: 1, last: "2026-10-01T00:00:00.000Z" },
       { name: "ab", display: "a-b", count: 0 },
@@ -383,10 +384,11 @@ describe("the Featured tab’s hashtags", () => {
     }
     const html = await (await h.request("/@alice/featured")).text();
     const page = shown(html);
+    // Ten, Mastodon's limit, written out so that a change of MAX_FEATURED_TAGS fails here.
     expect(page.tags).toEqual(
-      rows.slice(0, MAX_FEATURED_TAGS).map((row, i) => ({
+      rows.slice(0, 10).map((row) => ({
         name: `#${row.display}`,
-        href: i === 1 ? null : `/tags/${row.name}`,
+        href: `/@alice/tagged/${row.name}`,
         count: STRINGS.featured.posts(row.count),
       })),
     );
@@ -396,7 +398,7 @@ describe("the Featured tab’s hashtags", () => {
       await h.request(`/api/v1/accounts/${alice.id}/featured_tags`)
     ).json<{ name: string; statuses_count: string; url: string; last_status_at: string | null }[]>();
     expect(api.map((tag) => tag.name)).toEqual(rows.map((row) => row.display));
-    expect(api.slice(0, MAX_FEATURED_TAGS).map((tag) => STRINGS.featured.posts(Number(tag.statuses_count)))).toEqual(
+    expect(api.slice(0, 10).map((tag) => STRINGS.featured.posts(Number(tag.statuses_count)))).toEqual(
       page.tags.map((tag) => tag.count),
     );
     expect(api[0]).toEqual({
@@ -406,9 +408,69 @@ describe("the Featured tab’s hashtags", () => {
       statuses_count: "1",
       last_status_at: "2026-10-01",
     });
-    // The link opens the hashtag's page.
-    expect((await h.request("/tags/cafe")).status).toBe(200);
-    expect((await h.request("/tags/a-b")).status).toBe(404);
+    // The link opens the page the API's url names.
+    expect(page.tags[0]!.href).toBe(new URL(api[0]!.url).pathname);
+    expect((await h.request("/@alice/tagged/cafe")).status).toBe(200);
+    expect((await h.request("/@alice/tagged/ab")).status).toBe(200);
+  });
+
+  it("links the path of the API’s url, by the stored key, and no link for a key that page refuses", async () => {
+    const h = await community(["alice", "bob", "carol"]);
+    const { alice, bob, carol } = h.users;
+    await seedStatus(h.store, {
+      accountId: alice.id,
+      visibility: "public",
+      content: "<p>a cat post</p>",
+      tags: ["cats"],
+    });
+    // Per account, its featured rows and, for each, its label, the path of its API url, whether the page links it and
+    // the status that path answers. alice: a written key, a key that needs encoding, one with no post, and two keys
+    // that are not hashtag names (an imported a-b, and __, the key a writer stores for _\u0301_). bob: an imported key
+    // under another display name, the same key as alice's (keys are per account, migrations/0016_tags.sql). carol: an
+    // imported key that is a hashtag name under a display name that is not.
+    const accounts = [
+      {
+        username: "alice",
+        id: alice.id,
+        rows: [
+          { name: "cats", display: "Cats", path: "/@alice/tagged/cats", linked: true, status: 200 },
+          { name: "猫", display: "猫", path: "/@alice/tagged/%E7%8C%AB", linked: true, status: 200 },
+          { name: "walks", display: "walks", path: "/@alice/tagged/walks", linked: true, status: 200 },
+          { name: "a-b", display: "a-b", path: "/@alice/tagged/a-b", linked: false, status: 404 },
+          { name: "__", display: "_\u0301_", path: "/@alice/tagged/__", linked: false, status: 404 },
+        ],
+      },
+      {
+        username: "bob",
+        id: bob.id,
+        rows: [{ name: "cats", display: "Dogs", path: "/@bob/tagged/cats", linked: true, status: 200 }],
+      },
+      {
+        username: "carol",
+        id: carol.id,
+        rows: [{ name: "dogs", display: "a-b", path: "/@carol/tagged/dogs", linked: true, status: 200 }],
+      },
+    ];
+    let next = 0;
+    for (const { id, rows } of accounts) {
+      for (const row of rows) {
+        await feature(h, id, ++next, row);
+      }
+    }
+    for (const { username, id, rows } of accounts) {
+      const api = await (await h.request(`/api/v1/accounts/${id}/featured_tags`)).json<{ url: string }[]>();
+      expect(api.map((tag) => new URL(tag.url).pathname)).toEqual(rows.map((row) => row.path));
+      const page = shown(await (await h.request(`/@${username}/featured`)).text());
+      expect(page.tags.map(({ name, href }) => ({ name, href }))).toEqual(
+        rows.map((row) => ({ name: `#${row.display}`, href: row.linked ? row.path : null })),
+      );
+      // Each linked path answers 200, an empty list for a hashtag with no post; the unlinked keys' paths answer 404
+      // (the guarded branch ran).
+      for (const row of rows) {
+        expect((await h.request(row.path)).status, row.path).toBe(row.status);
+      }
+    }
+    expect(await (await h.request("/@alice/tagged/cats")).text()).toContain("a cat post");
   });
 });
 
@@ -555,14 +617,13 @@ describe("the Featured tab at its maxima (RES-3)", () => {
   // PROFILE_URL_LIMIT, emoji at their presented cap, counts at MAX_ACCOUNT_COUNT, MAX_FIELDS local fields of escaping
   // names and linked values at their limits, each verified. Its username is the page's own handle (a local name, never
   // escaping) and it cannot have moved (a local row holds no moved_to_account_id, migration 0060). Ten hashtags of 256
-  // four-byte characters (the name bound in characters and bytes, and a hashtag page's name at the same bound), counts
-  // at MAX_ACCOUNT_COUNT and a stored time of escaping characters past its cut. A name of escaping characters would
-  // present more JSON but is no hashtag, so its page link is null instead: the two caps exclude each other, and the
-  // ceiling counts both. 41 endorsed accounts, each with an actor id at ACTOR_URI_LIMIT, a username at USERNAME_LIMIT
-  // on a domain of DOMAIN_BYTES, display name and bio at their caps, profile URL and images at PROFILE_URL_LIMIT, the
-  // fullest remote fields (the first REMOTE_VERIFIED_SHOWN linking REMOTE_FIELD_LINK_BYTES links, each verified by a
-  // verification row at the writer's maximum), emoji at their presented cap, counts at MAX_ACCOUNT_COUNT, and moved to
-  // an account at every cap of a moved-to account, its counts at MAX_ACCOUNT_COUNT too.
+  // four-byte characters (the name bound in characters and bytes, and its key at the same bound), counts at
+  // MAX_ACCOUNT_COUNT and a stored time of escaping characters past its cut. 41 endorsed accounts, each with an actor id
+  // at ACTOR_URI_LIMIT, a username at USERNAME_LIMIT on a domain of DOMAIN_BYTES, display name and bio at their caps,
+  // profile URL and images at PROFILE_URL_LIMIT, the fullest remote fields (the first REMOTE_VERIFIED_SHOWN linking
+  // REMOTE_FIELD_LINK_BYTES links, each verified by a verification row at the writer's maximum), emoji at their
+  // presented cap, counts at MAX_ACCOUNT_COUNT, and moved to an account at every cap of a moved-to account, its counts
+  // at MAX_ACCOUNT_COUNT too.
   it("keeps each real RPC answer at every cap within WEB_PAGE_BYTES, cut by bytes, each account within its maximum", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -658,7 +719,7 @@ describe("the Featured tab at its maxima (RES-3)", () => {
     expect(first.tags).toHaveLength(MAX_FEATURED_TAGS);
     for (const tag of first.tags) {
       expect(jsonBytes(tag)).toBeLessThanOrEqual(FEATURED_TAG_JSON_MAX);
-      expect([tag.tag, tag.featured.statuses_count, tag.featured.last_status_at]).toEqual([
+      expect([tag.key, tag.featured.statuses_count, tag.featured.last_status_at]).toEqual([
         tag.featured.name,
         String(MAX_ACCOUNT_COUNT),
         C.repeat(10),
